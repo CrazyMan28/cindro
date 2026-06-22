@@ -59,6 +59,29 @@ struct PluginRow {
     qint64 updated = 0;
 };
 
+// A queued task (Contract C task.queue / task.list). `whenAt`<=0 means "run as
+// soon as possible"; otherwise it is a unix-ms time to run at.
+struct TaskRow {
+    QString id;
+    QString deviceId;   // device that queued it (empty for desktop-queued)
+    QString text;       // the prompt to run
+    qint64 whenAt = 0;  // unix ms (0 => asap)
+    QString state;      // "queued" | "running" | "done" | "error" | "canceled"
+    QString sessionId;  // session it ran in, once started (may be empty)
+    qint64 created = 0; // unix ms
+    qint64 updated = 0; // unix ms
+
+    QJsonObject toJson() const;
+};
+
+// A registered FCM push token for a device (Contract C push.register). One row
+// per device id; re-registering replaces the token.
+struct PushTokenRow {
+    QString deviceId;
+    QString fcmToken;
+    qint64 updated = 0; // unix ms
+};
+
 class SessionStore {
 public:
     SessionStore() = default;
@@ -107,6 +130,18 @@ public:
     std::optional<PluginRow> getPlugin(const QString &id);
     bool upsertPlugin(const PluginRow &row);
     bool removePlugin(const QString &id);
+
+    // --- tasks (Contract C queue) -----------------------------------------
+    bool createTask(const TaskRow &row);
+    QVector<TaskRow> listTasks(const QString &deviceId = QString());
+    std::optional<TaskRow> getTask(const QString &id);
+    bool updateTaskState(const QString &id, const QString &state,
+                         const QString &sessionId = QString());
+
+    // --- push tokens (Contract C push.register) ---------------------------
+    bool upsertPushToken(const PushTokenRow &row);   // replaces by deviceId
+    QVector<PushTokenRow> listPushTokens();
+    bool removePushToken(const QString &deviceId);
 
 private:
     bool exec(const QString &sql, QString *err = nullptr);

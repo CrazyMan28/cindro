@@ -3,10 +3,17 @@
     <string name="app_name">Jarvis</string>
 
     <string name="pair_title">Pair with Jarvis</string>
-    <string name="pair_subtitle">Connect this phone to your Jarvis daemon over your local network.</string>
+    <string name="pair_subtitle">Open the Jarvis sidebar on your laptop, choose “Pair a device”, then scan the QR or type the host and 6-digit code shown.</string>
     <string name="pair_host_label">Host : Port</string>
-    <string name="pair_host_hint">192.168.0.47:8796</string>
+    <string name="pair_host_hint">100.114.201.41:8796</string>
+    <string name="pair_code_label">Pairing code</string>
+    <string name="pair_name_label">This device’s name</string>
     <string name="pair_scan_qr">Scan QR</string>
-    <string name="pair_connect">Connect</string>
-    <string name="pair_help">Open the Jarvis sidebar on your laptop and choose “Pair a device”, then scan the QR or type the address shown.</string>
+    <string name="pair_connect">Pair</string>
+    <string name="pair_cancel">Cancel</string>
+    <string name="pair_camera_denied">Camera permission denied — enter the host and code by hand instead.</string>
+
+    <string name="nav_sessions">Sessions</string>
+    <string name="nav_queue">Queue</string>
+    <string name="nav_settings">Settings</string>
 </resources>

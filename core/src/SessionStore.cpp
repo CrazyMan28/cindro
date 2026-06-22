@@ -142,6 +142,27 @@ bool SessionStore::migrate()
             " updated INTEGER)")))
         return false;
 
+    // Contract C: queued tasks (task.queue / task.list).
+    if (!exec(QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS tasks ("
+            " id TEXT PRIMARY KEY,"
+            " device_id TEXT,"
+            " text TEXT,"
+            " when_at INTEGER,"
+            " state TEXT,"
+            " session_id TEXT,"
+            " created INTEGER,"
+            " updated INTEGER)")))
+        return false;
+
+    // Contract C: per-device FCM push tokens (push.register).
+    if (!exec(QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS push_tokens ("
+            " device_id TEXT PRIMARY KEY,"
+            " fcm_token TEXT,"
+            " updated INTEGER)")))
+        return false;
+
     // Seed the built-in computer-use MCP server exactly once (idempotent).
     {
         QSqlQuery q(m_db);
@@ -530,6 +551,172 @@ bool SessionStore::removePlugin(const QString &id)
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral("DELETE FROM plugins WHERE id=?"));
     q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+// --- tasks ------------------------------------------------------------------
+
+QJsonObject TaskRow::toJson() const
+{
+    QJsonObject o;
+    o.insert(QStringLiteral("id"), id);
+    o.insert(QStringLiteral("device_id"), deviceId);
+    o.insert(QStringLiteral("text"), text);
+    o.insert(QStringLiteral("when"), whenAt);
+    o.insert(QStringLiteral("state"), state);
+    o.insert(QStringLiteral("session_id"), sessionId);
+    o.insert(QStringLiteral("created"), created);
+    o.insert(QStringLiteral("updated"), updated);
+    return o;
+}
+
+static TaskRow readTaskRow(QSqlQuery &q)
+{
+    TaskRow r;
+    r.id = q.value(0).toString();
+    r.deviceId = q.value(1).toString();
+    r.text = q.value(2).toString();
+    r.whenAt = q.value(3).toLongLong();
+    r.state = q.value(4).toString();
+    r.sessionId = q.value(5).toString();
+    r.created = q.value(6).toLongLong();
+    r.updated = q.value(7).toLongLong();
+    return r;
+}
+
+bool SessionStore::createTask(const TaskRow &row)
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "INSERT INTO tasks"
+        " (id,device_id,text,when_at,state,session_id,created,updated)"
+        " VALUES (?,?,?,?,?,?,?,?)"));
+    q.addBindValue(row.id);
+    q.addBindValue(row.deviceId);
+    q.addBindValue(row.text);
+    q.addBindValue(row.whenAt);
+    q.addBindValue(row.state.isEmpty() ? QStringLiteral("queued") : row.state);
+    q.addBindValue(row.sessionId);
+    q.addBindValue(row.created != 0 ? row.created : now);
+    q.addBindValue(row.updated != 0 ? row.updated : now);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+QVector<TaskRow> SessionStore::listTasks(const QString &deviceId)
+{
+    QVector<TaskRow> out;
+    QSqlQuery q(m_db);
+    if (deviceId.isEmpty()) {
+        q.prepare(QStringLiteral(
+            "SELECT id,device_id,text,when_at,state,session_id,created,updated"
+            " FROM tasks ORDER BY created DESC"));
+    } else {
+        q.prepare(QStringLiteral(
+            "SELECT id,device_id,text,when_at,state,session_id,created,updated"
+            " FROM tasks WHERE device_id=? ORDER BY created DESC"));
+        q.addBindValue(deviceId);
+    }
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return out;
+    }
+    while (q.next())
+        out.push_back(readTaskRow(q));
+    return out;
+}
+
+std::optional<TaskRow> SessionStore::getTask(const QString &id)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "SELECT id,device_id,text,when_at,state,session_id,created,updated"
+        " FROM tasks WHERE id=?"));
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return std::nullopt;
+    }
+    if (!q.next())
+        return std::nullopt;
+    return readTaskRow(q);
+}
+
+bool SessionStore::updateTaskState(const QString &id, const QString &state,
+                                   const QString &sessionId)
+{
+    QSqlQuery q(m_db);
+    if (sessionId.isEmpty()) {
+        q.prepare(QStringLiteral("UPDATE tasks SET state=?, updated=? WHERE id=?"));
+        q.addBindValue(state);
+        q.addBindValue(QDateTime::currentMSecsSinceEpoch());
+        q.addBindValue(id);
+    } else {
+        q.prepare(QStringLiteral(
+            "UPDATE tasks SET state=?, session_id=?, updated=? WHERE id=?"));
+        q.addBindValue(state);
+        q.addBindValue(sessionId);
+        q.addBindValue(QDateTime::currentMSecsSinceEpoch());
+        q.addBindValue(id);
+    }
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+// --- push tokens ------------------------------------------------------------
+
+bool SessionStore::upsertPushToken(const PushTokenRow &row)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "INSERT OR REPLACE INTO push_tokens (device_id,fcm_token,updated)"
+        " VALUES (?,?,?)"));
+    q.addBindValue(row.deviceId);
+    q.addBindValue(row.fcmToken);
+    q.addBindValue(row.updated != 0 ? row.updated
+                                    : QDateTime::currentMSecsSinceEpoch());
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+QVector<PushTokenRow> SessionStore::listPushTokens()
+{
+    QVector<PushTokenRow> out;
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral(
+            "SELECT device_id,fcm_token,updated FROM push_tokens"))) {
+        m_lastError = q.lastError().text();
+        return out;
+    }
+    while (q.next()) {
+        PushTokenRow r;
+        r.deviceId = q.value(0).toString();
+        r.fcmToken = q.value(1).toString();
+        r.updated = q.value(2).toLongLong();
+        out.push_back(r);
+    }
+    return out;
+}
+
+bool SessionStore::removePushToken(const QString &deviceId)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("DELETE FROM push_tokens WHERE device_id=?"));
+    q.addBindValue(deviceId);
     if (!q.exec()) {
         m_lastError = q.lastError().text();
         return false;

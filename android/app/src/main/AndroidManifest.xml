@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Pairing + Contract C device WebSocket (ws://<laptop-ip>:8796) need the network. -->
+    <!-- Pairing + Contract C device WebSocket (ws://<laptop>:8796) need the network. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <!-- Scan QR will use the camera (stubbed for now). -->
+    <!-- POST_NOTIFICATIONS is runtime-requested on API 33+ for FCM alerts. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- QR pairing scans with CameraX; camera is optional (manual entry fallback). -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />
@@ -16,6 +19,7 @@
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Jarvis">
@@ -30,6 +34,23 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- FCM receiver: data-only pushes from jarvisd (project "baratone"). -->
+        <service
+            android:name=".fcm.FcmService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="jarvis_updates" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/jarvis_accent" />
+
     </application>
 
 </manifest>

@@ -283,6 +283,27 @@ void Bridge::loadSessionHistory(const QString &sessionId)
     request(QStringLiteral("session.history"), params, sessionId);
 }
 
+// ---- Devices (pairing) -----------------------------------------------------
+
+void Bridge::devicesPairStart()
+{
+    request(QStringLiteral("devices.pair_start"), {});
+}
+
+void Bridge::devicesList()
+{
+    request(QStringLiteral("devices.list"), {});
+}
+
+void Bridge::devicesRevoke(const QString &id)
+{
+    if (id.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    request(QStringLiteral("devices.revoke"), params);
+}
+
 void Bridge::onTextMessageReceived(const QString &message)
 {
     QJsonParseError perr;
@@ -391,6 +412,20 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                                 : ctx;
         emit sessionHistory(sid, events);
         m_openingSession = false;
+    } else if (method == QStringLiteral("devices.pair_start")) {
+        // { code, payload, qr_svg, expires_at }
+        const QString qrSvg = result.value(QStringLiteral("qr_svg")).toString();
+        const QString code = result.value(QStringLiteral("code")).toString();
+        const QString payload = result.value(QStringLiteral("payload")).toString();
+        // expires_at may arrive as epoch seconds (number) or an ISO string; the UI
+        // only needs a numeric epoch for the countdown, so coerce defensively.
+        const QVariant exp = result.value(QStringLiteral("expires_at"));
+        emit pairingStarted(qrSvg, code, payload, exp.toDouble());
+    } else if (method == QStringLiteral("devices.list")) {
+        emit devicesListed(result.value(QStringLiteral("devices")).toList());
+    } else if (method == QStringLiteral("devices.revoke")) {
+        emit devicesChanged();
+        devicesList(); // refresh the paired-device list after a revoke
     }
     // ping / session.send / session.cancel / approval.respond: ack only.
 }
