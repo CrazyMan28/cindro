@@ -1,0 +1,10 @@
+# Jarvis plugin manifest — catalog entry.
+id = "git-skills"
+name = "Git Power Skills"
+author = "community"
+version = "0.4.1"
+kind = "skill"
+description = "Adds high-level git workflows the brain can call: safe rebase, branch promote (develop to qa to main), and a guarded force-push assistant."
+permissions = ["fs.read", "fs.write", "shell.git"]
+installed = false
+enabled = false

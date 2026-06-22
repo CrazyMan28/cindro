@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Jarvis
+GenericName=AI co-worker
+Comment=Jarvis AI co-worker sidebar
+Exec=__HOME__/.local/bin/jarvis-sidebar
+Icon=jarvis
+Terminal=false
+Categories=Utility;Development;Qt;
+StartupWMClass=jarvis-sidebar
+Keywords=ai;assistant;codex;

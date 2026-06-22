@@ -11,7 +11,7 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Sql WebSockets)
+find_package(Qt6 REQUIRED COMPONENTS Core Network Sql WebSockets)
 
 # libsodium via pkg-config (no CMake config package shipped on Fedora).
 find_package(PkgConfig REQUIRED)
@@ -32,6 +32,7 @@ target_link_libraries(jarvisd
     PRIVATE
         jarvis-core
         Qt6::Core
+        Qt6::Network
         Qt6::Sql
         Qt6::WebSockets
         PkgConfig::SODIUM

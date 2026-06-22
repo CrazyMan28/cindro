@@ -1,0 +1,185 @@
+#include "jarvis/SettingsStore.h"
+
+#include "jarvis/Config.h"
+
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QSaveFile>
+#include <QStringList>
+#include <QTextStream>
+
+namespace jarvis {
+
+QString SettingsStore::secretsFilePath()
+{
+    return Config::configDir() + QStringLiteral("/secrets.json");
+}
+
+QStringList SettingsStore::providerKeys()
+{
+    return {QStringLiteral("codex"), QStringLiteral("claude"),
+            QStringLiteral("openai"), QStringLiteral("anthropic"),
+            QStringLiteral("ollama")};
+}
+
+void SettingsStore::load()
+{
+    const Config cfg = Config::load();
+    m_defaultBrain = cfg.defaultBrain;
+    m_defaultModel = cfg.defaultModel;
+
+    // theme round-trips as `theme_json = '<compact json>'` in config.toml.
+    m_theme = QJsonObject();
+    {
+        QFile f(Config::configFilePath());
+        if (f.exists() && f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QString text = QString::fromUtf8(f.readAll());
+            f.close();
+            for (const QString &raw : text.split(QLatin1Char('\n'))) {
+                const QString line = raw.trimmed();
+                if (!line.startsWith(QStringLiteral("theme_json")))
+                    continue;
+                const int eq = line.indexOf(QLatin1Char('='));
+                if (eq < 0)
+                    continue;
+                QString v = line.mid(eq + 1).trimmed();
+                if (v.size() >= 2 &&
+                    ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
+                     (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
+                    v = v.mid(1, v.size() - 2);
+                const QJsonDocument d = QJsonDocument::fromJson(v.toUtf8());
+                if (d.isObject())
+                    m_theme = d.object();
+                break;
+            }
+        }
+    }
+
+    // secrets.json: { provider: value, ... }  (flat; matches ControlServer's writer).
+    m_apiKeys = QJsonObject();
+    {
+        QFile f(secretsFilePath());
+        if (f.exists() && f.open(QIODevice::ReadOnly)) {
+            const QJsonDocument d = QJsonDocument::fromJson(f.readAll());
+            f.close();
+            if (d.isObject())
+                m_apiKeys = d.object();
+        }
+    }
+}
+
+bool SettingsStore::hasApiKey(const QString &provider) const
+{
+    return !m_apiKeys.value(provider).toString().isEmpty();
+}
+
+void SettingsStore::setApiKey(const QString &provider, const QString &value)
+{
+    if (value.isEmpty())
+        m_apiKeys.remove(provider);
+    else
+        m_apiKeys.insert(provider, value);
+}
+
+QString SettingsStore::apiKey(const QString &provider) const
+{
+    return m_apiKeys.value(provider).toString();
+}
+
+QJsonObject SettingsStore::apiKeysSet() const
+{
+    QJsonObject out;
+    for (const QString &p : providerKeys())
+        out.insert(p, hasApiKey(p));
+    return out;
+}
+
+bool SettingsStore::saveConfig()
+{
+    const QString path = Config::configFilePath();
+    const QFileInfo fi(path);
+    QDir dir = fi.absoluteDir();
+    if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {
+        m_lastError = QStringLiteral("failed to create config dir: ") + dir.absolutePath();
+        return false;
+    }
+
+    // Preserve any unrelated keys/sections; rewrite only our managed keys.
+    QStringList preserved;
+    {
+        QFile f(path);
+        if (f.exists() && f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QString text = QString::fromUtf8(f.readAll());
+            f.close();
+            for (const QString &raw : text.split(QLatin1Char('\n'))) {
+                const QString t = raw.trimmed();
+                if (t.startsWith(QStringLiteral("default_brain")) ||
+                    t.startsWith(QStringLiteral("default_model")) ||
+                    t.startsWith(QStringLiteral("theme_json")))
+                    continue;
+                preserved << raw;
+            }
+        }
+    }
+
+    QString out;
+    QTextStream ts(&out);
+    ts << "default_brain = \"" << m_defaultBrain << "\"\n";
+    ts << "default_model = \"" << m_defaultModel << "\"\n";
+    if (!m_theme.isEmpty()) {
+        const QByteArray tj = QJsonDocument(m_theme).toJson(QJsonDocument::Compact);
+        ts << "theme_json = '" << QString::fromUtf8(tj) << "'\n";
+    }
+    bool seenContent = false;
+    for (const QString &line : std::as_const(preserved)) {
+        if (!seenContent && line.trimmed().isEmpty())
+            continue;
+        seenContent = true;
+        ts << line << "\n";
+    }
+    ts.flush();
+
+    QSaveFile sf(path);
+    if (!sf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        m_lastError = QStringLiteral("cannot write config.toml: ") + sf.errorString();
+        return false;
+    }
+    sf.write(out.toUtf8());
+    if (!sf.commit()) {
+        m_lastError = QStringLiteral("cannot commit config.toml: ") + sf.errorString();
+        return false;
+    }
+    return true;
+}
+
+bool SettingsStore::saveSecrets()
+{
+    const QString path = secretsFilePath();
+    const QFileInfo fi(path);
+    QDir dir = fi.absoluteDir();
+    if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {
+        m_lastError = QStringLiteral("failed to create config dir: ") + dir.absolutePath();
+        return false;
+    }
+
+    const QByteArray json = QJsonDocument(m_apiKeys).toJson(QJsonDocument::Indented);
+    QSaveFile sf(path);
+    if (!sf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        m_lastError = QStringLiteral("cannot write secrets.json: ") + sf.errorString();
+        return false;
+    }
+    sf.write(json);
+    if (!sf.commit()) {
+        m_lastError = QStringLiteral("cannot commit secrets.json: ") + sf.errorString();
+        return false;
+    }
+    if (!QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+        m_lastError = QStringLiteral("cannot chmod 0600 secrets.json");
+        return false;
+    }
+    return true;
+}
+
+} // namespace jarvis

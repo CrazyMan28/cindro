@@ -34,6 +34,31 @@ struct StoredEvent {
     qint64 ts = 0; // unix ms
 };
 
+// A registered MCP server (Contract A v2 mcp.* methods). The built-in
+// computer-use server is seeded on first open and cannot be removed.
+struct McpServerRow {
+    QString id;
+    QString name;
+    QString transport;   // "http" | "stdio"
+    QString endpoint;    // URL (http) or command line (stdio)
+    QString token;       // optional bearer (http) — never echoed back to clients
+    bool enabled = true;
+    bool builtin = false;
+    QString risk;        // "low" | "medium" | "high"
+    qint64 created = 0;
+
+    QJsonObject toJson() const; // omits token; adds enabled/connected placeholders
+};
+
+// A plugin's installed/enabled state (catalog manifest lives on disk; this row
+// tracks only the mutable state the user toggles).
+struct PluginRow {
+    QString id;
+    bool installed = false;
+    bool enabled = false;
+    qint64 updated = 0;
+};
+
 class SessionStore {
 public:
     SessionStore() = default;
@@ -69,6 +94,19 @@ public:
     int appendEvent(const QString &sessionId, const NormalizedBrainEvent &ev);
     // Events for a session ordered by seq ascending. limit<=0 => all.
     QVector<StoredEvent> listEvents(const QString &sessionId, int limit = 0);
+
+    // --- MCP servers ------------------------------------------------------
+    QVector<McpServerRow> listMcpServers();
+    std::optional<McpServerRow> getMcpServer(const QString &id);
+    bool addMcpServer(const McpServerRow &row);
+    bool removeMcpServer(const QString &id); // refuses builtin rows
+    bool setMcpEnabled(const QString &id, bool enabled);
+
+    // --- plugins ----------------------------------------------------------
+    QVector<PluginRow> listPlugins();
+    std::optional<PluginRow> getPlugin(const QString &id);
+    bool upsertPlugin(const PluginRow &row);
+    bool removePlugin(const QString &id);
 
 private:
     bool exec(const QString &sql, QString *err = nullptr);
