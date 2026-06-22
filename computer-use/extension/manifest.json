@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Computer Use Bridge",
+  "version": "0.2.0",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Computer Use Bridge — status"
+  },
+  "description": "Connects this browser to the local computer-use MCP server so AI agents can drive it.",
+  "permissions": ["tabs", "scripting", "storage", "alarms", "debugger"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "sw.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options.html"
+}

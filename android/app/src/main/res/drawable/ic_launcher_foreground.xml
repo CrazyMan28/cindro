@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Adaptive-icon foreground: a stylized "J" arc reticle on the 108x108dp canvas.
+  Artwork is kept inside the central 72dp safe zone.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer reticle ring -->
+    <path
+        android:strokeColor="#34D8FF"
+        android:strokeWidth="2.5"
+        android:fillColor="#00000000"
+        android:pathData="M54,28
+            a26,26 0 1,1 -0.01,0 Z" />
+
+    <!-- The 'J' glyph -->
+    <path
+        android:fillColor="#E6F7FF"
+        android:pathData="M60,40
+            h7
+            v22
+            a13,13 0 0,1 -26,0
+            h7
+            a6,6 0 0,0 12,0
+            Z" />
+</vector>

@@ -1,0 +1,22 @@
+[Unit]
+Description=Jarvis daemon (jarvisd) — control WebSocket + brain orchestration
+Documentation=https://github.com/jarvis/jarvis
+# Wait for the graphical (Wayland) session so the daemon's later device/desktop
+# integrations have a session bus to talk to. Harmless on headless too.
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# %h expands to the user's home. Adjust the install prefix here if you install
+# jarvisd somewhere other than ~/.local/bin.
+ExecStart=%h/.local/bin/jarvisd
+Restart=on-failure
+RestartSec=2
+# jarvisd reads ~/.config/jarvis/{config.toml,control_token} and writes
+# ~/.local/share/jarvis/jarvis.db; it auto-generates the 0600 control_token on
+# first start (Contract A). Nothing else is required in the environment.
+Environment=QT_QPA_PLATFORM=offscreen
+
+[Install]
+WantedBy=graphical-session.target
