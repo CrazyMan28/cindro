@@ -4,11 +4,19 @@
 #include "jarvis/CodexBrain.h"
 
 #include <QDateTime>
+#include <QDir>
+#include <QEventLoop>
+#include <QFile>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QRandomGenerator>
+#include <QTextStream>
+#include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QWebSocket>
@@ -49,6 +57,16 @@ bool ControlServer::start()
         m_lastError = QStringLiteral("failed to open session store: ") + m_store.lastError();
         return false;
     }
+
+    // Contract A v2 stores/registries. SettingsStore loads config.toml prefs +
+    // secrets.json; the registries wrap the (now-open) SessionStore tables.
+    m_settings.load();
+    // Keep the in-memory config in sync with persisted prefs.
+    m_config.defaultBrain = m_settings.defaultBrain();
+    m_config.defaultModel = m_settings.defaultModel();
+    m_mcp = std::make_unique<McpRegistry>(m_store);
+    m_plugins = std::make_unique<PluginRegistry>(m_store);
+    m_plugins->ensureSeeded(); // seed sample manifests if the catalog is empty
 
     m_wsServer = new QWebSocketServer(QStringLiteral("jarvisd-control"),
                                       QWebSocketServer::NonSecureMode, this);
@@ -164,6 +182,24 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionHistory(req);
     else if (m == QStringLiteral("approval.respond"))
         resp = handleApprovalRespond(req);
+    else if (m == QStringLiteral("mcp.list"))
+        resp = handleMcpList(req);
+    else if (m == QStringLiteral("mcp.add"))
+        resp = handleMcpAdd(req);
+    else if (m == QStringLiteral("mcp.remove"))
+        resp = handleMcpRemove(req);
+    else if (m == QStringLiteral("mcp.set_enabled"))
+        resp = handleMcpSetEnabled(req);
+    else if (m == QStringLiteral("mcp.test"))
+        resp = handleMcpTest(req);
+    else if (m == QStringLiteral("plugins.catalog"))
+        resp = handlePluginsCatalog(req);
+    else if (m == QStringLiteral("plugins.install"))
+        resp = handlePluginsInstall(req);
+    else if (m == QStringLiteral("plugins.set_enabled"))
+        resp = handlePluginsSetEnabled(req);
+    else if (m == QStringLiteral("plugins.remove"))
+        resp = handlePluginsRemove(req);
     else
         resp = Response::failure(req.id, QStringLiteral("unknown_method"),
                                  QStringLiteral("unknown method: ") + m);
@@ -181,11 +217,52 @@ Response ControlServer::handlePing(const Request &req)
     return Response::success(req.id, result);
 }
 
+// Static model lists per brain. Codex also merges anything in ~/.codex/config.toml.
+static QJsonArray modelsForBrain(const QString &brain)
+{
+    QJsonArray models;
+    if (brain == QStringLiteral("codex")) {
+        models << QStringLiteral("gpt-5.5") << QStringLiteral("gpt-5-codex")
+               << QStringLiteral("gpt-5.5-codex") << QStringLiteral("o4-mini");
+    } else if (brain == QStringLiteral("claude")) {
+        models << QStringLiteral("claude-opus-4-8") << QStringLiteral("claude-opus-4-5")
+               << QStringLiteral("claude-sonnet-4-5") << QStringLiteral("claude-haiku-4-5");
+    } else { // api
+        models << QStringLiteral("gpt-5.5") << QStringLiteral("o4-mini")
+               << QStringLiteral("claude-opus-4-8") << QStringLiteral("qwen2.5:3b");
+    }
+    return models;
+}
+
 Response ControlServer::handleSettingsGet(const Request &req)
 {
     QJsonObject s;
-    s.insert(QStringLiteral("default_brain"), m_config.defaultBrain);
-    s.insert(QStringLiteral("default_model"), m_config.defaultModel);
+    s.insert(QStringLiteral("default_brain"), m_settings.defaultBrain());
+    s.insert(QStringLiteral("default_model"), m_settings.defaultModel());
+
+    QJsonArray brains;
+    brains << QStringLiteral("codex") << QStringLiteral("claude") << QStringLiteral("api");
+    s.insert(QStringLiteral("brains"), brains);
+
+    QJsonObject byBrain;
+    byBrain.insert(QStringLiteral("codex"), modelsForBrain(QStringLiteral("codex")));
+    byBrain.insert(QStringLiteral("claude"), modelsForBrain(QStringLiteral("claude")));
+    byBrain.insert(QStringLiteral("api"), modelsForBrain(QStringLiteral("api")));
+    s.insert(QStringLiteral("models_by_brain"), byBrain);
+
+    // Booleans only — raw secret values are NEVER returned.
+    s.insert(QStringLiteral("api_keys_set"), m_settings.apiKeysSet());
+
+    // Theme prefs (persisted in config.toml as theme_json). Fall back to a
+    // sane default HUD theme when none has been set yet.
+    QJsonObject theme = m_settings.theme();
+    if (theme.isEmpty()) {
+        theme.insert(QStringLiteral("accent"), QStringLiteral("#19E3FF"));
+        theme.insert(QStringLiteral("glow"), true);
+        theme.insert(QStringLiteral("compact"), false);
+    }
+    s.insert(QStringLiteral("theme"), theme);
+
     QJsonObject ports;
     ports.insert(QStringLiteral("control"), m_config.controlPort);
     ports.insert(QStringLiteral("device"), m_config.devicePort);
@@ -197,27 +274,87 @@ Response ControlServer::handleSettingsGet(const Request &req)
 Response ControlServer::handleSettingsSet(const Request &req)
 {
     const QJsonObject patch = req.params.value(QStringLiteral("patch")).toObject();
-    if (patch.contains(QStringLiteral("default_brain")))
-        m_config.defaultBrain = patch.value(QStringLiteral("default_brain")).toString();
-    if (patch.contains(QStringLiteral("default_model")))
-        m_config.defaultModel = patch.value(QStringLiteral("default_model")).toString();
+
+    bool prefsTouched = false;
+    if (patch.contains(QStringLiteral("default_brain"))) {
+        const QString v = patch.value(QStringLiteral("default_brain")).toString();
+        m_settings.setDefaultBrain(v);
+        m_config.defaultBrain = v;
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("default_model"))) {
+        const QString v = patch.value(QStringLiteral("default_model")).toString();
+        m_settings.setDefaultModel(v);
+        m_config.defaultModel = v;
+        prefsTouched = true;
+    }
     if (patch.contains(QStringLiteral("default_cwd")))
         m_config.defaultCwd = patch.value(QStringLiteral("default_cwd")).toString();
-    return handleSettingsGet(req);
+    if (patch.contains(QStringLiteral("theme"))) {
+        m_settings.setTheme(patch.value(QStringLiteral("theme")).toObject());
+        prefsTouched = true;
+    }
+    if (prefsTouched)
+        m_settings.saveConfig();
+
+    // API keys are WRITE-ONLY: persist to secrets.json (0600), never echoed.
+    if (patch.contains(QStringLiteral("api_keys"))) {
+        const QJsonObject keys = patch.value(QStringLiteral("api_keys")).toObject();
+        for (auto it = keys.begin(); it != keys.end(); ++it)
+            m_settings.setApiKey(it.key(), it.value().toString()); // empty clears
+        m_settings.saveSecrets();
+    }
+
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
 }
 
 Response ControlServer::handleModelList(const Request &req)
 {
     const QString brain = req.params.value(QStringLiteral("brain")).toString(m_config.defaultBrain);
-    QJsonArray models;
+    QJsonArray models = modelsForBrain(brain);
+
+    // codex: merge the configured default model from ~/.codex/config.toml.
     if (brain == QStringLiteral("codex")) {
-        models << QStringLiteral("gpt-5.5") << QStringLiteral("gpt-5.5-codex")
-               << QStringLiteral("o4-mini");
-    } else if (brain == QStringLiteral("claude")) {
-        models << QStringLiteral("claude-opus-4-8") << QStringLiteral("claude-sonnet-4-5");
-    } else {
-        models << m_config.defaultModel;
+        QFile f(QDir::homePath() + QStringLiteral("/.codex/config.toml"));
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QTextStream in(&f);
+            while (!in.atEnd()) {
+                const QString line = in.readLine().trimmed();
+                if (line.startsWith(QStringLiteral("model")) && line.contains(QLatin1Char('='))
+                    && !line.startsWith(QStringLiteral("model_"))) {
+                    QString v = line.section(QLatin1Char('='), 1).trimmed();
+                    if (v.size() >= 2 && v.startsWith(QLatin1Char('"')))
+                        v = v.mid(1, v.size() - 2);
+                    if (!v.isEmpty() && !models.contains(v))
+                        models.prepend(v);
+                    break;
+                }
+            }
+        }
     }
+
+    // ollama (api brain): best-effort live tag list.
+    if (brain == QStringLiteral("api")) {
+        QNetworkAccessManager nam;
+        QNetworkRequest rq(QUrl(QStringLiteral("http://127.0.0.1:11434/api/tags")));
+        QNetworkReply *reply = nam.get(rq);
+        QEventLoop loop;
+        QTimer::singleShot(800, &loop, &QEventLoop::quit);
+        connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        loop.exec();
+        if (reply->isFinished() && reply->error() == QNetworkReply::NoError) {
+            const QJsonObject o = QJsonDocument::fromJson(reply->readAll()).object();
+            for (const QJsonValue &m : o.value(QStringLiteral("models")).toArray()) {
+                const QString name = m.toObject().value(QStringLiteral("name")).toString();
+                if (!name.isEmpty() && !models.contains(name))
+                    models.append(name);
+            }
+        }
+        reply->deleteLater();
+    }
+
     QJsonObject result;
     result.insert(QStringLiteral("brain"), brain);
     result.insert(QStringLiteral("models"), models);
@@ -232,6 +369,12 @@ Brain *ControlServer::makeBrain(const SessionRow &row)
         opts.model = row.model;
         opts.profile = row.profile;
         opts.sandboxMode = CodexBrain::sandboxForProfile(row.profile);
+        // coworker sessions get every enabled MCP server (incl the built-in
+        // computer-use, bearer from ~/.computer-use/config.yaml) injected as
+        // `-c mcp_servers.<name>...` codex config overrides so the brain can
+        // call them.
+        if (row.profile == QStringLiteral("coworker") && m_mcp)
+            opts.configOverrides = m_mcp->codexOverrides();
         auto *brain = new CodexBrain(opts, this);
         brain->setSessionId(row.id);
         return brain;
@@ -270,12 +413,15 @@ Response ControlServer::handleSessionCreate(const Request &req)
     if (!cwd.isEmpty()) {
         if (auto *cb = qobject_cast<CodexBrain *>(brain)) {
             // Rebuild with cwd override; CodexBrain stores opts internally so
-            // we recreate it to keep the override authoritative.
+            // we recreate it to keep the override authoritative. Preserve the
+            // injected MCP config overrides for coworker sessions.
             CodexBrain::Options opts;
             opts.cwd = cwd;
             opts.model = row.model;
             opts.profile = row.profile;
             opts.sandboxMode = CodexBrain::sandboxForProfile(row.profile);
+            if (row.profile == QStringLiteral("coworker") && m_mcp)
+                opts.configOverrides = m_mcp->codexOverrides();
             cb->deleteLater();
             cb = new CodexBrain(opts, this);
             cb->setSessionId(row.id);
@@ -376,6 +522,122 @@ Response ControlServer::handleApprovalRespond(const Request &req)
     }
     brain->respondApproval(approvalId, decision);
     return Response::success(req.id);
+}
+
+// --- Contract A v2: MCP registry (delegates to McpRegistry) ----------------
+
+Response ControlServer::handleMcpList(const Request &req)
+{
+    QJsonArray arr;
+    for (const McpServerRow &row : m_mcp->list())
+        arr.append(row.toJson());
+    QJsonObject result;
+    result.insert(QStringLiteral("servers"), arr);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleMcpAdd(const Request &req)
+{
+    const QJsonObject p = req.params;
+    const QString name = p.value(QStringLiteral("name")).toString(QStringLiteral("Unnamed"));
+    const QString transport = p.value(QStringLiteral("transport")).toString(QStringLiteral("http"));
+    const QString endpoint = p.value(QStringLiteral("endpoint")).toString();
+    const QString token = p.value(QStringLiteral("token")).toString();
+    const bool enabled = p.value(QStringLiteral("enabled")).toBool(true);
+    const QString risk = p.value(QStringLiteral("risk")).toString(QStringLiteral("medium"));
+    if (endpoint.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("endpoint is required"));
+    const QString id = m_mcp->add(name, transport, endpoint, token, enabled, risk);
+    if (id.isEmpty())
+        return Response::failure(req.id, QStringLiteral("store_error"), m_store.lastError());
+    QJsonObject result;
+    result.insert(QStringLiteral("id"), id);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleMcpRemove(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    if (!m_mcp->remove(id))
+        return Response::failure(req.id, QStringLiteral("not_removed"),
+                                 QStringLiteral("server not found or is built-in: ") + id);
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleMcpSetEnabled(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const bool enabled = req.params.value(QStringLiteral("enabled")).toBool();
+    if (!m_mcp->setEnabled(id, enabled))
+        return Response::failure(req.id, QStringLiteral("store_error"), m_store.lastError());
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleMcpTest(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    auto srv = m_mcp->get(id);
+    if (!srv)
+        return Response::failure(req.id, QStringLiteral("no_server"),
+                                 QStringLiteral("unknown server: ") + id);
+
+    // Real MCP initialize + tools/list over http or stdio with a 5s timeout.
+    const McpTestResult tr = McpRegistry::test(*srv, /*timeoutMs=*/5000);
+
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), tr.ok);
+    result.insert(QStringLiteral("tools_count"), tr.toolsCount);
+    if (!tr.error.isEmpty())
+        result.insert(QStringLiteral("error"), tr.error);
+    return Response::success(req.id, result);
+}
+
+// --- Contract A v2: plugins marketplace (delegates to PluginRegistry) ------
+
+Response ControlServer::handlePluginsCatalog(const Request &req)
+{
+    QJsonArray plugins;
+    for (const PluginManifest &m : m_plugins->catalog())
+        plugins.append(m.toJson());
+    QJsonObject result;
+    result.insert(QStringLiteral("plugins"), plugins);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handlePluginsInstall(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    if (!m_plugins->install(id))
+        return Response::failure(req.id, QStringLiteral("store_error"), m_plugins->lastError());
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handlePluginsSetEnabled(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const bool enabled = req.params.value(QStringLiteral("enabled")).toBool();
+    if (!m_plugins->setEnabled(id, enabled))
+        return Response::failure(req.id, QStringLiteral("store_error"), m_plugins->lastError());
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handlePluginsRemove(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    if (!m_plugins->remove(id))
+        return Response::failure(req.id, QStringLiteral("store_error"), m_plugins->lastError());
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
 }
 
 // --- event fan-out ---------------------------------------------------------

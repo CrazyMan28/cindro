@@ -8,37 +8,14 @@
 #include <QObject>
 #include <QTimer>
 #include <QUrl>
-#include <QList>
-
-#include <LayerShellQt/Window>
+#include <QtQml>
 
 #include "Bridge.h"
+#include "WindowController.h"
 
 namespace {
 
 constexpr auto kIpcName = "jarvis-sidebar";
-
-// Apply the proven LayerShellQt configuration to the QQuickWindow.
-// Follows spikes/RESULTS.md exactly: no useLayerShell(); accumulate Anchors with |=;
-// LayerTop; anchor Top|Right|Bottom; exclusiveZone=width; KeyboardInteractivityOnDemand;
-// scope "jarvis-sidebar".
-void configureLayerShell(QWindow *window, int width)
-{
-    auto *w = LayerShellQt::Window::get(window);
-    if (!w)
-        return;
-
-    LayerShellQt::Window::Anchors anchors;
-    anchors |= LayerShellQt::Window::AnchorTop;
-    anchors |= LayerShellQt::Window::AnchorRight;
-    anchors |= LayerShellQt::Window::AnchorBottom;
-
-    w->setLayer(LayerShellQt::Window::LayerTop);
-    w->setAnchors(anchors);
-    w->setExclusiveZone(width);
-    w->setScope(QStringLiteral("jarvis-sidebar"));
-    w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
-}
 
 // Best-effort single-instance toggle: if an instance is already listening on the
 // local socket, send it a "toggle" line and return true (caller should exit).
@@ -62,16 +39,19 @@ int main(int argc, char **argv)
     QGuiApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("jarvis-sidebar"));
     app.setOrganizationName(QStringLiteral("jarvis"));
+    app.setOrganizationDomain(QStringLiteral("jarvis.local"));
 
     QCommandLineParser parser;
-    parser.setApplicationDescription(QStringLiteral("Jarvis sidebar (LayerShellQt)"));
+    parser.setApplicationDescription(QStringLiteral("Jarvis desktop app"));
     parser.addHelpOption();
     QCommandLineOption toggleOpt(QStringLiteral("toggle"),
                                  QStringLiteral("Toggle a running instance, else show."));
     parser.addOption(toggleOpt);
+    // Design preview: seeds a sample transcript in QML (read via Qt.application.arguments).
+    QCommandLineOption demoOpt(QStringLiteral("demo"),
+                               QStringLiteral("Seed sample transcript content (design preview)."));
+    parser.addOption(demoOpt);
     parser.process(app);
-
-    const int sidebarWidth = 460;
 
     if (parser.isSet(toggleOpt)) {
         // If another instance is up, toggle it and quit. Otherwise fall through and show.
@@ -86,53 +66,35 @@ int main(int argc, char **argv)
 
     QQmlApplicationEngine engine;
 
-    // Register/expose the Bridge as a context property (also QML_ELEMENT registered).
+    // Bridge (Contract A WS client) — context property + QML_ELEMENT registered.
     auto *bridge = new Bridge(&app);
     engine.rootContext()->setContextProperty(QStringLiteral("bridge"), bridge);
 
-    // The window MUST be turned into a wlr-layer-shell surface BEFORE it is first
-    // mapped, otherwise the compositor maps it as an ordinary xdg-toplevel and it
-    // ends up a floating window (the bug this fixes). Main.qml therefore declares
-    // `visible: false`; here — on a DIRECT connection so it runs synchronously
-    // during loadFromModule(), before the event loop ever maps the surface — we:
-    //   1. create the QPlatformWindow (LayerShellQt::Window::get needs it),
-    //   2. install + configure the layer-shell role (anchors/layer/zone/scope),
-    //   3. only then make the window visible so it maps as a layer surface.
-    QObject::connect(
-        &engine, &QQmlApplicationEngine::objectCreated, &app,
-        [sidebarWidth](QObject *obj, const QUrl &) {
-            auto *window = qobject_cast<QQuickWindow *>(obj);
-            if (!window)
-                return;
-            // The QPlatformWindow must exist before LayerShellQt can wrap it,
-            // and the layer-shell role must be set before the first show().
-            window->create();
-            configureLayerShell(window, sidebarWidth);
-            window->show();
-        },
-        Qt::DirectConnection);
+    // WindowController is QML_SINGLETON; register the concrete instance so C++
+    // and QML share one object that survives engine teardown order.
+    auto *windowController = new WindowController(&app);
+    qmlRegisterSingletonInstance("JarvisSidebar", 1, 0, "WindowController", windowController);
 
     engine.loadFromModule(QStringLiteral("JarvisSidebar"), QStringLiteral("Main"));
     if (engine.rootObjects().isEmpty())
         return -1;
 
-    // Wire the IPC toggle: hide if visible, show+raise otherwise.
-    QObject::connect(server, &QLocalServer::newConnection, &app, [server, &engine]() {
+    // IPC toggle: hide the active surface if it's visible; otherwise re-show the
+    // current mode via the controller (which knows float vs dock).
+    QObject::connect(server, &QLocalServer::newConnection, &app,
+                     [server, windowController]() {
         QLocalSocket *conn = server->nextPendingConnection();
         if (!conn)
             return;
-        QObject::connect(conn, &QLocalSocket::readyRead, conn, [conn, &engine]() {
+        QObject::connect(conn, &QLocalSocket::readyRead, conn, [conn, windowController]() {
             const QByteArray cmd = conn->readAll().trimmed();
-            if (cmd == "toggle" && !engine.rootObjects().isEmpty()) {
-                if (auto *win = qobject_cast<QQuickWindow *>(engine.rootObjects().first())) {
-                    if (win->isVisible()) {
-                        win->hide();
-                    } else {
-                        win->show();
-                        win->raise();
-                        win->requestActivate();
-                    }
-                }
+            if (cmd == "toggle") {
+                if (windowController->mode() == QStringLiteral("hidden"))
+                    windowController->dock();
+                else if (windowController->docked())
+                    windowController->hideDock();
+                else
+                    windowController->undock(); // re-show floating
             }
             conn->disconnectFromServer();
         });

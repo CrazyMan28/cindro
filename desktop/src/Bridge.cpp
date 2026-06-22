@@ -122,10 +122,12 @@ void Bridge::send(const QString &method, const QVariantMap &params, int id)
     m_socket->sendTextMessage(QString::fromUtf8(payload));
 }
 
-int Bridge::request(const QString &method, const QVariantMap &params)
+int Bridge::request(const QString &method, const QVariantMap &params, const QString &ctx)
 {
     const int id = nextId();
     m_pending.insert(id, method);
+    if (!ctx.isEmpty())
+        m_pendingCtx.insert(id, ctx);
     send(method, params, id);
     return id;
 }
@@ -181,6 +183,106 @@ void Bridge::listModels(const QString &brain)
     request(QStringLiteral("model.list"), params);
 }
 
+// ---- Contract A v2 ---------------------------------------------------------
+
+void Bridge::openSession(const QString &sessionId)
+{
+    if (sessionId.isEmpty())
+        return;
+    m_sessionId = sessionId;
+    emit sessionIdChanged();
+    setStatus(QStringLiteral("session ready"));
+    emit sessionOpened(sessionId);
+    // Load this session's history so the Chat page can replay it.
+    m_openingSession = true;
+    QVariantMap params;
+    params.insert(QStringLiteral("session_id"), sessionId);
+    request(QStringLiteral("session.history"), params, sessionId);
+}
+
+void Bridge::loadSettings()
+{
+    request(QStringLiteral("settings.get"), {});
+}
+
+void Bridge::saveSettings(const QVariantMap &patch)
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("patch"), patch);
+    request(QStringLiteral("settings.set"), params);
+}
+
+void Bridge::listMcp()
+{
+    request(QStringLiteral("mcp.list"), {});
+}
+
+void Bridge::addMcp(const QVariantMap &server)
+{
+    request(QStringLiteral("mcp.add"), server);
+}
+
+void Bridge::removeMcp(const QString &id)
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    request(QStringLiteral("mcp.remove"), params);
+}
+
+void Bridge::setMcpEnabled(const QString &id, bool enabled)
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    params.insert(QStringLiteral("enabled"), enabled);
+    request(QStringLiteral("mcp.set_enabled"), params);
+}
+
+void Bridge::testMcp(const QString &id)
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    request(QStringLiteral("mcp.test"), params, id);
+}
+
+void Bridge::loadPlugins()
+{
+    request(QStringLiteral("plugins.catalog"), {});
+}
+
+void Bridge::installPlugin(const QString &id)
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    request(QStringLiteral("plugins.install"), params);
+}
+
+void Bridge::setPluginEnabled(const QString &id, bool enabled)
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    params.insert(QStringLiteral("enabled"), enabled);
+    request(QStringLiteral("plugins.set_enabled"), params);
+}
+
+void Bridge::removePlugin(const QString &id)
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    request(QStringLiteral("plugins.remove"), params);
+}
+
+void Bridge::listSessions()
+{
+    request(QStringLiteral("session.list"), {});
+}
+
+void Bridge::loadSessionHistory(const QString &sessionId)
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("session_id"), sessionId);
+    request(QStringLiteral("session.history"), params, sessionId);
+}
+
 void Bridge::onTextMessageReceived(const QString &message)
 {
     QJsonParseError perr;
@@ -218,10 +320,18 @@ void Bridge::onTextMessageReceived(const QString &message)
 void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QVariantMap &error)
 {
     const QString method = m_pending.take(id);
+    const QString ctx = m_pendingCtx.take(id);
 
     if (!ok) {
         const QString msg = error.value(QStringLiteral("message")).toString();
         const QString code = error.value(QStringLiteral("code")).toString();
+        if (method == QStringLiteral("session.history"))
+            m_openingSession = false;
+        // mcp.test failures surface through mcpTested, not a generic error toast.
+        if (method == QStringLiteral("mcp.test")) {
+            emit mcpTested(ctx, false, 0, msg.isEmpty() ? code : msg);
+            return;
+        }
         emit errorOccurred(QStringLiteral("%1 failed: [%2] %3")
                                .arg(method.isEmpty() ? QStringLiteral("request") : method, code, msg));
         return;
@@ -241,6 +351,46 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             models << v.toString();
         const QString brain = result.value(QStringLiteral("brain")).toString();
         emit modelsListed(brain, models);
+    } else if (method == QStringLiteral("settings.get")) {
+        emit settingsLoaded(result);
+    } else if (method == QStringLiteral("settings.set")) {
+        emit settingsSaved();
+    } else if (method == QStringLiteral("mcp.list")) {
+        emit mcpListed(result.value(QStringLiteral("servers")).toList());
+    } else if (method == QStringLiteral("mcp.add")
+               || method == QStringLiteral("mcp.remove")
+               || method == QStringLiteral("mcp.set_enabled")) {
+        emit mcpChanged();
+        listMcp(); // refresh the list after a mutation
+    } else if (method == QStringLiteral("mcp.test")) {
+        emit mcpTested(ctx,
+                       result.value(QStringLiteral("ok")).toBool(),
+                       result.value(QStringLiteral("tools_count")).toInt(),
+                       result.value(QStringLiteral("error")).toString());
+    } else if (method == QStringLiteral("plugins.catalog")) {
+        emit pluginsListed(result.value(QStringLiteral("plugins")).toList());
+    } else if (method == QStringLiteral("plugins.install")
+               || method == QStringLiteral("plugins.set_enabled")
+               || method == QStringLiteral("plugins.remove")) {
+        emit pluginsChanged();
+        loadPlugins(); // refresh the catalog after a mutation
+    } else if (method == QStringLiteral("session.list")) {
+        emit sessionsListed(result.value(QStringLiteral("sessions")).toList());
+    } else if (method == QStringLiteral("session.history")) {
+        // events: [{seq,ts,ev:{kind,...}}] — fold the inner ev out for QML.
+        QVariantList events;
+        for (const QVariant &v : result.value(QStringLiteral("events")).toList()) {
+            const QVariantMap row = v.toMap();
+            QVariantMap evm = row.value(QStringLiteral("ev")).toMap();
+            evm.insert(QStringLiteral("seq"), row.value(QStringLiteral("seq")));
+            events << evm;
+        }
+        const QString sid = ctx.isEmpty()
+                                ? result.value(QStringLiteral("session")).toMap()
+                                      .value(QStringLiteral("id")).toString()
+                                : ctx;
+        emit sessionHistory(sid, events);
+        m_openingSession = false;
     }
     // ping / session.send / session.cancel / approval.respond: ack only.
 }

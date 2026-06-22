@@ -120,6 +120,55 @@ bool SessionStore::migrate()
 
     exec(QStringLiteral(
         "CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, seq)"));
+
+    if (!exec(QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS mcp_servers ("
+            " id TEXT PRIMARY KEY,"
+            " name TEXT,"
+            " transport TEXT,"
+            " endpoint TEXT,"
+            " token TEXT,"
+            " enabled INTEGER,"
+            " builtin INTEGER,"
+            " risk TEXT,"
+            " created INTEGER)")))
+        return false;
+
+    if (!exec(QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS plugins ("
+            " id TEXT PRIMARY KEY,"
+            " installed INTEGER,"
+            " enabled INTEGER,"
+            " updated INTEGER)")))
+        return false;
+
+    // Seed the built-in computer-use MCP server exactly once (idempotent).
+    {
+        QSqlQuery q(m_db);
+        q.prepare(QStringLiteral("SELECT COUNT(*) FROM mcp_servers WHERE id=?"));
+        q.addBindValue(QStringLiteral("computer-use"));
+        bool present = false;
+        if (q.exec() && q.next())
+            present = q.value(0).toInt() > 0;
+        if (!present) {
+            QSqlQuery ins(m_db);
+            ins.prepare(QStringLiteral(
+                "INSERT INTO mcp_servers"
+                " (id,name,transport,endpoint,token,enabled,builtin,risk,created)"
+                " VALUES (?,?,?,?,?,?,?,?,?)"));
+            ins.addBindValue(QStringLiteral("computer-use"));
+            ins.addBindValue(QStringLiteral("Computer Use"));
+            ins.addBindValue(QStringLiteral("http"));
+            ins.addBindValue(QStringLiteral("http://100.114.201.41:8794/mcp"));
+            ins.addBindValue(QString());
+            ins.addBindValue(1);
+            ins.addBindValue(1);
+            ins.addBindValue(QStringLiteral("high"));
+            ins.addBindValue(QDateTime::currentMSecsSinceEpoch());
+            ins.exec();
+        }
+    }
+
     return true;
 }
 
@@ -299,6 +348,193 @@ QVector<StoredEvent> SessionStore::listEvents(const QString &sessionId, int limi
         std::reverse(out.begin(), out.end());
     }
     return out;
+}
+
+// --- MCP servers -----------------------------------------------------------
+
+QJsonObject McpServerRow::toJson() const
+{
+    // NOTE: token is intentionally never serialized. `connected`/`tools_count`
+    // are live probe results filled in by the caller (mcp.test), defaulted here.
+    QJsonObject o;
+    o.insert(QStringLiteral("id"), id);
+    o.insert(QStringLiteral("name"), name);
+    o.insert(QStringLiteral("transport"), transport);
+    o.insert(QStringLiteral("endpoint"), endpoint);
+    o.insert(QStringLiteral("enabled"), enabled);
+    o.insert(QStringLiteral("builtin"), builtin);
+    o.insert(QStringLiteral("connected"), false);
+    o.insert(QStringLiteral("tools_count"), 0);
+    o.insert(QStringLiteral("has_token"), !token.isEmpty());
+    o.insert(QStringLiteral("risk"), risk);
+    return o;
+}
+
+static McpServerRow readMcpRow(QSqlQuery &q)
+{
+    McpServerRow r;
+    r.id = q.value(0).toString();
+    r.name = q.value(1).toString();
+    r.transport = q.value(2).toString();
+    r.endpoint = q.value(3).toString();
+    r.token = q.value(4).toString();
+    r.enabled = q.value(5).toInt() != 0;
+    r.builtin = q.value(6).toInt() != 0;
+    r.risk = q.value(7).toString();
+    r.created = q.value(8).toLongLong();
+    return r;
+}
+
+QVector<McpServerRow> SessionStore::listMcpServers()
+{
+    QVector<McpServerRow> out;
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral(
+            "SELECT id,name,transport,endpoint,token,enabled,builtin,risk,created"
+            " FROM mcp_servers ORDER BY builtin DESC, created ASC"))) {
+        m_lastError = q.lastError().text();
+        return out;
+    }
+    while (q.next())
+        out.push_back(readMcpRow(q));
+    return out;
+}
+
+std::optional<McpServerRow> SessionStore::getMcpServer(const QString &id)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "SELECT id,name,transport,endpoint,token,enabled,builtin,risk,created"
+        " FROM mcp_servers WHERE id=?"));
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return std::nullopt;
+    }
+    if (!q.next())
+        return std::nullopt;
+    return readMcpRow(q);
+}
+
+bool SessionStore::addMcpServer(const McpServerRow &row)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "INSERT OR REPLACE INTO mcp_servers"
+        " (id,name,transport,endpoint,token,enabled,builtin,risk,created)"
+        " VALUES (?,?,?,?,?,?,?,?,?)"));
+    q.addBindValue(row.id);
+    q.addBindValue(row.name);
+    q.addBindValue(row.transport);
+    q.addBindValue(row.endpoint);
+    q.addBindValue(row.token);
+    q.addBindValue(row.enabled ? 1 : 0);
+    q.addBindValue(row.builtin ? 1 : 0);
+    q.addBindValue(row.risk);
+    q.addBindValue(row.created != 0 ? row.created
+                                    : QDateTime::currentMSecsSinceEpoch());
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+bool SessionStore::removeMcpServer(const QString &id)
+{
+    // Built-in servers (computer-use) are protected from removal.
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("DELETE FROM mcp_servers WHERE id=? AND builtin=0"));
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return q.numRowsAffected() > 0;
+}
+
+bool SessionStore::setMcpEnabled(const QString &id, bool enabled)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("UPDATE mcp_servers SET enabled=? WHERE id=?"));
+    q.addBindValue(enabled ? 1 : 0);
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+// --- plugins ---------------------------------------------------------------
+
+static PluginRow readPluginRow(QSqlQuery &q)
+{
+    PluginRow r;
+    r.id = q.value(0).toString();
+    r.installed = q.value(1).toInt() != 0;
+    r.enabled = q.value(2).toInt() != 0;
+    r.updated = q.value(3).toLongLong();
+    return r;
+}
+
+QVector<PluginRow> SessionStore::listPlugins()
+{
+    QVector<PluginRow> out;
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral(
+            "SELECT id,installed,enabled,updated FROM plugins"))) {
+        m_lastError = q.lastError().text();
+        return out;
+    }
+    while (q.next())
+        out.push_back(readPluginRow(q));
+    return out;
+}
+
+std::optional<PluginRow> SessionStore::getPlugin(const QString &id)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "SELECT id,installed,enabled,updated FROM plugins WHERE id=?"));
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return std::nullopt;
+    }
+    if (!q.next())
+        return std::nullopt;
+    return readPluginRow(q);
+}
+
+bool SessionStore::upsertPlugin(const PluginRow &row)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "INSERT OR REPLACE INTO plugins (id,installed,enabled,updated)"
+        " VALUES (?,?,?,?)"));
+    q.addBindValue(row.id);
+    q.addBindValue(row.installed ? 1 : 0);
+    q.addBindValue(row.enabled ? 1 : 0);
+    q.addBindValue(row.updated != 0 ? row.updated
+                                    : QDateTime::currentMSecsSinceEpoch());
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
+bool SessionStore::removePlugin(const QString &id)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("DELETE FROM plugins WHERE id=?"));
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
 }
 
 } // namespace jarvis

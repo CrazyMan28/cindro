@@ -15,7 +15,16 @@ qt_add_executable(jarvis-sidebar
     src/main.cpp
     src/Bridge.cpp
     src/Bridge.h
+    src/WindowController.cpp
+    src/WindowController.h
 )
+
+# Theme.qml is a QML singleton (declares `pragma Singleton`); flag it so the
+# generated qmldir registers it as one.
+set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+# Widgets.qml exposes shared inline components and is consumed as `Widgets.X{}`,
+# so it must be a singleton too.
+set_source_files_properties(qml/Widgets.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 # Bundle the QML as a proper module so main.cpp can loadFromModule("JarvisSidebar","Main").
 qt_add_qml_module(jarvis-sidebar
@@ -23,7 +32,22 @@ qt_add_qml_module(jarvis-sidebar
     VERSION 1.0
     QML_FILES
         qml/Main.qml
+        qml/AppShell.qml
+        qml/NavRail.qml
+        qml/PageHeader.qml
+        qml/Widgets.qml
+        qml/JarvisPanel.qml
         qml/ChatDelegate.qml
+        qml/SessionsPage.qml
+        qml/SettingsPage.qml
+        qml/McpPage.qml
+        qml/PluginsPage.qml
+        qml/TitleBar.qml
+        qml/Theme.qml
+        qml/ArcReactor.qml
+        qml/HudFx.qml
+        qml/HudStatusStrip.qml
+        qml/HudFrame.qml
 )
 
 # The generated QML type-registration unit includes the QML_ELEMENT headers by

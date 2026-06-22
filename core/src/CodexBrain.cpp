@@ -43,6 +43,9 @@ QStringList CodexBrain::buildArgs(const QString &prompt) const
     QStringList args;
     args << QStringLiteral("exec")
          << QStringLiteral("--json")
+         // Run even when cwd is not a git repo / trusted dir (e.g. $HOME); the
+         // sandbox mode is what actually constrains writes.
+         << QStringLiteral("--skip-git-repo-check")
          << QStringLiteral("--sandbox") << m_opts.sandboxMode;
     if (!m_opts.cwd.isEmpty())
         args << QStringLiteral("-C") << m_opts.cwd;
@@ -84,6 +87,10 @@ void CodexBrain::send(const QString &text, const QStringList &images)
     m_proc->setProgram(m_opts.program);
     m_proc->setArguments(buildArgs(text));
     m_proc->setProcessChannelMode(QProcess::SeparateChannels);
+    // Redirect stdin from /dev/null BEFORE start so codex sees EOF immediately
+    // and never blocks "Reading additional input from stdin..." (verified
+    // gotcha, spikes/RESULTS.md). This is the equivalent of `</dev/null`.
+    m_proc->setStandardInputFile(QProcess::nullDevice());
 
     connect(m_proc, &QProcess::readyReadStandardOutput, this, &CodexBrain::onReadyReadStdout);
     connect(m_proc, &QProcess::readyReadStandardError, this, &CodexBrain::onReadyReadStderr);
@@ -98,10 +105,6 @@ void CodexBrain::send(const QString &text, const QStringList &images)
         emit turnFinished(m_sessionId);
         return;
     }
-
-    // Close stdin immediately so codex sees EOF and does not block reading
-    // additional input from stdin (verified gotcha, spikes/RESULTS.md).
-    m_proc->closeWriteChannel();
 }
 
 void CodexBrain::cancel()
@@ -129,11 +132,22 @@ void CodexBrain::onReadyReadStderr()
 {
     if (!m_proc)
         return;
-    const QByteArray err = m_proc->readAllStandardError().trimmed();
-    if (!err.isEmpty()) {
-        // Surface codex stderr as a low-priority normalized error/thinking
-        // line; keep it as error so the UI can show diagnostics.
-        emitEvent(NormalizedBrainEvent::error(QString::fromUtf8(err)));
+    const QByteArray chunk = m_proc->readAllStandardError();
+    // codex writes diagnostics line-by-line on stderr. Surface them as error
+    // events, but filter benign/noisy lines that are not real turn failures:
+    //   - "Reading additional input from stdin..." (informational; emitted
+    //     even though we close stdin — never a failure),
+    //   - rmcp transport worker errors for the user's GLOBAL ~/.codex MCP
+    //     servers being unreachable (orthogonal to this turn).
+    for (const QByteArray &rawLine : chunk.split('\n')) {
+        const QByteArray line = rawLine.trimmed();
+        if (line.isEmpty())
+            continue;
+        if (line.contains("Reading additional input from stdin"))
+            continue;
+        if (line.contains("rmcp::transport") || line.contains("worker quit with fatal"))
+            continue;
+        emitEvent(NormalizedBrainEvent::error(QString::fromUtf8(line)));
     }
 }
 

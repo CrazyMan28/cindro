@@ -14,12 +14,15 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Sql WebSockets)
+find_package(Qt6 REQUIRED COMPONENTS Core Sql WebSockets Network)
 
 add_library(jarvis-core STATIC
     src/Protocol.cpp
     src/Config.cpp
     src/SessionStore.cpp
+    src/SettingsStore.cpp
+    src/McpRegistry.cpp
+    src/PluginRegistry.cpp
     src/CodexParser.cpp
     src/CodexBrain.cpp
     # Headers listed so AUTOMOC processes the Q_OBJECT types (Brain, CodexBrain),
@@ -27,6 +30,9 @@ add_library(jarvis-core STATIC
     include/jarvis/Protocol.h
     include/jarvis/Config.h
     include/jarvis/SessionStore.h
+    include/jarvis/SettingsStore.h
+    include/jarvis/McpRegistry.h
+    include/jarvis/PluginRegistry.h
     include/jarvis/CodexParser.h
     include/jarvis/Brain.h
     include/jarvis/CodexBrain.h
@@ -44,6 +50,7 @@ target_link_libraries(jarvis-core
         Qt6::Core
         Qt6::Sql
         Qt6::WebSockets
+        Qt6::Network
 )
 
 target_compile_features(jarvis-core PUBLIC cxx_std_20)

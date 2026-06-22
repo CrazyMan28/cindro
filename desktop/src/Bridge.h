@@ -57,6 +57,34 @@ public:
     // model.list { brain } -> emits modelsListed on response.
     Q_INVOKABLE void listModels(const QString &brain);
 
+    // ---- Contract A v2 ------------------------------------------------------
+    // session.create with explicit profile/title plus optional callback routing.
+    // Open an existing session by id (used from the Sessions page; loads history).
+    Q_INVOKABLE void openSession(const QString &sessionId);
+
+    // settings.get -> settingsLoaded(QVariantMap).
+    Q_INVOKABLE void loadSettings();
+    // settings.set { patch } -> settingsSaved(); api key values are write-only.
+    Q_INVOKABLE void saveSettings(const QVariantMap &patch);
+
+    // mcp.* registry.
+    Q_INVOKABLE void listMcp();
+    Q_INVOKABLE void addMcp(const QVariantMap &server);
+    Q_INVOKABLE void removeMcp(const QString &id);
+    Q_INVOKABLE void setMcpEnabled(const QString &id, bool enabled);
+    Q_INVOKABLE void testMcp(const QString &id);
+
+    // plugins.* marketplace.
+    Q_INVOKABLE void loadPlugins();
+    Q_INVOKABLE void installPlugin(const QString &id);
+    Q_INVOKABLE void setPluginEnabled(const QString &id, bool enabled);
+    Q_INVOKABLE void removePlugin(const QString &id);
+
+    // session.list -> sessionsListed(QVariantList).
+    Q_INVOKABLE void listSessions();
+    // session.history { session_id } -> sessionHistory(sessionId, events).
+    Q_INVOKABLE void loadSessionHistory(const QString &sessionId);
+
 signals:
     void connectedChanged();
     void sessionIdChanged();
@@ -67,6 +95,19 @@ signals:
 
     // Result of model.list.
     void modelsListed(const QString &brain, const QStringList &models);
+
+    // ---- Contract A v2 results ---------------------------------------------
+    void settingsLoaded(const QVariantMap &settings);
+    void settingsSaved();
+    void mcpListed(const QVariantList &servers);
+    void mcpTested(const QString &id, bool ok, int toolsCount, const QString &error);
+    void mcpChanged();   // emitted after add/remove/set_enabled so the UI refreshes
+    void pluginsListed(const QVariantList &plugins);
+    void pluginsChanged();
+    void sessionsListed(const QVariantList &sessions);
+    void sessionHistory(const QString &sessionId, const QVariantList &events);
+    // Fired when openSession finishes wiring a chosen session as current.
+    void sessionOpened(const QString &sessionId);
 
     // Surfaced protocol/transport errors for the UI.
     void errorOccurred(const QString &message);
@@ -80,7 +121,8 @@ private slots:
 private:
     int nextId();
     void send(const QString &method, const QVariantMap &params, int id);
-    int request(const QString &method, const QVariantMap &params);
+    int request(const QString &method, const QVariantMap &params,
+                const QString &ctx = QString());
     void setStatus(const QString &s);
     void handleResponse(int id, bool ok, const QVariantMap &result, const QVariantMap &error);
 
@@ -95,4 +137,10 @@ private:
 
     // Maps request id -> the method that originated it, so responses can be routed.
     QHash<int, QString> m_pending;
+    // Optional per-request context (e.g. the mcp id for mcp.test, the session id
+    // for session.history) so async results can be tagged on completion.
+    QHash<int, QString> m_pendingCtx;
+    // True while a session opened from the Sessions page is being loaded, so the
+    // history response can be surfaced as a chat load rather than a list refresh.
+    bool m_openingSession = false;
 };
