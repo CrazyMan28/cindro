@@ -1,0 +1,16 @@
+[Unit]
+Description=Computer-use MCP server (desktop UI control + Chrome bridge)
+After=network-online.target ydotoold.service
+Wants=ydotoold.service
+
+[Service]
+Type=simple
+ExecStart=%h/projects/mcp/computer_use/.venv/bin/computer-use-mcp
+Environment=YDOTOOL_SOCKET=%t/.ydotool_socket
+# The desktop exports a 3.14 PYTHONPATH that breaks venvs; keep it out.
+UnsetEnvironment=PYTHONPATH
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

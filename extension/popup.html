@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      width: 280px; margin: 0; padding: 14px;
+      background: #1b1e23; color: #e5e7eb;
+    }
+    h1 { font-size: 0.95rem; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; }
+    .dot.ok { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+    .dot.bad { background: #ef4444; box-shadow: 0 0 6px #ef4444; }
+    .row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 0.8rem; color: #9ca3af; }
+    .row b { color: #e5e7eb; font-weight: 600; }
+    #warn { margin: 8px 0 0; padding: 6px 8px; border-radius: 6px; background: #7f1d1d; color: #fecaca; font-size: 0.78rem; display: none; }
+    .btns { display: flex; gap: 8px; margin-top: 12px; }
+    button {
+      flex: 1; padding: 6px 0; border: 0; border-radius: 6px; cursor: pointer;
+      font-weight: 600; font-size: 0.8rem; background: #374151; color: #e5e7eb;
+    }
+    button.primary { background: #3b82f6; color: white; }
+  </style>
+</head>
+<body>
+  <h1><span id="dot" class="dot bad"></span> Computer Use Bridge <span id="ver" style="color:#6b7280;font-weight:400"></span></h1>
+  <div class="row"><span>Status</span><b id="status">checking…</b></div>
+  <div class="row"><span>Server</span><b id="server">—</b></div>
+  <div class="row"><span>Last server ping</span><b id="ping">—</b></div>
+  <div class="row"><span>Debugger tabs</span><b id="tabs">0</b></div>
+  <div id="warn"></div>
+  <div class="btns">
+    <button id="reconnect" class="primary">Reconnect</button>
+    <button id="settings">Settings</button>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

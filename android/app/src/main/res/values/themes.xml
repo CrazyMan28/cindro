@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Base window theme used before Compose draws. The app is dark-only in Compose,
+      so we pin the window background dark and hide the platform action bar.
+    -->
+    <style name="Theme.Jarvis" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@color/jarvis_background</item>
+        <item name="android:navigationBarColor">@color/jarvis_background</item>
+        <item name="android:windowBackground">@color/jarvis_background</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

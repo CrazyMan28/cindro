@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!--
+      Do not back up the encrypted secret store: its AndroidKeyStore master key is
+      device-bound and would not be restorable on another device.
+    -->
+    <exclude domain="sharedpref" path="jarvis_secret_store.xml" />
+</full-backup-content>

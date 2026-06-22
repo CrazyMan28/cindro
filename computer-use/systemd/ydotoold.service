@@ -1,0 +1,12 @@
+[Unit]
+Description=ydotool user daemon (uinput keyboard injection for computer-use-mcp)
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/rm -f %t/.ydotool_socket
+ExecStart=/usr/bin/ydotoold --socket-path=%t/.ydotool_socket --socket-perm=0600
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

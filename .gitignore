@@ -1,0 +1,29 @@
+# --- C++ / CMake build artifacts ---
+build/
+build-*/
+*.o
+CMakeCache.txt
+CMakeFiles/
+**/build/
+
+# --- Python ---
+.venv/
+__pycache__/
+*.pyc
+
+# --- Node / web ---
+node_modules/
+
+# --- Android / Gradle ---
+*.apk
+*.aab
+.gradle/
+local.properties
+
+# --- Secrets (NEVER commit) ---
+*.token
+service-account*.json
+.env
+
+# --- Logs ---
+*.log
