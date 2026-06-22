@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Jarvis talks to the daemon over a cleartext WebSocket (ws://<host>:8796) on the
+    user's LAN / Tailscale tailnet — there is no public hop, and the channel itself is
+    authenticated and signed end-to-end (Ed25519 device handshake, Contract C). The OS
+    blocks cleartext by default on API 28+, so we explicitly permit it. FCM/Firebase
+    traffic still uses the system trust store over TLS.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

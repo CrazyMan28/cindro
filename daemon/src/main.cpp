@@ -7,6 +7,7 @@
 //   - serve the Contract A control WebSocket on 127.0.0.1:<control_port>.
 
 #include "ControlServer.h"
+#include "DeviceServer.h"
 
 #include "jarvis/Config.h"
 
@@ -95,6 +96,20 @@ int main(int argc, char **argv)
     std::fprintf(stderr,
                  "jarvisd: control WS listening on ws://127.0.0.1:%d/control/ws\n",
                  config.controlPort);
+
+    // Contract C: the device channel (phone). Reuses the ControlServer's shared
+    // session/store/registry machinery. A bind failure here is non-fatal — the
+    // control WS (desktop) keeps working — but is logged.
+    auto *deviceServer = new jarvis::DeviceServer(config, server, &app);
+    if (!deviceServer->start()) {
+        std::fprintf(stderr, "jarvisd: device WS not started: %s\n",
+                     qPrintable(deviceServer->lastError()));
+    } else {
+        std::fprintf(stderr,
+                     "jarvisd: device WS listening on ws://%s:%d/device/ws\n",
+                     qPrintable(jarvis::ControlServer::tailnetHost()),
+                     config.devicePort);
+    }
 
     return app.exec();
 }

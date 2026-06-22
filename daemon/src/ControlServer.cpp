@@ -12,6 +12,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
+#include <QNetworkInterface>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRandomGenerator>
@@ -67,6 +68,12 @@ bool ControlServer::start()
     m_mcp = std::make_unique<McpRegistry>(m_store);
     m_plugins = std::make_unique<PluginRegistry>(m_store);
     m_plugins->ensureSeeded(); // seed sample manifests if the catalog is empty
+
+    // Contract C: load paired devices + ensure the daemon ed25519 identity, and
+    // pick the best available FCM push backend (real if a "baratone" service
+    // account is reachable, else a logging stub).
+    m_deviceReg.load();
+    m_fcm = FcmSender::makeDefault();
 
     m_wsServer = new QWebSocketServer(QStringLiteral("jarvisd-control"),
                                       QWebSocketServer::NonSecureMode, this);
@@ -200,6 +207,12 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handlePluginsSetEnabled(req);
     else if (m == QStringLiteral("plugins.remove"))
         resp = handlePluginsRemove(req);
+    else if (m == QStringLiteral("devices.pair_start"))
+        resp = handleDevicesPairStart(req);
+    else if (m == QStringLiteral("devices.list"))
+        resp = handleDevicesList(req);
+    else if (m == QStringLiteral("devices.revoke"))
+        resp = handleDevicesRevoke(req);
     else
         resp = Response::failure(req.id, QStringLiteral("unknown_method"),
                                  QStringLiteral("unknown method: ") + m);
@@ -383,32 +396,32 @@ Brain *ControlServer::makeBrain(const SessionRow &row)
     return nullptr;
 }
 
-Response ControlServer::handleSessionCreate(const Request &req)
+QString ControlServer::createSession(const QString &profile, const QString &brainName,
+                                     const QString &model, const QString &cwd,
+                                     const QString &title, QString *err)
 {
-    const QJsonObject p = req.params;
     SessionRow row;
     row.id = genSessionId();
-    row.profile = p.value(QStringLiteral("profile")).toString(QStringLiteral("coder"));
-    row.brain = p.value(QStringLiteral("brain")).toString(m_config.defaultBrain);
-    row.model = p.value(QStringLiteral("model")).toString(m_config.defaultModel);
-    row.title = p.value(QStringLiteral("title")).toString(QStringLiteral("Untitled session"));
+    row.profile = profile.isEmpty() ? QStringLiteral("coder") : profile;
+    row.brain = brainName.isEmpty() ? m_config.defaultBrain : brainName;
+    row.model = model.isEmpty() ? m_config.defaultModel : model;
+    row.title = title.isEmpty() ? QStringLiteral("Untitled session") : title;
     row.state = QStringLiteral("idle");
     row.created = QDateTime::currentMSecsSinceEpoch();
     row.updated = row.created;
 
-    // cwd override is honored for the brain spawn (kept in config snapshot).
-    const QString cwd = p.value(QStringLiteral("cwd")).toString();
-
     if (!m_store.create(row)) {
-        return Response::failure(req.id, QStringLiteral("store_error"),
-                                 m_store.lastError());
+        if (err)
+            *err = m_store.lastError();
+        return QString();
     }
 
     Brain *brain = makeBrain(row);
     if (!brain) {
         m_store.updateState(row.id, QStringLiteral("error"));
-        return Response::failure(req.id, QStringLiteral("unsupported_brain"),
-                                 QStringLiteral("brain not available: ") + row.brain);
+        if (err)
+            *err = QStringLiteral("brain not available: ") + row.brain;
+        return QString();
     }
     if (!cwd.isEmpty()) {
         if (auto *cb = qobject_cast<CodexBrain *>(brain)) {
@@ -430,11 +443,67 @@ Response ControlServer::handleSessionCreate(const Request &req)
     }
     connect(brain, &Brain::event, this, &ControlServer::onBrainEvent);
     m_brains.insert(row.id, brain);
+    return row.id;
+}
+
+bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
+                                  const QStringList &images, QString *err)
+{
+    Brain *brain = m_brains.value(sessionId, nullptr);
+    if (!brain) {
+        if (err)
+            *err = QStringLiteral("unknown or inactive session: ") + sessionId;
+        return false;
+    }
+    m_store.updateState(sessionId, QStringLiteral("running"));
+    brain->send(text, images);
+    return true;
+}
+
+bool ControlServer::cancelSession(const QString &sessionId, QString *err)
+{
+    Brain *brain = m_brains.value(sessionId, nullptr);
+    if (!brain) {
+        if (err)
+            *err = QStringLiteral("unknown or inactive session: ") + sessionId;
+        return false;
+    }
+    brain->cancel();
+    m_store.updateState(sessionId, QStringLiteral("idle"));
+    return true;
+}
+
+bool ControlServer::respondApprovalFor(const QString &sessionId, const QString &approvalId,
+                                       const QString &decision, QString *err)
+{
+    Brain *brain = m_brains.value(sessionId, nullptr);
+    if (!brain) {
+        if (err)
+            *err = QStringLiteral("unknown or inactive session: ") + sessionId;
+        return false;
+    }
+    brain->respondApproval(approvalId, decision);
+    return true;
+}
+
+Response ControlServer::handleSessionCreate(const Request &req)
+{
+    const QJsonObject p = req.params;
+    QString err;
+    const QString sessionId = createSession(
+        p.value(QStringLiteral("profile")).toString(),
+        p.value(QStringLiteral("brain")).toString(),
+        p.value(QStringLiteral("model")).toString(),
+        p.value(QStringLiteral("cwd")).toString(),
+        p.value(QStringLiteral("title")).toString(),
+        &err);
+    if (sessionId.isEmpty())
+        return Response::failure(req.id, QStringLiteral("session_create_failed"), err);
 
     QJsonObject result;
-    result.insert(QStringLiteral("session_id"), row.id);
-    if (!row.threadId.isEmpty())
-        result.insert(QStringLiteral("thread_id"), row.threadId);
+    result.insert(QStringLiteral("session_id"), sessionId);
+    if (auto row = m_store.get(sessionId); row && !row->threadId.isEmpty())
+        result.insert(QStringLiteral("thread_id"), row->threadId);
     return Response::success(req.id, result);
 }
 
@@ -443,18 +512,13 @@ Response ControlServer::handleSessionSend(const Request &req)
     const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
     const QString text = req.params.value(QStringLiteral("text")).toString();
 
-    Brain *brain = m_brains.value(sessionId, nullptr);
-    if (!brain) {
-        return Response::failure(req.id, QStringLiteral("no_session"),
-                                 QStringLiteral("unknown or inactive session: ") + sessionId);
-    }
-
     QStringList images;
     for (const QJsonValue &v : req.params.value(QStringLiteral("images")).toArray())
         images << v.toString();
 
-    m_store.updateState(sessionId, QStringLiteral("running"));
-    brain->send(text, images);
+    QString err;
+    if (!sendToSession(sessionId, text, images, &err))
+        return Response::failure(req.id, QStringLiteral("no_session"), err);
 
     QJsonObject result;
     result.insert(QStringLiteral("accepted"), true);
@@ -464,13 +528,9 @@ Response ControlServer::handleSessionSend(const Request &req)
 Response ControlServer::handleSessionCancel(const Request &req)
 {
     const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
-    Brain *brain = m_brains.value(sessionId, nullptr);
-    if (!brain) {
-        return Response::failure(req.id, QStringLiteral("no_session"),
-                                 QStringLiteral("unknown or inactive session: ") + sessionId);
-    }
-    brain->cancel();
-    m_store.updateState(sessionId, QStringLiteral("idle"));
+    QString err;
+    if (!cancelSession(sessionId, &err))
+        return Response::failure(req.id, QStringLiteral("no_session"), err);
     return Response::success(req.id);
 }
 
@@ -515,12 +575,9 @@ Response ControlServer::handleApprovalRespond(const Request &req)
     const QString approvalId = req.params.value(QStringLiteral("approval_id")).toString();
     const QString decision = req.params.value(QStringLiteral("decision")).toString();
 
-    Brain *brain = m_brains.value(sessionId, nullptr);
-    if (!brain) {
-        return Response::failure(req.id, QStringLiteral("no_session"),
-                                 QStringLiteral("unknown or inactive session: ") + sessionId);
-    }
-    brain->respondApproval(approvalId, decision);
+    QString err;
+    if (!respondApprovalFor(sessionId, approvalId, decision, &err))
+        return Response::failure(req.id, QStringLiteral("no_session"), err);
     return Response::success(req.id);
 }
 
@@ -640,6 +697,59 @@ Response ControlServer::handlePluginsRemove(const Request &req)
     return Response::success(req.id, ok);
 }
 
+// --- Contract A v2: device pairing/management ------------------------------
+
+QString ControlServer::tailnetHost()
+{
+    // Prefer the tailscale0 interface; else the first 100.64/10 (CGNAT) IPv4.
+    for (const QNetworkInterface &iface : QNetworkInterface::allInterfaces()) {
+        const bool isTailscale = iface.name().startsWith(QStringLiteral("tailscale"));
+        for (const QNetworkAddressEntry &entry : iface.addressEntries()) {
+            const QHostAddress ip = entry.ip();
+            if (ip.protocol() != QAbstractSocket::IPv4Protocol)
+                continue;
+            const QString s = ip.toString();
+            if (isTailscale || s.startsWith(QStringLiteral("100."))) {
+                if (s != QStringLiteral("127.0.0.1"))
+                    return s;
+            }
+        }
+    }
+    return QStringLiteral("127.0.0.1");
+}
+
+Response ControlServer::handleDevicesPairStart(const Request &req)
+{
+    const QString host = tailnetHost() + QStringLiteral(":") +
+                         QString::number(m_config.devicePort);
+    const QString fp = m_deviceReg.identityFingerprint();
+    const PairingCode pc = m_pairing.start(host, fp);
+    return Response::success(req.id, pc.toJson());
+}
+
+Response ControlServer::handleDevicesList(const Request &req)
+{
+    QJsonArray arr;
+    for (const DeviceRow &d : m_deviceReg.list())
+        arr.append(d.toJson());
+    QJsonObject result;
+    result.insert(QStringLiteral("devices"), arr);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleDevicesRevoke(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    if (!m_deviceReg.revoke(id))
+        return Response::failure(req.id, QStringLiteral("no_device"),
+                                 QStringLiteral("unknown device: ") + id);
+    // Drop any push token + pending tasks for the revoked device.
+    m_store.removePushToken(id);
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
 // --- event fan-out ---------------------------------------------------------
 
 void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrainEvent &ev)
@@ -659,6 +769,9 @@ void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrain
     }
 
     broadcastSessionEvent(sessionId, ev);
+
+    // Fan the (already-persisted) event out to the device channel + push.
+    emit sessionEvent(sessionId, ev);
 }
 
 void ControlServer::broadcastSessionEvent(const QString &sessionId, const NormalizedBrainEvent &ev)

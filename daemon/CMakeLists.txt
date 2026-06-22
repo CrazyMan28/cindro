@@ -26,6 +26,7 @@ endif()
 add_executable(jarvisd
     src/main.cpp
     src/ControlServer.cpp
+    src/DeviceServer.cpp
 )
 
 target_link_libraries(jarvisd

@@ -85,6 +85,14 @@ public:
     // session.history { session_id } -> sessionHistory(sessionId, events).
     Q_INVOKABLE void loadSessionHistory(const QString &sessionId);
 
+    // ---- Devices (Contract A v2 pairing, surfaced in Settings) --------------
+    // devices.pair_start -> pairingStarted(qrSvg, code, payload, expiresAt).
+    Q_INVOKABLE void devicesPairStart();
+    // devices.list -> devicesListed(QVariantList).
+    Q_INVOKABLE void devicesList();
+    // devices.revoke { id } -> on success refreshes the list.
+    Q_INVOKABLE void devicesRevoke(const QString &id);
+
 signals:
     void connectedChanged();
     void sessionIdChanged();
@@ -108,6 +116,14 @@ signals:
     void sessionHistory(const QString &sessionId, const QVariantList &events);
     // Fired when openSession finishes wiring a chosen session as current.
     void sessionOpened(const QString &sessionId);
+
+    // ---- Devices pairing results -------------------------------------------
+    // devices.pair_start result: the raw qr_svg markup, the 6-digit code, the
+    // full jarvis://pair?... payload, and the epoch-seconds expiry.
+    void pairingStarted(const QString &qrSvg, const QString &code,
+                        const QString &payload, double expiresAt);
+    void devicesListed(const QVariantList &devices);
+    void devicesChanged();   // emitted after a revoke so the UI refreshes
 
     // Surfaced protocol/transport errors for the UI.
     void errorOccurred(const QString &message);

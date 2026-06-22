@@ -6,6 +6,16 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// Firebase Cloud Messaging is wired through the google-services plugin, but the
+// plugin hard-fails the build if app/google-services.json is missing. Apply it
+// only when the file is present so a clean checkout (or a CI box without the
+// baratone config) still produces a working assembleDebug — the app degrades to
+// a no-op FCM path in that case (see FcmService / PushRegistrar).
+val hasGoogleServices = file("google-services.json").exists()
+if (hasGoogleServices) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 android {
     namespace = "com.jarvis.app"
     compileSdk = 36
@@ -19,6 +29,11 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
+
+        // Surfaced to the app so the FCM path can no-op cleanly when Firebase
+        // config is absent, and so the device-WS default port lives in one place.
+        buildConfigField("boolean", "FCM_ENABLED", hasGoogleServices.toString())
+        buildConfigField("int", "DEVICE_PORT", "8796")
     }
 
     buildTypes {
@@ -64,6 +79,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.fragment.ktx)
+    implementation(libs.androidx.navigation.compose)
 
     // Compose BOM aligns all compose artifact versions.
     val composeBom = platform(libs.androidx.compose.bom)
@@ -78,13 +95,33 @@ dependencies {
     implementation(libs.androidx.compose.foundation)
     debugImplementation(libs.androidx.compose.ui.tooling)
 
-    // Networking for the (future) Contract C device WebSocket on :8796.
+    // Contract C device WebSocket on :8796 + coroutine glue.
     implementation(libs.okhttp)
     implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.play.services)
 
-    // Encrypted handle/secret storage (device key, paired-host token).
+    // Encrypted handle/secret storage + Ed25519 device identity (Tink).
     implementation(libs.androidx.security.crypto)
     implementation(libs.gson)
+    implementation(libs.tink.android)
+
+    // Pairing: CameraX preview + ML Kit barcode (QR) scanning.
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.mlkit.barcode.scanning)
+
+    // Biometric gate for 'biometric'-tier approvals / take-over.
+    implementation(libs.androidx.biometric)
+
+    // Image loading for chat photo attachments / previews.
+    implementation(libs.coil.compose)
+
+    // FCM push (project "baratone"). Resolved regardless; the google-services
+    // plugin is only applied when google-services.json is present.
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
 
     testImplementation(libs.junit)
 }

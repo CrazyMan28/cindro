@@ -10,7 +10,10 @@
 // sockets as session.event frames.
 
 #include "jarvis/Config.h"
+#include "jarvis/DeviceRegistry.h"
+#include "jarvis/FcmSender.h"
 #include "jarvis/McpRegistry.h"
+#include "jarvis/PairingManager.h"
 #include "jarvis/PluginRegistry.h"
 #include "jarvis/Protocol.h"
 #include "jarvis/SessionStore.h"
@@ -41,6 +44,35 @@ public:
     // Returns false on failure (see lastError()).
     bool start();
     QString lastError() const { return m_lastError; }
+
+    // --- shared machinery exposed to the device channel (Contract C) -------
+    // The DeviceServer reuses the SAME store/brains/registries so a phone and
+    // the desktop drive one coherent session world.
+    SessionStore &store() { return m_store; }
+    DeviceRegistry &devices() { return m_deviceReg; }
+    PairingManager &pairing() { return m_pairing; }
+    FcmSender *fcm() { return m_fcm.get(); }
+
+    // Create a session row + live brain (shared with handleSessionCreate). On
+    // success returns the new session id; on failure returns empty and sets
+    // *err. `cwd` empty => default.
+    QString createSession(const QString &profile, const QString &brain,
+                          const QString &model, const QString &cwd,
+                          const QString &title, QString *err);
+    // Send a user turn into an existing live session. False if unknown/inactive.
+    bool sendToSession(const QString &sessionId, const QString &text,
+                       const QStringList &images, QString *err);
+    bool cancelSession(const QString &sessionId, QString *err);
+    bool respondApprovalFor(const QString &sessionId, const QString &approvalId,
+                            const QString &decision, QString *err);
+
+    // The tailnet (tailscale0) IPv4 address, or 127.0.0.1 if none — the host the
+    // phone dials in the pairing payload and the device WS binds.
+    static QString tailnetHost();
+
+signals:
+    // Fired after every brain event is persisted (Contract C device fan-out).
+    void sessionEvent(const QString &sessionId, const jarvis::NormalizedBrainEvent &ev);
 
 private slots:
     void onNewConnection();
@@ -76,6 +108,11 @@ private:
     Response handlePluginsSetEnabled(const Request &req);
     Response handlePluginsRemove(const Request &req);
 
+    // Contract A v2 device pairing/management (surfaced in desktop Settings).
+    Response handleDevicesPairStart(const Request &req);
+    Response handleDevicesList(const Request &req);
+    Response handleDevicesRevoke(const Request &req);
+
     // Create + wire a brain for a session row. Returns nullptr on unknown brain.
     Brain *makeBrain(const SessionRow &row);
 
@@ -93,6 +130,13 @@ private:
     SettingsStore m_settings;
     std::unique_ptr<McpRegistry> m_mcp;
     std::unique_ptr<PluginRegistry> m_plugins;
+
+    // Contract C shared machinery: paired-device store + daemon ed25519
+    // identity, short-lived pairing codes, and the FCM push sender. Owned here
+    // and reused by the DeviceServer.
+    DeviceRegistry m_deviceReg;
+    PairingManager m_pairing;
+    std::unique_ptr<FcmSender> m_fcm;
 
     // Authenticated client sockets (all are subscribed to session events).
     QSet<QWebSocket *> m_clients;
