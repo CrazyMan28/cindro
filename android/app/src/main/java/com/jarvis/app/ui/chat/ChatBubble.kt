@@ -1,6 +1,13 @@
 package com.jarvis.app.ui.chat
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,8 +17,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
@@ -26,35 +36,81 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.jarvis.app.ui.theme.GlowCard
 import com.jarvis.app.ui.theme.JarvisPalette
+import kotlinx.coroutines.delay
 
 @Composable
 fun ChatBubble(
     item: ChatItem,
     onApprove: (ChatItem.Approval, String) -> Unit,
+    selecting: Boolean = false,
+    selected: Boolean = false,
+    onClick: () -> Unit = {},
+    onLongClick: () -> Unit = {},
+    onStreamReveal: () -> Unit = {},
 ) {
-    when (item) {
-        is ChatItem.Message -> MessageBubble(item)
-        is ChatItem.Thinking -> ThinkingBubble(item)
-        is ChatItem.ToolCall -> ToolCallBubble(item)
-        is ChatItem.Diff -> DiffBubble(item)
-        is ChatItem.Approval -> ApprovalCard(item, onApprove)
-        is ChatItem.Error -> ErrorBubble(item)
+    // Long-press anywhere on a bubble enters / toggles selection; in selecting
+    // mode a plain tap toggles too. The selected bubble dims slightly.
+    val selectable = Modifier
+        .fillMaxWidth()
+        .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+        .alpha(if (selecting && !selected) 0.55f else 1f)
+    Box(selectable) {
+        when (item) {
+            is ChatItem.Message -> MessageBubble(item, selected, onStreamReveal)
+            is ChatItem.Thinking -> ThinkingBubble(item)
+            is ChatItem.ToolCall -> ToolCallBubble(item)
+            is ChatItem.Diff -> DiffBubble(item)
+            is ChatItem.Approval -> ApprovalCard(item, onApprove)
+            is ChatItem.Error -> ErrorBubble(item)
+        }
     }
 }
 
 @Composable
-private fun MessageBubble(item: ChatItem.Message) {
+private fun MessageBubble(
+    item: ChatItem.Message,
+    selected: Boolean = false,
+    onStreamReveal: () -> Unit = {},
+) {
     val isUser = item.role == "user"
     val align = if (isUser) Alignment.End else Alignment.Start
     val bg = if (isUser) JarvisPalette.AccentDim else JarvisPalette.Surface
-    val fg = if (isUser) JarvisPalette.TextPrimary else JarvisPalette.TextPrimary
+
+    // Typewriter reveal: while streaming, animate the number of visible characters
+    // up to the accumulated text length (~ a few hundred chars/sec). When the
+    // streaming flag clears (turn final) the full text snaps in.
+    var revealed by remember(item.id) { mutableIntStateOf(if (item.streaming) 0 else item.text.length) }
+    LaunchedEffect(item.text, item.streaming) {
+        if (!item.streaming) {
+            revealed = item.text.length
+            return@LaunchedEffect
+        }
+        // Reveal forward toward the current text length. ~16ms/char ≈ 60 chars/sec
+        // floor, but we step by a small batch so longer replies feel ChatGPT-fast
+        // (~300+ chars/sec) without dropping the soft per-step haptic cadence.
+        while (revealed < item.text.length) {
+            val step = (item.text.length - revealed).coerceAtMost(REVEAL_BATCH)
+            revealed += step
+            onStreamReveal()
+            delay(REVEAL_FRAME_MS)
+        }
+    }
+    val shown = if (revealed >= item.text.length) item.text else item.text.take(revealed)
+
     Column(Modifier.fillMaxWidth(), horizontalAlignment = align) {
         Surface(
             color = bg,
@@ -63,14 +119,57 @@ private fun MessageBubble(item: ChatItem.Message) {
                 bottomStart = if (isUser) 14.dp else 2.dp,
                 bottomEnd = if (isUser) 2.dp else 14.dp,
             ),
-            modifier = Modifier.widthIn(max = 320.dp),
+            modifier = Modifier
+                .widthIn(max = 320.dp)
+                .alpha(if (selected) 0.8f else 1f),
         ) {
+            // Soft fade on the revealing text while streaming.
+            val streamingNow = item.streaming && revealed < item.text.length
             Text(
-                text = item.text,
-                color = fg,
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                text = shown,
+                color = JarvisPalette.TextPrimary,
+                modifier = Modifier
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                    .alpha(if (streamingNow) 0.92f else 1f),
                 style = MaterialTheme.typography.bodyLarge,
             )
+        }
+    }
+}
+
+/** Pulsing three-dot "typing" indicator shown while the brain is working. */
+@Composable
+fun TypingIndicator(modifier: Modifier = Modifier) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically) {
+        Surface(
+            color = JarvisPalette.Surface,
+            shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp, bottomStart = 2.dp, bottomEnd = 14.dp),
+        ) {
+            Row(
+                Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val transition = rememberInfiniteTransition(label = "typing")
+                repeat(3) { i ->
+                    val a by transition.animateFloat(
+                        initialValue = 0.3f,
+                        targetValue = 1f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(durationMillis = 600, delayMillis = i * 160, easing = LinearEasing),
+                            repeatMode = RepeatMode.Reverse,
+                        ),
+                        label = "dot$i",
+                    )
+                    Box(
+                        Modifier
+                            .size(7.dp)
+                            .graphicsLayer { alpha = a }
+                            .clip(CircleShape)
+                            .background(JarvisPalette.Accent),
+                    )
+                }
+            }
         }
     }
 }
@@ -231,3 +330,8 @@ private fun DiffBlock(patch: String) {
         }
     }
 }
+
+// Typewriter reveal pacing: reveal up to REVEAL_BATCH chars every REVEAL_FRAME_MS,
+// i.e. ~ (REVEAL_BATCH * 1000 / REVEAL_FRAME_MS) chars/sec (≈ 350/sec by default).
+private const val REVEAL_BATCH = 7
+private const val REVEAL_FRAME_MS = 20L

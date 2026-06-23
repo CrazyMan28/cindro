@@ -238,6 +238,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionSend(req);
     else if (m == QStringLiteral("session.cancel"))
         resp = handleSessionCancel(req);
+    else if (m == QStringLiteral("session.delete"))
+        resp = handleSessionDelete(req);
     else if (m == QStringLiteral("session.list"))
         resp = handleSessionList(req);
     else if (m == QStringLiteral("session.history"))
@@ -845,6 +847,30 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     return true;
 }
 
+bool ControlServer::deleteSession(const QString &sessionId, QString *err)
+{
+    // 1) Tear down any live brain for this session (cancel its turn first so a
+    //    running tool loop is asked to stop, then delete + drop the map entry).
+    if (Brain *brain = m_brains.take(sessionId)) {
+        brain->cancel();
+        brain->deleteLater();
+    }
+    // 2) End any take-over and drop a held (gated) turn.
+    if (m_takeOverActive.contains(sessionId))
+        setTakeOverActive(sessionId, false);
+    m_injectionHeld.remove(sessionId);
+    // 3) Tear down the nested agent desktop (compositor + per-session engine).
+    if (m_agentDesktops.has(sessionId))
+        m_agentDesktops.teardown(sessionId);
+    // 4) Drop the row + its event stream from the store.
+    if (!m_store.deleteSession(sessionId)) {
+        if (err)
+            *err = m_store.lastError();
+        return false;
+    }
+    return true;
+}
+
 bool ControlServer::respondApprovalFor(const QString &sessionId, const QString &approvalId,
                                        const QString &decision, QString *err)
 {
@@ -947,6 +973,21 @@ Response ControlServer::handleSessionCancel(const Request &req)
     if (!cancelSession(sessionId, &err))
         return Response::failure(req.id, QStringLiteral("no_session"), err);
     return Response::success(req.id);
+}
+
+Response ControlServer::handleSessionDelete(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    if (sessionId.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("session_id required"));
+    QString err;
+    if (!deleteSession(sessionId, &err))
+        return Response::failure(req.id, QStringLiteral("session_delete_failed"), err);
+    QJsonObject result;
+    result.insert(QStringLiteral("deleted"), true);
+    result.insert(QStringLiteral("session_id"), sessionId);
+    return Response::success(req.id, result);
 }
 
 Response ControlServer::handleSessionList(const Request &req)

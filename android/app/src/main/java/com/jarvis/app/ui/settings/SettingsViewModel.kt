@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.jarvis.app.JarvisApp
+import com.jarvis.app.data.AppPrefs
 import com.jarvis.app.data.PairingStore
 import com.jarvis.app.data.VoiceSettings
 import com.jarvis.app.net.DeviceClient
@@ -39,6 +40,8 @@ data class SettingsUiState(
     val wakeEnabled: Boolean = false,
     val readBackEnabled: Boolean = true,
     val ttsVoice: String = "",
+    // Haptics
+    val hapticsEnabled: Boolean = true,
 )
 
 /** Full settings parity: connection, identity, API keys, default brain/model, voice. */
@@ -47,6 +50,7 @@ class SettingsViewModel(
     private val repo: JarvisRepository,
     private val pairingStore: PairingStore,
     private val voiceSettings: VoiceSettings,
+    private val appPrefs: AppPrefs,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(snapshot())
@@ -74,6 +78,7 @@ class SettingsViewModel(
         wakeEnabled = voiceSettings.wakeEnabled,
         readBackEnabled = voiceSettings.readBackEnabled,
         ttsVoice = voiceSettings.ttsVoice,
+        hapticsEnabled = appPrefs.hapticsEnabled,
     )
 
     // --- daemon settings parity -------------------------------------------
@@ -170,6 +175,11 @@ class SettingsViewModel(
         _uiState.update { it.copy(ttsVoice = voice) }
     }
 
+    fun setHapticsEnabled(enabled: Boolean) {
+        appPrefs.hapticsEnabled = enabled
+        _uiState.update { it.copy(hapticsEnabled = enabled) }
+    }
+
     fun reconnect() = repo.connect()
 
     fun unpair(onDone: () -> Unit) {
@@ -186,7 +196,7 @@ class SettingsViewModel(
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    SettingsViewModel(app, app.repository, app.pairingStore, app.voiceSettings) as T
+                    SettingsViewModel(app, app.repository, app.pairingStore, app.voiceSettings, app.appPrefs) as T
             }
     }
 }

@@ -4,9 +4,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.jarvis.app.JarvisApp
+import com.jarvis.app.data.AppPrefs
 import com.jarvis.app.data.VoiceSettings
 import com.jarvis.app.net.JarvisRepository
 import com.jarvis.app.protocol.BrainEvent
+import com.jarvis.app.ui.util.Haptics
 import com.jarvis.app.voice.VoiceController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -24,6 +26,9 @@ data class ChatUiState(
     val sending: Boolean = false,
     val busy: Boolean = false, // a turn is in flight (between turn_started and final)
     val error: String? = null,
+    /** Multi-select mode in the message list (long-press a bubble to enter). */
+    val selecting: Boolean = false,
+    val selected: Set<String> = emptySet(),
 )
 
 /**
@@ -36,6 +41,8 @@ class ChatViewModel(
     private val repo: JarvisRepository,
     private val voice: VoiceController,
     private val voiceSettings: VoiceSettings,
+    private val appPrefs: AppPrefs,
+    private val haptics: Haptics,
     sessionId: String,
 ) : ViewModel() {
 
@@ -44,6 +51,12 @@ class ChatViewModel(
 
     /** Push-to-talk / TTS phase, surfaced to the mic button. */
     val voicePhase = voice.phase
+
+    /** Whether subtle chat haptics are on (Settings toggle; default ON). */
+    val hapticsEnabled: Boolean get() = appPrefs.hapticsEnabled
+
+    /** Soft micro-vibration fired by the bubble as it reveals streamed characters. */
+    fun onStreamReveal() = haptics.streamTick(appPrefs.hapticsEnabled)
 
     private val seq = AtomicLong(0)
     private fun nextId() = "item-${seq.incrementAndGet()}"
@@ -101,6 +114,9 @@ class ChatViewModel(
         val images = _uiState.value.pending
         if (trimmed.isEmpty() && images.isEmpty()) return
 
+        // Light tick on send (ChatGPT-style).
+        haptics.send(appPrefs.hapticsEnabled)
+
         // Optimistic user bubble.
         if (trimmed.isNotEmpty()) {
             appendItem(ChatItem.Message(nextId(), role = "user", text = trimmed))
@@ -157,7 +173,17 @@ class ChatViewModel(
             "message" -> {
                 val role = ev.role ?: "assistant"
                 if (role != "user") lastAssistantText = ev.text
-                appendItem(ChatItem.Message(nextId(), role = role, text = ev.text.orEmpty()))
+                // Live assistant replies stream in with a typewriter reveal; the
+                // history replay (and user echoes) render fully at once.
+                val streaming = historyReplayed && role != "user"
+                appendItem(
+                    ChatItem.Message(
+                        id = nextId(),
+                        role = role,
+                        text = ev.text.orEmpty(),
+                        streaming = streaming,
+                    ),
+                )
             }
             "tool_call" -> appendItem(
                 ChatItem.ToolCall(
@@ -180,9 +206,11 @@ class ChatViewModel(
             )
             "error" -> {
                 appendItem(ChatItem.Error(nextId(), ev.message ?: "error"))
+                finishStreaming(hapticComplete = false)
                 _uiState.update { it.copy(busy = false) }
             }
             "final" -> {
+                finishStreaming(hapticComplete = historyReplayed)
                 _uiState.update { it.copy(busy = false) }
                 // Speak the turn's final assistant message if read-back is on.
                 val reply = lastAssistantText
@@ -221,6 +249,48 @@ class ChatViewModel(
     private fun appendItem(item: ChatItem) =
         _uiState.update { it.copy(items = it.items + item) }
 
+    /**
+     * Turn ended: clear the streaming flag on any in-flight assistant bubble (so it
+     * renders fully) and, for a live turn, fire the completion tick.
+     */
+    private fun finishStreaming(hapticComplete: Boolean) {
+        var hadStreaming = false
+        _uiState.update { st ->
+            st.copy(items = st.items.map {
+                if (it is ChatItem.Message && it.streaming) {
+                    hadStreaming = true
+                    it.copy(streaming = false)
+                } else it
+            })
+        }
+        if (hapticComplete && hadStreaming) haptics.complete(appPrefs.hapticsEnabled)
+    }
+
+    // --- selection + delete / copy ----------------------------------------
+
+    /** Enter multi-select with [id] selected (from a long-press). */
+    fun startSelection(id: String) =
+        _uiState.update { it.copy(selecting = true, selected = setOf(id)) }
+
+    fun toggleSelection(id: String) = _uiState.update { st ->
+        val next = if (id in st.selected) st.selected - id else st.selected + id
+        st.copy(selecting = next.isNotEmpty(), selected = next)
+    }
+
+    fun clearSelection() = _uiState.update { it.copy(selecting = false, selected = emptySet()) }
+
+    /** Delete one item locally (and best-effort from session.history on the daemon). */
+    fun deleteItems(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        _uiState.update { st ->
+            st.copy(
+                items = st.items.filterNot { it.id in ids },
+                selecting = false,
+                selected = emptySet(),
+            )
+        }
+    }
+
     companion object {
         fun factory(app: JarvisApp, sessionId: String): ViewModelProvider.Factory =
             object : ViewModelProvider.Factory {
@@ -230,6 +300,8 @@ class ChatViewModel(
                         repo = app.repository,
                         voice = VoiceController(app.repository, app.ttsPlayer),
                         voiceSettings = app.voiceSettings,
+                        appPrefs = app.appPrefs,
+                        haptics = Haptics(app),
                         sessionId = sessionId,
                     ) as T
             }

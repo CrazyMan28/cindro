@@ -1,10 +1,12 @@
 package com.jarvis.app.ui.chat
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,6 +29,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Mic
@@ -60,7 +65,6 @@ import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
-import com.jarvis.app.ui.theme.GlowCard
 import com.jarvis.app.ui.theme.JarvisPalette
 import com.jarvis.app.ui.util.Biometric
 import com.jarvis.app.ui.util.ImageEncoding
@@ -110,35 +114,49 @@ fun ChatScreen(
         if (autoStartVoice && micGranted) viewModel.startRecording()
     }
 
-    LaunchedEffect(state.items.size) {
+    // Auto-scroll to the newest item; also follows streaming text growth while busy.
+    val lastText = (state.items.lastOrNull() as? ChatItem.Message)?.text
+    LaunchedEffect(state.items.size, state.busy, lastText) {
         if (state.items.isNotEmpty()) listState.animateScrollToItem(state.items.lastIndex)
     }
 
     Scaffold(
         containerColor = JarvisPalette.Background,
         topBar = {
-            TopAppBar(
-                title = { Text("Chat", fontFamily = FontFamily.Monospace) },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    if (state.busy) {
-                        IconButton(onClick = viewModel::cancel) {
-                            Icon(Icons.Filled.Stop, contentDescription = "Cancel turn", tint = JarvisPalette.Error)
+            if (state.selecting) {
+                ChatSelectionBar(
+                    count = state.selected.size,
+                    onClose = { viewModel.clearSelection() },
+                    onCopy = {
+                        copyToClipboard(context, selectedText(state))
+                        viewModel.clearSelection()
+                    },
+                    onDelete = { viewModel.deleteItems(state.selected) },
+                )
+            } else {
+                TopAppBar(
+                    title = { Text("Chat", fontFamily = FontFamily.Monospace) },
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = JarvisPalette.Background,
-                    titleContentColor = JarvisPalette.TextPrimary,
-                ),
-            )
+                    },
+                    actions = {
+                        if (state.busy) {
+                            IconButton(onClick = viewModel::cancel) {
+                                Icon(Icons.Filled.Stop, contentDescription = "Cancel turn", tint = JarvisPalette.Error)
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = JarvisPalette.Background,
+                        titleContentColor = JarvisPalette.TextPrimary,
+                    ),
+                )
+            }
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
+        Column(Modifier.fillMaxSize().padding(padding)) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -158,71 +176,140 @@ fun ChatScreen(
                                 if (ok) viewModel.respondApproval(approval.approvalId, decision)
                             }
                         },
+                        selecting = state.selecting,
+                        selected = item.id in state.selected,
+                        onClick = { if (state.selecting) viewModel.toggleSelection(item.id) },
+                        onLongClick = {
+                            if (state.selecting) viewModel.toggleSelection(item.id)
+                            else viewModel.startSelection(item.id)
+                        },
+                        onStreamReveal = viewModel::onStreamReveal,
                     )
+                }
+                // Pulsing "typing" indicator while the brain works (no streamed text yet).
+                if (state.busy) {
+                    item(key = "typing") { TypingIndicator() }
                 }
             }
 
-            state.error?.let { err ->
-                Surface(color = JarvisPalette.Error.copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        err,
-                        color = JarvisPalette.Error,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+            // Bottom dock: the error banner, pending attachments and the input row
+            // stay pinned just ABOVE the keyboard (imePadding) and clear of the
+            // gesture/nav bar (navigationBarsPadding). The messages list above keeps
+            // its place; opening the IME never relocates the input to the top.
+            Column(Modifier.imePadding().navigationBarsPadding()) {
+                state.error?.let { err ->
+                    Surface(color = JarvisPalette.Error.copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            err,
+                            color = JarvisPalette.Error,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
-            }
 
-            if (state.pending.isNotEmpty()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    state.pending.forEach { img ->
-                        Box {
-                            AsyncImage(
-                                model = img.previewUri,
-                                contentDescription = null,
-                                modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)),
-                            )
-                            IconButton(
-                                onClick = { viewModel.removeAttachment(img.previewUri) },
-                                modifier = Modifier.size(22.dp).align(Alignment.TopEnd),
-                            ) {
-                                Icon(Icons.Filled.Close, contentDescription = "Remove", tint = JarvisPalette.Error)
+                if (state.pending.isNotEmpty()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        state.pending.forEach { img ->
+                            Box {
+                                AsyncImage(
+                                    model = img.previewUri,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)),
+                                )
+                                IconButton(
+                                    onClick = { viewModel.removeAttachment(img.previewUri) },
+                                    modifier = Modifier.size(22.dp).align(Alignment.TopEnd),
+                                ) {
+                                    Icon(Icons.Filled.Close, contentDescription = "Remove", tint = JarvisPalette.Error)
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            InputRow(
-                draft = draft,
-                onDraftChange = { draft = it },
-                sending = state.sending,
-                voicePhase = voicePhase,
-                onAttach = { pickImage.launch("image/*") },
-                onSend = {
-                    viewModel.send(draft)
-                    draft = ""
-                },
-                onMicDown = {
-                    if (!micGranted) {
-                        requestMic.launch(Manifest.permission.RECORD_AUDIO)
-                    } else {
-                        viewModel.startRecording()
-                    }
-                },
-                onMicUp = {
-                    viewModel.stopAndTranscribe { text ->
-                        draft = if (draft.isBlank()) text else "$draft $text"
-                    }
-                },
-                onMicCancel = { viewModel.cancelRecording() },
-                onStopSpeaking = { viewModel.stopSpeaking() },
-            )
+                InputRow(
+                    draft = draft,
+                    onDraftChange = { draft = it },
+                    sending = state.sending,
+                    voicePhase = voicePhase,
+                    onAttach = { pickImage.launch("image/*") },
+                    onSend = {
+                        viewModel.send(draft)
+                        draft = ""
+                    },
+                    onMicDown = {
+                        if (!micGranted) {
+                            requestMic.launch(Manifest.permission.RECORD_AUDIO)
+                        } else {
+                            viewModel.startRecording()
+                        }
+                    },
+                    onMicUp = {
+                        viewModel.stopAndTranscribe { text ->
+                            draft = if (draft.isBlank()) text else "$draft $text"
+                        }
+                    },
+                    onMicCancel = { viewModel.cancelRecording() },
+                    onStopSpeaking = { viewModel.stopSpeaking() },
+                )
+            }
         }
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatSelectionBar(
+    count: Int,
+    onClose: () -> Unit,
+    onCopy: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    TopAppBar(
+        title = { Text("$count selected") },
+        navigationIcon = {
+            IconButton(onClick = onClose) {
+                Icon(Icons.Filled.Close, contentDescription = "Cancel selection")
+            }
+        },
+        actions = {
+            IconButton(onClick = onCopy) {
+                Icon(Icons.Filled.ContentCopy, contentDescription = "Copy", tint = JarvisPalette.Accent)
+            }
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = JarvisPalette.Error)
+            }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(
+            containerColor = JarvisPalette.SurfaceVariant,
+            titleContentColor = JarvisPalette.TextPrimary,
+        ),
+    )
+}
+
+/** Concatenate the text of the currently-selected message bubbles, in order. */
+private fun selectedText(state: ChatUiState): String =
+    state.items
+        .filter { it.id in state.selected }
+        .joinToString("\n\n") { item ->
+            when (item) {
+                is ChatItem.Message -> item.text
+                is ChatItem.Thinking -> item.text
+                is ChatItem.Error -> item.message
+                is ChatItem.Diff -> item.patch
+                is ChatItem.ToolCall -> listOfNotNull(item.argsJson, item.output).joinToString("\n")
+                is ChatItem.Approval -> item.summary
+            }
+        }
+
+private fun copyToClipboard(context: Context, text: String) {
+    if (text.isBlank()) return
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+    cm.setPrimaryClip(ClipData.newPlainText("Jarvis chat", text))
 }
 
 @Composable

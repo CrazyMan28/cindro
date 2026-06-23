@@ -3,6 +3,7 @@ package com.jarvis.app
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.view.WindowCompat
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
@@ -25,6 +26,10 @@ class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // Edge-to-edge: let WindowInsets (incl. the IME) flow into Compose so the
+        // chat input row can dock just above the keyboard via Modifier.imePadding()
+        // instead of the whole UI being shoved up by the system.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
         JarvisNotifier.ensureChannels(this)
 
         val initialSession = intent?.getStringExtra(JarvisNotifier.EXTRA_SESSION_ID)

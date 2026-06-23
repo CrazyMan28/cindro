@@ -237,6 +237,16 @@ fun SettingsScreen(
                 }
             }
 
+            // --- Haptics ---
+            GlowCard(modifier = Modifier.fillMaxWidth()) {
+                ToggleRow(
+                    title = "Haptics",
+                    subtitle = "Subtle feedback: a tick on send, gentle pulses while a reply streams, and a tick when it finishes.",
+                    checked = state.hapticsEnabled,
+                    onChange = viewModel::setHapticsEnabled,
+                )
+            }
+
             // --- Device identity ---
             GlowCard(modifier = Modifier.fillMaxWidth()) {
                 Column {

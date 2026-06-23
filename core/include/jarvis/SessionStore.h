@@ -116,6 +116,9 @@ public:
     QVector<SessionRow> list();
     bool updateState(const QString &id, const QString &state);
     bool updateThreadId(const QString &id, const QString &threadId);
+    // Delete a session row and all of its events. Returns false on error;
+    // returns true even if the row didn't exist (idempotent delete).
+    bool deleteSession(const QString &id);
 
     // --- events -----------------------------------------------------------
     // Append an event; sequence number is assigned monotonically per session.
