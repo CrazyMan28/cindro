@@ -17,7 +17,7 @@ After=jarvisd.service computer-use-mcp.service network-online.target
 # that breaks venvs (see computer_use README).
 WorkingDirectory=%h/projects/computer_use/jarvis-mcp
 Environment=PYTHONPATH=
-ExecStart=/usr/bin/env -u PYTHONPATH uv run jarvis-mcp
+ExecStart=/usr/bin/env -u PYTHONPATH %h/.local/bin/uv run jarvis-mcp
 Restart=on-failure
 RestartSec=2
 
