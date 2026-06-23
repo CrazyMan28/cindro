@@ -151,7 +151,15 @@ def _agent_cursor_button(info: session.SessionInfo, button: str, press: bool) ->
 
 
 def _is_agent(which: str) -> bool:
-    return which == "agent"
+    # Explicit 'agent', OR the default 'active' while this engine is bound to a
+    # nested agent desktop — in that case it drives ONLY the nested compositor,
+    # so 'active' mouse ops must go to the agent cursor (sway IPC), never the
+    # host uinput seat (which would move the user's real pointer / be wrong).
+    if which == "agent":
+        return True
+    if which == "active" and session.compositor_hint() == "agent":
+        return True
+    return False
 
 
 def move(x: float, y: float, coord_space: str = "image",
@@ -302,7 +310,24 @@ def _ydotool(args: list[str], input_bytes: bytes | None = None, timeout: float =
     return err
 
 
+def _agent_keyboard_target() -> session.SessionInfo | None:
+    """When this engine is bound to a nested agent desktop, keyboard ops must go
+    THERE — ydotool/host uinput can't reach it (WLR_LIBINPUT_NO_DEVICES=1). Return
+    the agent SessionInfo in that case, else None (host ydotool path)."""
+    if session.compositor_hint() != "agent":
+        return None
+    try:
+        return session.get_session("agent")
+    except RuntimeError:
+        return None
+
+
 def key_press(combo: str, repeat: int = 1) -> dict:
+    agent = _agent_keyboard_target()
+    if agent is not None:
+        from computer_use_mcp import vkbd
+        vkbd.key_press(agent, combo, repeat)
+        return {"pressed": combo, "repeat": max(1, int(repeat)), "which": "agent"}
     args = _resolve_combo(combo)
     repeat = max(1, int(repeat))
     for i in range(repeat):
@@ -315,6 +340,14 @@ def key_press(combo: str, repeat: int = 1) -> dict:
 def type_text(text: str, method: str = "auto") -> dict:
     if method not in ("auto", "type", "paste"):
         raise ValueError("method must be auto/type/paste")
+    agent = _agent_keyboard_target()
+    if agent is not None:
+        # Inject into the nested compositor's seat via zwp_virtual_keyboard_v1.
+        # (clipboard-paste isn't reliable in the headless nested session, so we
+        # always synthesize keystrokes for the agent desktop.)
+        from computer_use_mcp import vkbd
+        typed = vkbd.type_text(agent, text)
+        return {"typed_chars": typed, "method": "vkbd", "which": "agent"}
     if method == "auto":
         method = "type" if text.isascii() and len(text) <= 200 else "paste"
     if method == "type":

@@ -231,13 +231,18 @@ def register(mcp: FastMCP) -> None:
             return _err(exc)
 
     @mcp.tool()
-    def app_launch(app: str, wait_for_window: bool = True) -> str:
+    def app_launch(app: str, wait_for_window: bool = True,
+                   which: str | None = None) -> str:
         """Launch a desktop application by name/id (fuzzy-matched against
-        installed apps, e.g. 'spotify', 'firefox', 'kcalc') or a raw command.
-        Runs with the active session's display env in its own systemd unit.
-        Returns new_windows so you can immediately window_activate/screenshot."""
+        installed apps, e.g. 'spotify', 'firefox', 'kcalc') or a raw command
+        (e.g. 'foot'). which: 'active' (real host seat) or 'agent' (the nested
+        co-worker desktop). Default auto-selects 'agent' when this engine is a
+        nested agent desktop, else 'active'. On the host seat it runs in its own
+        systemd unit; on the agent desktop it launches into the nested sway so
+        the window maps there (never your screen). Returns new_windows so you can
+        immediately window_activate/screenshot."""
         try:
-            return json.dumps(apps.launch(app, wait_for_window))
+            return json.dumps(apps.launch(app, wait_for_window, which=which))
         except Exception as exc:
             return _err(exc)
 

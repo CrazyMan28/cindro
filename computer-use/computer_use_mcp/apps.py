@@ -94,11 +94,25 @@ def _exec_argv(exec_line: str) -> list[str]:
     return argv
 
 
-def launch(app: str, wait_for_window: bool = True, timeout: float = 10.0) -> dict:
-    info = session.get_session("active")
+def _default_which() -> str:
+    """When this engine is bound to a nested agent desktop (the daemon set
+    JARVIS_AGENT_*), app launches must land THERE by default — not on the host
+    seat. Outside agent mode the default stays the real active session."""
+    return "agent" if session.compositor_hint() == "agent" else "active"
+
+
+def launch(app: str, wait_for_window: bool = True, timeout: float = 10.0,
+           which: str | None = None) -> dict:
+    if which is None:
+        which = _default_which()
+    info = session.get_session(which)
+    is_agent = info.kind == "agent"
     entry = _resolve(app)
     if entry:
-        if entry["terminal"]:
+        # A terminal .desktop entry on the host seat just nests gio/xterm wrongly,
+        # so it's refused there; in the nested agent desktop a terminal IS a
+        # first-class window we want to open, so allow it.
+        if entry["terminal"] and not is_agent:
             raise RuntimeError(f"{entry['name']} is a terminal app — run it from a shell instead.")
         argv = _exec_argv(entry["exec"])
         label = entry["name"]
@@ -112,25 +126,45 @@ def launch(app: str, wait_for_window: bool = True, timeout: float = 10.0) -> dic
         label = app
 
     env = info.env()
-    unit = f"cu-app-{int(time.time() * 1000)}"
-    cmd = ["systemd-run", "--user", "--collect", "--quiet", f"--unit={unit}"]
-    for key in ("WAYLAND_DISPLAY", "DISPLAY", "XDG_RUNTIME_DIR",
-                "DBUS_SESSION_BUS_ADDRESS", "SWAYSOCK", "XDG_SESSION_TYPE"):
-        if key in env:
-            cmd.append(f"--setenv={key}={env[key]}")
-    cmd += ["--", *argv]
+    # Scope window polling to THIS session. In agent mode this avoids the host
+    # KDE branch (kscreen-doctor blocks ~10s while the screen is locked), which
+    # otherwise makes wait_for_window — and the whole MCP call — time out.
+    win_scope = info.kind if is_agent else "all"
+    before = {w["id"] for w in windows.list_windows(win_scope) if "error" not in w}
 
-    before = {w["id"] for w in windows.list_windows() if "error" not in w}
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    if proc.returncode != 0:
-        raise RuntimeError(f"systemd-run failed: {proc.stderr.strip()}")
+    if is_agent:
+        # Launch INTO the nested compositor: `swaymsg exec` spawns the process as
+        # a child of the nested sway, which inherits that sway's WAYLAND_DISPLAY
+        # so the window maps on HEADLESS-1 (never the host seat). systemd-run with
+        # the host bus would instead spawn under the user manager on wayland-0.
+        if not info.swaysock:
+            raise RuntimeError("agent session has no swaysock — nested compositor not ready")
+        cmd = ["swaymsg", "-s", info.swaysock, "exec", "--",
+               " ".join(shlex.quote(a) for a in argv)]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=env)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"swaymsg exec failed: {proc.stderr.strip() or proc.stdout.strip()}")
+        unit = None
+    else:
+        unit = f"cu-app-{int(time.time() * 1000)}"
+        cmd = ["systemd-run", "--user", "--collect", "--quiet", f"--unit={unit}"]
+        for key in ("WAYLAND_DISPLAY", "DISPLAY", "XDG_RUNTIME_DIR",
+                    "DBUS_SESSION_BUS_ADDRESS", "SWAYSOCK", "XDG_SESSION_TYPE"):
+            if key in env:
+                cmd.append(f"--setenv={key}={env[key]}")
+        cmd += ["--", *argv]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if proc.returncode != 0:
+            raise RuntimeError(f"systemd-run failed: {proc.stderr.strip()}")
 
-    result = {"launched": label, "argv": argv, "unit": unit, "new_windows": []}
+    result = {"launched": label, "argv": argv, "unit": unit,
+              "which": info.kind, "new_windows": []}
     if wait_for_window:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             time.sleep(0.5)
-            current = [w for w in windows.list_windows() if "error" not in w]
+            current = [w for w in windows.list_windows(win_scope) if "error" not in w]
             new = [w for w in current if w["id"] not in before]
             if new:
                 result["new_windows"] = new
@@ -138,7 +172,7 @@ def launch(app: str, wait_for_window: bool = True, timeout: float = 10.0) -> dic
         if not result["new_windows"]:
             # Single-instance apps just raise their existing window.
             al = label.lower()
-            existing = [w for w in windows.list_windows() if "error" not in w
+            existing = [w for w in windows.list_windows(win_scope) if "error" not in w
                         and (al in (w.get("app") or "").lower() or al in (w.get("title") or "").lower())]
             result["existing_windows"] = existing
             result["note"] = ("no new window appeared (single-instance app already running, "
