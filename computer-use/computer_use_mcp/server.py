@@ -60,7 +60,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    if request.url.path == "/health" or request.method == "OPTIONS":
+    if request.url.path in ("/health", "/ready") or request.method == "OPTIONS":
         return await call_next(request)
     if not auth.request_ok(request):
         return JSONResponse(
@@ -98,6 +98,50 @@ async def health():
         "ydotoold_socket": os.path.exists(cfg["ydotool_socket"]),
         "extension_connected": bridge.connected,
     }
+
+
+@app.get("/ready")
+async def ready():
+    """DEEP readiness gate for the daemon's AgentDesktop.ensure().
+
+    /health only reports the cheap compositor hint, so a 200 there does NOT prove
+    the nested compositor can actually serve a tool call yet (the model's first
+    tool call can fire into a half-up engine — the observed flaky failure: empty
+    desktop + a single failed tool_result + zero successful tool_calls). /ready
+    instead proves the engine can do REAL work against the nested desktop:
+      1. the agent SessionInfo resolves (env-bound nested compositor), and
+      2. a live grim capture of the nested output succeeds.
+    Only then is it safe to let the session run a tool. Returns 200 {ready:true}
+    when usable, else 503 with the reason — the daemon polls until 200/timeout.
+    Unauthenticated like /health (it leaks nothing) so the readiness gate never
+    races the bearer."""
+    # Only meaningful for an agent-bound engine; a non-agent engine is "ready" as
+    # soon as it answers (the host session path doesn't have this race).
+    is_agent = bool(os.environ.get(session.AGENT_WAYLAND_ENV) or
+                    os.environ.get(session.AGENT_SWAYSOCK_ENV))
+    if not is_agent:
+        return {"ready": True, "kind": "host"}
+    try:
+        # A real grab of the nested output — the same path tools use. This both
+        # resolves the agent session AND proves grim can talk to the compositor.
+        frame = await asyncio.wait_for(
+            asyncio.to_thread(_probe_agent_frame), timeout=4.0)
+    except asyncio.TimeoutError:
+        return JSONResponse(status_code=503,
+                            content={"ready": False, "reason": "probe-timeout"})
+    except Exception as exc:  # noqa: BLE001 — surface the reason to the daemon
+        return JSONResponse(status_code=503,
+                            content={"ready": False, "reason": f"{type(exc).__name__}: {exc}"})
+    if not frame:
+        return JSONResponse(status_code=503,
+                            content={"ready": False, "reason": "empty-frame"})
+    return {"ready": True, "kind": "agent", "bytes": len(frame)}
+
+
+def _probe_agent_frame() -> bytes:
+    """Blocking helper: grab one JPEG frame of the nested agent desktop. Raises if
+    the compositor/grim isn't usable yet (caught by /ready)."""
+    return screen.grab_jpeg_frame(which="agent", width=320)
 
 
 @app.websocket("/ws/extension")

@@ -188,6 +188,24 @@ fun SettingsScreen(
                 }
             }
 
+            // --- Let Jarvis use a computer/browser (auto-spawn) ---
+            GlowCard(modifier = Modifier.fillMaxWidth()) {
+                ToggleRow(
+                    title = "Let Jarvis use a computer/browser",
+                    subtitle = "When on, any chat can open apps and drive Chrome on its own isolated desktop on demand — no \"Computer\" tab needed.",
+                    checked = state.letJarvisUseComputer,
+                    onChange = { on ->
+                        scope.launch {
+                            if (Biometric.authenticate(
+                                    activity, "Let Jarvis use a computer",
+                                    if (on) "Enable" else "Disable")) {
+                                viewModel.setLetJarvisUseComputer(on)
+                            }
+                        }
+                    },
+                )
+            }
+
             // --- Claude account (Pro vs Max) ---
             GlowCard(modifier = Modifier.fillMaxWidth()) {
                 Column {

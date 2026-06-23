@@ -15,6 +15,42 @@ def _err(exc: Exception, hint: str | None = None) -> str:
     return json.dumps(out)
 
 
+# Substrings that mark a "the nested compositor/engine isn't ready YET" failure
+# (vs a real error). The daemon's /ready gate blocks the session until the
+# compositor can serve a tool, but a model's very first tool call can still race
+# a cold compositor; these errors get ONE automatic retry after a short wait.
+_NOT_READY_MARKERS = (
+    "nested compositor not ready",
+    "no outputs",
+    "reports no outputs",
+    "session 'agent' not found",
+    "session agent not found",
+    "no active graphical session",
+    "grim failed",
+    "Connection refused",
+    "broken pipe",
+)
+
+
+def _is_not_ready(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(m.lower() in msg for m in _NOT_READY_MARKERS)
+
+
+def _retry_once_if_not_ready(fn, *, delay: float = 0.9):
+    """Call fn(); if it raises a not-ready-class error, wait `delay` and retry
+    ONCE. Any other error (or a second failure) propagates. Returns fn()'s value.
+    This is the tool-layer one-shot retry for the first-tool-call readiness race
+    (paired with the daemon's /ready gate)."""
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001
+        if not _is_not_ready(exc):
+            raise
+        time.sleep(delay)
+        return fn()
+
+
 def register(mcp: FastMCP) -> None:
     @mcp.tool()
     def session_info() -> str:
@@ -51,13 +87,13 @@ def register(mcp: FastMCP) -> None:
             region = None
             if None not in (region_x, region_y, region_w, region_h):
                 region = {"x": region_x, "y": region_y, "w": region_w, "h": region_h}
-            png, meta = screen.take_screenshot(
+            png, meta = _retry_once_if_not_ready(lambda: screen.take_screenshot(
                 output=output,
                 region=region,
                 max_width=max_width,
                 include_cursor=include_cursor,
                 which=session_name,
-            )
+            ))
             return [Image(data=png, format="png"), json.dumps(meta)]
         except Exception as exc:
             return [_err(exc, hint="session_info shows monitors and sessions")]
@@ -242,7 +278,8 @@ def register(mcp: FastMCP) -> None:
         the window maps there (never your screen). Returns new_windows so you can
         immediately window_activate/screenshot."""
         try:
-            return json.dumps(apps.launch(app, wait_for_window, which=which))
+            return json.dumps(_retry_once_if_not_ready(
+                lambda: apps.launch(app, wait_for_window, which=which)))
         except Exception as exc:
             return _err(exc)
 

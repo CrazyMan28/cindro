@@ -67,6 +67,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.jarvis.app.ui.theme.JarvisPalette
 import com.jarvis.app.ui.util.Biometric
+import com.jarvis.app.ui.util.HapticButton
+import com.jarvis.app.ui.util.HapticIconButton
+import com.jarvis.app.ui.util.HapticOutlinedButton
 import com.jarvis.app.ui.util.ImageEncoding
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -137,13 +140,13 @@ fun ChatScreen(
                 TopAppBar(
                     title = { Text("Chat", fontFamily = FontFamily.Monospace) },
                     navigationIcon = {
-                        IconButton(onClick = onBack) {
+                        HapticIconButton(onClick = onBack) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
                     },
                     actions = {
                         if (state.busy) {
-                            IconButton(onClick = viewModel::cancel) {
+                            HapticIconButton(onClick = viewModel::cancel) {
                                 Icon(Icons.Filled.Stop, contentDescription = "Cancel turn", tint = JarvisPalette.Error)
                             }
                         }
@@ -220,7 +223,7 @@ fun ChatScreen(
                                     contentDescription = null,
                                     modifier = Modifier.size(56.dp).clip(RoundedCornerShape(8.dp)),
                                 )
-                                IconButton(
+                                HapticIconButton(
                                     onClick = { viewModel.removeAttachment(img.previewUri) },
                                     modifier = Modifier.size(22.dp).align(Alignment.TopEnd),
                                 ) {
@@ -272,15 +275,15 @@ private fun ChatSelectionBar(
     TopAppBar(
         title = { Text("$count selected") },
         navigationIcon = {
-            IconButton(onClick = onClose) {
+            HapticIconButton(onClick = onClose) {
                 Icon(Icons.Filled.Close, contentDescription = "Cancel selection")
             }
         },
         actions = {
-            IconButton(onClick = onCopy) {
+            HapticIconButton(onClick = onCopy) {
                 Icon(Icons.Filled.ContentCopy, contentDescription = "Copy", tint = JarvisPalette.Accent)
             }
-            IconButton(onClick = onDelete) {
+            HapticIconButton(onClick = onDelete) {
                 Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = JarvisPalette.Error)
             }
         },
@@ -350,7 +353,7 @@ private fun InputRow(
                 Text(label, color = JarvisPalette.Accent, style = MaterialTheme.typography.bodySmall)
                 if (speaking) {
                     Spacer(Modifier.width(8.dp))
-                    IconButton(onClick = onStopSpeaking, modifier = Modifier.size(22.dp)) {
+                    HapticIconButton(onClick = onStopSpeaking, modifier = Modifier.size(22.dp)) {
                         Icon(Icons.Filled.VolumeOff, contentDescription = "Stop voice", tint = JarvisPalette.Error)
                     }
                 }
@@ -361,7 +364,7 @@ private fun InputRow(
             modifier = Modifier.fillMaxWidth().padding(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onAttach) {
+            HapticIconButton(onClick = onAttach) {
                 Icon(Icons.Filled.Image, contentDescription = "Attach photo", tint = JarvisPalette.Accent)
             }
             // Push-to-talk: hold to record, release to transcribe + drop into the draft.
@@ -401,7 +404,7 @@ private fun InputRow(
                 ),
             )
             Spacer(Modifier.width(6.dp))
-            IconButton(
+            HapticIconButton(
                 onClick = onSend,
                 enabled = !sending && draft.isNotBlank(),
             ) {

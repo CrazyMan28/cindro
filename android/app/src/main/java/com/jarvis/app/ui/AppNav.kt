@@ -189,6 +189,7 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
     val tabNav = rememberNavController()
     val backStack by tabNav.currentBackStackEntryAsState()
     val current = backStack?.destination
+    val haptics = com.jarvis.app.ui.util.LocalHaptics.current
 
     Scaffold(
         containerColor = JarvisPalette.Background,
@@ -199,6 +200,7 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
                     NavigationBarItem(
                         selected = selected,
                         onClick = {
+                            haptics?.tap()
                             tabNav.navigate(tab.route) {
                                 popUpTo(tabNav.graph.findStartDestination().id) { saveState = true }
                                 launchSingleTop = true

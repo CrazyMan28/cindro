@@ -340,6 +340,11 @@ private:
     AgentDesktop m_agentDesktops{AgentDesktop::Options{}};
     // sessionId set: real-session take-over currently active (overlay shown).
     QSet<QString> m_takeOverActive;
+    // sessionIds whose nested desktop was AUTO-spawned (let_jarvis_use_computer)
+    // for a non-co-work chat. These are torn down when the session goes idle so a
+    // plain chat doesn't leak a compositor per turn; an EXPLICIT coworker+agent
+    // desktop is NOT in this set and stays up for live-view/take-over.
+    QSet<QString> m_autoComputerSessions;
 
     // Authenticated client sockets (all are subscribed to session events).
     QSet<QWebSocket *> m_clients;

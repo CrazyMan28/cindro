@@ -37,6 +37,9 @@ data class SettingsUiState(
     val canDrive: Map<String, Boolean> = emptyMap(),
     val models: List<ModelInfo> = emptyList(),
     val modelsBrain: String = "codex",
+    // "Let Jarvis use a computer/browser" (daemon pref; default ON). When on,
+    // every chat can drive a computer/Chrome on demand with no manual co-work.
+    val letJarvisUseComputer: Boolean = true,
     val loadingDaemon: Boolean = false,
     val daemonError: String? = null,
     // Voice
@@ -103,6 +106,8 @@ class SettingsViewModel(
                     s.getAsJsonObject("can_drive")?.entrySet()?.forEach { (k, v) ->
                         drive[k] = v.asBoolean
                     }
+                    val letCompute = s.get("let_jarvis_use_computer")
+                        ?.takeIf { !it.isJsonNull }?.asBoolean ?: true
                     _uiState.update {
                         it.copy(
                             defaultBrain = brain,
@@ -110,6 +115,7 @@ class SettingsViewModel(
                             claudeAccount = account,
                             apiKeysSet = keys,
                             canDrive = drive,
+                            letJarvisUseComputer = letCompute,
                             loadingDaemon = false,
                             modelsBrain = brain,
                         )
@@ -148,6 +154,13 @@ class SettingsViewModel(
         val normalized = if (account == "max") "max" else "pro"
         patch(JsonObject().apply { addProperty("claude_account", normalized) }) {
             _uiState.update { it.copy(claudeAccount = normalized) }
+        }
+    }
+
+    /** "Let Jarvis use a computer/browser" daemon pref. Biometric-gated patch. */
+    fun setLetJarvisUseComputer(enabled: Boolean) {
+        patch(JsonObject().apply { addProperty("let_jarvis_use_computer", enabled) }) {
+            _uiState.update { it.copy(letJarvisUseComputer = enabled) }
         }
     }
 

@@ -50,6 +50,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.jarvis.app.ui.theme.GlowCard
 import com.jarvis.app.ui.theme.JarvisPalette
+import com.jarvis.app.ui.util.HapticButton
+import com.jarvis.app.ui.util.HapticOutlinedButton
 import kotlinx.coroutines.delay
 
 @Composable
@@ -94,6 +96,9 @@ private fun MessageBubble(
     // up to the accumulated text length (~ a few hundred chars/sec). When the
     // streaming flag clears (turn final) the full text snaps in.
     var revealed by remember(item.id) { mutableIntStateOf(if (item.streaming) 0 else item.text.length) }
+    // Count of WORDS revealed so far — a haptic tick fires once per newly-revealed
+    // word (not per character/batch) so the streaming "purr" tracks real typing.
+    var wordsRevealed by remember(item.id) { mutableIntStateOf(if (item.streaming) 0 else wordCount(item.text)) }
     LaunchedEffect(item.text, item.streaming) {
         if (!item.streaming) {
             revealed = item.text.length
@@ -101,11 +106,19 @@ private fun MessageBubble(
         }
         // Reveal forward toward the current text length. ~16ms/char ≈ 60 chars/sec
         // floor, but we step by a small batch so longer replies feel ChatGPT-fast
-        // (~300+ chars/sec) without dropping the soft per-step haptic cadence.
+        // (~300+ chars/sec). The bubble GROWS as `revealed` climbs and the list
+        // auto-scrolls to follow (ChatScreen keys its scroll off the live text),
+        // so the reply flows DOWN like real typing.
         while (revealed < item.text.length) {
             val step = (item.text.length - revealed).coerceAtMost(REVEAL_BATCH)
             revealed += step
-            onStreamReveal()
+            // Fire a per-WORD haptic tick: when this step crossed one or more word
+            // boundaries, tick once (the Haptics layer self-throttles bursts).
+            val nowWords = wordCount(item.text.take(revealed))
+            if (nowWords > wordsRevealed) {
+                wordsRevealed = nowWords
+                onStreamReveal()
+            }
             delay(REVEAL_FRAME_MS)
         }
     }
@@ -257,14 +270,14 @@ private fun ApprovalCard(item: ChatItem.Approval, onApprove: (ChatItem.Approval,
                 )
             } else {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = { onApprove(item, "deny") }) { Text("Deny") }
-                    Button(
+                    HapticOutlinedButton(onClick = { onApprove(item, "deny") }) { Text("Deny") }
+                    HapticButton(
                         onClick = { onApprove(item, "allow") },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = JarvisPalette.Accent, contentColor = JarvisPalette.OnAccent,
                         ),
                     ) { Text("Allow") }
-                    OutlinedButton(onClick = { onApprove(item, "always") }) { Text("Always") }
+                    HapticOutlinedButton(onClick = { onApprove(item, "always") }) { Text("Always") }
                 }
             }
         }
@@ -335,3 +348,10 @@ private fun DiffBlock(patch: String) {
 // i.e. ~ (REVEAL_BATCH * 1000 / REVEAL_FRAME_MS) chars/sec (≈ 350/sec by default).
 private const val REVEAL_BATCH = 7
 private const val REVEAL_FRAME_MS = 20L
+
+/** Number of whitespace-delimited words in [s] (used for per-word streaming
+ *  haptics). Cheap; called only on the revealed prefix while streaming. */
+private fun wordCount(s: String): Int {
+    if (s.isBlank()) return 0
+    return s.trim().split(Regex("\\s+")).size
+}
