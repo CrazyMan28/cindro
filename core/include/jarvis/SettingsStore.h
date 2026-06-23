@@ -39,6 +39,22 @@ public:
     void setDefaultModel(const QString &m) { m_defaultModel = m; }
     void setTheme(const QJsonObject &t) { m_theme = t; }
 
+    // Which claude OAuth account the claude brain spawns against.
+    //   "pro" -> ~/.claude          (you@example.com, the default)
+    //   "max" -> ~/.claude-secondary (you-max@example.com, uses Max quota)
+    // Anything unrecognized (or unset) is treated as "pro" so the brain never
+    // accidentally inherits the Max account.
+    QString claudeAccount() const { return m_claudeAccount; }
+    void setClaudeAccount(const QString &a)
+    {
+        m_claudeAccount = (a == QStringLiteral("max")) ? QStringLiteral("max")
+                                                       : QStringLiteral("pro");
+    }
+    // Absolute CLAUDE_CONFIG_DIR for the configured account. Always returns the
+    // Pro dir unless the account is explicitly "max".
+    static QString claudeConfigDirFor(const QString &account);
+    QString claudeConfigDir() const { return claudeConfigDirFor(m_claudeAccount); }
+
     // --- secrets (write-only) ---------------------------------------------
     bool hasApiKey(const QString &provider) const;
     void setApiKey(const QString &provider, const QString &value); // empty => clear
@@ -56,6 +72,7 @@ public:
 private:
     QString m_defaultBrain = QStringLiteral("codex");
     QString m_defaultModel = QStringLiteral("gpt-5.5");
+    QString m_claudeAccount = QStringLiteral("pro"); // default: Pro (~/.claude)
     QJsonObject m_theme;
     QJsonObject m_apiKeys; // provider -> value
     QString m_lastError;

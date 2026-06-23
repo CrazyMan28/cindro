@@ -26,6 +26,17 @@ public:
         QString sandboxMode = QStringLiteral("workspace-write"); // --sandbox
         QString profile = QStringLiteral("coder");    // "coder" | "coworker"
         QString program = QStringLiteral("codex");     // executable name/path
+        // When true, the brain is expected to DRIVE the computer-use MCP (i.e.
+        // call MCP tools) headless. codex 0.135 AUTO-CANCELS MCP tool calls
+        // ("user cancelled MCP tool call") under any sandbox other than
+        // danger-full-access when running non-interactively (no human to approve
+        // the per-call escalation) — empirically verified. So when driving we
+        // force `--sandbox danger-full-access` + `-c approval_policy="never"`.
+        // This is safe ONLY because the driving session targets the agent's OWN
+        // isolated nested desktop (never the user's real screen) — the daemon
+        // gates this on coworker+agent, exactly as ClaudeBrain uses
+        // bypassPermissions for the same case.
+        bool driveMcp = false;
         // Extra config overrides passed as `-c key=value` (e.g. MCP injection).
         QStringList configOverrides;
         // Extra environment variables set on the codex child process. Used to
@@ -46,6 +57,12 @@ public:
     void cancel() override;
     bool isBusy() const override;
 
+    // Build the `codex exec` argv for a one-shot turn. Public so a ctest can
+    // assert the DRIVE-mode contract: when Options.driveMcp is set the args must
+    // force `--sandbox danger-full-access` and `-c approval_policy="never"`
+    // (codex auto-cancels MCP tool calls under any narrower sandbox headless).
+    QStringList buildArgs(const QString &prompt) const;
+
 private slots:
     void onReadyReadStdout();
     void onReadyReadStderr();
@@ -55,7 +72,6 @@ private slots:
 private:
     void emitEvent(const NormalizedBrainEvent &ev);
     void drainBuffer(bool flushIncomplete);
-    QStringList buildArgs(const QString &prompt) const;
 
     Options m_opts;
     QProcess *m_proc = nullptr;

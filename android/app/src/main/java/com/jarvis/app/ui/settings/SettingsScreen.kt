@@ -147,6 +147,18 @@ fun SettingsScreen(
                             )
                         }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    // HONEST drive capability — the chosen brain is honored, never
+                    // silently swapped. codex + claude drive headless; api needs a key.
+                    val driveOk = state.canDrive[state.defaultBrain] == true
+                    Text(
+                        if (driveOk) "✓ ${state.defaultBrain} can drive the computer-use desktop"
+                        else if (state.defaultBrain == "api")
+                            "⚠ api can't drive without an OpenAI/Anthropic key — pick codex or claude, or set a key below"
+                        else "⚠ ${state.defaultBrain} can't drive the computer-use desktop headless",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (driveOk) JarvisPalette.Accent else JarvisPalette.Warning,
+                    )
                     Spacer(Modifier.height(12.dp))
                     Text("Model (${state.modelsBrain})", style = MaterialTheme.typography.labelLarge, color = JarvisPalette.TextSecondary)
                     Spacer(Modifier.height(6.dp))
@@ -172,6 +184,49 @@ fun SettingsScreen(
                     state.daemonError?.let {
                         Spacer(Modifier.height(6.dp))
                         Text(it, color = JarvisPalette.Error, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+
+            // --- Claude account (Pro vs Max) ---
+            GlowCard(modifier = Modifier.fillMaxWidth()) {
+                Column {
+                    Text("Claude account", style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextPrimary)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Which Claude login the claude brain runs as. Defaults to Pro.",
+                        style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    val accounts = listOf(
+                        "pro" to "Pro (you@example.com)",
+                        "max" to "Max (you-max@example.com)",
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        accounts.forEach { (id, label) ->
+                            FilterChip(
+                                selected = state.claudeAccount == id,
+                                onClick = {
+                                    scope.launch {
+                                        if (Biometric.authenticate(activity, "Set Claude account", label)) {
+                                            viewModel.setClaudeAccount(id)
+                                        }
+                                    }
+                                },
+                                label = { Text(label, maxLines = 1) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = JarvisPalette.AccentDim,
+                                    selectedLabelColor = JarvisPalette.TextPrimary,
+                                ),
+                            )
+                        }
+                    }
+                    if (state.claudeAccount == "max") {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "⚠ Max — uses your Max quota (you-max@example.com).",
+                            style = MaterialTheme.typography.bodySmall, color = JarvisPalette.Warning,
+                        )
                     }
                 }
             }

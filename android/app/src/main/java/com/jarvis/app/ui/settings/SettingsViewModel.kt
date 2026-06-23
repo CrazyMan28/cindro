@@ -31,7 +31,10 @@ data class SettingsUiState(
     // Daemon parity (settings.get)
     val defaultBrain: String = "codex",
     val defaultModel: String? = null,
+    val claudeAccount: String = "pro", // "pro" (default) | "max"
     val apiKeysSet: Map<String, Boolean> = emptyMap(),
+    // brain -> can drive the computer-use desktop headless (no silent swap)
+    val canDrive: Map<String, Boolean> = emptyMap(),
     val models: List<ModelInfo> = emptyList(),
     val modelsBrain: String = "codex",
     val loadingDaemon: Boolean = false,
@@ -90,15 +93,23 @@ class SettingsViewModel(
                 .onSuccess { s ->
                     val brain = s.get("default_brain")?.takeIf { !it.isJsonNull }?.asString ?: "codex"
                     val model = s.get("default_model")?.takeIf { !it.isJsonNull }?.asString
+                    val account =
+                        if (s.get("claude_account")?.takeIf { !it.isJsonNull }?.asString == "max") "max" else "pro"
                     val keys = mutableMapOf<String, Boolean>()
                     s.getAsJsonObject("api_keys_set")?.entrySet()?.forEach { (k, v) ->
                         keys[k] = v.asBoolean
+                    }
+                    val drive = mutableMapOf<String, Boolean>()
+                    s.getAsJsonObject("can_drive")?.entrySet()?.forEach { (k, v) ->
+                        drive[k] = v.asBoolean
                     }
                     _uiState.update {
                         it.copy(
                             defaultBrain = brain,
                             defaultModel = model,
+                            claudeAccount = account,
                             apiKeysSet = keys,
+                            canDrive = drive,
                             loadingDaemon = false,
                             modelsBrain = brain,
                         )
@@ -129,6 +140,14 @@ class SettingsViewModel(
     fun setDefaultModel(model: String) {
         patch(JsonObject().apply { addProperty("default_model", model) }) {
             _uiState.update { it.copy(defaultModel = model) }
+        }
+    }
+
+    /** Claude account picker: "pro" (default) | "max". Biometric-gated patch. */
+    fun setClaudeAccount(account: String) {
+        val normalized = if (account == "max") "max" else "pro"
+        patch(JsonObject().apply { addProperty("claude_account", normalized) }) {
+            _uiState.update { it.copy(claudeAccount = normalized) }
         }
     }
 

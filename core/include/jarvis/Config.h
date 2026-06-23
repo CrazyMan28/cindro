@@ -11,6 +11,7 @@ namespace jarvis {
 struct Config {
     QString defaultBrain = QStringLiteral("codex"); // default_brain
     QString defaultModel = QStringLiteral("gpt-5.5"); // default_model
+    QString claudeAccount = QStringLiteral("pro");    // claude_account: "pro"|"max"
     int controlPort = 8795;                          // ports.control
     int devicePort = 8796;                           // ports.device
     QString defaultCwd;                              // cwd default; empty => $HOME

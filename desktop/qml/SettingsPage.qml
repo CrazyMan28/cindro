@@ -22,8 +22,10 @@ Item {
     property var keysSet: ({})                 // provider -> bool (from settings.get)
     property var pendingKeys: ({})             // provider -> new value to save
     property var modelsByBrain: ({})
+    property var canDrive: ({})                 // brain -> bool (computer-use drive)
     property string defaultBrain: "codex"
     property string defaultModel: ""
+    property string claudeAccount: "pro"        // "pro" (default) | "max"
     property bool glow: true
     property bool compact: false
     property bool dirty: false
@@ -100,8 +102,10 @@ Item {
         function onSettingsLoaded(s) {
             page.keysSet = s.api_keys_set !== undefined ? s.api_keys_set : ({})
             page.modelsByBrain = s.models_by_brain !== undefined ? s.models_by_brain : ({})
+            page.canDrive = s.can_drive !== undefined ? s.can_drive : ({})
             page.defaultBrain = s.default_brain !== undefined ? s.default_brain : "codex"
             page.defaultModel = s.default_model !== undefined ? s.default_model : ""
+            page.claudeAccount = (s.claude_account === "max") ? "max" : "pro"
             if (s.theme !== undefined) {
                 page.glow = s.theme.glow !== undefined ? s.theme.glow : true
                 page.compact = s.theme.compact !== undefined ? s.theme.compact : false
@@ -110,6 +114,7 @@ Item {
             page.dirty = false
             brainCombo.syncFromState()
             modelCombo.syncFromState()
+            claudeAccountCombo.syncFromState()
         }
         function onSettingsSaved() {
             page.saving = false
@@ -133,6 +138,7 @@ Item {
         var patch = {
             "default_brain": page.defaultBrain,
             "default_model": page.defaultModel,
+            "claude_account": page.claudeAccount,
             "theme": { "glow": page.glow, "compact": page.compact }
         }
         // only send keys the user actually typed (write-only)
@@ -231,6 +237,79 @@ Item {
                             onActivated: { page.defaultModel = currentText; page.dirty = true }
                         }
                     }
+                }
+
+                // Per-brain "can drive the computer-use desktop" indicator — the
+                // choice is HONORED; no silent substitution. codex + claude can
+                // drive headless; the api brain only with an OpenAI/Anthropic key.
+                Text {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 2
+                    text: {
+                        var cd = page.canDrive[page.defaultBrain]
+                        if (cd === true) return "✓ " + page.defaultBrain + " can drive the computer-use desktop"
+                        if (page.defaultBrain === "api")
+                            return "⚠ api can't drive without an OpenAI/Anthropic key — pick codex or claude, or set a key below"
+                        return "⚠ " + page.defaultBrain + " can't drive the computer-use desktop headless"
+                    }
+                    color: (page.canDrive[page.defaultBrain] === true) ? Theme.ok : Theme.amber
+                    font.family: Theme.fontSans
+                    font.pixelSize: 11
+                    wrapMode: Text.WordWrap
+                }
+            }
+
+            // ===== Claude account =========================================
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+                visible: true
+                Text {
+                    text: "// CLAUDE ACCOUNT"
+                    color: Theme.accent
+                    font.family: Theme.fontDisplay
+                    font.pixelSize: 11
+                    font.letterSpacing: Theme.trackMid
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "Which Claude login the claude brain runs as. Defaults to Pro."
+                    color: Theme.textFaint
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 14
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "Account"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: claudeAccountCombo
+                            Layout.fillWidth: true
+                            // index 0 == Pro (default), index 1 == Max
+                            model: ["Pro (you@example.com)", "Max (you-max@example.com)"]
+                            function syncFromState() {
+                                currentIndex = (page.claudeAccount === "max") ? 1 : 0
+                            }
+                            onActivated: {
+                                page.claudeAccount = (currentIndex === 1) ? "max" : "pro"
+                                page.dirty = true
+                            }
+                        }
+                    }
+                }
+                // Max-quota warning, only when Max is selected.
+                Text {
+                    Layout.fillWidth: true
+                    visible: page.claudeAccount === "max"
+                    text: "⚠ Max — uses your Max quota (you-max@example.com)."
+                    color: Theme.amber
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
                 }
             }
 

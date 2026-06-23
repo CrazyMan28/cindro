@@ -24,11 +24,22 @@ QStringList SettingsStore::providerKeys()
             QStringLiteral("mistral"), QStringLiteral("ollama")};
 }
 
+QString SettingsStore::claudeConfigDirFor(const QString &account)
+{
+    // Pro = ~/.claude (default), Max = ~/.claude-secondary. Anything other than
+    // an explicit "max" resolves to Pro so the claude brain never accidentally
+    // points at the Max account.
+    if (account == QStringLiteral("max"))
+        return QDir::homePath() + QStringLiteral("/.claude-secondary");
+    return QDir::homePath() + QStringLiteral("/.claude");
+}
+
 void SettingsStore::load()
 {
     const Config cfg = Config::load();
     m_defaultBrain = cfg.defaultBrain;
     m_defaultModel = cfg.defaultModel;
+    setClaudeAccount(cfg.claudeAccount); // normalizes to pro|max
 
     // theme round-trips as `theme_json = '<compact json>'` in config.toml.
     m_theme = QJsonObject();
@@ -117,6 +128,7 @@ bool SettingsStore::saveConfig()
                 const QString t = raw.trimmed();
                 if (t.startsWith(QStringLiteral("default_brain")) ||
                     t.startsWith(QStringLiteral("default_model")) ||
+                    t.startsWith(QStringLiteral("claude_account")) ||
                     t.startsWith(QStringLiteral("theme_json")))
                     continue;
                 preserved << raw;
@@ -128,6 +140,7 @@ bool SettingsStore::saveConfig()
     QTextStream ts(&out);
     ts << "default_brain = \"" << m_defaultBrain << "\"\n";
     ts << "default_model = \"" << m_defaultModel << "\"\n";
+    ts << "claude_account = \"" << m_claudeAccount << "\"\n";
     if (!m_theme.isEmpty()) {
         const QByteArray tj = QJsonDocument(m_theme).toJson(QJsonDocument::Compact);
         ts << "theme_json = '" << QString::fromUtf8(tj) << "'\n";
