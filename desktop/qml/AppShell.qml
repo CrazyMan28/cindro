@@ -3,8 +3,9 @@ import QtQuick.Layouts
 import JarvisSidebar
 
 // AppShell — the full multi-page application body. A slim left NavRail routes
-// between five pages rendered in the content area on the right:
-//   0 Chat (the existing JarvisPanel), 1 Sessions, 2 Settings, 3 MCP, 4 Plugins.
+// between six pages rendered in the content area on the right:
+//   0 Chat (the existing JarvisPanel), 1 Computer (co-worker / take-over),
+//   2 Sessions, 3 Settings, 4 MCP, 5 Plugins.
 //
 // This is the single shared content surface reparented between the floating
 // window and the docked layer-shell surface (see Main.qml), so all page state
@@ -54,7 +55,7 @@ Item {
             // Each page is wrapped so we can animate opacity + a small x-slide.
             // Only the active page is interactive; the rest fade out behind it.
             Repeater {
-                model: 5
+                model: 6
                 delegate: Item {
                     id: pageWrap
                     required property int index
@@ -81,10 +82,11 @@ Item {
                         sourceComponent: {
                             switch (pageWrap.index) {
                             case 0: return chatComp
-                            case 1: return sessionsComp
-                            case 2: return settingsComp
-                            case 3: return mcpComp
-                            case 4: return pluginsComp
+                            case 1: return computerComp
+                            case 2: return sessionsComp
+                            case 3: return settingsComp
+                            case 4: return mcpComp
+                            case 5: return pluginsComp
                             }
                         }
                     }
@@ -96,6 +98,7 @@ Item {
 
     // ---- page components ---------------------------------------------------
     Component { id: chatComp;     JarvisPanel {} }
+    Component { id: computerComp; ComputerPage {} }
     Component {
         id: sessionsComp
         SessionsPage {

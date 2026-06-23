@@ -19,7 +19,7 @@ import subprocess
 import threading
 import time
 
-from computer_use_mcp import clipboard, screen, session
+from computer_use_mcp import agent_bus, clipboard, screen, session
 from computer_use_mcp.config import load_config
 
 ABS_MAX = 65535
@@ -115,35 +115,112 @@ def _emit_button(button: str, value: int) -> None:
     ui.syn()
 
 
-def move(x: float, y: float, coord_space: str = "image") -> tuple[int, int]:
-    gx, gy = screen.map_to_desktop(x, y, coord_space)
-    _emit_abs(gx, gy)
+# -- nested agent-desktop pointer (sway IPC, no host uinput) --------------------
+#
+# A single global uinput device only ever lands on the host seat, so the nested
+# headless Sway cannot be driven that way. swaymsg's `seat - cursor` command set
+# moves/presses the nested compositor's own virtual pointer, isolated from the
+# user's real screen — exactly the Wave 5 requirement.
+
+_SWAY_BUTTONS = {"left": "button1", "middle": "button2", "right": "button3"}
+
+
+def _agent_swaymsg(info: session.SessionInfo, command: str) -> None:
+    args = ["swaymsg"]
+    if info.swaysock:
+        args += ["-s", info.swaysock]
+    args += [command]
+    proc = subprocess.run(args, capture_output=True, timeout=10, env=info.env())
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "swaymsg (agent cursor) failed: "
+            f"{(proc.stderr or proc.stdout).decode(errors='replace').strip()}"
+        )
+
+
+def _agent_cursor_set(info: session.SessionInfo, gx: int, gy: int) -> None:
+    # `seat - cursor set X Y` is in OUTPUT-layout coordinates; the nested desktop
+    # is a single output at its own origin, so map_to_desktop already produced
+    # global coords that match.
+    _agent_swaymsg(info, f"seat - cursor set {int(gx)} {int(gy)}")
+
+
+def _agent_cursor_button(info: session.SessionInfo, button: str, press: bool) -> None:
+    swb = _SWAY_BUTTONS[button]
+    _agent_swaymsg(info, f"seat - cursor {'press' if press else 'release'} {swb}")
+
+
+def _is_agent(which: str) -> bool:
+    return which == "agent"
+
+
+def move(x: float, y: float, coord_space: str = "image",
+         which: str = "active") -> tuple[int, int]:
+    gx, gy = screen.map_to_desktop(x, y, coord_space, which)
+    if _is_agent(which):
+        info = session.get_session("agent")
+        _agent_cursor_set(info, gx, gy)
+        agent_bus.publish(gx, gy, kind="move")
+    else:
+        _emit_abs(gx, gy)
     return gx, gy
 
 
 def click(x: float | None = None, y: float | None = None, button: str = "left",
-          double: bool = False, coord_space: str = "image") -> dict:
+          double: bool = False, coord_space: str = "image",
+          which: str = "active") -> dict:
     if button not in _BUTTONS:
         raise ValueError(f"button must be one of {list(_BUTTONS)}")
     pos = None
     if x is not None and y is not None:
-        pos = move(x, y, coord_space)
+        pos = move(x, y, coord_space, which)
         time.sleep(0.06)
-    for i in range(2 if double else 1):
-        _emit_button(button, 1)
-        time.sleep(0.04)
-        _emit_button(button, 0)
-        if double and i == 0:
-            time.sleep(0.12)
+    if _is_agent(which):
+        info = session.get_session("agent")
+        for i in range(2 if double else 1):
+            _agent_cursor_button(info, button, True)
+            time.sleep(0.04)
+            _agent_cursor_button(info, button, False)
+            if double and i == 0:
+                time.sleep(0.12)
+        if pos is not None:
+            agent_bus.publish(pos[0], pos[1], button=button, kind="click")
+    else:
+        for i in range(2 if double else 1):
+            _emit_button(button, 1)
+            time.sleep(0.04)
+            _emit_button(button, 0)
+            if double and i == 0:
+                time.sleep(0.12)
     return {"clicked": button, "double": double, "desktop_pos": pos}
 
 
 def drag(x1: float, y1: float, x2: float, y2: float, button: str = "left",
-         coord_space: str = "image", steps: int = 14) -> dict:
+         coord_space: str = "image", steps: int = 14,
+         which: str = "active") -> dict:
     if button not in _BUTTONS:
         raise ValueError(f"button must be one of {list(_BUTTONS)}")
-    g1 = screen.map_to_desktop(x1, y1, coord_space)
-    g2 = screen.map_to_desktop(x2, y2, coord_space)
+    g1 = screen.map_to_desktop(x1, y1, coord_space, which)
+    g2 = screen.map_to_desktop(x2, y2, coord_space, which)
+    if _is_agent(which):
+        info = session.get_session("agent")
+        _agent_cursor_set(info, *g1)
+        agent_bus.publish(g1[0], g1[1], button=button, kind="down")
+        time.sleep(0.1)
+        _agent_cursor_button(info, button, True)
+        try:
+            for i in range(1, max(2, steps) + 1):
+                t = i / steps
+                px = round(g1[0] + (g2[0] - g1[0]) * t)
+                py = round(g1[1] + (g2[1] - g1[1]) * t)
+                _agent_cursor_set(info, px, py)
+                agent_bus.publish(px, py, button=button, kind="drag")
+                time.sleep(0.02)
+        finally:
+            time.sleep(0.1)
+            _agent_cursor_button(info, button, False)
+            agent_bus.publish(g2[0], g2[1], button=button, kind="up")
+        return {"from": g1, "to": g2, "button": button}
     _emit_abs(*g1)
     time.sleep(0.1)
     _emit_button(button, 1)
@@ -162,15 +239,23 @@ def drag(x1: float, y1: float, x2: float, y2: float, button: str = "left",
 
 def scroll(amount: int = 3, direction: str = "down",
            x: float | None = None, y: float | None = None,
-           coord_space: str = "image") -> dict:
+           coord_space: str = "image", which: str = "active") -> dict:
     from evdev import ecodes as e
     if direction not in ("up", "down", "left", "right"):
         raise ValueError("direction must be up/down/left/right")
     pos = None
     if x is not None and y is not None:
-        pos = move(x, y, coord_space)
+        pos = move(x, y, coord_space, which)
         time.sleep(0.06)
     amount = max(1, int(amount))
+    if _is_agent(which):
+        # swaymsg has no scroll primitive; publish the intent for the overlay so
+        # the agent cursor still reflects the gesture. (A wlr virtual-pointer
+        # could add real wheel events later; the nested apps mostly key-scroll.)
+        if pos is not None:
+            agent_bus.publish(pos[0], pos[1], button=direction, kind="scroll")
+        return {"scrolled": direction, "notches": amount, "desktop_pos": pos,
+                "note": "agent scroll is advisory (sway IPC has no wheel event)"}
     invert = -1 if load_config()["scroll_invert"] else 1
     # evdev semantics: REL_WHEEL +1 = up, REL_HWHEEL +1 = right.
     code = e.REL_WHEEL if direction in ("up", "down") else e.REL_HWHEEL

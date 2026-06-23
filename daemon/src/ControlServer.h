@@ -9,6 +9,7 @@
 // the v1 request methods, and fans NormalizedBrainEvents out to subscribed
 // sockets as session.event frames.
 
+#include "jarvis/AgentDesktop.h"
 #include "jarvis/Config.h"
 #include "jarvis/DeviceRegistry.h"
 #include "jarvis/FcmSender.h"
@@ -52,13 +53,33 @@ public:
     DeviceRegistry &devices() { return m_deviceReg; }
     PairingManager &pairing() { return m_pairing; }
     FcmSender *fcm() { return m_fcm.get(); }
+    AgentDesktop &agentDesktops() { return m_agentDesktops; }
+
+    // The per-session nested-agent-desktop info (up=false default if the session
+    // is not a coworker+agent session). Used by the device channel's video pump
+    // (mirror.start) to find the engine's /video/mjpeg endpoint + bearer.
+    AgentDesktopInfo agentDesktopFor(const QString &sessionId) const;
 
     // Create a session row + live brain (shared with handleSessionCreate). On
     // success returns the new session id; on failure returns empty and sets
-    // *err. `cwd` empty => default.
+    // *err. `cwd` empty => default. `target` ∈ ""(=real for coder) | "agent" |
+    // "real"; coworker+agent spins up an isolated nested desktop + per-session
+    // engine and points the brain's computer-use MCP at it.
     QString createSession(const QString &profile, const QString &brain,
                           const QString &model, const QString &cwd,
-                          const QString &title, QString *err);
+                          const QString &title, QString *err,
+                          const QString &target = QString());
+
+    // target="real" take-over: after a biometric approval the agent drives the
+    // user's ACTIVE real session via the global :8794 engine. requestTakeOver
+    // records intent + emits the agent-driving overlay state; the actual
+    // approval flow rides Contract A approval.respond / Contract C biometric.
+    bool requestTakeOver(const QString &sessionId, QString *err);
+    bool setTakeOverActive(const QString &sessionId, bool active);
+    bool takeOverActive(const QString &sessionId) const
+    {
+        return m_takeOverActive.contains(sessionId);
+    }
     // Send a user turn into an existing live session. False if unknown/inactive.
     bool sendToSession(const QString &sessionId, const QString &text,
                        const QStringList &images, QString *err);
@@ -73,6 +94,10 @@ public:
 signals:
     // Fired after every brain event is persisted (Contract C device fan-out).
     void sessionEvent(const QString &sessionId, const jarvis::NormalizedBrainEvent &ev);
+
+    // target="real" take-over state changed: the desktop overlay subscribes to
+    // this to show / hide the "JARVIS IS DRIVING" layer-shell banner + cursor.
+    void agentDrivingChanged(const QString &sessionId, bool driving);
 
 private slots:
     void onNewConnection();
@@ -113,8 +138,19 @@ private:
     Response handleDevicesList(const Request &req);
     Response handleDevicesRevoke(const Request &req);
 
+    // Wave 5: nested agent desktop status + real-session take-over.
+    Response handleAgentDesktopInfo(const Request &req);
+    Response handleTakeOverRequest(const Request &req);
+
     // Create + wire a brain for a session row. Returns nullptr on unknown brain.
-    Brain *makeBrain(const SessionRow &row);
+    // `agentMcpOverrides` (non-empty for coworker+agent) replaces the global
+    // computer-use override with the per-session nested-desktop engine.
+    Brain *makeBrain(const SessionRow &row, const QString &cwdOverride,
+                     const QStringList &agentMcpOverrides);
+
+    // Codex MCP overrides that point the built-in computer-use at the nested
+    // per-session engine (url+bearer) and keep any other enabled servers.
+    QStringList agentMcpOverridesFor(const AgentDesktopInfo &desk) const;
 
     Config m_config;
     QString m_controlToken;
@@ -137,6 +173,11 @@ private:
     DeviceRegistry m_deviceReg;
     PairingManager m_pairing;
     std::unique_ptr<FcmSender> m_fcm;
+
+    // Wave 5: per-coworker(agent) nested desktops + their bound engines.
+    AgentDesktop m_agentDesktops{AgentDesktop::Options{}};
+    // sessionId set: real-session take-over currently active (overlay shown).
+    QSet<QString> m_takeOverActive;
 
     // Authenticated client sockets (all are subscribed to session events).
     QSet<QWebSocket *> m_clients;

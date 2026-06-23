@@ -52,6 +52,17 @@ public:
     // Typed as QObject* so moc need not see the full QQuickWindow type here.
     Q_INVOKABLE void registerWindows(QObject *floatWin, QObject *dockWin);
 
+    // ---- distinct-cursor / "JARVIS IS DRIVING" overlay ---------------------
+    // Configure a transparent, full-screen, click-through wlr-layer-shell OVERLAY
+    // surface (layer=Overlay, exclusiveZone=0, keyboard interactivity None, empty
+    // input region so it NEVER steals input). Used while a real-screen take-over
+    // is active to draw the agent cursor + banner ON TOP of the user's desktop.
+    // Idempotent; installs the role before the first show().
+    Q_INVOKABLE void configureOverlay(QObject *overlayWin);
+    // Map / unmap the overlay surface (called when bridge.driving flips).
+    Q_INVOKABLE void showOverlay();
+    Q_INVOKABLE void hideOverlay();
+
     // Switch to the right-anchored layer-shell sidebar.
     Q_INVOKABLE void dock();
     // Return to the floating, movable window.
@@ -69,9 +80,11 @@ private:
 
     QPointer<QQuickWindow> m_float;
     QPointer<QQuickWindow> m_dock;
+    QPointer<QQuickWindow> m_overlay;
 
     QString m_mode;          // current mode
     QString m_initialMode;   // mode loaded from QSettings at construction
     bool m_dockConfigured = false;
+    bool m_overlayConfigured = false;
     const int m_dockWidth = 540;
 };

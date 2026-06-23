@@ -175,19 +175,89 @@ def take_screenshot(
     return png, meta
 
 
-def map_to_desktop(x: float, y: float, coord_space: str = "image") -> tuple[int, int]:
+def _capture_png(info: session.SessionInfo, rect: Rect | None,
+                 cursor: bool) -> bytes:
+    """One raw PNG capture for the given session, choosing grim vs spectacle.
+    Shared by take_screenshot() and the video source."""
+    if _grim_available(info):
+        return _grim_capture(info, rect, cursor)
+    return _spectacle_capture(info, cursor)
+
+
+def grab_jpeg_frame(which: str = "agent", *, width: int | None = None,
+                    quality: int = 70, include_cursor: bool = False) -> bytes:
+    """Capture a single frame of the session and JPEG-encode it (Pillow).
+
+    Used by GET /video/frame and as the per-frame engine of video_source().
+    For which in ('sway','agent') this grabs the wlroots output via grim over the
+    session's own WAYLAND_DISPLAY; for 'kde' it falls back to spectacle (NOTE:
+    spectacle cannot see layer-shell overlays — the daemon should stream the
+    nested 'agent' desktop, per spikes/RESULTS.md)."""
+    from PIL import Image as PILImage
+
+    info = session.get_session(which)
+    if not info.outputs:
+        raise RuntimeError(
+            info.outputs_unavailable_reason
+            or f"Session {info.kind} reports no outputs — cannot capture video."
+        )
+    bbox = info.bbox
+    rect = Rect(bbox["x"], bbox["y"], bbox["w"], bbox["h"])
+    png = _capture_png(info, rect, include_cursor)
+    img = PILImage.open(io.BytesIO(png)).convert("RGB")
+    if width and img.width > width:
+        img.thumbnail((width, 10_000_000), PILImage.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=int(quality))
+    return buf.getvalue()
+
+
+def video_source(which: str = "agent", *, fps: float = 6.0,
+                 width: int | None = None, quality: int = 70,
+                 include_cursor: bool = False, max_frames: int | None = None):
+    """Generator yielding JPEG-encoded frames of the (agent or active) output.
+
+    Drives grab_jpeg_frame() on a fixed cadence (configurable fps/width/quality).
+    The default which='agent' streams the nested headless-Sway desktop via grim
+    (the live-video source the daemon re-publishes over the device channel). On a
+    transient capture error the frame is skipped (the desktop may be briefly
+    unavailable) rather than killing the stream. Stops after max_frames if set."""
+    period = 1.0 / max(0.5, float(fps))
+    if width is None:
+        width = int(load_config().get("video_width", 1280))
+    count = 0
+    while True:
+        start = time.monotonic()
+        try:
+            yield grab_jpeg_frame(which, width=width, quality=quality,
+                                  include_cursor=include_cursor)
+        except Exception:
+            # Skip a bad frame (compositor not ready / transient grim error).
+            pass
+        count += 1
+        if max_frames is not None and count >= max_frames:
+            return
+        elapsed = time.monotonic() - start
+        if elapsed < period:
+            time.sleep(period - elapsed)
+
+
+def map_to_desktop(x: float, y: float, coord_space: str = "image",
+                   which: str = "active") -> tuple[int, int]:
     """Map a tool-supplied coordinate to global desktop pixels and validate it
-    against the ACTIVE session's monitors (uinput input lands there)."""
-    active = session.get_session("active")
+    against the TARGET session's monitors. For the default real path that target
+    is the ACTIVE session (uinput input lands there); for which='agent' it is the
+    nested headless-Sway desktop the co-worker brain drives."""
+    target = session.get_session(which)
 
     if coord_space == "desktop":
         gx, gy = float(x), float(y)
     elif coord_space.startswith("output:"):
         name = coord_space.split(":", 1)[1]
-        out = next((o for o in active.outputs if o.name.lower() == name.lower()), None)
+        out = next((o for o in target.outputs if o.name.lower() == name.lower()), None)
         if out is None:
             raise RuntimeError(
-                f"Unknown output {name!r}. Available: {[o.name for o in active.outputs]}"
+                f"Unknown output {name!r}. Available: {[o.name for o in target.outputs]}"
             )
         gx, gy = out.x + float(x), out.y + float(y)
     elif coord_space == "image":
@@ -203,11 +273,11 @@ def map_to_desktop(x: float, y: float, coord_space: str = "image") -> tuple[int,
                 f"Last screenshot is older than {IMAGE_COORD_MAX_AGE}s — take a fresh "
                 "desktop_screenshot before clicking by image coordinates."
             )
-        if shot["session_kind"] != active.kind:
+        if shot["session_kind"] != target.kind:
             raise RuntimeError(
-                f"Last screenshot captured the {shot['session_kind']} session, but input "
-                f"always lands in the ACTIVE session ({active.kind}). Screenshot the "
-                "active session and use coordinates from that image."
+                f"Last screenshot captured the {shot['session_kind']} session, but this "
+                f"input targets the {target.kind} session. Screenshot the {target.kind} "
+                "session (the same 'which') and use coordinates from that image."
             )
         gx = shot["origin"][0] + float(x) / shot["scale"]
         gy = shot["origin"][1] + float(y) / shot["scale"]
@@ -216,8 +286,8 @@ def map_to_desktop(x: float, y: float, coord_space: str = "image") -> tuple[int,
             f"Unknown coord_space {coord_space!r}: use 'image', 'desktop', or 'output:NAME'."
         )
 
-    if active.outputs and not any(o.contains(gx, gy) for o in active.outputs):
-        rects = "; ".join(f"{o.name}: {o.x},{o.y} {o.w}x{o.h}" for o in active.outputs)
+    if target.outputs and not any(o.contains(gx, gy) for o in target.outputs):
+        rects = "; ".join(f"{o.name}: {o.x},{o.y} {o.w}x{o.h}" for o in target.outputs)
         raise RuntimeError(
             f"Point ({gx:.0f},{gy:.0f}) lands outside every monitor (dead zone in the "
             f"layout). Monitors: {rects}"

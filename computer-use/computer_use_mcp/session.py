@@ -30,6 +30,15 @@ UID = os.getuid()
 RUNTIME_DIR = f"/run/user/{UID}"
 USER_BUS = f"unix:path={RUNTIME_DIR}/bus"
 
+# The daemon (jarvisd) spawns a nested headless Sway for the co-worker "agent"
+# session and tells this engine which compositor to drive by exporting these
+# env vars into the engine process. Their presence is what makes detect()
+# surface an "agent" SessionInfo at all.
+AGENT_WAYLAND_ENV = "JARVIS_AGENT_WAYLAND_DISPLAY"
+AGENT_SWAYSOCK_ENV = "JARVIS_AGENT_SWAYSOCK"
+# Optional: lets a test/daemon point grim/swaymsg at a non-default runtime dir.
+AGENT_RUNTIME_DIR_ENV = "JARVIS_AGENT_RUNTIME_DIR"
+
 _CACHE: tuple[float, dict] | None = None
 _CACHE_TTL = 2.0
 
@@ -63,7 +72,11 @@ class Output:
 
 @dataclass
 class SessionInfo:
-    kind: str  # "kde" | "sway"
+    # "kde" | "sway" | "agent" (alias: nested-agent-desktop). The "agent" kind
+    # is the headless nested Sway the co-worker brain drives — it is selected
+    # explicitly via the JARVIS_AGENT_WAYLAND_DISPLAY / JARVIS_AGENT_SWAYSOCK
+    # env vars, NOT discovered on seat0, and is never the host "active" session.
+    kind: str
     session_id: str | None = None
     tty: str | None = None
     active: bool = False
@@ -73,6 +86,7 @@ class SessionInfo:
     compositor_pid: int | None = None
     outputs: list[Output] = field(default_factory=list)
     outputs_unavailable_reason: str | None = None
+    runtime_dir: str | None = None  # override XDG_RUNTIME_DIR (agent session)
 
     @property
     def bbox(self) -> dict | None:
@@ -88,7 +102,8 @@ class SessionInfo:
         """Subprocess env overlay for tools that talk to this session."""
         e = dict(os.environ)
         e.pop("PYTHONPATH", None)  # victus exports a 3.14 PYTHONPATH that breaks venvs
-        e["XDG_RUNTIME_DIR"] = RUNTIME_DIR
+        runtime_dir = self.runtime_dir or RUNTIME_DIR
+        e["XDG_RUNTIME_DIR"] = runtime_dir
         e["DBUS_SESSION_BUS_ADDRESS"] = USER_BUS
         if self.wayland_display:
             e["WAYLAND_DISPLAY"] = self.wayland_display
@@ -114,6 +129,7 @@ class SessionInfo:
             "compositor_pid": self.compositor_pid,
             "outputs": [o.as_dict() for o in self.outputs],
             "outputs_unavailable_reason": self.outputs_unavailable_reason,
+            "runtime_dir": self.runtime_dir,
             "bbox": self.bbox,
         }
 
@@ -193,6 +209,59 @@ def _find_sway() -> SessionInfo | None:
     return None
 
 
+def _find_agent_sway(environ: dict[str, str] | None = None) -> SessionInfo | None:
+    """Discover the nested headless-Sway *agent* desktop from explicit env.
+
+    Unlike the host compositors, the agent desktop is NOT on seat0 and is not the
+    loginctl ActiveSession, so it cannot be matched by process/socket elimination.
+    The daemon (jarvisd) that spawned the nested `sway -c <conf>` exports
+    JARVIS_AGENT_WAYLAND_DISPLAY (+ JARVIS_AGENT_SWAYSOCK) into this engine
+    process; we trust those and build the SessionInfo directly. Returns None when
+    the env vars are absent (the default real/active path is unaffected)."""
+    env = environ if environ is not None else os.environ
+    wl = env.get(AGENT_WAYLAND_ENV)
+    sock = env.get(AGENT_SWAYSOCK_ENV)
+    if not wl and not sock:
+        return None
+    # The nested compositor's wayland-N socket lives in its OWN isolated runtime
+    # dir (the daemon spawns sway with a per-session XDG_RUNTIME_DIR), which is
+    # NOT the host /run/user/<uid>. Resolve that dir, in priority order:
+    #   1. an explicit JARVIS_AGENT_RUNTIME_DIR (daemon may set it);
+    #   2. the directory holding the absolute JARVIS_AGENT_SWAYSOCK (the nested
+    #      sway-ipc + wayland-N sockets are co-located there) — robust even when
+    #      the daemon doesn't pass (1);
+    #   3. the engine process's own XDG_RUNTIME_DIR (set to the nested dir by the
+    #      daemon) if it differs from the host default;
+    #   4. fall back to the host RUNTIME_DIR.
+    runtime_dir = env.get(AGENT_RUNTIME_DIR_ENV)
+    if not runtime_dir and sock and os.path.isabs(sock):
+        runtime_dir = os.path.dirname(sock)
+    if not runtime_dir:
+        proc_xdg = env.get("XDG_RUNTIME_DIR")
+        if proc_xdg and proc_xdg != RUNTIME_DIR:
+            runtime_dir = proc_xdg
+    runtime_dir = runtime_dir or RUNTIME_DIR
+    # WAYLAND_DISPLAY may be an absolute socket path or a bare name (wayland-1).
+    wayland_display = None
+    if wl:
+        wayland_display = os.path.basename(wl) if os.path.isabs(wl) else wl
+    info = SessionInfo(
+        kind="agent",
+        session_id="agent",
+        wayland_display=wayland_display,
+        swaysock=sock or None,
+        runtime_dir=runtime_dir,
+        active=False,  # the host seat stays active; agent is never "active"
+    )
+    # Best-effort: identify the nested sway pid from its IPC socket name
+    # (sway-ipc.<UID>.<PID>.sock) so callers can see what they're driving.
+    if sock:
+        m = re.match(rf"sway-ipc\.{UID}\.(\d+)\.sock", os.path.basename(sock))
+        if m:
+            info.compositor_pid = int(m.group(1))
+    return info
+
+
 def _find_kwin() -> SessionInfo | None:
     rc, out, _ = _run(["pgrep", "-x", "kwin_wayland"])
     if rc != 0 or not out:
@@ -253,7 +322,15 @@ def _kde_outputs(info: SessionInfo) -> None:
 
 
 def _sway_outputs(info: SessionInfo) -> None:
-    rc, out, err = _run(["swaymsg", "-s", info.swaysock, "-t", "get_outputs"], timeout=10)
+    if info.swaysock:
+        cmd = ["swaymsg", "-s", info.swaysock, "-t", "get_outputs"]
+        env = None
+    else:
+        # Agent session may carry only WAYLAND_DISPLAY; let swaymsg locate the
+        # IPC socket itself from SWAYSOCK/WAYLAND_DISPLAY in info.env().
+        cmd = ["swaymsg", "-t", "get_outputs"]
+        env = info.env()
+    rc, out, err = _run(cmd, env=env, timeout=10)
     if rc != 0:
         info.outputs_unavailable_reason = f"swaymsg get_outputs failed: {err}"
         return
@@ -349,19 +426,48 @@ def detect(refresh: bool = False) -> dict:
     if active_id and not any(s.active for s in sessions) and len(sessions) == 1:
         sessions[0].active = True
 
+    # The nested agent desktop is additive and selected explicitly via env vars;
+    # it is appended AFTER the active-flag logic so it can never become active.
+    agent = _find_agent_sway()
+    if agent is not None:
+        agent.active = False
+        sessions.append(agent)
+
     for info in sessions:
         if info.kind == "kde":
             _kde_outputs(info)
-        else:
+        else:  # sway or agent (both wlroots; grim/swaymsg)
             _sway_outputs(info)
 
-    result = {"active": next((s for s in sessions if s.active), None), "sessions": sessions}
+    result = {"active": next((s for s in sessions if s.active and s.kind != "agent"), None),
+              "sessions": sessions}
     _CACHE = (now, result)
     return result
 
 
+def compositor_hint() -> str | None:
+    """A CHEAP active-compositor hint for /health — no kscreen-doctor / output
+    enumeration, just env + a quick pgrep. The per-session agent engine runs with
+    an isolated XDG_RUNTIME_DIR where the host KDE output probe (kscreen-doctor)
+    blocks; /health must never depend on it. Returns "agent" when this engine is
+    bound to a nested agent desktop, else "kde"/"sway" by process presence, else
+    None."""
+    if os.environ.get(AGENT_WAYLAND_ENV) or os.environ.get(AGENT_SWAYSOCK_ENV):
+        return "agent"
+    rc, out, _ = _run(["pgrep", "-x", "kwin_wayland"], timeout=2)
+    if rc == 0 and out:
+        return "kde"
+    rc, out, _ = _run(["pgrep", "-x", "sway"], timeout=2)
+    if rc == 0 and out:
+        return "sway"
+    return None
+
+
 def get_session(which: str = "active") -> SessionInfo:
-    """Resolve 'active' | 'kde' | 'sway' to a live session or raise."""
+    """Resolve 'active' | 'kde' | 'sway' | 'agent' to a live session or raise.
+
+    'agent' is the nested headless-Sway co-worker desktop; it only exists when
+    JARVIS_AGENT_WAYLAND_DISPLAY/JARVIS_AGENT_SWAYSOCK are set in this process."""
     d = detect()
     if which == "active":
         if d["active"] is None:

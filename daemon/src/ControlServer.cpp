@@ -50,6 +50,8 @@ ControlServer::~ControlServer()
         m_wsServer->close();
     qDeleteAll(m_brains);
     m_brains.clear();
+    // Kill every nested agent desktop + its bound engine.
+    m_agentDesktops.teardownAll();
 }
 
 bool ControlServer::start()
@@ -213,6 +215,10 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleDevicesList(req);
     else if (m == QStringLiteral("devices.revoke"))
         resp = handleDevicesRevoke(req);
+    else if (m == QStringLiteral("agent_desktop.info"))
+        resp = handleAgentDesktopInfo(req);
+    else if (m == QStringLiteral("take_over.request"))
+        resp = handleTakeOverRequest(req);
     else
         resp = Response::failure(req.id, QStringLiteral("unknown_method"),
                                  QStringLiteral("unknown method: ") + m);
@@ -374,31 +380,79 @@ Response ControlServer::handleModelList(const Request &req)
     return Response::success(req.id, result);
 }
 
-Brain *ControlServer::makeBrain(const SessionRow &row)
+Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverride,
+                                const QStringList &agentMcpOverrides)
 {
     if (row.brain == QStringLiteral("codex")) {
         CodexBrain::Options opts;
-        opts.cwd = m_config.effectiveCwd();
+        opts.cwd = cwdOverride.isEmpty() ? m_config.effectiveCwd() : cwdOverride;
         opts.model = row.model;
         opts.profile = row.profile;
         opts.sandboxMode = CodexBrain::sandboxForProfile(row.profile);
         // coworker sessions get every enabled MCP server (incl the built-in
         // computer-use, bearer from ~/.computer-use/config.yaml) injected as
         // `-c mcp_servers.<name>...` codex config overrides so the brain can
-        // call them.
-        if (row.profile == QStringLiteral("coworker") && m_mcp)
+        // call them. For a coworker+agent (nested-desktop) session the daemon
+        // supplies a per-session override that points computer-use at the
+        // NESTED engine instead of the global :8794, so the brain drives the
+        // agent's own desktop — never the user's real screen.
+        if (!agentMcpOverrides.isEmpty())
+            opts.configOverrides = agentMcpOverrides;
+        else if (row.profile == QStringLiteral("coworker") && m_mcp)
             opts.configOverrides = m_mcp->codexOverrides();
         auto *brain = new CodexBrain(opts, this);
         brain->setSessionId(row.id);
         return brain;
     }
-    // claude / api brains arrive in Wave 5.
+    // claude / api brains arrive in a later wave.
     return nullptr;
+}
+
+// Build the codex `-c mcp_servers.computer_use...` overrides that point the
+// built-in computer-use server at the per-session nested-desktop engine
+// (url+bearer), plus any OTHER enabled (non-built-in) MCP servers unchanged.
+QStringList ControlServer::agentMcpOverridesFor(const AgentDesktopInfo &desk) const
+{
+    QStringList ov;
+    // Point computer-use at the nested engine.
+    const QString key = QStringLiteral("computer_use");
+    ov << QStringLiteral("mcp_servers.%1.url=%2").arg(key, desk.mcpUrl);
+    if (!desk.bearer.isEmpty())
+        ov << QStringLiteral("mcp_servers.%1.bearer_token=%2").arg(key, desk.bearer);
+    // Keep any other enabled servers (skip the built-in computer-use; we just
+    // overrode it above).
+    if (m_mcp) {
+        for (const McpServerRow &srv : m_mcp->list()) {
+            if (!srv.enabled || srv.id == McpRegistry::builtinId())
+                continue;
+            const QString k = McpRegistry::codexKey(srv);
+            if (srv.transport == QStringLiteral("stdio")) {
+                const QStringList parts =
+                    srv.endpoint.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+                if (parts.isEmpty())
+                    continue;
+                ov << QStringLiteral("mcp_servers.%1.command=%2").arg(k, parts.first());
+                if (parts.size() > 1) {
+                    QStringList quoted;
+                    for (const QString &a : parts.mid(1))
+                        quoted << QStringLiteral("\"%1\"").arg(a);
+                    ov << QStringLiteral("mcp_servers.%1.args=[%2]")
+                              .arg(k, quoted.join(QLatin1Char(',')));
+                }
+            } else {
+                ov << QStringLiteral("mcp_servers.%1.url=%2").arg(k, srv.endpoint);
+                if (!srv.token.isEmpty())
+                    ov << QStringLiteral("mcp_servers.%1.bearer_token=%2").arg(k, srv.token);
+            }
+        }
+    }
+    return ov;
 }
 
 QString ControlServer::createSession(const QString &profile, const QString &brainName,
                                      const QString &model, const QString &cwd,
-                                     const QString &title, QString *err)
+                                     const QString &title, QString *err,
+                                     const QString &target)
 {
     SessionRow row;
     row.id = genSessionId();
@@ -416,31 +470,41 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
         return QString();
     }
 
-    Brain *brain = makeBrain(row);
+    // For a coworker session whose target is "agent" (the DEFAULT for coworker
+    // mode), bring up an isolated nested desktop + a per-session computer-use
+    // engine bound to it; the brain's computer-use MCP is pointed at that engine
+    // so it drives the agent's OWN screen, never the user's. target="real" (or
+    // a coder session) uses the global computer-use as before.
+    const bool isCoworker = (row.profile == QStringLiteral("coworker"));
+    const QString effTarget = target.isEmpty()
+                                  ? (isCoworker ? QStringLiteral("agent")
+                                                : QStringLiteral("real"))
+                                  : target;
+
+    QStringList agentOverrides;
+    if (isCoworker && effTarget == QStringLiteral("agent")) {
+        QString deskErr;
+        const AgentDesktopInfo desk = m_agentDesktops.ensure(row.id, &deskErr);
+        if (!desk.up) {
+            m_store.updateState(row.id, QStringLiteral("error"));
+            if (err)
+                *err = QStringLiteral("agent desktop failed: ") + deskErr;
+            return QString();
+        }
+        agentOverrides = agentMcpOverridesFor(desk);
+    }
+
+    Brain *brain = makeBrain(row, cwd, agentOverrides);
     if (!brain) {
+        // Tear down any nested desktop we just spun up for this session.
+        if (m_agentDesktops.has(row.id))
+            m_agentDesktops.teardown(row.id);
         m_store.updateState(row.id, QStringLiteral("error"));
         if (err)
             *err = QStringLiteral("brain not available: ") + row.brain;
         return QString();
     }
-    if (!cwd.isEmpty()) {
-        if (auto *cb = qobject_cast<CodexBrain *>(brain)) {
-            // Rebuild with cwd override; CodexBrain stores opts internally so
-            // we recreate it to keep the override authoritative. Preserve the
-            // injected MCP config overrides for coworker sessions.
-            CodexBrain::Options opts;
-            opts.cwd = cwd;
-            opts.model = row.model;
-            opts.profile = row.profile;
-            opts.sandboxMode = CodexBrain::sandboxForProfile(row.profile);
-            if (row.profile == QStringLiteral("coworker") && m_mcp)
-                opts.configOverrides = m_mcp->codexOverrides();
-            cb->deleteLater();
-            cb = new CodexBrain(opts, this);
-            cb->setSessionId(row.id);
-            brain = cb;
-        }
-    }
+
     connect(brain, &Brain::event, this, &ControlServer::onBrainEvent);
     m_brains.insert(row.id, brain);
     return row.id;
@@ -470,12 +534,30 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     }
     brain->cancel();
     m_store.updateState(sessionId, QStringLiteral("idle"));
+    // Canceling a turn ends any real-session take-over (overlay hides).
+    if (m_takeOverActive.contains(sessionId))
+        setTakeOverActive(sessionId, false);
+    // For a coworker+agent session, cancel is the session's "release" signal
+    // (Contract A has no separate session.close): tear down the nested desktop +
+    // its bound engine so we don't leak a compositor/engine per session. A fresh
+    // desktop is spun up if the session is recreated.
+    if (m_agentDesktops.has(sessionId))
+        m_agentDesktops.teardown(sessionId);
     return true;
 }
 
 bool ControlServer::respondApprovalFor(const QString &sessionId, const QString &approvalId,
                                        const QString &decision, QString *err)
 {
+    // A take-over approval is daemon-side (no brain involvement): allow/always
+    // flips the real-session take-over ON (overlay shown), deny clears it.
+    if (approvalId.startsWith(QStringLiteral("takeover-"))) {
+        const bool allow = (decision == QStringLiteral("allow") ||
+                            decision == QStringLiteral("always"));
+        setTakeOverActive(sessionId, allow);
+        return true;
+    }
+
     Brain *brain = m_brains.value(sessionId, nullptr);
     if (!brain) {
         if (err)
@@ -496,7 +578,8 @@ Response ControlServer::handleSessionCreate(const Request &req)
         p.value(QStringLiteral("model")).toString(),
         p.value(QStringLiteral("cwd")).toString(),
         p.value(QStringLiteral("title")).toString(),
-        &err);
+        &err,
+        p.value(QStringLiteral("target")).toString());
     if (sessionId.isEmpty())
         return Response::failure(req.id, QStringLiteral("session_create_failed"), err);
 
@@ -504,6 +587,10 @@ Response ControlServer::handleSessionCreate(const Request &req)
     result.insert(QStringLiteral("session_id"), sessionId);
     if (auto row = m_store.get(sessionId); row && !row->threadId.isEmpty())
         result.insert(QStringLiteral("thread_id"), row->threadId);
+    // Surface the nested agent desktop so the desktop "Computer" page + the
+    // device video pump can find it.
+    if (const AgentDesktopInfo desk = agentDesktopFor(sessionId); desk.up)
+        result.insert(QStringLiteral("agent_desktop"), desk.toJson());
     return Response::success(req.id, result);
 }
 
@@ -748,6 +835,75 @@ Response ControlServer::handleDevicesRevoke(const Request &req)
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
+}
+
+// --- Wave 5: nested agent desktop + real-session take-over ------------------
+
+AgentDesktopInfo ControlServer::agentDesktopFor(const QString &sessionId) const
+{
+    return m_agentDesktops.info(sessionId);
+}
+
+Response ControlServer::handleAgentDesktopInfo(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    const AgentDesktopInfo desk = m_agentDesktops.info(sessionId);
+    if (!desk.up)
+        return Response::failure(req.id, QStringLiteral("no_agent_desktop"),
+                                 QStringLiteral("no nested agent desktop for session: ") +
+                                     sessionId);
+    QJsonObject result = desk.toJson();
+    // Convenience: the local single-JPEG + MJPEG endpoints for the desktop
+    // "Computer" preview (the bearer rides the same per-session token).
+    const QString base = m_agentDesktops.engineBase(sessionId);
+    result.insert(QStringLiteral("video_frame"), base + QStringLiteral("/video/frame"));
+    result.insert(QStringLiteral("video_mjpeg"), base + QStringLiteral("/video/mjpeg"));
+    return Response::success(req.id, result);
+}
+
+bool ControlServer::requestTakeOver(const QString &sessionId, QString *err)
+{
+    Brain *brain = m_brains.value(sessionId, nullptr);
+    if (!brain) {
+        if (err)
+            *err = QStringLiteral("unknown or inactive session: ") + sessionId;
+        return false;
+    }
+    // The actual approval is biometric (Contract C tier / Contract A
+    // approval.respond). We surface an approval event so the phone/desktop can
+    // gate it; the take-over goes ACTIVE only once setTakeOverActive(true) is
+    // called by the approval path.
+    NormalizedBrainEvent ev = NormalizedBrainEvent::approval(
+        QStringLiteral("takeover-") + sessionId,
+        QStringLiteral("Allow Jarvis to drive your REAL screen?"),
+        QStringLiteral("high"));
+    onBrainEvent(sessionId, ev);
+    return true;
+}
+
+bool ControlServer::setTakeOverActive(const QString &sessionId, bool active)
+{
+    const bool was = m_takeOverActive.contains(sessionId);
+    if (active)
+        m_takeOverActive.insert(sessionId);
+    else
+        m_takeOverActive.remove(sessionId);
+    if (was != active)
+        emit agentDrivingChanged(sessionId, active);
+    return true;
+}
+
+Response ControlServer::handleTakeOverRequest(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    QString err;
+    if (!requestTakeOver(sessionId, &err))
+        return Response::failure(req.id, QStringLiteral("no_session"), err);
+    QJsonObject result;
+    result.insert(QStringLiteral("pending_approval"), true);
+    result.insert(QStringLiteral("approval_id"),
+                  QStringLiteral("takeover-") + sessionId);
+    return Response::success(req.id, result);
 }
 
 // --- event fan-out ---------------------------------------------------------

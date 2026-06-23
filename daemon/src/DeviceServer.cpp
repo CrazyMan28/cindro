@@ -16,7 +16,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QNetworkAccessManager>
 #include <QNetworkInterface>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QRandomGenerator>
 #include <QUrl>
 #include <QWebSocket>
@@ -47,10 +50,15 @@ QByteArray makeNonce()
 DeviceServer::DeviceServer(Config config, ControlServer *control, QObject *parent)
     : QObject(parent), m_config(std::move(config)), m_control(control)
 {
+    m_nam = new QNetworkAccessManager(this);
 }
 
 DeviceServer::~DeviceServer()
 {
+    // Abort any in-flight mirror pumps before the NAM goes away.
+    const QStringList pumps = m_pumps.keys();
+    for (const QString &sid : pumps)
+        stopPump(sid);
     if (m_local)
         m_local->close();
     if (m_tailnet)
@@ -120,6 +128,12 @@ void DeviceServer::onSocketDisconnected()
     auto *client = qobject_cast<QWebSocket *>(sender());
     if (!client)
         return;
+    // Drop this device's mirror subscriptions (decrement / close each pump).
+    if (auto it = m_conns.find(client); it != m_conns.end()) {
+        const QSet<QString> mirrored = it.value().mirroring;
+        for (const QString &sid : mirrored)
+            stopPump(sid);
+    }
     m_conns.remove(client);
     client->deleteLater();
 }
@@ -271,7 +285,9 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("task.queue") ||
         method == QStringLiteral("push.register"))
         return QStringLiteral("action");
-    if (method == QStringLiteral("approval.respond"))
+    if (method == QStringLiteral("approval.respond") ||
+        method == QStringLiteral("mirror.start") ||
+        method == QStringLiteral("mirror.stop"))
         return QStringLiteral("biometric");
     return QStringLiteral("action");
 }
@@ -284,6 +300,7 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("session.history"), QStringLiteral("task.queue"),
         QStringLiteral("task.list"),       QStringLiteral("push.register"),
         QStringLiteral("approval.respond"),
+        QStringLiteral("mirror.start"),    QStringLiteral("mirror.stop"),
     };
     QJsonObject map;
     for (const QString &m : methods)
@@ -320,6 +337,10 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         resp = devPushRegister(c, req);
     } else if (m == QStringLiteral("approval.respond")) {
         resp = devApprovalRespond(req);
+    } else if (m == QStringLiteral("mirror.start")) {
+        resp = devMirrorStart(c, client, req);
+    } else if (m == QStringLiteral("mirror.stop")) {
+        resp = devMirrorStop(c, client, req);
     } else {
         resp = Response::failure(req.id, QStringLiteral("unknown_method"),
                                  QStringLiteral("unknown method: ") + m);
@@ -356,6 +377,10 @@ Response DeviceServer::devSessionCreate(Conn &c, const Request &req)
 
     QJsonObject result;
     result.insert(QStringLiteral("session_id"), sessionId);
+    // Surface the nested agent desktop (coworker+agent) so the phone knows it
+    // can mirror.start this session's live video.
+    if (const AgentDesktopInfo desk = m_control->agentDesktopFor(sessionId); desk.up)
+        result.insert(QStringLiteral("agent_desktop"), desk.toJson());
     return Response::success(req.id, result);
 }
 
@@ -520,6 +545,186 @@ Response DeviceServer::devApprovalRespond(const Request &req)
     return Response::success(req.id);
 }
 
+// --- Contract C video mirror (biometric) ------------------------------------
+
+Response DeviceServer::devMirrorStart(Conn &c, QWebSocket *client, const Request &req)
+{
+    Q_UNUSED(client);
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    if (sessionId.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("session_id is required"));
+
+    // Only a coworker+agent session has a nested desktop to mirror.
+    const AgentDesktopInfo desk = m_control->agentDesktopFor(sessionId);
+    if (!desk.up)
+        return Response::failure(req.id, QStringLiteral("no_agent_desktop"),
+                                 QStringLiteral("session has no nested agent desktop: ") +
+                                     sessionId);
+
+    if (!c.mirroring.contains(sessionId)) {
+        c.mirroring.insert(sessionId);
+        startPump(sessionId); // ref-counted; opens the MJPEG read once
+    }
+
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("session_id"), sessionId);
+    result.insert(QStringLiteral("width"), desk.width);
+    result.insert(QStringLiteral("height"), desk.height);
+    // Phones decode the binary 'mirror.frame' frames (length-prefixed JSON
+    // header + JPEG); advertise the framing so the client knows what to expect.
+    result.insert(QStringLiteral("frame_format"), QStringLiteral("jpeg"));
+    result.insert(QStringLiteral("transport"), QStringLiteral("binary"));
+    return Response::success(req.id, result);
+}
+
+Response DeviceServer::devMirrorStop(Conn &c, QWebSocket *client, const Request &req)
+{
+    Q_UNUSED(client);
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    if (c.mirroring.remove(sessionId))
+        stopPump(sessionId); // ref-counted; closes when the last subscriber drops
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+void DeviceServer::startPump(const QString &sessionId)
+{
+    MirrorPump &pump = m_pumps[sessionId];
+    ++pump.refcount;
+    if (pump.reply)
+        return; // already streaming
+
+    const QString base = m_control->agentDesktops().engineBase(sessionId);
+    const QString bearer = m_control->agentDesktops().bearer(sessionId);
+    if (base.isEmpty()) {
+        m_pumps.remove(sessionId);
+        return;
+    }
+    const QUrl url(base + QStringLiteral("/video/mjpeg"));
+    QNetworkRequest rq(url);
+    if (!bearer.isEmpty())
+        rq.setRawHeader("Authorization", QByteArray("Bearer ") + bearer.toUtf8());
+    rq.setRawHeader("Accept", "multipart/x-mixed-replace");
+
+    QNetworkReply *reply = m_nam->get(rq);
+    pump.reply = reply;
+    pump.buf.clear();
+    pump.boundary.clear();
+    m_pumpReply.insert(reply, sessionId);
+    connect(reply, &QNetworkReply::readyRead, this, &DeviceServer::onPumpReadyRead);
+    connect(reply, &QNetworkReply::finished, this, &DeviceServer::onPumpFinished);
+}
+
+void DeviceServer::stopPump(const QString &sessionId)
+{
+    auto it = m_pumps.find(sessionId);
+    if (it == m_pumps.end())
+        return;
+    MirrorPump &pump = it.value();
+    if (pump.refcount > 0)
+        --pump.refcount;
+    if (pump.refcount > 0)
+        return; // other devices still mirroring
+    if (pump.reply) {
+        QNetworkReply *reply = pump.reply;
+        m_pumpReply.remove(reply);
+        reply->disconnect(this);
+        reply->abort();
+        reply->deleteLater();
+    }
+    m_pumps.erase(it);
+}
+
+void DeviceServer::onPumpReadyRead()
+{
+    auto *reply = qobject_cast<QNetworkReply *>(sender());
+    if (!reply)
+        return;
+    const QString sessionId = m_pumpReply.value(reply);
+    auto it = m_pumps.find(sessionId);
+    if (it == m_pumps.end())
+        return;
+    MirrorPump &pump = it.value();
+    pump.buf += reply->readAll();
+
+    // Parse multipart/x-mixed-replace: each part is
+    //   --<boundary>\r\n <headers> \r\n\r\n <jpeg bytes> \r\n
+    // We extract JPEGs by the SOI/EOI markers (FFD8 .. FFD9) which is robust to
+    // boundary/header variance from the engine's video_source generator.
+    while (true) {
+        const int soi = pump.buf.indexOf(QByteArray::fromHex("ffd8"));
+        if (soi < 0) {
+            // No start marker yet; cap buffer so it can't grow unbounded.
+            if (pump.buf.size() > (1 << 20))
+                pump.buf = pump.buf.right(1 << 16);
+            break;
+        }
+        const int eoi = pump.buf.indexOf(QByteArray::fromHex("ffd9"), soi + 2);
+        if (eoi < 0)
+            break; // incomplete frame; wait for more bytes
+        const QByteArray jpeg = pump.buf.mid(soi, eoi + 2 - soi);
+        pump.buf.remove(0, eoi + 2);
+        emitMirrorFrame(sessionId, jpeg);
+    }
+}
+
+void DeviceServer::onPumpFinished()
+{
+    auto *reply = qobject_cast<QNetworkReply *>(sender());
+    if (!reply)
+        return;
+    const QString sessionId = m_pumpReply.value(reply);
+    m_pumpReply.remove(reply);
+    auto it = m_pumps.find(sessionId);
+    if (it != m_pumps.end() && it.value().reply == reply) {
+        it.value().reply = nullptr;
+        // If subscribers remain, transparently re-open the stream (the engine's
+        // MJPEG endpoint can close between turns); otherwise drop the pump.
+        if (it.value().refcount > 0) {
+            const int refs = it.value().refcount;
+            it.value().refcount = 0; // startPump re-increments per subscriber
+            m_pumps.erase(it);
+            for (int i = 0; i < refs; ++i)
+                startPump(sessionId);
+        } else {
+            m_pumps.erase(it);
+        }
+    }
+    reply->deleteLater();
+}
+
+void DeviceServer::emitMirrorFrame(const QString &sessionId, const QByteArray &jpeg)
+{
+    // Binary frame layout (Contract C video):
+    //   [4-byte big-endian header length][header JSON utf8][JPEG bytes]
+    // header = {"t":"mirror.frame","session_id":..,"ts":..,"len":..}
+    QJsonObject header;
+    header.insert(QStringLiteral("t"), QStringLiteral("mirror.frame"));
+    header.insert(QStringLiteral("session_id"), sessionId);
+    header.insert(QStringLiteral("ts"), QDateTime::currentMSecsSinceEpoch());
+    header.insert(QStringLiteral("len"), jpeg.size());
+    const QByteArray hdr =
+        QJsonDocument(header).toJson(QJsonDocument::Compact);
+
+    QByteArray frame;
+    const quint32 hlen = quint32(hdr.size());
+    frame.append(char((hlen >> 24) & 0xFF));
+    frame.append(char((hlen >> 16) & 0xFF));
+    frame.append(char((hlen >> 8) & 0xFF));
+    frame.append(char(hlen & 0xFF));
+    frame.append(hdr);
+    frame.append(jpeg);
+
+    for (auto cit = m_conns.begin(); cit != m_conns.end(); ++cit) {
+        Conn &c = cit.value();
+        if (c.authed && c.mirroring.contains(sessionId))
+            sendBinary(cit.key(), frame);
+    }
+}
+
 // --- event fan-out + push ---------------------------------------------------
 
 void DeviceServer::onSessionEvent(const QString &sessionId, const NormalizedBrainEvent &ev)
@@ -576,6 +781,13 @@ void DeviceServer::sendJson(QWebSocket *client, const QJsonObject &obj)
         return;
     client->sendTextMessage(
         QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact)));
+}
+
+void DeviceServer::sendBinary(QWebSocket *client, const QByteArray &bytes)
+{
+    if (!client)
+        return;
+    client->sendBinaryMessage(bytes);
 }
 
 void DeviceServer::sendResponse(QWebSocket *client, const Response &resp)

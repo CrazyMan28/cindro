@@ -5,6 +5,7 @@
 #include <QScreen>
 #include <QRect>
 #include <QSize>
+#include <QRegion>
 #include <QSettings>
 
 #include <LayerShellQt/Window>
@@ -55,6 +56,65 @@ void WindowController::configureDockSurface()
     w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
 
     m_dockConfigured = true;
+}
+
+// Install the wlr-layer-shell OVERLAY role on the distinct-cursor window. It is a
+// full-screen, input-transparent surface that draws the agent cursor + the
+// "JARVIS IS DRIVING" banner ON TOP of everything while a real-screen take-over
+// is live. Per the spike: no useLayerShell(); accumulate Anchors with |=. Crucial
+// difference from the dock: LayerOverlay, exclusiveZone 0 (reserves no space),
+// KeyboardInteractivityNone, and an EMPTY input region (QWindow::setMask with an
+// empty QRegion) so it NEVER steals pointer/keyboard input from the real desktop.
+void WindowController::configureOverlay(QObject *overlayWin)
+{
+    if (!m_overlay)
+        m_overlay = qobject_cast<QQuickWindow *>(overlayWin);
+    if (m_overlayConfigured || !m_overlay)
+        return;
+
+    m_overlay->create();
+
+    auto *w = LayerShellQt::Window::get(m_overlay);
+    if (!w)
+        return;
+
+    // Anchor to all four edges so the surface spans the whole output.
+    LayerShellQt::Window::Anchors anchors;
+    anchors |= LayerShellQt::Window::AnchorTop;
+    anchors |= LayerShellQt::Window::AnchorRight;
+    anchors |= LayerShellQt::Window::AnchorBottom;
+    anchors |= LayerShellQt::Window::AnchorLeft;
+
+    w->setLayer(LayerShellQt::Window::LayerOverlay);
+    w->setAnchors(anchors);
+    w->setExclusiveZone(0);   // reserve NO space — float above the desktop
+    w->setScope(QStringLiteral("jarvis-driving-overlay"));
+    w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityNone);
+
+    // Empty input region => fully click-through. On Wayland, setMask sets the
+    // surface input region; an empty region means no input is ever delivered here.
+    m_overlay->setFlag(Qt::WindowTransparentForInput, true);
+    m_overlay->setMask(QRegion());
+
+    m_overlayConfigured = true;
+}
+
+void WindowController::showOverlay()
+{
+    if (!m_overlay)
+        return;
+    configureOverlay(m_overlay);
+    m_overlay->show();
+    // Re-assert the empty input region after the surface maps (some compositors
+    // reset the input region on (re)map).
+    m_overlay->setMask(QRegion());
+    m_overlay->raise();
+}
+
+void WindowController::hideOverlay()
+{
+    if (m_overlay)
+        m_overlay->hide();
 }
 
 void WindowController::applyMode(const QString &mode, bool persist)

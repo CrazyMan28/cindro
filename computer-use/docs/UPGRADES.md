@@ -1,12 +1,45 @@
-# computer-use — UPGRADE POINTS (Wave 5 plan)
+# computer-use — UPGRADE POINTS (Wave 5)
 
-This file is a **map**, not a changelog. The engine was copied verbatim from
-`mcp/computer_use/` (NO behaviour changes / NO upgrades applied yet — `git diff`
-against the source tree is empty except for the removed `.git`, `.venv`,
-`__pycache__`). The four upgrades below are what Wave 5 ("nested agent desktop +
-distinct cursor overlay + live video") needs from this engine. Each entry names
-the exact file and the exact existing functions/objects to extend so the work
-lands in one place and matches Contract A / Contract B in `docs/BUILD_SPEC.md`.
+> **STATUS: implemented (Wave 5).** All four upgrade points below are now live.
+> The agent path is purely *additive* — the default real/active-session path
+> (the 32 existing tools, global uinput) is unchanged. Tests in `tests/`.
+>
+> **Selection env vars (set by jarvisd into the engine process):**
+> - `JARVIS_AGENT_WAYLAND_DISPLAY` — nested compositor's `WAYLAND_DISPLAY`
+>   (bare name `wayland-N` or an absolute socket path; normalized to the name).
+> - `JARVIS_AGENT_SWAYSOCK` — nested sway IPC socket (`sway-ipc.<UID>.<PID>.sock`).
+> - `JARVIS_AGENT_RUNTIME_DIR` — optional `XDG_RUNTIME_DIR` override.
+>
+> Their presence is what makes `session.detect()` surface a third
+> `SessionInfo(kind="agent")`; it is **never** the host `active` session.
+>
+> **Input targeting:** mouse tools take `which="active"|"agent"` (default
+> `active`). Agent input drives the nested compositor's own pointer via
+> `swaymsg seat - cursor set/press/release` (button1/2/3 = left/middle/right) —
+> no host uinput, so it never touches the user's screen. Every agent mouse op
+> publishes `{x,y,button,kind,session,t}` to the **agent-pointer bus**
+> (`computer_use_mcp/agent_bus.py`): a JSONL append to
+> `~/.local/share/jarvis/agent_pointer.jsonl` (override via
+> `JARVIS_AGENT_POINTER_LOG`) **and** in-process async subscribers.
+>
+> **Video:** `screen.video_source(which="agent", fps, width, quality)` is a
+> generator yielding Pillow-encoded **JPEG** frames of HEADLESS-1 via grim;
+> `screen.grab_jpeg_frame(...)` grabs one. The daemon consumes:
+> - `GET /video/frame?which=agent&width=&quality=&cursor=` — single JPEG.
+> - `GET /video/mjpeg?which=agent&fps=&width=&quality=` — `multipart/x-mixed-replace`.
+> - `WS /video/stream?which=agent` — binary JPEG frames multiplexed with
+>   text `{"type":"pointer",...}` agent-cursor events.
+>
+> All `/video/*` routes inherit the existing bearer-token `auth_middleware`
+> (no exemption added); the WS checks `auth.ws_ok` at the endpoint.
+> Config knobs in `config.py`: `video_source` (auto|wlr|portal), `video_width`,
+> `video_fps`.
+
+This file is a **map**. The four upgrades below are what Wave 5 ("nested agent
+desktop + distinct cursor overlay + live video") needs from this engine. Each
+entry names the exact file and the exact existing functions/objects to extend so
+the work lands in one place and matches Contract A / Contract B in
+`docs/BUILD_SPEC.md`.
 
 Importable package: **`computer_use_mcp`** (pyproject `[project].name =
 computer-use-mcp`, wheel package `computer_use_mcp`, console script
