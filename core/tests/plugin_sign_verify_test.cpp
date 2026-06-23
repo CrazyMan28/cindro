@@ -160,6 +160,20 @@ int main()
         f2.close();
         const QString h2 = PluginSigner::hashPayloadDir(pkgDir);
         check(h1 != h2, "payload dir hash changes when a file changes");
+
+        // BUG 3: an EXISTING-but-EMPTY payload dir (the mcp-only case) must hash
+        // to the empty-input SHA-256 — byte-for-byte what the CLI signs over —
+        // so a published mcp-only plugin verifies. A MISSING dir hashes to ""
+        // instead, which is the mismatch `publish` must avoid.
+        const QString emptyDir = tmp.filePath(QStringLiteral("empty-payload"));
+        QDir().mkpath(emptyDir);
+        const QString he = PluginSigner::hashPayloadDir(emptyDir);
+        check(he == QStringLiteral(
+                  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+              "empty payload dir hashes to the empty-input sha256 (matches CLI)");
+        const QString missing = tmp.filePath(QStringLiteral("does-not-exist"));
+        check(PluginSigner::hashPayloadDir(missing).isEmpty(),
+              "a MISSING payload dir hashes to \"\" (the mismatch publish avoids)");
     }
 
     // --- 4. sandbox plan derives confinement from permissions --------------
@@ -189,6 +203,14 @@ int main()
               "argv hardens with ProtectHome=read-only");
         check(!joined.contains(QStringLiteral("PrivateNetwork=yes")),
               "network grant => no PrivateNetwork isolation");
+        // BUG 1: must be a transient SERVICE (exec/sandbox props are service-only;
+        // a .scope rejects ProtectHome=...). Assert no --scope and the service type.
+        check(!joined.contains(QStringLiteral("--scope")),
+              "plan does NOT use --scope (would reject sandbox properties)");
+        check(joined.contains(QStringLiteral("--service-type=exec")),
+              "plan launches a transient .service via --service-type=exec");
+        check(joined.contains(QStringLiteral("--unit=jarvis-plugin-acme-mcp.service")),
+              "transient unit is jarvis-plugin-<id>.service");
 
         // A plugin with NO network permission must get PrivateNetwork=yes.
         PluginManifest noNet = sampleManifest();

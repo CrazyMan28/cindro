@@ -419,6 +419,12 @@ def cmd_publish(args):
         payload_dest = os.path.join(catalog_dir, m["id"])
         if os.path.isdir(payload_dest):
             shutil.rmtree(payload_dest)
+        # ALWAYS create <catalog>/<id>/ even for an mcp-only plugin with no
+        # payload files. The daemon's hashPayloadDir() hashes this dir; if it is
+        # MISSING the daemon hashes "" (QString()) while the CLI signed over the
+        # empty-input digest (e3b0c44...) -> signature mismatch -> verified:false.
+        # An existing-but-empty dir hashes identically in both (empty SHA-256).
+        os.makedirs(payload_dest, exist_ok=True)
         for root, _dirs, files in os.walk(pkg_dir):
             for fn in files:
                 full = os.path.join(root, fn)
