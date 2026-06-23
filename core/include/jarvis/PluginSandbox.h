@@ -4,11 +4,17 @@
 // sandbox, derived from the plugin's DECLARED permissions, and tear it down by
 // PID (never pkill-by-name).
 //
-// Preferred backend: `systemd-run --user --scope` with:
+// Preferred backend: a TRANSIENT systemd `.service` via
+// `systemd-run --user --unit=jarvis-plugin-<id> --service-type=exec --collect`
+// with (these are exec/service-only properties — a .scope would reject them):
 //   - ProtectHome=read-only            (home is hidden unless a fs perm opens it)
+//   - ProtectSystem=strict
 //   - ReadWritePaths=<p> per filesystem:<p> permission
 //   - PrivateNetwork=yes               UNLESS a network:<host> permission exists
 //   - a scrubbed environment, re-exporting only the declared env_keys
+// After launch we POLL `systemctl --user show` and require the unit to be
+// active/activating with a non-zero MainPID before reporting success — the
+// systemd-run wrapper exiting 0 does NOT mean the unit came up.
 // Fallback (when systemd-run is unavailable): a plain QProcess with the env
 // scrubbed to the declared env_keys (best-effort; weaker isolation).
 //
@@ -21,6 +27,7 @@
 #include <QProcess>
 #include <QString>
 #include <QStringList>
+#include <cstdint>
 #include <map>
 #include <memory>
 
@@ -41,10 +48,12 @@ struct SandboxPlan {
 // PID (terminate, then kill after a grace period) — scoped to THIS process only.
 struct RunningPlugin {
     QString id;
-    qint64 pid = 0;
+    qint64 pid = 0;          // the MainPID of the sandboxed child (systemd) or
+                             // the QProcess pid (fallback)
     bool usesSystemdRun = false;
-    QString scopeName;        // "jarvis-plugin-<id>.scope" when systemd-run
-    std::unique_ptr<QProcess> process;
+    QString unitName;        // "jarvis-plugin-<id>.service" when systemd-run
+    std::unique_ptr<QProcess> process; // the systemd-run wrapper, or (fallback)
+                                       // the plugin process itself
 };
 
 class PluginSandbox : public QObject {
@@ -77,7 +86,15 @@ public:
 
     QString lastError() const { return m_lastError; }
 
+    // The transient unit name a plugin id maps to ("jarvis-plugin-<id>.service").
+    static QString unitNameFor(const QString &id);
+
 private:
+    // Poll `systemctl --user show <unit>` (busy-loop, no foreground sleep) until
+    // the unit is active/activating with a non-zero MainPID, or `timeoutMs`
+    // elapses. On success sets *mainPid. Returns false on timeout/failure.
+    static bool waitForUnitActive(const QString &unit, int timeoutMs,
+                                  qint64 *mainPid, QString *err);
     // std::map (not QHash) because the values are move-only unique_ptrs —
     // QHash's copy-on-write detach would require a copyable value type.
     std::map<QString, std::unique_ptr<RunningPlugin>> m_running;
