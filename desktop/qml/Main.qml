@@ -192,7 +192,10 @@ Window {
         height: 1080
         visible: false
         color: "transparent"
-        flags: Qt.FramelessWindowHint | Qt.WindowTransparentForInput
+        // NOTE: NOT Qt.WindowTransparentForInput — pointer click-through is done
+        // via the EMPTY input region set in WindowController.configureOverlay, so
+        // the surface can still receive the Esc key for take-over cancel.
+        flags: Qt.FramelessWindowHint
         title: "JARVIS DRIVING"
 
         DrivingOverlay {

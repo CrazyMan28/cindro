@@ -89,11 +89,18 @@ void WindowController::configureOverlay(QObject *overlayWin)
     w->setAnchors(anchors);
     w->setExclusiveZone(0);   // reserve NO space — float above the desktop
     w->setScope(QStringLiteral("jarvis-driving-overlay"));
-    w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityNone);
+    // Keyboard ON DEMAND (not None): the surface must still be able to receive the
+    // Esc key so the DrivingOverlay can cancel the take-over (docs/TAKEOVER_UX.md).
+    // OnDemand only takes focus when the compositor routes it here; combined with
+    // the EMPTY pointer input region below, pointer events still pass straight
+    // through to the desktop — only Esc is acted on.
+    w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
 
-    // Empty input region => fully click-through. On Wayland, setMask sets the
-    // surface input region; an empty region means no input is ever delivered here.
-    m_overlay->setFlag(Qt::WindowTransparentForInput, true);
+    // Empty POINTER input region => fully click-through for the mouse. On Wayland,
+    // setMask sets the surface input region; an empty region means no pointer
+    // events are ever delivered here (so we never grab the user's clicks). We do
+    // NOT set Qt::WindowTransparentForInput, because that would also drop the
+    // keyboard and break Esc-to-cancel.
     m_overlay->setMask(QRegion());
 
     m_overlayConfigured = true;
@@ -109,6 +116,9 @@ void WindowController::showOverlay()
     // reset the input region on (re)map).
     m_overlay->setMask(QRegion());
     m_overlay->raise();
+    // Request keyboard focus so the Esc key is routed here (OnDemand keyboard
+    // interactivity). Pointer events still pass through via the empty input mask.
+    m_overlay->requestActivate();
 }
 
 void WindowController::hideOverlay()

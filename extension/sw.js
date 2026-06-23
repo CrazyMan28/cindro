@@ -305,6 +305,15 @@ const HANDLERS = {
     return await contentCall(tab, { type: "scroll", direction: p.direction, amount: p.amount, ref: p.ref });
   },
 
+  // Toggle the in-page take-over UI (glow cursor + "Jarvis is using this tab"
+  // chip) without performing an element action. The engine can call this when
+  // a Chrome take-over starts (on:true) or is cancelled/ends (on:false) so the
+  // chip shows for the whole take-over, not only on discrete actions.
+  async "page.driving"(p) {
+    const tab = await targetTab(p);
+    return await contentCall(tab, { type: "driving", on: p.on !== false });
+  },
+
   async "page.screenshot"(p) {
     const tab = await targetTab(p);
     if (!p.fullPage && tab.active) {

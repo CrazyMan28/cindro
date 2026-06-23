@@ -2,26 +2,47 @@ import QtQuick
 import QtQuick.Effects
 import JarvisSidebar
 
-// DrivingOverlay — the content of the click-through, full-screen wlr-layer-shell
-// OVERLAY surface (role installed in C++ by WindowController.configureOverlay).
+// DrivingOverlay — the visual content of the full-screen, click-through
+// wlr-layer-shell OVERLAY surface (role + empty pointer input region installed in
+// C++ by WindowController.configureOverlay). It MATCHES the Codex take-over look,
+// cyan-accented for the Jarvis HUD:
 //
-// While a REAL-screen take-over is active (bridge.driving), this:
-//   * draws a DISTINCT neon cursor sprite at the agent's pointer position
-//     (read from bridge.agentPointer, screen-normalized in [0,1]),
-//   * shows a pulsing "⚡ JARVIS IS DRIVING" banner at the top.
+//   1) a dark rounded PILL near the top-center reading
+//        "⚡ Jarvis is using your computer  ·  Esc to cancel"
+//      ("Esc to cancel" dimmed). Esc -> bridge.takeOverCancel() AND hide.
+//   2) a GLOWING CURSOR: a soft cyan radial glow halo (~40px) plus a crisp,
+//      distinct Jarvis arrow sprite that LERP-animates to follow the agent
+//      pointer from bridge.agentPointer (screen-normalized [0,1]), with a subtle
+//      pulse on the halo.
 //
-// It must NOT steal input — the surface's input region is empty (set in C++) and
-// every item here is purely visual (no MouseArea anywhere). The background is
-// fully transparent so the user's real desktop shows through.
+// The surface NEVER steals pointer input (empty input region set in C++; no
+// MouseArea here). It accepts ONLY the Esc key (keyboard interactivity is enabled
+// on the surface in C++ ONLY while driving) to cancel the take-over.
 Item {
     id: overlay
     anchors.fill: parent
+    focus: true
 
-    // last agent pointer, normalized [0,1] -> pixel position on this surface
+    // Last agent pointer, normalized [0,1] -> pixel position on this surface.
     property real px: 0.5
     property real py: 0.5
     property string lastAction: "move"
-    property bool clickPulse: false
+
+    // Cancel the take-over: tell the daemon AND drop the overlay locally so the
+    // user is never stuck under a banner. bridge.takeOverCancel() flips driving
+    // false, which unmaps this surface via Main.qml's onDrivingChanged.
+    function cancel() {
+        bridge.takeOverCancel()
+    }
+
+    // Esc cancels (the surface is given keyboard focus only while driving).
+    Keys.onEscapePressed: overlay.cancel()
+    Keys.onPressed: function(e) {
+        if (e.key === Qt.Key_Escape) {
+            overlay.cancel()
+            e.accepted = true
+        }
+    }
 
     Connections {
         target: bridge
@@ -29,159 +50,209 @@ Item {
             overlay.px = Math.max(0, Math.min(1, nx))
             overlay.py = Math.max(0, Math.min(1, ny))
             overlay.lastAction = action
-            if (action === "click" || action === "drag") {
-                overlay.clickPulse = false
-                overlay.clickPulse = true
+            if (action === "click" || action === "drag" || action === "down") {
                 clickRing.restart()
             }
         }
+        // Re-assert keyboard focus whenever the overlay arms, so Esc lands here.
+        function onDrivingChanged() {
+            if (bridge.driving)
+                overlay.forceActiveFocus()
+        }
     }
 
-    // ===== "JARVIS IS DRIVING" banner =======================================
+    Component.onCompleted: overlay.forceActiveFocus()
+
+    // ======================================================================
+    //  TOP-CENTER PILL  —  "⚡ Jarvis is using your computer · Esc to cancel"
+    // ======================================================================
     Item {
-        id: banner
+        id: pill
         anchors.horizontalCenter: parent.horizontalCenter
         anchors.top: parent.top
-        anchors.topMargin: 14
-        width: bannerBg.width
-        height: bannerBg.height
+        anchors.topMargin: 18
+        width: pillBg.width
+        height: pillBg.height
+
+        // soft cyan glow bloom behind the pill (separate item so the blur halo
+        // is not clipped by the pill's own rounded rect)
+        Rectangle {
+            id: pillGlow
+            anchors.centerIn: pillBg
+            width: pillBg.width
+            height: pillBg.height
+            radius: pillBg.radius
+            color: "transparent"
+            border.width: 1
+            border.color: Theme.accent
+            opacity: 0.55
+            layer.enabled: true
+            layer.effect: MultiEffect {
+                blurEnabled: true
+                blur: 1.0
+                blurMax: 28
+                brightness: 0.18
+                colorization: 1.0
+                colorizationColor: Theme.accent
+            }
+            // gentle breathing on the glow so the banner reads as "live"
+            SequentialAnimation on opacity {
+                loops: Animation.Infinite
+                NumberAnimation { from: 0.32; to: 0.62; duration: 1500; easing.type: Easing.InOutSine }
+                NumberAnimation { from: 0.62; to: 0.32; duration: 1500; easing.type: Easing.InOutSine }
+            }
+        }
 
         Rectangle {
-            id: bannerBg
-            width: bannerRow.implicitWidth + 36
-            height: 40
-            radius: 20
-            color: Qt.rgba(0.02, 0.05, 0.09, 0.88)
-            border.width: 1.5
-            border.color: Theme.danger
-
-            // pulsing danger glow halo
-            layer.enabled: true
-            layer.effect: MultiEffect { blurEnabled: true; blur: 0.6; blurMax: 22; brightness: 0.15 }
-
-            SequentialAnimation on border.color {
-                loops: Animation.Infinite
-                ColorAnimation { from: Theme.danger; to: Theme.amber; duration: 900; easing.type: Easing.InOutSine }
-                ColorAnimation { from: Theme.amber; to: Theme.danger; duration: 900; easing.type: Easing.InOutSine }
-            }
+            id: pillBg
+            width: pillRow.implicitWidth + 40
+            height: 44
+            radius: height / 2
+            // near-black pill, ~#0A0E16 @ 0.92
+            color: Qt.rgba(0.039, 0.055, 0.086, 0.92)
+            border.width: 1
+            border.color: Theme.accent     // 1px cyan hairline
 
             Row {
-                id: bannerRow
+                id: pillRow
                 anchors.centerIn: parent
-                spacing: 10
+                spacing: 9
 
-                // lightning bolt mark
+                // ⚡ lightning bolt mark (cyan)
                 Canvas {
-                    width: 16; height: 20
+                    width: 14; height: 20
                     anchors.verticalCenter: parent.verticalCenter
                     onPaint: {
                         var ctx = getContext("2d"); ctx.reset()
-                        ctx.fillStyle = Theme.amber
+                        ctx.fillStyle = Theme.accentBright
                         ctx.beginPath()
-                        ctx.moveTo(10, 1); ctx.lineTo(2, 11); ctx.lineTo(7, 11)
-                        ctx.lineTo(6, 19); ctx.lineTo(14, 8); ctx.lineTo(9, 8)
+                        ctx.moveTo(9, 1); ctx.lineTo(1.5, 11); ctx.lineTo(6, 11)
+                        ctx.lineTo(5, 19); ctx.lineTo(12.5, 8); ctx.lineTo(8, 8)
                         ctx.closePath(); ctx.fill()
                     }
                 }
+                // primary label
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "JARVIS IS DRIVING"
+                    text: "Jarvis is using your computer"
                     color: Theme.text
-                    font.family: Theme.fontDisplay
-                    font.pixelSize: 14
-                    font.weight: Font.DemiBold
-                    font.letterSpacing: Theme.trackWide
+                    font.family: Theme.fontSans
+                    font.pixelSize: 15
+                    font.weight: Font.Medium
                 }
-                // live dot
-                Rectangle {
+                // separator dot
+                Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 8; height: 8; radius: 4
-                    color: Theme.danger
-                    SequentialAnimation on opacity {
-                        loops: Animation.Infinite
-                        NumberAnimation { from: 1.0; to: 0.2; duration: 600 }
-                        NumberAnimation { from: 0.2; to: 1.0; duration: 600 }
-                    }
+                    text: "·"
+                    color: Theme.textFaint
+                    font.family: Theme.fontSans
+                    font.pixelSize: 16
+                }
+                // dimmed "Esc to cancel"
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "Esc to cancel"
+                    color: Theme.textMuted
+                    opacity: 0.7
+                    font.family: Theme.fontSans
+                    font.pixelSize: 14
+                    font.weight: Font.Normal
                 }
             }
         }
     }
 
-    // ===== DISTINCT agent cursor sprite =====================================
+    // ======================================================================
+    //  GLOWING AGENT CURSOR  —  cyan radial halo + distinct Jarvis arrow
+    // ======================================================================
     Item {
         id: cursor
-        width: 46
-        height: 46
-        // place the hotspot (cursor tip) at the agent pointer position
-        x: overlay.px * overlay.width - 6
-        y: overlay.py * overlay.height - 4
-        Behavior on x { NumberAnimation { duration: 60; easing.type: Easing.OutQuad } }
-        Behavior on y { NumberAnimation { duration: 60; easing.type: Easing.OutQuad } }
+        width: 64
+        height: 64
+        // hotspot (arrow tip) sits at the agent pointer; the Item is centered on
+        // the halo, and the arrow's tip is offset to the halo center.
+        x: overlay.px * overlay.width - width / 2
+        y: overlay.py * overlay.height - height / 2
+        // LERP toward each new agent position so the cursor glides, not jumps.
+        Behavior on x { NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
+        Behavior on y { NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
 
-        // soft neon halo so the agent cursor is unmistakable over any wallpaper
+        // soft cyan radial GLOW halo (~40px, ~40% opacity, blurred), subtly pulsing
         Rectangle {
-            anchors.centerIn: cursorArrow
-            width: 30; height: 30; radius: 15
+            id: halo
+            anchors.centerIn: parent
+            width: 40
+            height: 40
+            radius: 20
             color: Theme.accent
-            opacity: 0.28
+            opacity: 0.40
             layer.enabled: true
-            layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: 28; brightness: 0.2 }
+            layer.effect: MultiEffect {
+                blurEnabled: true
+                blur: 1.0
+                blurMax: 40
+                brightness: 0.25
+            }
+            // subtle pulse so the agent cursor is easy to follow
+            SequentialAnimation on scale {
+                loops: Animation.Infinite
+                NumberAnimation { from: 0.82; to: 1.18; duration: 900; easing.type: Easing.InOutSine }
+                NumberAnimation { from: 1.18; to: 0.82; duration: 900; easing.type: Easing.InOutSine }
+            }
+            SequentialAnimation on opacity {
+                loops: Animation.Infinite
+                NumberAnimation { from: 0.30; to: 0.48; duration: 900; easing.type: Easing.InOutSine }
+                NumberAnimation { from: 0.48; to: 0.30; duration: 900; easing.type: Easing.InOutSine }
+            }
         }
 
-        // the arrow itself — a bold magenta/cyan sprite, clearly not the OS cursor
+        // the crisp Jarvis arrow sprite — clearly NOT the OS cursor: a cyan-filled
+        // arrow with a bright hot edge, tip centered on the halo.
         Canvas {
             id: cursorArrow
-            x: 4; y: 2
-            width: 26; height: 30
+            // place the arrow tip (its 0,0) at the halo center
+            x: parent.width / 2
+            y: parent.height / 2
+            width: 26
+            height: 30
             onPaint: {
                 var ctx = getContext("2d"); ctx.reset()
-                // filled arrow
                 ctx.beginPath()
-                ctx.moveTo(1, 1)
-                ctx.lineTo(1, 21)
-                ctx.lineTo(6.5, 16)
-                ctx.lineTo(10, 24)
-                ctx.lineTo(14, 22)
-                ctx.lineTo(10.5, 14.5)
-                ctx.lineTo(18, 14)
+                ctx.moveTo(0, 0)
+                ctx.lineTo(0, 20)
+                ctx.lineTo(5.5, 15)
+                ctx.lineTo(9, 23)
+                ctx.lineTo(13, 21)
+                ctx.lineTo(9.5, 13.5)
+                ctx.lineTo(17, 13)
                 ctx.closePath()
-                ctx.fillStyle = Theme.magenta
+                // cyan body
+                ctx.fillStyle = Theme.accent
                 ctx.fill()
+                // bright hot edge so it pops on any wallpaper
                 ctx.lineWidth = 1.4
                 ctx.lineJoin = "round"
                 ctx.strokeStyle = Theme.accentBright
                 ctx.stroke()
             }
-        }
-
-        // small "J" tag riding with the cursor
-        Rectangle {
-            anchors.left: cursorArrow.right
-            anchors.top: cursorArrow.top
-            anchors.leftMargin: 1
-            width: jTag.implicitWidth + 8
-            height: 14
-            radius: 4
-            color: Qt.rgba(0.02, 0.05, 0.09, 0.85)
-            border.width: 1
-            border.color: Theme.accent
-            Text {
-                id: jTag
-                anchors.centerIn: parent
-                text: "JARVIS"
-                color: Theme.accentBright
-                font.family: Theme.fontDisplay
-                font.pixelSize: 7
-                font.letterSpacing: 1.0
-                font.weight: Font.DemiBold
+            // dark inner contour for contrast on light backgrounds
+            layer.enabled: true
+            layer.effect: MultiEffect {
+                shadowEnabled: true
+                shadowColor: Qt.rgba(0, 0, 0, 0.6)
+                shadowBlur: 0.6
+                shadowVerticalOffset: 1
+                shadowHorizontalOffset: 1
             }
         }
     }
 
-    // ===== click / drag ripple at the cursor ================================
+    // ======================================================================
+    //  CLICK / DRAG RIPPLE  —  fired at the cursor on a click/drag action
+    // ======================================================================
     Rectangle {
         id: clickRingRect
-        width: 12; height: 12; radius: 6
+        width: 14; height: 14; radius: 7
         color: "transparent"
         border.width: 2
         border.color: overlay.lastAction === "drag" ? Theme.amber : Theme.accentBright
@@ -191,23 +262,9 @@ Item {
         SequentialAnimation {
             id: clickRing
             ParallelAnimation {
-                NumberAnimation { target: clickRingRect; property: "scale"; from: 0.5; to: 3.2; duration: 420; easing.type: Easing.OutCubic }
-                NumberAnimation { target: clickRingRect; property: "opacity"; from: 0.9; to: 0.0; duration: 420; easing.type: Easing.OutCubic }
+                NumberAnimation { target: clickRingRect; property: "scale"; from: 0.5; to: 3.4; duration: 440; easing.type: Easing.OutCubic }
+                NumberAnimation { target: clickRingRect; property: "opacity"; from: 0.9; to: 0.0; duration: 440; easing.type: Easing.OutCubic }
             }
-        }
-    }
-
-    // faint vignette pulse on the screen edges to reinforce "agent in control"
-    Rectangle {
-        anchors.fill: parent
-        color: "transparent"
-        border.width: 2
-        border.color: Theme.danger
-        opacity: 0.0
-        SequentialAnimation on opacity {
-            loops: Animation.Infinite
-            NumberAnimation { from: 0.0; to: 0.16; duration: 1100; easing.type: Easing.InOutSine }
-            NumberAnimation { from: 0.16; to: 0.0; duration: 1100; easing.type: Easing.InOutSine }
         }
     }
 }

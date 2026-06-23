@@ -52,6 +52,11 @@ int main(int argc, char **argv)
     QCommandLineOption demoOpt(QStringLiteral("demo"),
                                QStringLiteral("Seed sample transcript content (design preview)."));
     parser.addOption(demoOpt);
+    // Take-over overlay preview: boot straight into the driving overlay with a
+    // FAKE agent pointer looping, for screenshot / visual verification.
+    QCommandLineOption drivingDemoOpt(QStringLiteral("driving-demo"),
+                                      QStringLiteral("Show the take-over overlay with a fake agent pointer."));
+    parser.addOption(drivingDemoOpt);
     parser.process(app);
 
     if (parser.isSet(toggleOpt)) {
@@ -111,6 +116,12 @@ int main(int argc, char **argv)
 
     // Kick off the control connection once the event loop is running.
     QTimer::singleShot(0, bridge, &Bridge::connectToDaemon);
+
+    // --driving-demo: arm the take-over overlay with a fake agent pointer so the
+    // overlay can be rendered/verified without a live take-over. Deferred until
+    // after the QML tree is up so Main.qml's onDrivingChanged maps the overlay.
+    if (parser.isSet(drivingDemoOpt))
+        QTimer::singleShot(0, bridge, &Bridge::startDrivingDemo);
 
     return app.exec();
 }
