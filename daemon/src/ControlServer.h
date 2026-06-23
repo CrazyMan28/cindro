@@ -14,11 +14,13 @@
 #include "jarvis/DeviceRegistry.h"
 #include "jarvis/FcmSender.h"
 #include "jarvis/McpRegistry.h"
+#include "jarvis/MemoryStore.h"
 #include "jarvis/PairingManager.h"
 #include "jarvis/PluginRegistry.h"
 #include "jarvis/Protocol.h"
 #include "jarvis/SessionStore.h"
 #include "jarvis/SettingsStore.h"
+#include "jarvis/SkillStore.h"
 
 #include <QHash>
 #include <QObject>
@@ -54,6 +56,18 @@ public:
     PairingManager &pairing() { return m_pairing; }
     FcmSender *fcm() { return m_fcm.get(); }
     AgentDesktop &agentDesktops() { return m_agentDesktops; }
+    MemoryStore &memory() { return m_memory; }
+    SkillStore &skills() { return m_skills; }
+
+    // Contract A v3 method dispatch shared with the device channel mirror. Each
+    // returns the Response for the request; the device server forwards these so
+    // the phone can use memory + skills too. (handleRequest also routes here.)
+    Response dispatchMemoryOrSkill(const Request &req); // memory.*/skills.* or {} ok=false
+    static bool isMemoryOrSkillMethod(const QString &method);
+
+    // Build a "what I'm working on today" digest from project-tracker MCP
+    // (project_list / agent_checkin), recent sessions, and recent memories.
+    QString buildTodayDigest();
 
     // The per-session nested-agent-desktop info (up=false default if the session
     // is not a coworker+agent session). Used by the device channel's video pump
@@ -142,6 +156,19 @@ private:
     Response handleAgentDesktopInfo(const Request &req);
     Response handleTakeOverRequest(const Request &req);
 
+    // Contract A v3: memory (HERMES_FEATURES §1).
+    Response handleMemoryList(const Request &req);
+    Response handleMemorySearch(const Request &req);
+    Response handleMemoryAdd(const Request &req);
+    Response handleMemoryRemove(const Request &req);
+    // Contract A v3: self-authored skills (HERMES_FEATURES §2).
+    Response handleSkillsList(const Request &req);
+    Response handleSkillsGet(const Request &req);
+    Response handleSkillsCreate(const Request &req);
+    Response handleSkillsInvoke(const Request &req);
+    Response handleSkillsRemove(const Request &req);
+    Response handleSkillsToday(const Request &req);
+
     // Create + wire a brain for a session row. Returns nullptr on unknown brain.
     // `agentMcpOverrides` (non-empty for coworker+agent) replaces the global
     // computer-use override with the per-session nested-desktop engine.
@@ -151,6 +178,24 @@ private:
     // Codex MCP overrides that point the built-in computer-use at the nested
     // per-session engine (url+bearer) and keep any other enabled servers.
     QStringList agentMcpOverridesFor(const AgentDesktopInfo &desk) const;
+
+    // Claude `--mcp-config` JSON ({"mcpServers":{...}}) for a coworker session:
+    //   - FromRegistry: every enabled MCP server (incl. built-in computer-use).
+    //   - ForAgent(desk): computer-use pointed at the nested per-session engine.
+    QString claudeMcpConfigFromRegistry() const;
+    QString claudeMcpConfigForAgent(const AgentDesktopInfo &desk) const;
+
+    // Memory injection (HERMES_FEATURES §1), applied for ALL brains:
+    //   - prefetchMemoryBlock: top-k relevant memories rendered as a prompt
+    //     block to PREPEND before the user's text on each turn.
+    //   - syncTurnMemory: after a turn, persist a salient fact (best-effort
+    //     heuristic) so memory grows even when the model doesn't call the tool.
+    QString prefetchMemoryBlock(const QString &query);
+    void syncTurnMemory(const QString &sessionId, const QString &userText);
+
+    // Render the base system block (memory) injected into ApiBrain's system
+    // prompt at session.create time.
+    QString memorySystemBlock();
 
     Config m_config;
     QString m_controlToken;
@@ -173,6 +218,12 @@ private:
     DeviceRegistry m_deviceReg;
     PairingManager m_pairing;
     std::unique_ptr<FcmSender> m_fcm;
+
+    // Wave 5 intelligence backend: Jarvis-level long-term memory (SQLite+FTS5)
+    // and self-authored skills. Memory is prefetched/injected before every brain
+    // turn and synced after; skills are invokable + self-authoring.
+    MemoryStore m_memory;
+    SkillStore m_skills;
 
     // Wave 5: per-coworker(agent) nested desktops + their bound engines.
     AgentDesktop m_agentDesktops{AgentDesktop::Options{}};

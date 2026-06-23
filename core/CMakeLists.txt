@@ -31,6 +31,11 @@ add_library(jarvis-core STATIC
     src/PluginRegistry.cpp
     src/CodexParser.cpp
     src/CodexBrain.cpp
+    src/ClaudeParser.cpp
+    src/ClaudeBrain.cpp
+    src/ApiBrain.cpp
+    src/MemoryStore.cpp
+    src/SkillStore.cpp
     src/DeviceRegistry.cpp
     src/PairingManager.cpp
     src/FcmSender.cpp
@@ -46,6 +51,11 @@ add_library(jarvis-core STATIC
     include/jarvis/CodexParser.h
     include/jarvis/Brain.h
     include/jarvis/CodexBrain.h
+    include/jarvis/ClaudeParser.h
+    include/jarvis/ClaudeBrain.h
+    include/jarvis/ApiBrain.h
+    include/jarvis/MemoryStore.h
+    include/jarvis/SkillStore.h
     include/jarvis/DeviceRegistry.h
     include/jarvis/PairingManager.h
     include/jarvis/FcmSender.h
@@ -94,3 +104,28 @@ target_link_libraries(device_registry_test
     PRIVATE jarvis-core Qt6::Core PkgConfig::SODIUM)
 
 add_test(NAME device_registry_test COMMAND device_registry_test)
+
+# Wave 5 intelligence backend tests.
+# ClaudeBrain parser: captured `claude --output-format stream-json` sample +
+# synthetic tool turn -> Contract B normalized sequence.
+set(JARVIS_CLAUDE_SAMPLE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../spikes/claude_stream_json_sample.jsonl"
+    CACHE FILEPATH "Claude stream-json sample fed to the parser test")
+
+add_executable(claude_parser_test tests/claude_parser_test.cpp)
+target_link_libraries(claude_parser_test PRIVATE jarvis-core Qt6::Core)
+target_compile_definitions(claude_parser_test
+    PRIVATE JARVIS_CLAUDE_SAMPLE="${JARVIS_CLAUDE_SAMPLE}")
+add_test(NAME claude_parser_test
+         COMMAND claude_parser_test "${JARVIS_CLAUDE_SAMPLE}")
+
+# MemoryStore: add + FTS5 search + replace + remove roundtrip (temp DB).
+add_executable(memory_store_test tests/memory_store_test.cpp)
+target_link_libraries(memory_store_test PRIVATE jarvis-core Qt6::Core Qt6::Sql)
+add_test(NAME memory_store_test COMMAND memory_store_test)
+
+# SkillStore: frontmatter parse + create (self-authoring) + invoke (template
+# render) roundtrip (temp skills root).
+add_executable(skill_store_test tests/skill_store_test.cpp)
+target_link_libraries(skill_store_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME skill_store_test COMMAND skill_store_test)

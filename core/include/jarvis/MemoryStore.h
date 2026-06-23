@@ -1,0 +1,94 @@
+#pragma once
+
+// MemoryStore — Jarvis-level long-term memory (HERMES_FEATURES.md §1).
+//
+// A builtin SQLite + FTS5 memory provider stored in jarvis.db (tables
+// `memories` + `memories_fts`). jarvisd PREFETCHES relevant memories before
+// every brain turn (injected into the prompt/system) and SYNCS salient facts
+// after each turn; the memory tools (memory.add/replace/remove/search) are also
+// exposed to the model so it can self-curate.
+//
+// This class owns its own QSqlDatabase connection (separate connection name) so
+// it can live alongside SessionStore on the same on-disk file without clashing.
+
+#include <QDateTime>
+#include <QJsonObject>
+#include <QSqlDatabase>
+#include <QString>
+#include <QStringList>
+#include <QVector>
+#include <optional>
+
+namespace jarvis {
+
+// One stored memory. `tags` is a free-form list (stored as a space-joined
+// string for FTS); `score` is only populated by search() (FTS5 bm25 rank).
+struct MemoryRow {
+    QString id;
+    QString text;
+    QStringList tags;
+    qint64 created = 0; // unix ms
+    qint64 updated = 0; // unix ms
+    double score = 0.0; // search relevance (0 outside of search())
+
+    QJsonObject toJson() const;
+};
+
+class MemoryStore {
+public:
+    MemoryStore() = default;
+    ~MemoryStore();
+
+    MemoryStore(const MemoryStore &) = delete;
+    MemoryStore &operator=(const MemoryStore &) = delete;
+
+    // Default DB path: ~/.local/share/jarvis/jarvis.db (shared with SessionStore).
+    static QString defaultDbPath();
+
+    // Open (and create + migrate) the memories + memories_fts tables. Uses a
+    // distinct connection name so it can coexist with SessionStore on the same
+    // file. Returns false on failure (see lastError()).
+    bool open(const QString &dbPath = QString(),
+              const QString &connectionName = QStringLiteral("jarvis-memory"));
+    bool isOpen() const;
+    void close();
+
+    QString lastError() const { return m_lastError; }
+
+    // --- CRUD --------------------------------------------------------------
+    // Add a new memory; returns its generated id (empty on error). created/
+    // updated stamped now. If `id` is provided it is used verbatim (upsert).
+    QString add(const QString &text, const QStringList &tags = {},
+                const QString &id = QString());
+    // Replace the text/tags of an existing memory (updated re-stamped). False if
+    // the id does not exist or on error.
+    bool replace(const QString &id, const QString &text, const QStringList &tags);
+    bool remove(const QString &id);
+    std::optional<MemoryRow> get(const QString &id);
+
+    // Newest-first list (limit<=0 => all).
+    QVector<MemoryRow> list(int limit = 0);
+
+    // Full-text search over text+tags (FTS5). Falls back to a LIKE scan when the
+    // query has no usable FTS tokens. Returns up to `limit` rows, best match
+    // first, each with a populated `score` (higher = more relevant).
+    QVector<MemoryRow> search(const QString &query, int limit = 20);
+
+    // prefetch(query,k): the top-k relevant memories for a turn. Empty query =>
+    // the k most-recent memories (so a fresh turn still gets context).
+    QVector<MemoryRow> prefetch(const QString &query, int k = 6);
+
+    // Render a prefetch result as a system-prompt block to inject before a turn.
+    // Empty input => empty string (nothing injected).
+    static QString renderPromptBlock(const QVector<MemoryRow> &memories);
+
+private:
+    bool exec(const QString &sql, QString *err = nullptr);
+    bool migrate();
+
+    QSqlDatabase m_db;
+    QString m_connectionName;
+    QString m_lastError;
+};
+
+} // namespace jarvis

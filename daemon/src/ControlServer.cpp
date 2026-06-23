@@ -1,9 +1,12 @@
 #include "ControlServer.h"
 
+#include "jarvis/ApiBrain.h"
 #include "jarvis/Brain.h"
+#include "jarvis/ClaudeBrain.h"
 #include "jarvis/CodexBrain.h"
 
 #include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
@@ -60,6 +63,12 @@ bool ControlServer::start()
         m_lastError = QStringLiteral("failed to open session store: ") + m_store.lastError();
         return false;
     }
+
+    // Wave 5: Jarvis long-term memory (SQLite+FTS5, same jarvis.db, distinct
+    // connection). Non-fatal if it fails (memory simply stays empty) — but log.
+    if (!m_memory.open())
+        qWarning("jarvisd: memory store unavailable: %s",
+                 qPrintable(m_memory.lastError()));
 
     // Contract A v2 stores/registries. SettingsStore loads config.toml prefs +
     // secrets.json; the registries wrap the (now-open) SessionStore tables.
@@ -219,6 +228,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleAgentDesktopInfo(req);
     else if (m == QStringLiteral("take_over.request"))
         resp = handleTakeOverRequest(req);
+    else if (isMemoryOrSkillMethod(m))
+        resp = dispatchMemoryOrSkill(req);
     else
         resp = Response::failure(req.id, QStringLiteral("unknown_method"),
                                  QStringLiteral("unknown method: ") + m);
@@ -404,7 +415,47 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         brain->setSessionId(row.id);
         return brain;
     }
-    // claude / api brains arrive in a later wave.
+
+    if (row.brain == QStringLiteral("claude")) {
+        ClaudeBrain::Options opts;
+        opts.cwd = cwdOverride.isEmpty() ? m_config.effectiveCwd() : cwdOverride;
+        opts.model = row.model;
+        opts.profile = row.profile;
+        // Coworker sessions expose the computer-use (+ other enabled) MCP servers
+        // to claude via a --mcp-config JSON file. For a coworker+agent session
+        // the override points computer-use at the NESTED engine (agent's own
+        // screen, never the user's real one).
+        QString mcpJson;
+        if (!agentMcpOverrides.isEmpty()) {
+            // coworker+agent: point computer-use at the nested per-session engine.
+            mcpJson = claudeMcpConfigForAgent(m_agentDesktops.info(row.id));
+        } else if (row.profile == QStringLiteral("coworker")) {
+            mcpJson = claudeMcpConfigFromRegistry();
+        }
+        opts.mcpConfigJson = mcpJson;
+        auto *brain = new ClaudeBrain(opts, this);
+        brain->setSessionId(row.id);
+        return brain;
+    }
+
+    if (row.brain == QStringLiteral("api")) {
+        ApiBrain::Options opts;
+        opts.model = row.model;
+        opts.systemPrompt = memorySystemBlock();
+        // Resolve a key for the model's provider from secrets.json (write-only
+        // store). Anthropic models use the anthropic key; everything else the
+        // openai key. Ollama needs none.
+        const QString provider = ApiBrain::resolveProvider(opts);
+        if (provider == QStringLiteral("anthropic"))
+            opts.apiKey = m_settings.apiKey(QStringLiteral("anthropic"));
+        else if (provider == QStringLiteral("openai"))
+            opts.apiKey = m_settings.apiKey(QStringLiteral("openai"));
+        // ollama: no key.
+        auto *brain = new ApiBrain(opts, this);
+        brain->setSessionId(row.id);
+        return brain;
+    }
+
     return nullptr;
 }
 
@@ -447,6 +498,123 @@ QStringList ControlServer::agentMcpOverridesFor(const AgentDesktopInfo &desk) co
         }
     }
     return ov;
+}
+
+// --- Claude --mcp-config JSON ----------------------------------------------
+
+// Build a {"mcpServers":{<key>:{...}}} object for every enabled MCP server.
+// `computerUseEndpoint`/`computerUseBearer` override the built-in computer-use
+// entry (used to point it at a nested per-session engine for coworker+agent).
+static QJsonObject claudeMcpServersObject(McpRegistry *mcp,
+                                          const QString &cuEndpoint = QString(),
+                                          const QString &cuBearer = QString())
+{
+    QJsonObject servers;
+    if (!mcp)
+        return servers;
+    for (const McpServerRow &srv : mcp->list()) {
+        if (!srv.enabled)
+            continue;
+        const QString key = McpRegistry::codexKey(srv);
+        QJsonObject entry;
+        const bool isBuiltin = (srv.id == McpRegistry::builtinId());
+        if (srv.transport == QStringLiteral("stdio")) {
+            const QStringList parts =
+                srv.endpoint.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            if (parts.isEmpty())
+                continue;
+            entry.insert(QStringLiteral("command"), parts.first());
+            if (parts.size() > 1) {
+                QJsonArray args;
+                for (const QString &a : parts.mid(1))
+                    args.append(a);
+                entry.insert(QStringLiteral("args"), args);
+            }
+        } else {
+            QString url = srv.endpoint;
+            QString token = srv.token;
+            if (isBuiltin) {
+                if (!cuEndpoint.isEmpty())
+                    url = cuEndpoint;
+                token = cuBearer.isEmpty() ? McpRegistry::computerUseBearer() : cuBearer;
+            }
+            entry.insert(QStringLiteral("type"), QStringLiteral("http"));
+            entry.insert(QStringLiteral("url"), url);
+            if (!token.isEmpty()) {
+                QJsonObject headers;
+                headers.insert(QStringLiteral("Authorization"),
+                               QStringLiteral("Bearer ") + token);
+                entry.insert(QStringLiteral("headers"), headers);
+            }
+        }
+        servers.insert(key, entry);
+    }
+    return servers;
+}
+
+QString ControlServer::claudeMcpConfigFromRegistry() const
+{
+    QJsonObject root;
+    root.insert(QStringLiteral("mcpServers"), claudeMcpServersObject(m_mcp.get()));
+    return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
+}
+
+QString ControlServer::claudeMcpConfigForAgent(const AgentDesktopInfo &desk) const
+{
+    QJsonObject root;
+    root.insert(QStringLiteral("mcpServers"),
+                claudeMcpServersObject(m_mcp.get(), desk.mcpUrl, desk.bearer));
+    return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
+}
+
+// --- memory injection (HERMES_FEATURES §1) ---------------------------------
+
+QString ControlServer::prefetchMemoryBlock(const QString &query)
+{
+    if (!m_memory.isOpen())
+        return QString();
+    const QVector<MemoryRow> hits = m_memory.prefetch(query, 6);
+    return MemoryStore::renderPromptBlock(hits);
+}
+
+QString ControlServer::memorySystemBlock()
+{
+    // ApiBrain has no CLI system prompt of its own; seed it with recent memory.
+    if (!m_memory.isOpen())
+        return QStringLiteral("You are Jarvis, a helpful AI co-worker.");
+    QString block = QStringLiteral(
+        "You are Jarvis, a helpful AI co-worker. You have persistent memory.\n");
+    const QString mem = MemoryStore::renderPromptBlock(m_memory.prefetch(QString(), 8));
+    if (!mem.isEmpty())
+        block += QStringLiteral("\n") + mem;
+    return block;
+}
+
+void ControlServer::syncTurnMemory(const QString &sessionId, const QString &userText)
+{
+    // Best-effort post-turn write so memory grows even when the model doesn't
+    // call memory.add itself. Heuristic: persist explicit "remember that ..." /
+    // "note that ..." user statements (cheap, high-precision); the model can
+    // curate the rest via the memory tools exposed to it.
+    Q_UNUSED(sessionId);
+    if (!m_memory.isOpen())
+        return;
+    const QString t = userText.trimmed();
+    static const QStringList cues = {
+        QStringLiteral("remember that "), QStringLiteral("remember to "),
+        QStringLiteral("note that "),     QStringLiteral("keep in mind that "),
+        QStringLiteral("don't forget that "), QStringLiteral("for future reference, "),
+    };
+    const QString lower = t.toLower();
+    for (const QString &cue : cues) {
+        const int idx = lower.indexOf(cue);
+        if (idx >= 0) {
+            QString fact = t.mid(idx + cue.size()).trimmed();
+            if (fact.size() >= 4)
+                m_memory.add(fact, {QStringLiteral("auto"), QStringLiteral("user")});
+            return;
+        }
+    }
 }
 
 QString ControlServer::createSession(const QString &profile, const QString &brainName,
@@ -520,7 +688,20 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         return false;
     }
     m_store.updateState(sessionId, QStringLiteral("running"));
-    brain->send(text, images);
+
+    // Memory PREFETCH (HERMES_FEATURES §1), applied for ALL brains: prepend a
+    // relevant-memory block to the user's turn so the model has context. The
+    // memory tools (memory.*) let the model curate; this is the injection half.
+    QString effectiveText = text;
+    const QString memBlock = prefetchMemoryBlock(text);
+    if (!memBlock.isEmpty())
+        effectiveText = memBlock + QStringLiteral("\n---\n") + text;
+
+    brain->send(effectiveText, images);
+
+    // Memory SYNC (post-turn write of salient user facts). Cheap + synchronous;
+    // the model can also persist richer facts via the memory tools.
+    syncTurnMemory(sessionId, text);
     return true;
 }
 
@@ -904,6 +1085,223 @@ Response ControlServer::handleTakeOverRequest(const Request &req)
     result.insert(QStringLiteral("approval_id"),
                   QStringLiteral("takeover-") + sessionId);
     return Response::success(req.id, result);
+}
+
+// --- Contract A v3: memory + self-authored skills ---------------------------
+
+bool ControlServer::isMemoryOrSkillMethod(const QString &method)
+{
+    return method.startsWith(QStringLiteral("memory.")) ||
+           method.startsWith(QStringLiteral("skills."));
+}
+
+Response ControlServer::dispatchMemoryOrSkill(const Request &req)
+{
+    const QString &m = req.method;
+    if (m == QStringLiteral("memory.list"))
+        return handleMemoryList(req);
+    if (m == QStringLiteral("memory.search"))
+        return handleMemorySearch(req);
+    if (m == QStringLiteral("memory.add"))
+        return handleMemoryAdd(req);
+    if (m == QStringLiteral("memory.remove"))
+        return handleMemoryRemove(req);
+    if (m == QStringLiteral("skills.list"))
+        return handleSkillsList(req);
+    if (m == QStringLiteral("skills.get"))
+        return handleSkillsGet(req);
+    if (m == QStringLiteral("skills.create"))
+        return handleSkillsCreate(req);
+    if (m == QStringLiteral("skills.invoke"))
+        return handleSkillsInvoke(req);
+    if (m == QStringLiteral("skills.remove"))
+        return handleSkillsRemove(req);
+    if (m == QStringLiteral("skills.today"))
+        return handleSkillsToday(req);
+    return Response::failure(req.id, QStringLiteral("unknown_method"),
+                             QStringLiteral("unknown method: ") + m);
+}
+
+Response ControlServer::handleMemoryList(const Request &req)
+{
+    const int limit = req.params.value(QStringLiteral("limit")).toInt(0);
+    QJsonArray arr;
+    for (const MemoryRow &m : m_memory.list(limit))
+        arr.append(m.toJson());
+    QJsonObject result;
+    result.insert(QStringLiteral("memories"), arr);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleMemorySearch(const Request &req)
+{
+    const QString q = req.params.value(QStringLiteral("q")).toString();
+    const int limit = req.params.value(QStringLiteral("limit")).toInt(20);
+    QJsonArray arr;
+    for (const MemoryRow &m : m_memory.search(q, limit))
+        arr.append(m.toJson());
+    QJsonObject result;
+    result.insert(QStringLiteral("memories"), arr);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleMemoryAdd(const Request &req)
+{
+    const QString text = req.params.value(QStringLiteral("text")).toString();
+    QStringList tags;
+    for (const QJsonValue &t : req.params.value(QStringLiteral("tags")).toArray())
+        tags << t.toString();
+    if (text.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("text is required"));
+    const QString id = m_memory.add(text, tags);
+    if (id.isEmpty())
+        return Response::failure(req.id, QStringLiteral("store_error"), m_memory.lastError());
+    QJsonObject result;
+    result.insert(QStringLiteral("id"), id);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleMemoryRemove(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    if (!m_memory.remove(id))
+        return Response::failure(req.id, QStringLiteral("not_removed"),
+                                 QStringLiteral("memory not found: ") + id);
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleSkillsList(const Request &req)
+{
+    QJsonArray arr;
+    for (const SkillRow &s : m_skills.list())
+        arr.append(s.toListJson());
+    QJsonObject result;
+    result.insert(QStringLiteral("skills"), arr);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleSkillsGet(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    SkillFrontmatter fm;
+    QString body, path;
+    if (!m_skills.read(name, &fm, &body, &path))
+        return Response::failure(req.id, QStringLiteral("no_skill"), m_skills.lastError());
+    QJsonObject result;
+    result.insert(QStringLiteral("frontmatter"), fm.toJson());
+    result.insert(QStringLiteral("body"), body);
+    result.insert(QStringLiteral("path"), path);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleSkillsCreate(const Request &req)
+{
+    const QJsonObject p = req.params;
+    const QString name = p.value(QStringLiteral("name")).toString();
+    const QString description = p.value(QStringLiteral("description")).toString();
+    const QString body = p.value(QStringLiteral("body")).toString();
+    const QString group = p.value(QStringLiteral("group")).toString();
+    QStringList tags;
+    for (const QJsonValue &t : p.value(QStringLiteral("tags")).toArray())
+        tags << t.toString();
+    QVector<SkillScript> scripts;
+    for (const QJsonValue &sv : p.value(QStringLiteral("scripts")).toArray()) {
+        const QJsonObject so = sv.toObject();
+        scripts.push_back(SkillScript{so.value(QStringLiteral("name")).toString(),
+                                      so.value(QStringLiteral("content")).toString()});
+    }
+    if (name.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("name is required"));
+    const QString path = m_skills.create(name, description, body, group, tags, scripts);
+    if (path.isEmpty())
+        return Response::failure(req.id, QStringLiteral("write_error"), m_skills.lastError());
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("path"), path);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleSkillsInvoke(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    const QJsonObject argsObj = req.params.value(QStringLiteral("args")).toObject();
+    const QString argsStr = req.params.value(QStringLiteral("args")).isString()
+                                ? req.params.value(QStringLiteral("args")).toString()
+                                : QString();
+    QString err;
+    const QString message = m_skills.invoke(name, argsStr, argsObj, &err);
+    if (message.isEmpty())
+        return Response::failure(req.id, QStringLiteral("no_skill"), err);
+    QJsonObject result;
+    result.insert(QStringLiteral("message"), message);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleSkillsRemove(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    if (!m_skills.remove(name))
+        return Response::failure(req.id, QStringLiteral("no_skill"), m_skills.lastError());
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleSkillsToday(const Request &req)
+{
+    QJsonObject result;
+    result.insert(QStringLiteral("digest"), buildTodayDigest());
+    return Response::success(req.id, result);
+}
+
+QString ControlServer::buildTodayDigest()
+{
+    // A short "what I'm working on today" summary from recent sessions +
+    // memories. (Project-tracker MCP project_list/agent_checkin would enrich
+    // this; the daemon surfaces what it can locally and notes the MCP source so
+    // the desktop/phone can fold in the live project list.)
+    QString out = QStringLiteral("# Today\n");
+
+    const QVector<SessionRow> sessions = m_store.list();
+    int shown = 0;
+    if (!sessions.isEmpty()) {
+        out += QStringLiteral("\n## Recent sessions\n");
+        for (const SessionRow &s : sessions) {
+            if (shown++ >= 5)
+                break;
+            out += QStringLiteral("- [%1/%2] %3 (%4)\n")
+                       .arg(s.brain, s.profile,
+                            s.title.isEmpty() ? s.id : s.title, s.state);
+        }
+    }
+
+    if (m_memory.isOpen()) {
+        const QVector<MemoryRow> recent = m_memory.list(5);
+        if (!recent.isEmpty()) {
+            out += QStringLiteral("\n## Recent memory\n");
+            for (const MemoryRow &m : recent)
+                out += QStringLiteral("- %1\n").arg(m.text);
+        }
+    }
+
+    const QVector<SkillRow> skills = m_skills.list();
+    if (!skills.isEmpty()) {
+        out += QStringLiteral("\n## Skills available\n");
+        int n = 0;
+        for (const SkillRow &s : skills) {
+            if (n++ >= 8)
+                break;
+            out += QStringLiteral("- /%1 — %2\n").arg(s.fm.name, s.fm.description);
+        }
+    }
+
+    out += QStringLiteral("\n(Live project list via project-tracker MCP "
+                          "project_list is folded in by the client.)\n");
+    return out;
 }
 
 // --- event fan-out ---------------------------------------------------------

@@ -277,13 +277,23 @@ QString DeviceServer::tierFor(const QString &method)
 {
     if (method == QStringLiteral("session.list") ||
         method == QStringLiteral("session.history") ||
-        method == QStringLiteral("task.list"))
+        method == QStringLiteral("task.list") ||
+        method == QStringLiteral("memory.list") ||
+        method == QStringLiteral("memory.search") ||
+        method == QStringLiteral("skills.list") ||
+        method == QStringLiteral("skills.get") ||
+        method == QStringLiteral("skills.today"))
         return QStringLiteral("read");
     if (method == QStringLiteral("session.create") ||
         method == QStringLiteral("session.send") ||
         method == QStringLiteral("session.cancel") ||
         method == QStringLiteral("task.queue") ||
-        method == QStringLiteral("push.register"))
+        method == QStringLiteral("push.register") ||
+        method == QStringLiteral("memory.add") ||
+        method == QStringLiteral("memory.remove") ||
+        method == QStringLiteral("skills.create") ||
+        method == QStringLiteral("skills.invoke") ||
+        method == QStringLiteral("skills.remove"))
         return QStringLiteral("action");
     if (method == QStringLiteral("approval.respond") ||
         method == QStringLiteral("mirror.start") ||
@@ -301,6 +311,12 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("task.list"),       QStringLiteral("push.register"),
         QStringLiteral("approval.respond"),
         QStringLiteral("mirror.start"),    QStringLiteral("mirror.stop"),
+        // Contract A v3 mirrored to the phone: memory + self-authored skills.
+        QStringLiteral("memory.list"),     QStringLiteral("memory.search"),
+        QStringLiteral("memory.add"),      QStringLiteral("memory.remove"),
+        QStringLiteral("skills.list"),     QStringLiteral("skills.get"),
+        QStringLiteral("skills.create"),   QStringLiteral("skills.invoke"),
+        QStringLiteral("skills.remove"),   QStringLiteral("skills.today"),
     };
     QJsonObject map;
     for (const QString &m : methods)
@@ -341,6 +357,10 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         resp = devMirrorStart(c, client, req);
     } else if (m == QStringLiteral("mirror.stop")) {
         resp = devMirrorStop(c, client, req);
+    } else if (ControlServer::isMemoryOrSkillMethod(m)) {
+        // Contract A v3 mirror: memory + skills share the SAME store as the
+        // desktop, so the phone curates one coherent memory/skill world.
+        resp = m_control->dispatchMemoryOrSkill(req);
     } else {
         resp = Response::failure(req.id, QStringLiteral("unknown_method"),
                                  QStringLiteral("unknown method: ") + m);
