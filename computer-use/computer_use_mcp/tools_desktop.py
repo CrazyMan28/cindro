@@ -5,7 +5,9 @@ import time
 
 from mcp.server.fastmcp import FastMCP, Image
 
-from computer_use_mcp import apps, clipboard, input as inp, screen, session, windows
+from computer_use_mcp import (
+    apps, clipboard, input as inp, screen, session, windows, workspaces,
+)
 
 
 def _err(exc: Exception, hint: str | None = None) -> str:
@@ -249,6 +251,63 @@ def register(mcp: FastMCP) -> None:
         pixels)."""
         try:
             return json.dumps(windows.set_state(window_id, action, x, y, w, h))
+        except Exception as exc:
+            return _err(exc)
+
+    # -- workspaces / virtual desktops ------------------------------------------
+
+    @mcp.tool()
+    def workspace_list(which: str = "active") -> str:
+        """List workspaces / virtual desktops with num, name, and which is
+        focused. Works on BOTH compositors: Sway workspaces (via swaymsg) and KDE
+        KWin virtual desktops (via the KWin bridge). which: 'active' (the host
+        seat, or the nested agent desktop when this engine is bound to one),
+        'agent' (nested co-worker desktop), or 'kde'/'sway' to target a specific
+        host compositor. Call this before switch/rename to learn names+numbers."""
+        try:
+            return json.dumps(
+                _retry_once_if_not_ready(lambda: workspaces.list_workspaces(which)),
+                indent=1)
+        except Exception as exc:
+            return _err(exc, hint="session_info shows which compositors are present")
+
+    @mcp.tool()
+    def workspace_switch(name: str | None = None, num: int | None = None,
+                         which: str = "active") -> str:
+        """Switch to a workspace / virtual desktop by name or number. Pass `name`
+        (e.g. 'research') or `num` (e.g. 2) — exactly one. On Sway, switching to a
+        name that doesn't exist CREATES it. which: 'active' (default), 'agent'
+        (nested co-worker desktop), or 'kde'/'sway'."""
+        try:
+            return json.dumps(_retry_once_if_not_ready(
+                lambda: workspaces.switch_workspace(name=name, num=num, which=which)))
+        except Exception as exc:
+            return _err(exc, hint="workspace_list shows valid names/numbers")
+
+    @mcp.tool()
+    def workspace_create(name: str, switch: bool = True,
+                         which: str = "active") -> str:
+        """Create a NEW named workspace / virtual desktop and (by default) switch
+        to it, so the model can spin up a dedicated space like 'research' and work
+        there. On Sway this focuses the named workspace (created on demand); on KDE
+        it adds a new KWin virtual desktop and activates it. which: 'active'
+        (default), 'agent' (nested co-worker desktop), or 'kde'/'sway'."""
+        try:
+            return json.dumps(_retry_once_if_not_ready(
+                lambda: workspaces.create_workspace(name, switch=switch, which=which)))
+        except Exception as exc:
+            return _err(exc)
+
+    @mcp.tool()
+    def workspace_rename(name: str, old: str | None = None,
+                         which: str = "active") -> str:
+        """Rename a workspace / virtual desktop to `name`. Renames the CURRENT
+        workspace unless `old` (the existing name) is given. Works on Sway
+        (`rename workspace ... to`) and KDE (KWin virtual desktop name). which:
+        'active' (default), 'agent' (nested co-worker desktop), or 'kde'/'sway'."""
+        try:
+            return json.dumps(_retry_once_if_not_ready(
+                lambda: workspaces.rename_workspace(name, old=old, which=which)))
         except Exception as exc:
             return _err(exc)
 
