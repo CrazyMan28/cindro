@@ -354,6 +354,106 @@ void Bridge::devicesRevoke(const QString &id)
     request(QStringLiteral("devices.revoke"), params);
 }
 
+// ---- Memory (Contract A v3) ------------------------------------------------
+
+void Bridge::memoryList(int limit)
+{
+    QVariantMap params;
+    if (limit > 0)
+        params.insert(QStringLiteral("limit"), limit);
+    request(QStringLiteral("memory.list"), params);
+}
+
+void Bridge::memorySearch(const QString &q)
+{
+    const QString query = q.trimmed();
+    if (query.isEmpty()) {
+        // Empty query is just a full-list refresh.
+        memoryList();
+        return;
+    }
+    QVariantMap params;
+    params.insert(QStringLiteral("q"), query);
+    request(QStringLiteral("memory.search"), params);
+}
+
+void Bridge::memoryAdd(const QString &text, const QStringList &tags)
+{
+    const QString body = text.trimmed();
+    if (body.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("text"), body);
+    if (!tags.isEmpty())
+        params.insert(QStringLiteral("tags"), tags);
+    request(QStringLiteral("memory.add"), params);
+}
+
+void Bridge::memoryRemove(const QString &id)
+{
+    if (id.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    request(QStringLiteral("memory.remove"), params);
+}
+
+// ---- Skills (Contract A v3, self-authoring) --------------------------------
+
+void Bridge::skillsList()
+{
+    request(QStringLiteral("skills.list"), {});
+}
+
+void Bridge::skillGet(const QString &name)
+{
+    if (name.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), name);
+    request(QStringLiteral("skills.get"), params, name);
+}
+
+void Bridge::skillCreate(const QString &name, const QString &description,
+                         const QString &body, const QString &group)
+{
+    const QString n = name.trimmed();
+    if (n.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), n);
+    params.insert(QStringLiteral("description"), description.trimmed());
+    params.insert(QStringLiteral("body"), body);
+    if (!group.trimmed().isEmpty())
+        params.insert(QStringLiteral("group"), group.trimmed());
+    request(QStringLiteral("skills.create"), params);
+}
+
+void Bridge::skillInvoke(const QString &name, const QString &args)
+{
+    if (name.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), name);
+    if (!args.trimmed().isEmpty())
+        params.insert(QStringLiteral("args"), args.trimmed());
+    request(QStringLiteral("skills.invoke"), params, name);
+}
+
+void Bridge::skillRemove(const QString &name)
+{
+    if (name.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), name);
+    request(QStringLiteral("skills.remove"), params);
+}
+
+void Bridge::skillsToday()
+{
+    request(QStringLiteral("skills.today"), {});
+}
+
 // ---- COMPUTER page ---------------------------------------------------------
 
 void Bridge::setDriving(bool d)
@@ -713,6 +813,22 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                 || method == QStringLiteral("session.set_target"))) {
             return;
         }
+        // Memory + skills (Contract A v3) land daemon-side in Wave 6. Until then
+        // the daemon answers unknown_method; degrade the pages to a clean empty
+        // state instead of a generic error toast.
+        if (code == QStringLiteral("unknown_method")
+            && (method.startsWith(QStringLiteral("memory."))
+                || method.startsWith(QStringLiteral("skills.")))) {
+            if (method == QStringLiteral("memory.list"))
+                emit memoriesListed(QVariantList(), false);
+            else if (method == QStringLiteral("memory.search"))
+                emit memoriesListed(QVariantList(), true);
+            else if (method == QStringLiteral("skills.list"))
+                emit skillsListed(QVariantList());
+            else if (method == QStringLiteral("skills.today"))
+                emit todayDigest(QString());
+            return;
+        }
         emit errorOccurred(QStringLiteral("%1 failed: [%2] %3")
                                .arg(method.isEmpty() ? QStringLiteral("request") : method, code, msg));
         return;
@@ -795,6 +911,29 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                                 : ctx;
         emit sessionHistory(sid, events);
         m_openingSession = false;
+    } else if (method == QStringLiteral("memory.list")) {
+        emit memoriesListed(result.value(QStringLiteral("memories")).toList(), false);
+    } else if (method == QStringLiteral("memory.search")) {
+        emit memoriesListed(result.value(QStringLiteral("memories")).toList(), true);
+    } else if (method == QStringLiteral("memory.add")
+               || method == QStringLiteral("memory.remove")) {
+        emit memoryChanged();
+        memoryList(); // refresh the list after a mutation
+    } else if (method == QStringLiteral("skills.list")) {
+        emit skillsListed(result.value(QStringLiteral("skills")).toList());
+    } else if (method == QStringLiteral("skills.get")) {
+        emit skillLoaded(ctx,
+                         result.value(QStringLiteral("frontmatter")).toMap(),
+                         result.value(QStringLiteral("body")).toString(),
+                         result.value(QStringLiteral("path")).toString());
+    } else if (method == QStringLiteral("skills.create")
+               || method == QStringLiteral("skills.remove")) {
+        emit skillsChanged();
+        skillsList(); // re-index after a self-authoring write / removal
+    } else if (method == QStringLiteral("skills.invoke")) {
+        emit skillInvoked(ctx, result.value(QStringLiteral("message")).toString());
+    } else if (method == QStringLiteral("skills.today")) {
+        emit todayDigest(result.value(QStringLiteral("digest")).toString());
     } else if (method == QStringLiteral("devices.pair_start")) {
         // { code, payload, qr_svg, expires_at }
         const QString qrSvg = result.value(QStringLiteral("qr_svg")).toString();

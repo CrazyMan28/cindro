@@ -343,6 +343,13 @@ Item {
                             font.pixelSize: 13
                             lineHeight: 1.35
                         }
+
+                        // TODAY // BRIEFING — skills.today digest, refreshed on connect.
+                        TodayBriefing {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 6
+                            visible: bridge.connected
+                        }
                     }
                 }
 
@@ -504,6 +511,24 @@ Item {
                 }
             }
         }
+    }
+
+    // Inject a rendered skill (from the Skills page /invoke) into the transcript
+    // as a user turn and send it. Creates a session first if none is active, just
+    // like submit(). The skill text becomes the next model input.
+    function injectSkill(name, message) {
+        var t = ("" + message).trim()
+        if (t.length === 0 || !bridge.connected)
+            return
+        if (bridge.sessionId.length === 0)
+            bridge.createSession("coder", "codex", panel.selectedModel)
+        chatModel.append({
+            "kind": "message", "role": "user",
+            "text": "/" + name + (t.length ? "\n\n" + t : ""),
+            "callId": "", "toolName": "", "approvalId": "", "risk": "", "ok": true
+        })
+        bridge.sendMessage(t)
+        chatView.positionViewAtEnd()
     }
 
     // ---- Actions -----------------------------------------------------------

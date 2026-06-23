@@ -3,9 +3,9 @@ import QtQuick.Layouts
 import JarvisSidebar
 
 // AppShell — the full multi-page application body. A slim left NavRail routes
-// between six pages rendered in the content area on the right:
+// between eight pages rendered in the content area on the right:
 //   0 Chat (the existing JarvisPanel), 1 Computer (co-worker / take-over),
-//   2 Sessions, 3 Settings, 4 MCP, 5 Plugins.
+//   2 Memory, 3 Skills, 4 Sessions, 5 Settings, 6 MCP, 7 Plugins.
 //
 // This is the single shared content surface reparented between the floating
 // window and the docked layer-shell surface (see Main.qml), so all page state
@@ -17,6 +17,10 @@ Item {
     id: shell
 
     property int currentIndex: 0
+
+    // Set by the Chat loader so other pages (e.g. Skills /invoke) can inject into
+    // the live transcript without coupling to load order.
+    property var chatPanel: null
 
     // Singleton-style access to shared inline widgets (Widgets.PillButton, etc.).
     // QML resolves `Widgets` inside pages because it's in the same module.
@@ -55,7 +59,7 @@ Item {
             // Each page is wrapped so we can animate opacity + a small x-slide.
             // Only the active page is interactive; the rest fade out behind it.
             Repeater {
-                model: 6
+                model: 8
                 delegate: Item {
                     id: pageWrap
                     required property int index
@@ -83,10 +87,12 @@ Item {
                             switch (pageWrap.index) {
                             case 0: return chatComp
                             case 1: return computerComp
-                            case 2: return sessionsComp
-                            case 3: return settingsComp
-                            case 4: return mcpComp
-                            case 5: return pluginsComp
+                            case 2: return memoryComp
+                            case 3: return skillsComp
+                            case 4: return sessionsComp
+                            case 5: return settingsComp
+                            case 6: return mcpComp
+                            case 7: return pluginsComp
                             }
                         }
                     }
@@ -97,8 +103,24 @@ Item {
     }
 
     // ---- page components ---------------------------------------------------
-    Component { id: chatComp;     JarvisPanel {} }
+    Component {
+        id: chatComp
+        JarvisPanel { Component.onCompleted: shell.chatPanel = this }
+    }
     Component { id: computerComp; ComputerPage {} }
+    Component { id: memoryComp;   MemoryPage {} }
+    Component {
+        id: skillsComp
+        SkillsPage {
+            // /invoke a skill -> drop the rendered text into the live Chat panel
+            // and jump to the Chat page so the user sees it land.
+            onRunSkill: function(name, message) {
+                if (shell.chatPanel)
+                    shell.chatPanel.injectSkill(name, message)
+                shell.currentIndex = 0
+            }
+        }
+    }
     Component {
         id: sessionsComp
         SessionsPage {

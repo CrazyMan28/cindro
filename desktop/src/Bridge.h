@@ -117,6 +117,35 @@ public:
     // devices.revoke { id } -> on success refreshes the list.
     Q_INVOKABLE void devicesRevoke(const QString &id);
 
+    // ---- Memory (Contract A v3) --------------------------------------------
+    // memory.list { limit? } -> memoriesListed(QVariantList).
+    Q_INVOKABLE void memoryList(int limit = 0);
+    // memory.search { q } -> memoriesListed(QVariantList) (scored).
+    Q_INVOKABLE void memorySearch(const QString &q);
+    // memory.add { text, tags? } -> on success refreshes the list.
+    Q_INVOKABLE void memoryAdd(const QString &text, const QStringList &tags);
+    // memory.remove { id } -> on success refreshes the list.
+    Q_INVOKABLE void memoryRemove(const QString &id);
+
+    // ---- Skills (Contract A v3, self-authoring) ----------------------------
+    // skills.list -> skillsListed(QVariantList).
+    Q_INVOKABLE void skillsList();
+    // skills.get { name } -> skillLoaded(name, frontmatter, body, path).
+    Q_INVOKABLE void skillGet(const QString &name);
+    // skills.create { name, description, body, group?, scripts? } — SELF-AUTHORING:
+    // writes a SKILL.md to the skills dir; on success refreshes the list.
+    Q_INVOKABLE void skillCreate(const QString &name, const QString &description,
+                                 const QString &body, const QString &group);
+    // skills.invoke { name, args? } -> skillInvoked(name, message). The rendered
+    // skill text is meant to be injected into the chat as a user message.
+    Q_INVOKABLE void skillInvoke(const QString &name, const QString &args);
+    // skills.remove { name } -> on success refreshes the list.
+    Q_INVOKABLE void skillRemove(const QString &name);
+
+    // skills.today -> todayDigest(digest). A short "what I'm working on today"
+    // summary built from project-tracker + recent sessions/memories.
+    Q_INVOKABLE void skillsToday();
+
     // ---- COMPUTER page (co-worker session + take-over + live video) --------
     // Start a co-worker session: session.create{profile:"coworker",target:"agent"}.
     // jarvisd spawns the nested headless desktop + a per-session computer-use
@@ -181,6 +210,26 @@ signals:
                         const QString &payload, double expiresAt);
     void devicesListed(const QVariantList &devices);
     void devicesChanged();   // emitted after a revoke so the UI refreshes
+
+    // ---- Memory results (Contract A v3) ------------------------------------
+    // memory.list / memory.search both resolve here. `isSearch` lets the UI tell
+    // a scored search result from a full list. Rows: {id,text,tags,created,score?}.
+    void memoriesListed(const QVariantList &memories, bool isSearch);
+    // Emitted after add/remove so the page can re-query.
+    void memoryChanged();
+
+    // ---- Skills results (Contract A v3) ------------------------------------
+    // Rows: {name,group,description,tags,self_authored}.
+    void skillsListed(const QVariantList &skills);
+    // skills.get result.
+    void skillLoaded(const QString &name, const QVariantMap &frontmatter,
+                     const QString &body, const QString &path);
+    // Emitted after create/remove so the page can re-query.
+    void skillsChanged();
+    // skills.invoke result — the rendered skill text to inject into chat.
+    void skillInvoked(const QString &name, const QString &message);
+    // skills.today result.
+    void todayDigest(const QString &digest);
 
     // ---- COMPUTER page signals ---------------------------------------------
     void coworkerSessionIdChanged();

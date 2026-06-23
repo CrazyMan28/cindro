@@ -16,6 +16,8 @@ Item {
     readonly property var items: [
         { key: "chat",     label: "CHAT" },
         { key: "computer", label: "COMPUTER" },
+        { key: "memory",   label: "MEMORY" },
+        { key: "skills",   label: "SKILLS" },
         { key: "sessions", label: "SESSIONS" },
         { key: "settings", label: "SETTINGS" },
         { key: "mcp",      label: "MCP" },
@@ -238,6 +240,29 @@ Item {
                     ctx.moveTo(10, 5.5); ctx.lineTo(13.5, 8.5); ctx.lineTo(11.6, 8.7)
                     ctx.lineTo(12.7, 10.6); ctx.lineTo(11.6, 11.1); ctx.lineTo(10.6, 9.1)
                     ctx.lineTo(9.2, 10.2); ctx.closePath(); ctx.stroke()
+                    break
+                case "memory":
+                    // a brain/recall node: a chip outline with a pulse core + leads
+                    ctx.strokeRect(4, 4, 10, 10)
+                    ctx.beginPath(); ctx.arc(9, 9, 2, 0, Math.PI*2); ctx.stroke()
+                    // pins
+                    ctx.beginPath()
+                    ctx.moveTo(7, 4); ctx.lineTo(7, 1.5)
+                    ctx.moveTo(11, 4); ctx.lineTo(11, 1.5)
+                    ctx.moveTo(7, 14); ctx.lineTo(7, 16.5)
+                    ctx.moveTo(11, 14); ctx.lineTo(11, 16.5)
+                    ctx.moveTo(4, 7); ctx.lineTo(1.5, 7)
+                    ctx.moveTo(4, 11); ctx.lineTo(1.5, 11)
+                    ctx.moveTo(14, 7); ctx.lineTo(16.5, 7)
+                    ctx.moveTo(14, 11); ctx.lineTo(16.5, 11)
+                    ctx.stroke()
+                    break
+                case "skills":
+                    // a lightning spark glyph
+                    ctx.beginPath()
+                    ctx.moveTo(10, 1.5); ctx.lineTo(4, 9.5); ctx.lineTo(8.5, 9.5)
+                    ctx.lineTo(7.5, 16.5); ctx.lineTo(14, 8); ctx.lineTo(9.5, 8)
+                    ctx.closePath(); ctx.stroke()
                     break
                 case "sessions":
                     ctx.strokeRect(2.5, 2.5, 13, 3.5)

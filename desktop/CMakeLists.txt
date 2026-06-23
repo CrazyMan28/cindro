@@ -43,6 +43,9 @@ qt_add_qml_module(jarvis-sidebar
         qml/SettingsPage.qml
         qml/McpPage.qml
         qml/PluginsPage.qml
+        qml/MemoryPage.qml
+        qml/SkillsPage.qml
+        qml/TodayBriefing.qml
         qml/ComputerPage.qml
         qml/DrivingOverlay.qml
         qml/TitleBar.qml
