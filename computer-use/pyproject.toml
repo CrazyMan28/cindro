@@ -11,6 +11,11 @@ dependencies = [
     "pillow>=10.0",
     "dbus-fast>=2.24",
     "evdev>=1.7",
+    # Wayland client used ONLY for agent-mode keyboard: the nested headless sway
+    # runs with WLR_LIBINPUT_NO_DEVICES=1, so host uinput/ydotool keystrokes
+    # never reach it. We inject keys via zwp_virtual_keyboard_v1 bound to the
+    # nested WAYLAND_DISPLAY instead (computer_use_mcp/vkbd.py).
+    "pywayland>=0.4.17",
 ]
 
 [project.scripts]

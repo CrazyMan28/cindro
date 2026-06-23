@@ -499,6 +499,13 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         if (!agentMcpOverrides.args.isEmpty()) {
             // coworker+agent: point computer-use at the nested per-session engine.
             mcpJson = claudeMcpConfigForAgent(m_agentDesktops.info(row.id));
+            // Headless `claude -p` would otherwise PROMPT for permission before
+            // each MCP tool call and, with no interactive responder, the turn
+            // stalls and the computer-use tools never run (acceptEdits only
+            // auto-accepts file edits, not MCP tools). The agent drives its OWN
+            // nested desktop (never the user's real screen), so bypass prompts
+            // for this session so the brain can actually call the tools.
+            opts.permissionMode = QStringLiteral("bypassPermissions");
         } else if (row.profile == QStringLiteral("coworker")) {
             mcpJson = claudeMcpConfigFromRegistry();
         }

@@ -433,7 +433,16 @@ def detect(refresh: bool = False) -> dict:
         agent.active = False
         sessions.append(agent)
 
+    # When this engine is bound to a nested agent desktop, it drives ONLY that
+    # nested compositor — it never needs host geometry, and probing the host KDE
+    # outputs here blocks ~10s on kscreen-doctor (the engine's isolated
+    # XDG_RUNTIME_DIR can't reach the locked host Plasma), which stalls every
+    # window_list / app_launch poll. Skip the host output probes in agent mode.
+    agent_mode = bool(os.environ.get(AGENT_WAYLAND_ENV) or os.environ.get(AGENT_SWAYSOCK_ENV))
     for info in sessions:
+        if agent_mode and info.kind != "agent":
+            info.outputs_unavailable_reason = "skipped (engine bound to nested agent desktop)"
+            continue
         if info.kind == "kde":
             _kde_outputs(info)
         else:  # sway or agent (both wlroots; grim/swaymsg)
@@ -467,9 +476,18 @@ def get_session(which: str = "active") -> SessionInfo:
     """Resolve 'active' | 'kde' | 'sway' | 'agent' to a live session or raise.
 
     'agent' is the nested headless-Sway co-worker desktop; it only exists when
-    JARVIS_AGENT_WAYLAND_DISPLAY/JARVIS_AGENT_SWAYSOCK are set in this process."""
+    JARVIS_AGENT_WAYLAND_DISPLAY/JARVIS_AGENT_SWAYSOCK are set in this process.
+
+    When this engine is bound to a nested agent desktop, 'active' resolves to the
+    agent session: this per-session engine drives ONLY the nested compositor, so
+    every tool that defaults to which='active' (screenshot, clipboard, ...) must
+    target the agent desktop, never the host seat (which it can't reach anyway)."""
     d = detect()
     if which == "active":
+        if os.environ.get(AGENT_WAYLAND_ENV) or os.environ.get(AGENT_SWAYSOCK_ENV):
+            agent = next((s for s in d["sessions"] if s.kind == "agent"), None)
+            if agent is not None:
+                return agent
         if d["active"] is None:
             raise RuntimeError(
                 "No active graphical session detected on seat0 "
