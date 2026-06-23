@@ -2,6 +2,7 @@
 
 #include "jarvis/CodexParser.h"
 
+#include <QProcessEnvironment>
 #include <QStringList>
 
 namespace jarvis {
@@ -87,6 +88,15 @@ void CodexBrain::send(const QString &text, const QStringList &images)
     m_proc->setProgram(m_opts.program);
     m_proc->setArguments(buildArgs(text));
     m_proc->setProcessChannelMode(QProcess::SeparateChannels);
+    // Export MCP bearer tokens that the `-c ...bearer_token_env_var=<NAME>`
+    // overrides reference. Without these, codex starts the HTTP MCP server with
+    // no Authorization header and the engine rejects every tool call.
+    if (!m_opts.extraEnv.isEmpty()) {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        for (auto it = m_opts.extraEnv.constBegin(); it != m_opts.extraEnv.constEnd(); ++it)
+            env.insert(it.key(), it.value());
+        m_proc->setProcessEnvironment(env);
+    }
     // Redirect stdin from /dev/null BEFORE start so codex sees EOF immediately
     // and never blocks "Reading additional input from stdin..." (verified
     // gotcha, spikes/RESULTS.md). This is the equivalent of `</dev/null`.

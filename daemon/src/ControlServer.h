@@ -253,14 +253,17 @@ private:
     QString mistralKey() const;
 
     // Create + wire a brain for a session row. Returns nullptr on unknown brain.
-    // `agentMcpOverrides` (non-empty for coworker+agent) replaces the global
-    // computer-use override with the per-session nested-desktop engine.
+    // `agentMcpOverrides` (args non-empty for coworker+agent) replaces the
+    // global computer-use override with the per-session nested-desktop engine,
+    // and carries the bearer env vars for the codex child.
     Brain *makeBrain(const SessionRow &row, const QString &cwdOverride,
-                     const QStringList &agentMcpOverrides);
+                     const CodexMcpOverrides &agentMcpOverrides);
 
     // Codex MCP overrides that point the built-in computer-use at the nested
-    // per-session engine (url+bearer) and keep any other enabled servers.
-    QStringList agentMcpOverridesFor(const AgentDesktopInfo &desk) const;
+    // per-session engine (url + bearer-via-env-var) and keep any other enabled
+    // servers. Bearers are emitted as `bearer_token_env_var=<NAME>` with the
+    // value in CodexMcpOverrides::env (codex 0.135 rejects inline bearers).
+    CodexMcpOverrides agentMcpOverridesFor(const AgentDesktopInfo &desk) const;
 
     // Claude `--mcp-config` JSON ({"mcpServers":{...}}) for a coworker session:
     //   - FromRegistry: every enabled MCP server (incl. built-in computer-use).

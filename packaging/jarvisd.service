@@ -11,6 +11,7 @@ ExecStart=%h/.local/bin/jarvisd
 Restart=on-failure
 RestartSec=2
 Environment=QT_QPA_PLATFORM=offscreen
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 
 [Install]
 WantedBy=default.target
