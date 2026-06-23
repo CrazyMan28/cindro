@@ -35,6 +35,12 @@ public:
         // Permission mode: coder/coworker run with default gated permissions; the
         // daemon never passes bypassPermissions.
         QString permissionMode; // "" => CLI default
+        // CLAUDE_CONFIG_DIR for the spawned `claude` process — pins which OAuth
+        // account the brain runs as. DEFAULTS to the Pro account dir (~/.claude)
+        // so the brain never accidentally inherits the user's Max account
+        // (~/.claude-secondary) from the ambient environment. The daemon maps
+        // the `claude_account` setting (pro|max) onto this.
+        QString configDir;
     };
 
     explicit ClaudeBrain(Options opts, QObject *parent = nullptr);

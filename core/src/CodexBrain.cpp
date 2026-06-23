@@ -21,6 +21,13 @@ CodexBrain::CodexBrain(Options opts, QObject *parent)
 {
     if (m_opts.sandboxMode.isEmpty())
         m_opts.sandboxMode = sandboxForProfile(m_opts.profile);
+    // Driving the computer-use MCP headless requires danger-full-access; any
+    // narrower sandbox makes codex auto-cancel every MCP tool call. The caller
+    // (daemon) only ever sets driveMcp for a coworker+agent session that drives
+    // the agent's OWN isolated nested desktop, so this never loosens access to
+    // the user's real machine.
+    if (m_opts.driveMcp)
+        m_opts.sandboxMode = QStringLiteral("danger-full-access");
 }
 
 CodexBrain::~CodexBrain()
@@ -48,6 +55,11 @@ QStringList CodexBrain::buildArgs(const QString &prompt) const
          // sandbox mode is what actually constrains writes.
          << QStringLiteral("--skip-git-repo-check")
          << QStringLiteral("--sandbox") << m_opts.sandboxMode;
+    // When driving the computer-use MCP, also set approval_policy=never so codex
+    // never escalates a per-call approval it can't get headless. `codex exec`
+    // has NO -a/--ask-for-approval flag, so this MUST go through `-c`.
+    if (m_opts.driveMcp)
+        args << QStringLiteral("-c") << QStringLiteral("approval_policy=\"never\"");
     if (!m_opts.cwd.isEmpty())
         args << QStringLiteral("-C") << m_opts.cwd;
     if (!m_opts.model.isEmpty())

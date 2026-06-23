@@ -337,10 +337,24 @@ Response ControlServer::handleSettingsGet(const Request &req)
     QJsonObject s;
     s.insert(QStringLiteral("default_brain"), m_settings.defaultBrain());
     s.insert(QStringLiteral("default_model"), m_settings.defaultModel());
+    s.insert(QStringLiteral("claude_account"), m_settings.claudeAccount());
 
     QJsonArray brains;
     brains << QStringLiteral("codex") << QStringLiteral("claude") << QStringLiteral("api");
     s.insert(QStringLiteral("brains"), brains);
+
+    // Per-brain "can drive the computer-use nested desktop headless" capability,
+    // so the picker can HONESTLY mark which brains drive (no silent swapping).
+    //   claude -> yes (bypassPermissions for coworker+agent)
+    //   codex  -> yes (danger-full-access on the isolated nested desktop)
+    //   api    -> only when an OpenAI/Anthropic key is set (tool-calling brain)
+    QJsonObject canDrive;
+    canDrive.insert(QStringLiteral("claude"), true);
+    canDrive.insert(QStringLiteral("codex"), true);
+    canDrive.insert(QStringLiteral("api"),
+                    m_settings.hasApiKey(QStringLiteral("openai")) ||
+                        m_settings.hasApiKey(QStringLiteral("anthropic")));
+    s.insert(QStringLiteral("can_drive"), canDrive);
 
     QJsonObject byBrain;
     byBrain.insert(QStringLiteral("codex"), modelsForBrain(QStringLiteral("codex")));
@@ -384,6 +398,12 @@ Response ControlServer::handleSettingsSet(const Request &req)
         const QString v = patch.value(QStringLiteral("default_model")).toString();
         m_settings.setDefaultModel(v);
         m_config.defaultModel = v;
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("claude_account"))) {
+        const QString v = patch.value(QStringLiteral("claude_account")).toString();
+        m_settings.setClaudeAccount(v); // normalizes to pro|max
+        m_config.claudeAccount = m_settings.claudeAccount();
         prefsTouched = true;
     }
     if (patch.contains(QStringLiteral("default_cwd")))
@@ -478,6 +498,13 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         if (!agentMcpOverrides.args.isEmpty()) {
             opts.configOverrides = agentMcpOverrides.args;
             opts.extraEnv = agentMcpOverrides.env;
+            // coworker+agent: the brain must DRIVE the computer-use MCP against
+            // the isolated nested desktop. codex auto-cancels MCP tool calls
+            // headless unless the sandbox is danger-full-access, so flag this
+            // session to drive (CodexBrain then forces the sandbox + approval).
+            // This is the codex analogue of ClaudeBrain's bypassPermissions for
+            // the same case — the agent only ever touches its OWN screen.
+            opts.driveMcp = true;
         } else if (row.profile == QStringLiteral("coworker") && m_mcp) {
             const CodexMcpOverrides cu = m_mcp->codexOverrides();
             opts.configOverrides = cu.args;
@@ -493,6 +520,10 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         opts.cwd = cwdOverride.isEmpty() ? m_config.effectiveCwd() : cwdOverride;
         opts.model = row.model;
         opts.profile = row.profile;
+        // Pin the claude OAuth account: pro -> ~/.claude (default), max ->
+        // ~/.claude-secondary. The brain ctor also defaults to Pro if empty, so
+        // the brain can never accidentally inherit the Max account.
+        opts.configDir = m_settings.claudeConfigDir();
         // Coworker sessions expose the computer-use (+ other enabled) MCP servers
         // to claude via a --mcp-config JSON file. For a coworker+agent session
         // the override points computer-use at the NESTED engine (agent's own
@@ -752,6 +783,22 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
 
     CodexMcpOverrides agentOverrides;
     if (isCoworker && effTarget == QStringLiteral("agent")) {
+        // HONEST DRIVE GATE: only brains that can actually call MCP tools
+        // headless may drive the nested desktop. codex (danger-full-access) and
+        // claude (bypassPermissions) both can. The `api` brain can only drive
+        // when it has tool-calling + a usable key; otherwise refuse clearly
+        // instead of spinning up a desktop the brain can never touch.
+        const bool apiCanDrive = m_settings.hasApiKey(QStringLiteral("openai")) ||
+                                 m_settings.hasApiKey(QStringLiteral("anthropic"));
+        if (row.brain == QStringLiteral("api") && !apiCanDrive) {
+            m_store.updateState(row.id, QStringLiteral("error"));
+            if (err)
+                *err = QStringLiteral(
+                    "the 'api' brain can't drive the computer-use desktop without "
+                    "an OpenAI or Anthropic API key — pick the codex or claude "
+                    "brain, or set an API key in Settings");
+            return QString();
+        }
         QString deskErr;
         const AgentDesktopInfo desk = m_agentDesktops.ensure(row.id, &deskErr);
         if (!desk.up) {

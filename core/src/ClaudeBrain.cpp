@@ -4,6 +4,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QProcessEnvironment>
 #include <QStandardPaths>
 
 namespace jarvis {
@@ -11,6 +12,11 @@ namespace jarvis {
 ClaudeBrain::ClaudeBrain(Options opts, QObject *parent)
     : Brain(parent), m_opts(std::move(opts))
 {
+    // Default to the Pro account dir (~/.claude) when the daemon supplies none,
+    // so a claude brain turn NEVER falls back to whatever CLAUDE_CONFIG_DIR the
+    // ambient environment might carry (e.g. the Max account ~/.claude-secondary).
+    if (m_opts.configDir.isEmpty())
+        m_opts.configDir = QDir::homePath() + QStringLiteral("/.claude");
 }
 
 ClaudeBrain::~ClaudeBrain()
@@ -106,6 +112,14 @@ void ClaudeBrain::send(const QString &text, const QStringList &images)
     m_proc->setArguments(buildArgs(text));
     if (!m_opts.cwd.isEmpty())
         m_proc->setWorkingDirectory(m_opts.cwd);
+    // Pin CLAUDE_CONFIG_DIR so the brain runs as the SELECTED claude account
+    // (Pro by default). Set it explicitly rather than inheriting, so the brain
+    // never accidentally uses the Max account from the ambient environment.
+    {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("CLAUDE_CONFIG_DIR"), m_opts.configDir);
+        m_proc->setProcessEnvironment(env);
+    }
     m_proc->setProcessChannelMode(QProcess::SeparateChannels);
     // Close stdin (EOF) so the one-shot `-p` turn never blocks reading input.
     m_proc->setStandardInputFile(QProcess::nullDevice());

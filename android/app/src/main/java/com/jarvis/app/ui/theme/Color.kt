@@ -21,4 +21,5 @@ internal object JarvisPalette {
 
     val Error = Color(0xFFFF6B6B)
     val Success = Color(0xFF4ADE80)
+    val Warning = Color(0xFFFFB454) // amber — non-fatal warnings (e.g. Max quota)
 }

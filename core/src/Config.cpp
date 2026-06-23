@@ -105,6 +105,13 @@ Config Config::parseToml(const QString &text)
             cfg.defaultBrain = value;
         } else if (fq == QStringLiteral("default_model")) {
             cfg.defaultModel = value;
+        } else if (fq == QStringLiteral("claude_account")) {
+            // Only "max" selects the secondary (Max) account; anything else
+            // (including unset/garbage) stays on Pro so the brain never
+            // accidentally inherits the Max account.
+            cfg.claudeAccount = (value == QStringLiteral("max"))
+                                    ? QStringLiteral("max")
+                                    : QStringLiteral("pro");
         } else if (fq == QStringLiteral("control_port") ||
                    fq == QStringLiteral("ports.control")) {
             bool ok = false;
