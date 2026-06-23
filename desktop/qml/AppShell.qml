@@ -3,9 +3,11 @@ import QtQuick.Layouts
 import JarvisSidebar
 
 // AppShell — the full multi-page application body. A slim left NavRail routes
-// between eight pages rendered in the content area on the right:
+// between twelve pages rendered in the content area on the right:
 //   0 Chat (the existing JarvisPanel), 1 Computer (co-worker / take-over),
-//   2 Memory, 3 Skills, 4 Sessions, 5 Settings, 6 MCP, 7 Plugins.
+//   2 Browser (agent's controlled tab), 3 Schedules (cron jobs),
+//   4 Memory, 5 Skills, 6 Sessions (+ sub-agent tree), 7 Activity (audit),
+//   8 SSH (allow-list + gated exec), 9 Settings, 10 MCP, 11 Plugins.
 //
 // This is the single shared content surface reparented between the floating
 // window and the docked layer-shell surface (see Main.qml), so all page state
@@ -59,7 +61,7 @@ Item {
             // Each page is wrapped so we can animate opacity + a small x-slide.
             // Only the active page is interactive; the rest fade out behind it.
             Repeater {
-                model: 8
+                model: 12
                 delegate: Item {
                     id: pageWrap
                     required property int index
@@ -87,12 +89,16 @@ Item {
                             switch (pageWrap.index) {
                             case 0: return chatComp
                             case 1: return computerComp
-                            case 2: return memoryComp
-                            case 3: return skillsComp
-                            case 4: return sessionsComp
-                            case 5: return settingsComp
-                            case 6: return mcpComp
-                            case 7: return pluginsComp
+                            case 2: return browserComp
+                            case 3: return schedulesComp
+                            case 4: return memoryComp
+                            case 5: return skillsComp
+                            case 6: return sessionsComp
+                            case 7: return activityComp
+                            case 8: return sshComp
+                            case 9: return settingsComp
+                            case 10: return mcpComp
+                            case 11: return pluginsComp
                             }
                         }
                     }
@@ -108,6 +114,10 @@ Item {
         JarvisPanel { Component.onCompleted: shell.chatPanel = this }
     }
     Component { id: computerComp; ComputerPage {} }
+    Component { id: browserComp;  BrowserPage {} }
+    Component { id: schedulesComp; SchedulesPage {} }
+    Component { id: activityComp; ActivityPage {} }
+    Component { id: sshComp;      SshPage {} }
     Component { id: memoryComp;   MemoryPage {} }
     Component {
         id: skillsComp

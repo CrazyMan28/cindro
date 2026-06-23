@@ -287,6 +287,10 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("skills.list") ||
         method == QStringLiteral("skills.get") ||
         method == QStringLiteral("skills.today") ||
+        // Wave 8 ops reads.
+        method == QStringLiteral("schedule.list") ||
+        method == QStringLiteral("ssh.allow_list") ||
+        method == QStringLiteral("audit.list") ||
         // Full config surface — reads are read tier.
         method == QStringLiteral("settings.get") ||
         method == QStringLiteral("model.list") ||
@@ -306,6 +310,13 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("skills.create") ||
         method == QStringLiteral("skills.invoke") ||
         method == QStringLiteral("skills.remove") ||
+        // Wave 8 ops actions that aren't security-sensitive (toggling/removing a
+        // schedule, managing the ssh allow-list). schedule.create + ssh.exec are
+        // biometric (below).
+        method == QStringLiteral("schedule.set_enabled") ||
+        method == QStringLiteral("schedule.remove") ||
+        method == QStringLiteral("ssh.allow_add") ||
+        method == QStringLiteral("ssh.allow_remove") ||
         // Config actions that aren't security-sensitive.
         method == QStringLiteral("mcp.remove") ||
         method == QStringLiteral("mcp.set_enabled") ||
@@ -326,7 +337,11 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("settings.set") ||
         method == QStringLiteral("mcp.add") ||
         method == QStringLiteral("devices.revoke") ||
-        method == QStringLiteral("take_over.request"))
+        method == QStringLiteral("take_over.request") ||
+        // Wave 8: a scheduled job runs unattended, and ssh.exec runs a remote
+        // command — both are biometric-tier on the phone.
+        method == QStringLiteral("schedule.create") ||
+        method == QStringLiteral("ssh.exec"))
         return QStringLiteral("biometric");
     return QStringLiteral("action");
 }
@@ -346,6 +361,13 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("skills.list"),     QStringLiteral("skills.get"),
         QStringLiteral("skills.create"),   QStringLiteral("skills.invoke"),
         QStringLiteral("skills.remove"),   QStringLiteral("skills.today"),
+        // Wave 8 co-worker ops mirrored to the phone: scheduler, ssh allow-list
+        // + gated exec, and the audit log. schedule.create + ssh.exec biometric.
+        QStringLiteral("schedule.create"), QStringLiteral("schedule.list"),
+        QStringLiteral("schedule.set_enabled"), QStringLiteral("schedule.remove"),
+        QStringLiteral("ssh.allow_list"),  QStringLiteral("ssh.allow_add"),
+        QStringLiteral("ssh.allow_remove"), QStringLiteral("ssh.exec"),
+        QStringLiteral("audit.list"),
         // FULL Contract-C config surface: the phone can configure everything.
         QStringLiteral("settings.get"),    QStringLiteral("settings.set"),
         QStringLiteral("model.list"),
@@ -404,6 +426,12 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         // Contract A v3 mirror: memory + skills share the SAME store as the
         // desktop, so the phone curates one coherent memory/skill world.
         resp = m_control->dispatchMemoryOrSkill(req);
+    } else if (ControlServer::isOpsMethod(m)) {
+        // Wave 8 co-worker ops mirror: schedule.* / ssh.* / audit.list share the
+        // same SQLite tables + allow-list as the desktop. `remote=true` so the
+        // audit log records that the action originated from a paired device, and
+        // ssh.exec/schedule.create were biometric-gated on the phone.
+        resp = m_control->dispatchOpsMethod(req, /*remote=*/true);
     } else if (ControlServer::isConfigMethod(m)) {
         // FULL Contract-C exposure: settings/model/mcp/plugins/voice/devices/
         // take_over/file.* all mirror to the phone via the SAME ControlServer

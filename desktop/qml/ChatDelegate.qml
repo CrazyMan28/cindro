@@ -252,74 +252,12 @@ Item {
         }
     }
 
-    // ===== Diff ===============================================================
+    // ===== Diff (reviewable per-file panel w/ Stage/Commit/Revert/PR) ========
     Component {
         id: diffComp
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            radius: Theme.radiusXs
-            implicitHeight: diffCol.implicitHeight + 18
-            color: Qt.rgba(0, 0, 0, 0.22)
-            border.color: Theme.hairline
-            border.width: 1
-            clip: true
-
-            ColumnLayout {
-                id: diffCol
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: 11
-                spacing: 7
-
-                RowLayout {
-                    spacing: 8
-                    Canvas {
-                        width: 12; height: 12
-                        Layout.alignment: Qt.AlignVCenter
-                        onPaint: {
-                            var ctx = getContext("2d"); ctx.reset()
-                            ctx.strokeStyle = Theme.accent; ctx.lineWidth = 1.3
-                            ctx.lineCap = "round"; ctx.lineJoin = "round"
-                            ctx.strokeRect(2.5, 1.5, 7, 9)
-                            ctx.beginPath(); ctx.moveTo(4.5, 4); ctx.lineTo(7.5, 4)
-                            ctx.moveTo(4.5, 6.5); ctx.lineTo(7.5, 6.5); ctx.stroke()
-                        }
-                    }
-                    Text {
-                        text: del.toolName
-                        color: Theme.text
-                        font.weight: Font.Medium
-                        font.pixelSize: 12
-                        font.family: Theme.fontMono
-                        elide: Text.ElideMiddle
-                        Layout.fillWidth: true
-                    }
-                }
-
-                // diff body with per-line +/- tinting
-                Column {
-                    Layout.fillWidth: true
-                    spacing: 0
-                    Repeater {
-                        model: del.text.split("\n").slice(0, 18)
-                        Text {
-                            required property string modelData
-                            width: parent.width
-                            text: modelData.length ? modelData : " "
-                            color: modelData.startsWith("+") ? Theme.ok
-                                   : modelData.startsWith("-") ? Theme.danger
-                                   : Theme.textMuted
-                            wrapMode: Text.NoWrap
-                            elide: Text.ElideRight
-                            font.pixelSize: 11
-                            font.family: Theme.fontMono
-                            textFormat: Text.PlainText
-                        }
-                    }
-                }
-            }
+        DiffReviewPanel {
+            path: del.toolName
+            patch: del.text
         }
     }
 

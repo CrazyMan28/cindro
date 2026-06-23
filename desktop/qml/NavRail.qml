@@ -14,14 +14,18 @@ Item {
     signal navigate(int index)
 
     readonly property var items: [
-        { key: "chat",     label: "CHAT" },
-        { key: "computer", label: "COMPUTER" },
-        { key: "memory",   label: "MEMORY" },
-        { key: "skills",   label: "SKILLS" },
-        { key: "sessions", label: "SESSIONS" },
-        { key: "settings", label: "SETTINGS" },
-        { key: "mcp",      label: "MCP" },
-        { key: "plugins",  label: "PLUGINS" }
+        { key: "chat",      label: "CHAT" },
+        { key: "computer",  label: "COMPUTER" },
+        { key: "browser",   label: "BROWSER" },
+        { key: "schedules", label: "SCHEDULES" },
+        { key: "memory",    label: "MEMORY" },
+        { key: "skills",    label: "SKILLS" },
+        { key: "sessions",  label: "SESSIONS" },
+        { key: "activity",  label: "ACTIVITY" },
+        { key: "ssh",       label: "SSH" },
+        { key: "settings",  label: "SETTINGS" },
+        { key: "mcp",       label: "MCP" },
+        { key: "plugins",   label: "PLUGINS" }
     ]
 
     // ---- rail background ----------------------------------------------------
@@ -263,6 +267,39 @@ Item {
                     ctx.moveTo(10, 1.5); ctx.lineTo(4, 9.5); ctx.lineTo(8.5, 9.5)
                     ctx.lineTo(7.5, 16.5); ctx.lineTo(14, 8); ctx.lineTo(9.5, 8)
                     ctx.closePath(); ctx.stroke()
+                    break
+                case "browser":
+                    // globe: circle + meridian curves + latitude lines
+                    ctx.beginPath(); ctx.arc(9, 9, 7, 0, Math.PI*2); ctx.stroke()
+                    ctx.beginPath()
+                    ctx.moveTo(9, 2); ctx.quadraticCurveTo(3, 9, 9, 16); ctx.stroke()
+                    ctx.beginPath()
+                    ctx.moveTo(9, 2); ctx.quadraticCurveTo(15, 9, 9, 16); ctx.stroke()
+                    ctx.beginPath()
+                    ctx.moveTo(2, 9); ctx.lineTo(16, 9)
+                    ctx.moveTo(3.2, 5.5); ctx.lineTo(14.8, 5.5)
+                    ctx.moveTo(3.2, 12.5); ctx.lineTo(14.8, 12.5); ctx.stroke()
+                    break
+                case "schedules":
+                    // clock face with hands
+                    ctx.beginPath(); ctx.arc(9, 9, 7, 0, Math.PI*2); ctx.stroke()
+                    ctx.beginPath()
+                    ctx.moveTo(9, 9); ctx.lineTo(9, 4.5)
+                    ctx.moveTo(9, 9); ctx.lineTo(12.5, 10.5); ctx.stroke()
+                    break
+                case "activity":
+                    // pulse / ECG line
+                    ctx.beginPath()
+                    ctx.moveTo(1.5, 9); ctx.lineTo(5, 9); ctx.lineTo(7, 3.5)
+                    ctx.lineTo(10, 14.5); ctx.lineTo(12, 9); ctx.lineTo(16.5, 9)
+                    ctx.stroke()
+                    break
+                case "ssh":
+                    // terminal: window with a prompt chevron + cursor
+                    ctx.strokeRect(2, 3, 14, 12)
+                    ctx.beginPath()
+                    ctx.moveTo(5, 7.5); ctx.lineTo(7.5, 9.5); ctx.lineTo(5, 11.5); ctx.stroke()
+                    ctx.beginPath(); ctx.moveTo(9, 11.5); ctx.lineTo(12.5, 11.5); ctx.stroke()
                     break
                 case "sessions":
                     ctx.strokeRect(2.5, 2.5, 13, 3.5)

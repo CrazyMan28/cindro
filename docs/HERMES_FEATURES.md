@@ -43,6 +43,41 @@ From the phone bridge `AuditLog`: every tool call logged {timestamp, tool, succe
 risk: low|medium|high}. high-risk (system control, computer-use take-over, ssh) requires explicit user
 approval (the approval cards already in the desktop UI). Keep last ~100 entries; surface in a desktop page.
 
+### Implementation (Wave 8, core + daemon)
+- `core/src/AuditLog.*` — SQLite `audit` table in jarvis.db (distinct connection):
+  `{id,ts,tool,ok,risk,summary,session_id,remote}`. `audit.list{limit?}` returns the newest ~100.
+  jarvisd records: every `session.send` (low), every brain `tool_call` (risk from the injection scan),
+  every `approval`, all `schedule.*` and `ssh.*` actions, and the injection-gate decision.
+- `core/src/InjectionGuard.*` — pure heuristic scanner (BUILD_SPEC prompt-injection gating). Cues:
+  "ignore/disregard previous instructions", credential/cookie exfiltration verbs, destructive shell
+  (`rm -rf ~`, fork bomb, disk-wipe), large embedded base64 blobs, and (for tool calls) an unexpected
+  external POST to a non-loopback/non-tailnet host. Scored to low|medium|high; medium+ trips the gate.
+- **Where it gates:** `ControlServer::gateForInjection()` runs over the user turn before it reaches the
+  brain. For an **ApiBrain** session a risky turn is BLOCKED: jarvisd emits an `approval`
+  NormalizedBrainEvent (`inject-<session>`), holds the turn, and only resends it after
+  `approval.respond("inject-<session>","allow")` (Anthropic-style confirmation). For **CLI brains
+  (codex / claude)** the gate CANNOT intercept mid-loop — they run their own in-process tool loop — so
+  jarvisd only AUDITS + notifies the flagged turn and relies on the CLIs' own approval/sandbox modes
+  (`--sandbox` for codex, claude's permission prompts). Every brain `tool_call` is still rescanned and
+  audited as it streams back.
+- `core/src/NotifyService.*` — `notify-send` (libnotify/mako) on attention events: approval needed,
+  schedule done, task done. Fire-and-forget; silently no-ops if notify-send is absent.
+
+## 5b. Scheduler + SSH allow-list (Wave 8, BUILD_SPEC Contract-A additions)
+- `core/src/Scheduler.*` — SQLite `schedules` table + a ~15s `QTimer` tick. `CronSpec` parses
+  `every Nm/Nh/Ns`, `at HH:MM`, and 5-field cron (`* , - /` ranges/steps, dow 0/7=Sun). Due enabled
+  jobs fire via a `FireFn` the daemon wires to `createSession + sendToSession`; `last_run`/`next_run`
+  persist (cadence advances from the scheduled time, not wall-clock, so it doesn't drift). Methods:
+  `schedule.create{name,when|cron,prompt,brain?,model?,profile?,enabled?}`, `schedule.list`,
+  `schedule.set_enabled`, `schedule.remove`. A fired job calls `notify-send` + audits.
+- `core/src/SshAllowList.*` — `~/.config/jarvis/ssh_allow.json` (0600). `ssh.allow_list/allow_add/
+  allow_remove`, and `ssh.exec{host,cmd}` which runs `ssh -o BatchMode=yes -o StrictHostKeyChecking=
+  accept-new <host> <cmd>` via QProcess **only if the host is allow-listed** — a non-listed host
+  returns `host_not_allowed` and ssh is NEVER spawned. Audited (high risk).
+- **Contract C mirror:** `schedule.*`, `ssh.allow_list/add/remove`, `ssh.exec`, and `audit.list` are all
+  exposed over the device WS via `ControlServer::dispatchOpsMethod(remote=true)`. `ssh.exec` and
+  `schedule.create` are **biometric** tier; the audit log records `remote=true` for device-initiated ops.
+
 ## 6. Voice STT/TTS + "Hey Jarvis" wake (adopt — Android, task #7/#10)
 Android `SpeechRecognizer` (push-to-talk + foreground wake phrase) + `TextToSpeech`. Async input,
 sync TTS output. Wake phrase only while a foreground service + notification is visible (no silent bg listen).
