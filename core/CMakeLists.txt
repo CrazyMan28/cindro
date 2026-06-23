@@ -29,6 +29,8 @@ add_library(jarvis-core STATIC
     src/SettingsStore.cpp
     src/McpRegistry.cpp
     src/PluginRegistry.cpp
+    src/PluginSigner.cpp
+    src/PluginSandbox.cpp
     src/CodexParser.cpp
     src/CodexBrain.cpp
     src/ClaudeParser.cpp
@@ -56,6 +58,8 @@ add_library(jarvis-core STATIC
     include/jarvis/SettingsStore.h
     include/jarvis/McpRegistry.h
     include/jarvis/PluginRegistry.h
+    include/jarvis/PluginSigner.h
+    include/jarvis/PluginSandbox.h
     include/jarvis/CodexParser.h
     include/jarvis/Brain.h
     include/jarvis/CodexBrain.h
@@ -167,3 +171,12 @@ add_test(NAME ssh_allowlist_test COMMAND ssh_allowlist_test)
 add_executable(injection_guard_test tests/injection_guard_test.cpp)
 target_link_libraries(injection_guard_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME injection_guard_test COMMAND injection_guard_test)
+
+# Wave 7 plugin marketplace backend test.
+# PluginSigner: sign a manifest+payload -> verify ok against a trusted key;
+# a tampered manifest fails; an unknown signing key fails; the sandbox plan
+# derives confinement from declared permissions. Links libsodium directly.
+add_executable(plugin_sign_verify tests/plugin_sign_verify_test.cpp)
+target_link_libraries(plugin_sign_verify
+    PRIVATE jarvis-core Qt6::Core PkgConfig::SODIUM)
+add_test(NAME plugin_sign_verify COMMAND plugin_sign_verify)

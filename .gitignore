@@ -25,5 +25,12 @@ local.properties
 service-account*.json
 .env
 
+# --- Plugin publisher PRIVATE keys (public .pub may be committed) ---
+plugins/keys/*.key
+*.privkey
+
+# --- Packed plugin tarballs (built artifacts, re-creatable via `pack`) ---
+plugins/**/*.tar.gz
+
 # --- Logs ---
 *.log
