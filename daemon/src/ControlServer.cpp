@@ -10,6 +10,7 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileInfo>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -73,6 +74,22 @@ bool ControlServer::start()
     // Contract A v2 stores/registries. SettingsStore loads config.toml prefs +
     // secrets.json; the registries wrap the (now-open) SessionStore tables.
     m_settings.load();
+    // MISTRAL key bootstrap: if ~/.config/jarvis/mistral_api_key exists and the
+    // SettingsStore doesn't already carry a "mistral" secret, load it in-memory
+    // so settings.get reports api_keys_set.mistral=true and the api brain can use
+    // Mistral chat + Voxtral voice. The key file stays the source of truth (we
+    // do NOT copy it into secrets.json) so it never lands in two places.
+    if (!m_settings.hasApiKey(QStringLiteral("mistral"))) {
+        const QString keyPath =
+            Config::configDir() + QStringLiteral("/mistral_api_key");
+        QFile mf(keyPath);
+        if (mf.exists() && mf.open(QIODevice::ReadOnly)) {
+            const QString key = QString::fromUtf8(mf.readAll()).trimmed();
+            mf.close();
+            if (!key.isEmpty())
+                m_settings.setApiKey(QStringLiteral("mistral"), key);
+        }
+    }
     // Keep the in-memory config in sync with persisted prefs.
     m_config.defaultBrain = m_settings.defaultBrain();
     m_config.defaultModel = m_settings.defaultModel();
@@ -228,6 +245,14 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleAgentDesktopInfo(req);
     else if (m == QStringLiteral("take_over.request"))
         resp = handleTakeOverRequest(req);
+    else if (m == QStringLiteral("voice.stt"))
+        resp = handleVoiceStt(req);
+    else if (m == QStringLiteral("voice.tts"))
+        resp = handleVoiceTts(req);
+    else if (m == QStringLiteral("file.push"))
+        resp = handleFilePush(req);
+    else if (m == QStringLiteral("file.get"))
+        resp = handleFileGet(req);
     else if (isMemoryOrSkillMethod(m))
         resp = dispatchMemoryOrSkill(req);
     else
@@ -259,9 +284,21 @@ static QJsonArray modelsForBrain(const QString &brain)
                << QStringLiteral("claude-sonnet-4-5") << QStringLiteral("claude-haiku-4-5");
     } else { // api
         models << QStringLiteral("gpt-5.5") << QStringLiteral("o4-mini")
-               << QStringLiteral("claude-opus-4-8") << QStringLiteral("qwen2.5:3b");
+               << QStringLiteral("claude-opus-4-8")
+               << QStringLiteral("mistral-large-latest")
+               << QStringLiteral("mistral-small-latest")
+               << QStringLiteral("qwen2.5:3b");
     }
     return models;
+}
+
+// The default model for a brain when the caller gives none: the FIRST entry of
+// modelsForBrain (claude -> a claude model, api -> a configured-provider model)
+// — NOT the global default (gpt-5.5, which is only correct for codex).
+static QString firstModelForBrain(const QString &brain)
+{
+    const QJsonArray models = modelsForBrain(brain);
+    return models.isEmpty() ? QString() : models.first().toString();
 }
 
 Response ControlServer::handleSettingsGet(const Request &req)
@@ -448,6 +485,8 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         const QString provider = ApiBrain::resolveProvider(opts);
         if (provider == QStringLiteral("anthropic"))
             opts.apiKey = m_settings.apiKey(QStringLiteral("anthropic"));
+        else if (provider == QStringLiteral("mistral"))
+            opts.apiKey = m_settings.apiKey(QStringLiteral("mistral"));
         else if (provider == QStringLiteral("openai"))
             opts.apiKey = m_settings.apiKey(QStringLiteral("openai"));
         // ollama: no key.
@@ -626,7 +665,18 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     row.id = genSessionId();
     row.profile = profile.isEmpty() ? QStringLiteral("coder") : profile;
     row.brain = brainName.isEmpty() ? m_config.defaultBrain : brainName;
-    row.model = model.isEmpty() ? m_config.defaultModel : model;
+    // BRAIN DEFAULT FIX: when the caller gives no model, pick the per-brain
+    // default (the FIRST entry of modelsForBrain) — a claude brain gets a claude
+    // model, an api brain a configured-provider model — NOT the global default
+    // (gpt-5.5), which is only the right default for codex. Only fall back to the
+    // global default_model when it actually belongs to this brain (i.e. codex).
+    if (!model.isEmpty()) {
+        row.model = model;
+    } else if (row.brain == QStringLiteral("codex") && !m_config.defaultModel.isEmpty()) {
+        row.model = m_config.defaultModel;
+    } else {
+        row.model = firstModelForBrain(row.brain);
+    }
     row.title = title.isEmpty() ? QStringLiteral("Untitled session") : title;
     row.state = QStringLiteral("idle");
     row.created = QDateTime::currentMSecsSinceEpoch();
@@ -1302,6 +1352,255 @@ QString ControlServer::buildTodayDigest()
     out += QStringLiteral("\n(Live project list via project-tracker MCP "
                           "project_list is folded in by the client.)\n");
     return out;
+}
+
+// --- Voice (Mistral Voxtral, laptop-proxied) --------------------------------
+
+QString ControlServer::mistralKey() const
+{
+    return m_settings.apiKey(QStringLiteral("mistral"));
+}
+
+Response ControlServer::handleVoiceStt(const Request &req)
+{
+    const QString key = mistralKey();
+    if (key.isEmpty())
+        return Response::failure(req.id, QStringLiteral("no_voice_key"),
+                                 QStringLiteral("Mistral API key not configured"));
+
+    const QByteArray audio = QByteArray::fromBase64(
+        req.params.value(QStringLiteral("audio_b64")).toString().toLatin1());
+    if (audio.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("audio_b64 is required"));
+    const QString mime = req.params.value(QStringLiteral("mime")).toString();
+    const QString lang = req.params.value(QStringLiteral("lang")).toString();
+    const QString model = req.params.value(QStringLiteral("model")).toString();
+
+    VoiceService voice(key);
+    const VoiceService::Result r = voice.stt(audio, mime, lang, model);
+    if (!r.ok)
+        return Response::failure(req.id, QStringLiteral("voice_stt_failed"), r.error);
+
+    QJsonObject result;
+    result.insert(QStringLiteral("text"), r.text);
+    if (!r.language.isEmpty())
+        result.insert(QStringLiteral("language"), r.language);
+    if (!r.wordsJson.isEmpty()) {
+        const QJsonDocument wd = QJsonDocument::fromJson(r.wordsJson);
+        if (wd.isArray())
+            result.insert(QStringLiteral("words"), wd.array());
+    }
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleVoiceTts(const Request &req)
+{
+    const QString key = mistralKey();
+    if (key.isEmpty())
+        return Response::failure(req.id, QStringLiteral("no_voice_key"),
+                                 QStringLiteral("Mistral API key not configured"));
+
+    const QString text = req.params.value(QStringLiteral("text")).toString();
+    if (text.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("text is required"));
+    const QString vc = req.params.value(QStringLiteral("voice")).toString();
+    const QString format = req.params.value(QStringLiteral("format")).toString();
+    const QString model = req.params.value(QStringLiteral("model")).toString();
+
+    VoiceService voice(key);
+    const VoiceService::Result r = voice.tts(text, vc, format, model);
+    if (!r.ok)
+        return Response::failure(req.id, QStringLiteral("voice_tts_failed"), r.error);
+
+    QJsonObject result;
+    result.insert(QStringLiteral("audio_b64"), QString::fromLatin1(r.audio.toBase64()));
+    result.insert(QStringLiteral("mime"), r.mime);
+    return Response::success(req.id, result);
+}
+
+// --- device->phone file push (Contract C) -----------------------------------
+
+namespace {
+
+QString fileInboxDir(const QString &sessionId)
+{
+    QString dir = QDir::homePath() + QStringLiteral("/.local/share/jarvis/files");
+    if (!sessionId.isEmpty())
+        dir += QLatin1Char('/') + sessionId;
+    QDir().mkpath(dir);
+    return dir;
+}
+
+QString genFileId()
+{
+    auto *rng = QRandomGenerator::system();
+    QByteArray bytes(8, Qt::Uninitialized);
+    for (int i = 0; i < bytes.size(); ++i)
+        bytes[i] = char(rng->bounded(256));
+    return QStringLiteral("file_") + QString::fromLatin1(bytes.toHex());
+}
+
+QString guessMime(const QString &name)
+{
+    const QString n = name.toLower();
+    if (n.endsWith(QStringLiteral(".png"))) return QStringLiteral("image/png");
+    if (n.endsWith(QStringLiteral(".jpg")) || n.endsWith(QStringLiteral(".jpeg")))
+        return QStringLiteral("image/jpeg");
+    if (n.endsWith(QStringLiteral(".pdf"))) return QStringLiteral("application/pdf");
+    if (n.endsWith(QStringLiteral(".txt")) || n.endsWith(QStringLiteral(".md")))
+        return QStringLiteral("text/plain");
+    if (n.endsWith(QStringLiteral(".json"))) return QStringLiteral("application/json");
+    if (n.endsWith(QStringLiteral(".zip"))) return QStringLiteral("application/zip");
+    return QStringLiteral("application/octet-stream");
+}
+
+} // namespace
+
+Response ControlServer::handleFilePush(const Request &req)
+{
+    const QJsonObject p = req.params;
+    const QString sessionId = p.value(QStringLiteral("session_id")).toString();
+    QString name = p.value(QStringLiteral("name")).toString();
+
+    // Source: inline b64, OR an on-disk path the daemon reads.
+    QByteArray bytes;
+    if (p.contains(QStringLiteral("b64"))) {
+        bytes = QByteArray::fromBase64(p.value(QStringLiteral("b64")).toString().toLatin1());
+    } else if (p.contains(QStringLiteral("path"))) {
+        const QString srcPath = p.value(QStringLiteral("path")).toString();
+        QFile sf(srcPath);
+        if (!sf.open(QIODevice::ReadOnly))
+            return Response::failure(req.id, QStringLiteral("bad_path"),
+                                     QStringLiteral("cannot read file: ") + srcPath);
+        bytes = sf.readAll();
+        sf.close();
+        if (name.isEmpty())
+            name = QFileInfo(srcPath).fileName();
+    } else {
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("b64 or path is required"));
+    }
+    if (bytes.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("empty file content"));
+    if (name.isEmpty())
+        name = QStringLiteral("file.bin");
+    // Strip any directory components from the supplied name (path-safety).
+    name = QFileInfo(name).fileName();
+
+    const QString fileId = genFileId();
+    const QString dir = fileInboxDir(sessionId);
+    const QString outPath = dir + QLatin1Char('/') + fileId + QLatin1Char('_') + name;
+    QFile of(outPath);
+    if (!of.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return Response::failure(req.id, QStringLiteral("write_error"),
+                                 QStringLiteral("cannot store file: ") + of.errorString());
+    of.write(bytes);
+    of.close();
+
+    const QString mime = p.value(QStringLiteral("mime")).toString(guessMime(name));
+
+    QJsonObject descriptor;
+    descriptor.insert(QStringLiteral("file_id"), fileId);
+    descriptor.insert(QStringLiteral("name"), name);
+    descriptor.insert(QStringLiteral("size"), bytes.size());
+    descriptor.insert(QStringLiteral("mime"), mime);
+    descriptor.insert(QStringLiteral("path"), outPath);
+    if (!sessionId.isEmpty())
+        descriptor.insert(QStringLiteral("session_id"), sessionId);
+
+    // Announce to the device channel: phones get a 'file.offer' event and can
+    // pull the bytes back with file.get{file_id, session_id?}.
+    emit filePushed(descriptor);
+
+    // Don't leak the local path back over the wire.
+    QJsonObject result = descriptor;
+    result.remove(QStringLiteral("path"));
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleFileGet(const Request &req)
+{
+    const QString fileId = req.params.value(QStringLiteral("file_id")).toString();
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    if (fileId.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("file_id is required"));
+
+    const QString dir = fileInboxDir(sessionId);
+    // Stored as "<file_id>_<name>"; find the single match for this id.
+    QDir d(dir);
+    const QStringList matches =
+        d.entryList(QStringList{fileId + QStringLiteral("_*")}, QDir::Files);
+    if (matches.isEmpty())
+        return Response::failure(req.id, QStringLiteral("no_file"),
+                                 QStringLiteral("unknown file: ") + fileId);
+    const QString path = dir + QLatin1Char('/') + matches.first();
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return Response::failure(req.id, QStringLiteral("read_error"),
+                                 QStringLiteral("cannot read file"));
+    const QByteArray bytes = f.readAll();
+    f.close();
+
+    const QString name = matches.first().mid(fileId.size() + 1);
+    QJsonObject result;
+    result.insert(QStringLiteral("file_id"), fileId);
+    result.insert(QStringLiteral("name"), name);
+    result.insert(QStringLiteral("mime"), guessMime(name));
+    result.insert(QStringLiteral("b64"), QString::fromLatin1(bytes.toBase64()));
+    return Response::success(req.id, result);
+}
+
+// --- full Contract-C config-surface dispatch --------------------------------
+
+bool ControlServer::isConfigMethod(const QString &method)
+{
+    static const QSet<QString> methods = {
+        QStringLiteral("settings.get"),      QStringLiteral("settings.set"),
+        QStringLiteral("model.list"),        QStringLiteral("mcp.list"),
+        QStringLiteral("mcp.add"),           QStringLiteral("mcp.remove"),
+        QStringLiteral("mcp.set_enabled"),   QStringLiteral("mcp.test"),
+        QStringLiteral("plugins.catalog"),   QStringLiteral("plugins.install"),
+        QStringLiteral("plugins.set_enabled"), QStringLiteral("plugins.remove"),
+        QStringLiteral("voice.stt"),         QStringLiteral("voice.tts"),
+        QStringLiteral("take_over.request"), QStringLiteral("file.push"),
+        QStringLiteral("file.get"),
+        QStringLiteral("devices.pair_start"), QStringLiteral("devices.list"),
+        QStringLiteral("devices.revoke"),
+        QStringLiteral("agent_desktop.info"),
+    };
+    return methods.contains(method);
+}
+
+Response ControlServer::dispatchConfigMethod(const Request &req)
+{
+    const QString &m = req.method;
+    if (m == QStringLiteral("settings.get"))    return handleSettingsGet(req);
+    if (m == QStringLiteral("settings.set"))    return handleSettingsSet(req);
+    if (m == QStringLiteral("model.list"))      return handleModelList(req);
+    if (m == QStringLiteral("mcp.list"))        return handleMcpList(req);
+    if (m == QStringLiteral("mcp.add"))         return handleMcpAdd(req);
+    if (m == QStringLiteral("mcp.remove"))      return handleMcpRemove(req);
+    if (m == QStringLiteral("mcp.set_enabled")) return handleMcpSetEnabled(req);
+    if (m == QStringLiteral("mcp.test"))        return handleMcpTest(req);
+    if (m == QStringLiteral("plugins.catalog")) return handlePluginsCatalog(req);
+    if (m == QStringLiteral("plugins.install")) return handlePluginsInstall(req);
+    if (m == QStringLiteral("plugins.set_enabled")) return handlePluginsSetEnabled(req);
+    if (m == QStringLiteral("plugins.remove"))  return handlePluginsRemove(req);
+    if (m == QStringLiteral("voice.stt"))       return handleVoiceStt(req);
+    if (m == QStringLiteral("voice.tts"))       return handleVoiceTts(req);
+    if (m == QStringLiteral("take_over.request")) return handleTakeOverRequest(req);
+    if (m == QStringLiteral("file.push"))       return handleFilePush(req);
+    if (m == QStringLiteral("file.get"))        return handleFileGet(req);
+    if (m == QStringLiteral("devices.pair_start")) return handleDevicesPairStart(req);
+    if (m == QStringLiteral("devices.list"))    return handleDevicesList(req);
+    if (m == QStringLiteral("devices.revoke"))  return handleDevicesRevoke(req);
+    if (m == QStringLiteral("agent_desktop.info")) return handleAgentDesktopInfo(req);
+    return Response::failure(req.id, QStringLiteral("unknown_method"),
+                             QStringLiteral("unknown config method: ") + m);
 }
 
 // --- event fan-out ---------------------------------------------------------

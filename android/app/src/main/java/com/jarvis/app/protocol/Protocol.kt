@@ -108,6 +108,21 @@ data class SessionEvent(val sessionId: String, val event: BrainEvent) {
     }
 }
 
+/**
+ * A `file.offer` Contract C event: the daemon pushes a file (device->phone). The
+ * phone downloads it (inline b64 here, or via a follow-up transfer) and opens/shares it.
+ * Frame: {"v":1,"event":"file.offer","data":{id,name,mime,size,session_id?,b64?}}.
+ */
+data class FileOfferEvent(val offer: FileOffer) {
+    companion object {
+        fun from(obj: JsonObject): FileOfferEvent? {
+            if (obj.get("event")?.asString != "file.offer") return null
+            val data = obj.getAsJsonObject("data") ?: return null
+            return FileOfferEvent(FileOffer.from(data))
+        }
+    }
+}
+
 /** Helpers for building params payloads. */
 object Params {
     fun of(vararg pairs: Pair<String, Any?>): JsonObject {

@@ -4,8 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.jarvis.app.JarvisApp
+import com.jarvis.app.data.VoiceSettings
 import com.jarvis.app.net.JarvisRepository
 import com.jarvis.app.protocol.BrainEvent
+import com.jarvis.app.voice.VoiceController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,25 +34,53 @@ data class ChatUiState(
  */
 class ChatViewModel(
     private val repo: JarvisRepository,
+    private val voice: VoiceController,
+    private val voiceSettings: VoiceSettings,
     sessionId: String,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState(sessionId = sessionId))
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
+    /** Push-to-talk / TTS phase, surfaced to the mic button. */
+    val voicePhase = voice.phase
+
     private val seq = AtomicLong(0)
     private fun nextId() = "item-${seq.incrementAndGet()}"
+
+    /** Buffers the latest assistant message of the in-flight turn for spoken read-back. */
+    private var lastAssistantText: String? = null
+
+    /** Read-back only applies to live events, never to the history replay on open. */
+    @Volatile private var historyReplayed = false
 
     init {
         loadHistory()
         subscribe()
     }
 
+    // --- voice (push-to-talk) ---------------------------------------------
+
+    fun startRecording(): Boolean = voice.startRecording()
+
+    fun cancelRecording() = voice.cancelRecording()
+
+    /** Stop recording, transcribe via voice.stt; [onText] receives the transcript draft. */
+    fun stopAndTranscribe(onText: (String) -> Unit) {
+        viewModelScope.launch {
+            val text = voice.stopAndTranscribe()
+            if (text != null) onText(text) else _uiState.update { it.copy(error = "No speech recognized") }
+        }
+    }
+
+    fun stopSpeaking() = voice.stopSpeaking()
+
     private fun loadHistory() {
         viewModelScope.launch {
             runCatching { withContext(Dispatchers.IO) { repo.history(_uiState.value.sessionId) } }
                 .onSuccess { events -> events.forEach(::fold) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+            historyReplayed = true
         }
     }
 
@@ -124,9 +154,11 @@ class ChatViewModel(
         when (ev.kind) {
             "turn_started" -> _uiState.update { it.copy(busy = true) }
             "thinking" -> ev.text?.let { appendItem(ChatItem.Thinking(nextId(), it)) }
-            "message" -> appendItem(
-                ChatItem.Message(nextId(), role = ev.role ?: "assistant", text = ev.text.orEmpty()),
-            )
+            "message" -> {
+                val role = ev.role ?: "assistant"
+                if (role != "user") lastAssistantText = ev.text
+                appendItem(ChatItem.Message(nextId(), role = role, text = ev.text.orEmpty()))
+            }
             "tool_call" -> appendItem(
                 ChatItem.ToolCall(
                     id = ev.callId ?: nextId(),
@@ -150,7 +182,15 @@ class ChatViewModel(
                 appendItem(ChatItem.Error(nextId(), ev.message ?: "error"))
                 _uiState.update { it.copy(busy = false) }
             }
-            "final" -> _uiState.update { it.copy(busy = false) }
+            "final" -> {
+                _uiState.update { it.copy(busy = false) }
+                // Speak the turn's final assistant message if read-back is on.
+                val reply = lastAssistantText
+                lastAssistantText = null
+                if (historyReplayed && voiceSettings.readBackEnabled && !reply.isNullOrBlank()) {
+                    viewModelScope.launch { voice.speak(reply, voiceSettings.ttsVoice) }
+                }
+            }
             // thread_started / usage / unknown: nothing to render directly.
         }
     }
@@ -186,7 +226,12 @@ class ChatViewModel(
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    ChatViewModel(app.repository, sessionId) as T
+                    ChatViewModel(
+                        repo = app.repository,
+                        voice = VoiceController(app.repository, app.ttsPlayer),
+                        voiceSettings = app.voiceSettings,
+                        sessionId = sessionId,
+                    ) as T
             }
     }
 }

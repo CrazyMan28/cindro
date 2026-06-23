@@ -1,0 +1,82 @@
+package com.jarvis.app.ui.mcp
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.jarvis.app.JarvisApp
+import com.jarvis.app.net.JarvisRepository
+import com.jarvis.app.protocol.McpServer
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+data class McpUiState(
+    val servers: List<McpServer> = emptyList(),
+    val loading: Boolean = false,
+    val testResults: Map<String, String> = emptyMap(),
+    val error: String? = null,
+)
+
+/** mcp.list/add/remove/test/set_enabled from the phone. add = biometric tier. */
+class McpViewModel(private val repo: JarvisRepository) : ViewModel() {
+
+    private val _uiState = MutableStateFlow(McpUiState())
+    val uiState: StateFlow<McpUiState> = _uiState.asStateFlow()
+
+    init { refresh() }
+
+    fun refresh() {
+        _uiState.update { it.copy(loading = true, error = null) }
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.listMcp() } }
+                .onSuccess { list -> _uiState.update { it.copy(servers = list, loading = false) } }
+                .onFailure { e -> _uiState.update { it.copy(loading = false, error = e.message) } }
+        }
+    }
+
+    /** Caller MUST have cleared the BiometricPrompt (mcp.add is biometric). */
+    fun add(name: String, url: String?, command: String?, onDone: () -> Unit) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.addMcp(name, url?.ifBlank { null }, command?.ifBlank { null }) } }
+                .onSuccess { refresh(); onDone() }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
+    fun remove(name: String) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.removeMcp(name) } }
+                .onSuccess { refresh() }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
+    fun setEnabled(name: String, enabled: Boolean) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.setMcpEnabled(name, enabled) } }
+                .onSuccess { refresh() }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
+    fun test(name: String) {
+        viewModelScope.launch {
+            val result = runCatching { withContext(Dispatchers.IO) { repo.testMcp(name) } }
+                .getOrElse { it.message ?: "error" }
+            _uiState.update { it.copy(testResults = it.testResults + (name to result)) }
+        }
+    }
+
+    companion object {
+        fun factory(app: JarvisApp): ViewModelProvider.Factory =
+            object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T =
+                    McpViewModel(app.repository) as T
+            }
+    }
+}

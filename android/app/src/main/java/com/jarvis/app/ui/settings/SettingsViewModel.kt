@@ -1,12 +1,16 @@
 package com.jarvis.app.ui.settings
 
+import com.google.gson.JsonObject
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.jarvis.app.JarvisApp
 import com.jarvis.app.data.PairingStore
+import com.jarvis.app.data.VoiceSettings
 import com.jarvis.app.net.DeviceClient
 import com.jarvis.app.net.JarvisRepository
+import com.jarvis.app.protocol.ModelInfo
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -14,6 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class SettingsUiState(
     val hostPort: String,
@@ -22,13 +27,26 @@ data class SettingsUiState(
     val daemonFingerprint: String?,
     val notificationsEnabled: Boolean,
     val paired: Boolean,
+    // Daemon parity (settings.get)
+    val defaultBrain: String = "codex",
+    val defaultModel: String? = null,
+    val apiKeysSet: Map<String, Boolean> = emptyMap(),
+    val models: List<ModelInfo> = emptyList(),
+    val modelsBrain: String = "codex",
+    val loadingDaemon: Boolean = false,
+    val daemonError: String? = null,
+    // Voice
+    val wakeEnabled: Boolean = false,
+    val readBackEnabled: Boolean = true,
+    val ttsVoice: String = "",
 )
 
-/** Daemon host:port, device identity, notifications toggle, paired status, and unpair. */
+/** Full settings parity: connection, identity, API keys, default brain/model, voice. */
 class SettingsViewModel(
     private val app: JarvisApp,
     private val repo: JarvisRepository,
     private val pairingStore: PairingStore,
+    private val voiceSettings: VoiceSettings,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(snapshot())
@@ -42,6 +60,10 @@ class SettingsViewModel(
     val lastError: StateFlow<String?> =
         repo.lastError.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    init {
+        loadDaemonSettings()
+    }
+
     private fun snapshot() = SettingsUiState(
         hostPort = pairingStore.hostPort ?: PairingStore.DEFAULT_HOST_PORT,
         deviceName = pairingStore.deviceName,
@@ -49,7 +71,79 @@ class SettingsViewModel(
         daemonFingerprint = pairingStore.daemonFingerprint,
         notificationsEnabled = pairingStore.notificationsEnabled,
         paired = pairingStore.isPaired,
+        wakeEnabled = voiceSettings.wakeEnabled,
+        readBackEnabled = voiceSettings.readBackEnabled,
+        ttsVoice = voiceSettings.ttsVoice,
     )
+
+    // --- daemon settings parity -------------------------------------------
+
+    fun loadDaemonSettings() {
+        _uiState.update { it.copy(loadingDaemon = true, daemonError = null) }
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.getSettings() } }
+                .onSuccess { s ->
+                    val brain = s.get("default_brain")?.takeIf { !it.isJsonNull }?.asString ?: "codex"
+                    val model = s.get("default_model")?.takeIf { !it.isJsonNull }?.asString
+                    val keys = mutableMapOf<String, Boolean>()
+                    s.getAsJsonObject("api_keys_set")?.entrySet()?.forEach { (k, v) ->
+                        keys[k] = v.asBoolean
+                    }
+                    _uiState.update {
+                        it.copy(
+                            defaultBrain = brain,
+                            defaultModel = model,
+                            apiKeysSet = keys,
+                            loadingDaemon = false,
+                            modelsBrain = brain,
+                        )
+                    }
+                    loadModels(brain)
+                }
+                .onFailure { e -> _uiState.update { it.copy(loadingDaemon = false, daemonError = e.message) } }
+        }
+    }
+
+    fun loadModels(brain: String) {
+        _uiState.update { it.copy(modelsBrain = brain) }
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.listModels(brain) } }
+                .onSuccess { list -> _uiState.update { it.copy(models = list) } }
+                .onFailure { e -> _uiState.update { it.copy(daemonError = e.message) } }
+        }
+    }
+
+    /** Default brain -> settings.set (biometric; caller MUST clear the prompt). */
+    fun setDefaultBrain(brain: String) {
+        patch(JsonObject().apply { addProperty("default_brain", brain) }) {
+            _uiState.update { it.copy(defaultBrain = brain) }
+            loadModels(brain)
+        }
+    }
+
+    fun setDefaultModel(model: String) {
+        patch(JsonObject().apply { addProperty("default_model", model) }) {
+            _uiState.update { it.copy(defaultModel = model) }
+        }
+    }
+
+    /** Set an API key (incl. "mistral"). Biometric — caller MUST clear the prompt. */
+    fun setApiKey(provider: String, key: String) {
+        val keysObj = JsonObject().apply { addProperty(provider, key) }
+        patch(JsonObject().apply { add("api_keys", keysObj) }) {
+            _uiState.update { it.copy(apiKeysSet = it.apiKeysSet + (provider to key.isNotBlank())) }
+        }
+    }
+
+    private fun patch(patch: JsonObject, onOk: () -> Unit) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.setSettings(patch) } }
+                .onSuccess { onOk() }
+                .onFailure { e -> _uiState.update { it.copy(daemonError = e.message) } }
+        }
+    }
+
+    // --- local prefs -------------------------------------------------------
 
     fun setNotificationsEnabled(enabled: Boolean) {
         pairingStore.notificationsEnabled = enabled
@@ -61,9 +155,23 @@ class SettingsViewModel(
         _uiState.update { it.copy(deviceName = name) }
     }
 
+    fun setWakeEnabled(enabled: Boolean) {
+        voiceSettings.wakeEnabled = enabled
+        _uiState.update { it.copy(wakeEnabled = enabled) }
+    }
+
+    fun setReadBack(enabled: Boolean) {
+        voiceSettings.readBackEnabled = enabled
+        _uiState.update { it.copy(readBackEnabled = enabled) }
+    }
+
+    fun setTtsVoice(voice: String) {
+        voiceSettings.ttsVoice = voice
+        _uiState.update { it.copy(ttsVoice = voice) }
+    }
+
     fun reconnect() = repo.connect()
 
-    /** Forget the daemon; drops the socket and returns the user to the pairing screen. */
     fun unpair(onDone: () -> Unit) {
         viewModelScope.launch {
             repo.disconnect()
@@ -78,7 +186,7 @@ class SettingsViewModel(
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    SettingsViewModel(app, app.repository, app.pairingStore) as T
+                    SettingsViewModel(app, app.repository, app.pairingStore, app.voiceSettings) as T
             }
     }
 }

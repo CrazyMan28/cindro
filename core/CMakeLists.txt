@@ -40,6 +40,7 @@ add_library(jarvis-core STATIC
     src/PairingManager.cpp
     src/FcmSender.cpp
     src/AgentDesktop.cpp
+    src/VoiceService.cpp
     # Headers listed so AUTOMOC processes the Q_OBJECT types (Brain, CodexBrain),
     # generating their staticMetaObject + vtable into this static lib.
     include/jarvis/Protocol.h
@@ -60,6 +61,7 @@ add_library(jarvis-core STATIC
     include/jarvis/PairingManager.h
     include/jarvis/FcmSender.h
     include/jarvis/AgentDesktop.h
+    include/jarvis/VoiceService.h
 )
 
 target_include_directories(jarvis-core
@@ -118,6 +120,12 @@ target_compile_definitions(claude_parser_test
     PRIVATE JARVIS_CLAUDE_SAMPLE="${JARVIS_CLAUDE_SAMPLE}")
 add_test(NAME claude_parser_test
          COMMAND claude_parser_test "${JARVIS_CLAUDE_SAMPLE}")
+
+# ClaudeBrain argv shape: asserts the prompt is an isolated trailing positional
+# after `--` (guards the prior --add-dir variadic-swallow regression).
+add_executable(claude_buildargs_test tests/claude_buildargs_test.cpp)
+target_link_libraries(claude_buildargs_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME claude_buildargs_test COMMAND claude_buildargs_test)
 
 # MemoryStore: add + FTS5 search + replace + remove roundtrip (temp DB).
 add_executable(memory_store_test tests/memory_store_test.cpp)

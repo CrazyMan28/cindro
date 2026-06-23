@@ -20,6 +20,7 @@ object JarvisNotifier {
 
     const val CHANNEL_ATTENTION = "jarvis_attention"
     const val CHANNEL_UPDATES = "jarvis_updates"
+    const val CHANNEL_WAKE = "jarvis_wake"
 
     private const val ACCENT = 0xFF34D8FF.toInt()
 
@@ -39,6 +40,13 @@ object JarvisNotifier {
                 "Updates",
                 NotificationManager.IMPORTANCE_DEFAULT,
             ).apply { description = "Task completions and ready files" },
+        )
+        mgr.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_WAKE,
+                "Wake listener",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply { description = "Shown while \"Hey Jarvis\" wake is active" },
         )
     }
 

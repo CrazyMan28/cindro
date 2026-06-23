@@ -44,6 +44,11 @@ public:
     void cancel() override;
     bool isBusy() const override;
 
+    // Build the `claude` argv for a one-shot `-p` turn. Public so a ctest can
+    // assert the prompt is an isolated trailing positional after `--` (guards the
+    // prior --add-dir regression where the variadic flag swallowed the prompt).
+    QStringList buildArgs(const QString &prompt) const;
+
 private slots:
     void onReadyReadStdout();
     void onReadyReadStderr();
@@ -54,7 +59,6 @@ private:
     void emitEvent(const NormalizedBrainEvent &ev);
     void drainBuffer(bool flushIncomplete);
     void handleLine(const QByteArray &line);
-    QStringList buildArgs(const QString &prompt) const;
 
     Options m_opts;
     QProcess *m_proc = nullptr;

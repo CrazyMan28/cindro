@@ -4,7 +4,8 @@
 //
 // Two wire dialects, auto-selected from the model id (or an explicit `provider`):
 //   - OpenAI-compatible  POST <base>/chat/completions  (SSE `data:` deltas).
-//     Covers OpenAI, and Ollama at http://127.0.0.1:11434/v1 (no key needed).
+//     Covers OpenAI, Mistral (https://api.mistral.ai/v1, mistral-* model ids),
+//     and Ollama at http://127.0.0.1:11434/v1 (no key needed).
 //   - Anthropic          POST <base>/messages          (SSE event/data deltas).
 //
 // Emits thread_started (synthetic id) -> turn_started -> message/thinking chunks
@@ -30,7 +31,7 @@ class ApiBrain : public Brain {
     Q_OBJECT
 public:
     struct Options {
-        // "openai" | "anthropic" | "ollama" | "" (auto from model/base).
+        // "openai" | "anthropic" | "mistral" | "ollama" | "" (auto from model/base).
         QString provider;
         QString model;
         QString apiKey;      // bearer / x-api-key (empty for ollama)

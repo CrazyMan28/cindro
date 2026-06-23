@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -48,6 +49,7 @@ import com.jarvis.app.ui.theme.JarvisPalette
 fun SessionsScreen(
     viewModel: SessionsViewModel,
     onOpenSession: (String) -> Unit,
+    onOpenMore: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val conn by viewModel.connection.collectAsStateWithLifecycle()
@@ -63,6 +65,9 @@ fun SessionsScreen(
                     Spacer(Modifier.height(0.dp))
                     IconButton(onClick = { viewModel.refresh() }) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                    }
+                    IconButton(onClick = onOpenMore) {
+                        Icon(Icons.Filled.MoreHoriz, contentDescription = "More")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
