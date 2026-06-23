@@ -11,6 +11,7 @@
 #include "jarvis/Protocol.h"
 
 #include <QByteArray>
+#include <QMap>
 #include <QProcess>
 #include <QString>
 
@@ -27,6 +28,11 @@ public:
         QString program = QStringLiteral("codex");     // executable name/path
         // Extra config overrides passed as `-c key=value` (e.g. MCP injection).
         QStringList configOverrides;
+        // Extra environment variables set on the codex child process. Used to
+        // export MCP bearer tokens that `configOverrides` reference via
+        // `bearer_token_env_var=<NAME>` (codex 0.135 rejects inline bearers for
+        // streamable_http). Merged on top of the inherited environment.
+        QMap<QString, QString> extraEnv;
     };
 
     // Map a session profile to the codex sandbox mode.

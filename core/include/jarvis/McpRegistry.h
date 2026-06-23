@@ -8,13 +8,16 @@
 //   - test(): a REAL MCP handshake (initialize + tools/list) over http(s)
 //     (Streamable HTTP / JSON-RPC POST) or stdio (spawned QProcess), with a
 //     timeout, returning the advertised tool count.
-//   - codexOverrides(): the `-c mcp_servers.<name>.url=...`/`.bearer_token=...`
-//     (http) or `.command=...` (stdio) overrides for every ENABLED server, so a
-//     spawned codex brain can call them. The built-in computer-use server's
-//     bearer is read from ~/.computer-use/config.yaml.
+//   - codexOverrides(): the `-c mcp_servers.<name>.url=...` +
+//     `.bearer_token_env_var=...` (http) or `.command=...` (stdio) overrides for
+//     every ENABLED server, so a spawned codex brain can call them — plus the
+//     (envName -> token) pairs the brain must export (codex 0.135 rejects an
+//     inline `bearer_token=` for streamable_http). The built-in computer-use
+//     server's bearer is read from ~/.computer-use/config.yaml.
 
 #include "jarvis/SessionStore.h"
 
+#include <QMap>
 #include <QString>
 #include <QStringList>
 
@@ -24,6 +27,18 @@ struct McpTestResult {
     bool ok = false;
     int toolsCount = 0;
     QString error;
+};
+
+// The codex `-c mcp_servers.<key>...` overrides PLUS the bearer-token env vars
+// they reference. codex 0.135 rejects an inline `bearer_token=` for a streamable
+// HTTP MCP server ("bearer_token is not supported for streamable_http") and
+// instead wants `bearer_token_env_var=<NAME>` with <NAME> set in the codex
+// process environment. So the override builder must hand back BOTH the `-c`
+// args AND the (envName -> token) pairs, and the spawning brain must export the
+// latter into the codex child's environment.
+struct CodexMcpOverrides {
+    QStringList args;            // values for `-c <arg>`
+    QMap<QString, QString> env;  // envName -> bearer token
 };
 
 class McpRegistry {
@@ -52,11 +67,17 @@ public:
 
     // --- codex injection ---------------------------------------------------
     // `-c mcp_servers.<key>...` overrides for every enabled server (always
-    // including the built-in computer-use with its config.yaml bearer).
-    QStringList codexOverrides();
+    // including the built-in computer-use with its config.yaml bearer). HTTP
+    // bearers are emitted as `bearer_token_env_var=<NAME>` with the value
+    // returned in CodexMcpOverrides::env (see struct doc).
+    CodexMcpOverrides codexOverrides();
 
     // Sanitize a server name into a codex-config-safe key (alnum + underscore).
     static QString codexKey(const McpServerRow &row);
+
+    // The codex env-var NAME under which a given server key's bearer is exported
+    // (e.g. JARVIS_CU_BEARER_<KEY>). Uppercased, alnum+underscore.
+    static QString bearerEnvName(const QString &codexKey);
 
 private:
     SessionStore &m_store;

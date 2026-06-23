@@ -458,7 +458,7 @@ Response ControlServer::handleModelList(const Request &req)
 }
 
 Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverride,
-                                const QStringList &agentMcpOverrides)
+                                const CodexMcpOverrides &agentMcpOverrides)
 {
     if (row.brain == QStringLiteral("codex")) {
         CodexBrain::Options opts;
@@ -473,10 +473,14 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         // supplies a per-session override that points computer-use at the
         // NESTED engine instead of the global :8794, so the brain drives the
         // agent's own desktop — never the user's real screen.
-        if (!agentMcpOverrides.isEmpty())
-            opts.configOverrides = agentMcpOverrides;
-        else if (row.profile == QStringLiteral("coworker") && m_mcp)
-            opts.configOverrides = m_mcp->codexOverrides();
+        if (!agentMcpOverrides.args.isEmpty()) {
+            opts.configOverrides = agentMcpOverrides.args;
+            opts.extraEnv = agentMcpOverrides.env;
+        } else if (row.profile == QStringLiteral("coworker") && m_mcp) {
+            const CodexMcpOverrides cu = m_mcp->codexOverrides();
+            opts.configOverrides = cu.args;
+            opts.extraEnv = cu.env;
+        }
         auto *brain = new CodexBrain(opts, this);
         brain->setSessionId(row.id);
         return brain;
@@ -492,7 +496,7 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         // the override points computer-use at the NESTED engine (agent's own
         // screen, never the user's real one).
         QString mcpJson;
-        if (!agentMcpOverrides.isEmpty()) {
+        if (!agentMcpOverrides.args.isEmpty()) {
             // coworker+agent: point computer-use at the nested per-session engine.
             mcpJson = claudeMcpConfigForAgent(m_agentDesktops.info(row.id));
         } else if (row.profile == QStringLiteral("coworker")) {
@@ -530,14 +534,19 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
 // Build the codex `-c mcp_servers.computer_use...` overrides that point the
 // built-in computer-use server at the per-session nested-desktop engine
 // (url+bearer), plus any OTHER enabled (non-built-in) MCP servers unchanged.
-QStringList ControlServer::agentMcpOverridesFor(const AgentDesktopInfo &desk) const
+CodexMcpOverrides ControlServer::agentMcpOverridesFor(const AgentDesktopInfo &desk) const
 {
-    QStringList ov;
-    // Point computer-use at the nested engine.
+    CodexMcpOverrides out;
+    // Point computer-use at the nested engine. codex 0.135 rejects an inline
+    // `bearer_token=` for a streamable_http MCP server, so reference an env var
+    // (set on the codex child) instead.
     const QString key = QStringLiteral("computer_use");
-    ov << QStringLiteral("mcp_servers.%1.url=%2").arg(key, desk.mcpUrl);
-    if (!desk.bearer.isEmpty())
-        ov << QStringLiteral("mcp_servers.%1.bearer_token=%2").arg(key, desk.bearer);
+    out.args << QStringLiteral("mcp_servers.%1.url=%2").arg(key, desk.mcpUrl);
+    if (!desk.bearer.isEmpty()) {
+        const QString envName = QStringLiteral("JARVIS_AGENT_CU_BEARER");
+        out.args << QStringLiteral("mcp_servers.%1.bearer_token_env_var=%2").arg(key, envName);
+        out.env.insert(envName, desk.bearer);
+    }
     // Keep any other enabled servers (skip the built-in computer-use; we just
     // overrode it above).
     if (m_mcp) {
@@ -550,22 +559,26 @@ QStringList ControlServer::agentMcpOverridesFor(const AgentDesktopInfo &desk) co
                     srv.endpoint.split(QLatin1Char(' '), Qt::SkipEmptyParts);
                 if (parts.isEmpty())
                     continue;
-                ov << QStringLiteral("mcp_servers.%1.command=%2").arg(k, parts.first());
+                out.args << QStringLiteral("mcp_servers.%1.command=%2").arg(k, parts.first());
                 if (parts.size() > 1) {
                     QStringList quoted;
                     for (const QString &a : parts.mid(1))
                         quoted << QStringLiteral("\"%1\"").arg(a);
-                    ov << QStringLiteral("mcp_servers.%1.args=[%2]")
-                              .arg(k, quoted.join(QLatin1Char(',')));
+                    out.args << QStringLiteral("mcp_servers.%1.args=[%2]")
+                                    .arg(k, quoted.join(QLatin1Char(',')));
                 }
             } else {
-                ov << QStringLiteral("mcp_servers.%1.url=%2").arg(k, srv.endpoint);
-                if (!srv.token.isEmpty())
-                    ov << QStringLiteral("mcp_servers.%1.bearer_token=%2").arg(k, srv.token);
+                out.args << QStringLiteral("mcp_servers.%1.url=%2").arg(k, srv.endpoint);
+                if (!srv.token.isEmpty()) {
+                    const QString envName = McpRegistry::bearerEnvName(k);
+                    out.args << QStringLiteral("mcp_servers.%1.bearer_token_env_var=%2")
+                                    .arg(k, envName);
+                    out.env.insert(envName, srv.token);
+                }
             }
         }
     }
-    return ov;
+    return out;
 }
 
 // --- Claude --mcp-config JSON ----------------------------------------------
@@ -728,7 +741,7 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
                                                 : QStringLiteral("real"))
                                   : target;
 
-    QStringList agentOverrides;
+    CodexMcpOverrides agentOverrides;
     if (isCoworker && effTarget == QStringLiteral("agent")) {
         QString deskErr;
         const AgentDesktopInfo desk = m_agentDesktops.ensure(row.id, &deskErr);

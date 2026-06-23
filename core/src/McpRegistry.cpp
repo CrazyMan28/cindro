@@ -319,9 +319,16 @@ QString McpRegistry::codexKey(const McpServerRow &row)
     return key;
 }
 
-QStringList McpRegistry::codexOverrides()
+QString McpRegistry::bearerEnvName(const QString &codexKey)
 {
-    QStringList ov;
+    QString k = codexKey.toUpper();
+    k.replace(QRegularExpression(QStringLiteral("[^A-Z0-9_]")), QStringLiteral("_"));
+    return QStringLiteral("JARVIS_CU_BEARER_") + k;
+}
+
+CodexMcpOverrides McpRegistry::codexOverrides()
+{
+    CodexMcpOverrides out;
     for (const McpServerRow &row : m_store.listMcpServers()) {
         if (!row.enabled)
             continue;
@@ -330,25 +337,30 @@ QStringList McpRegistry::codexOverrides()
             const QStringList parts = row.endpoint.split(QLatin1Char(' '), Qt::SkipEmptyParts);
             if (parts.isEmpty())
                 continue;
-            ov << QStringLiteral("mcp_servers.%1.command=%2").arg(key, parts.first());
+            out.args << QStringLiteral("mcp_servers.%1.command=%2").arg(key, parts.first());
             if (parts.size() > 1) {
                 // codex expects a TOML array literal for args.
                 QStringList quoted;
                 for (const QString &a : parts.mid(1))
                     quoted << QStringLiteral("\"%1\"").arg(a);
-                ov << QStringLiteral("mcp_servers.%1.args=[%2]").arg(key, quoted.join(QLatin1Char(',')));
+                out.args << QStringLiteral("mcp_servers.%1.args=[%2]").arg(key, quoted.join(QLatin1Char(',')));
             }
             continue;
         }
         // http(s)
-        ov << QStringLiteral("mcp_servers.%1.url=%2").arg(key, row.endpoint);
+        out.args << QStringLiteral("mcp_servers.%1.url=%2").arg(key, row.endpoint);
         QString token = row.token;
         if (token.isEmpty() && row.id == builtinId())
             token = computerUseBearer();
-        if (!token.isEmpty())
-            ov << QStringLiteral("mcp_servers.%1.bearer_token=%2").arg(key, token);
+        if (!token.isEmpty()) {
+            // codex 0.135 rejects inline `bearer_token=` for streamable_http;
+            // reference an env var instead and hand the value back to the caller.
+            const QString envName = bearerEnvName(key);
+            out.args << QStringLiteral("mcp_servers.%1.bearer_token_env_var=%2").arg(key, envName);
+            out.env.insert(envName, token);
+        }
     }
-    return ov;
+    return out;
 }
 
 } // namespace jarvis
