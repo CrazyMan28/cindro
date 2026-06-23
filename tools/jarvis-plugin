@@ -1,0 +1,496 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["cryptography>=42"]
+# ///
+"""
+jarvis-plugin — pack / sign / verify / publish Jarvis plugin packages.
+
+A plugin package is a directory containing `jarvis-plugin.toml` plus its payload
+(the skill SKILL.md / scripts, or an mcp launcher). The manifest carries an
+Ed25519 `signature` over a CANONICAL byte string derived from the manifest's
+identity + declared capabilities + a SHA-256 of the payload. This CLI's
+canonical string and key-id scheme are byte-for-byte identical to the C++
+`jarvis::PluginSigner` so a package signed here verifies in the daemon.
+
+Commands:
+  pack    <dir> [-o <out.tar.gz>]            tar.gz a package dir (manifest+payload)
+  keygen  [--out <prefix>]                   make an Ed25519 publisher keypair
+  sign    <pkg> --key <privkey>              sign the package, write signature into the manifest
+  verify  <pkg> [--keys <plugin_keys.json>]  verify the signature against trusted keys
+  publish <pkg> <catalog-dir>               add a signed entry to a catalog index
+
+A <pkg> is either a package directory or a .tar.gz produced by `pack`.
+
+Run with `./tools/jarvis-plugin <command> ...` (uv resolves `cryptography`).
+"""
+import argparse
+import hashlib
+import io
+import json
+import os
+import sys
+import tarfile
+import tempfile
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
+from cryptography.hazmat.primitives import serialization
+from cryptography.exceptions import InvalidSignature
+
+MANIFEST = "jarvis-plugin.toml"
+
+
+# --------------------------------------------------------------------------- #
+# Minimal flat TOML parser/serializer matching the C++ PluginRegistry parser.   #
+# Supports top-level keys, [mcp]/[skill] sections, string values, and string    #
+# arrays. NOT a general TOML implementation — only what the manifest uses.       #
+# --------------------------------------------------------------------------- #
+def _unquote(v: str) -> str:
+    v = v.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+        return v[1:-1]
+    return v
+
+
+def _parse_array(v: str):
+    v = v.strip()
+    if v.startswith("[") and v.endswith("]"):
+        v = v[1:-1]
+    out = []
+    for part in v.split(","):
+        part = _unquote(part.strip())
+        if part:
+            out.append(part)
+    return out
+
+
+def parse_manifest(text: str) -> dict:
+    """Returns a dict with top-level keys + nested 'mcp'/'skill' dicts."""
+    m = {"mcp": {}, "skill": {}}
+    section = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1].strip()
+            continue
+        if "=" not in line:
+            continue
+        key, _, raw = line.partition("=")
+        key, raw = key.strip(), raw.strip()
+        if section == "mcp":
+            if key == "env_keys":
+                m["mcp"][key] = _parse_array(raw)
+            else:
+                m["mcp"][key] = _unquote(raw)
+        elif section == "skill":
+            m["skill"][key] = _unquote(raw)
+        elif section:
+            continue  # unknown section
+        else:
+            if key == "permissions":
+                m[key] = _parse_array(raw)
+            else:
+                m[key] = _unquote(raw)
+    return m
+
+
+def effective_transport(m: dict) -> str:
+    if m.get("mcp", {}).get("url"):
+        return "http"
+    if m.get("mcp", {}).get("command"):
+        return "stdio"
+    return m.get("transport", "")
+
+
+def effective_endpoint(m: dict) -> str:
+    if m.get("mcp", {}).get("url"):
+        return m["mcp"]["url"]
+    if m.get("mcp", {}).get("command"):
+        return m["mcp"]["command"]
+    return m.get("endpoint", "")
+
+
+# --------------------------------------------------------------------------- #
+# Canonical string + payload hash — MUST match core/src/PluginSigner.cpp.       #
+# --------------------------------------------------------------------------- #
+def canonical_string(m: dict, payload_sha256_hex: str) -> bytes:
+    def field(k: str, v: str) -> bytes:
+        return k.encode() + b"=" + (v or "").encode() + b"\n"
+
+    def list_field(k: str, values) -> bytes:
+        vs = sorted(values or [])
+        out = k.encode() + b"=" + str(len(vs)).encode() + b"\n"
+        for e in vs:
+            eb = e.encode()
+            out += str(len(eb)).encode() + b":" + eb + b"\n"
+        return out
+
+    c = b"jarvis-plugin-v1\n"
+    c += field("id", m.get("id", ""))
+    c += field("name", m.get("name", ""))
+    c += field("author", m.get("author", ""))
+    c += field("version", m.get("version", ""))
+    c += field("kind", m.get("kind", ""))
+    c += field("transport", effective_transport(m))
+    c += field("endpoint", effective_endpoint(m))
+    c += field("skill_path", m.get("skill", {}).get("path", ""))
+    c += list_field("env_keys", m.get("mcp", {}).get("env_keys", []))
+    c += list_field("permissions", m.get("permissions", []))
+    c += field("payload_sha256", payload_sha256_hex)
+    return c
+
+
+def hash_payload_dir(pkg_dir: str) -> str:
+    """SHA-256 over every file except jarvis-plugin.toml, sorted by rel path."""
+    rels = []
+    for root, _dirs, files in os.walk(pkg_dir):
+        for fn in files:
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, pkg_dir)
+            if rel == MANIFEST:
+                continue
+            rels.append(rel)
+    rels.sort()
+    h = hashlib.sha256()
+    for rel in rels:
+        rb = rel.encode()
+        h.update(str(len(rb)).encode())
+        h.update(b":")
+        h.update(rb)
+        with open(os.path.join(pkg_dir, rel), "rb") as f:
+            data = f.read()
+        h.update(str(len(data)).encode())
+        h.update(b":")
+        h.update(data)
+    if not rels:
+        # Match C++: an empty payload dir yields the empty-input digest only when
+        # the dir has no files; we treat "manifest-only" as empty hash.
+        return h.hexdigest()
+    return h.hexdigest()
+
+
+def key_id_for(pubkey_raw: bytes) -> str:
+    return hashlib.sha256(pubkey_raw).hexdigest()[:16]
+
+
+# --------------------------------------------------------------------------- #
+# Package dir resolution (dir or .tar.gz).                                      #
+# --------------------------------------------------------------------------- #
+def resolve_pkg_dir(pkg: str):
+    """Returns (dir, cleanup_fn). Extracts a tarball into a temp dir if needed."""
+    if os.path.isdir(pkg):
+        return pkg, (lambda: None)
+    if os.path.isfile(pkg) and (pkg.endswith(".tar.gz") or pkg.endswith(".tgz")):
+        tmp = tempfile.mkdtemp(prefix="jarvis-plugin-")
+        with tarfile.open(pkg, "r:gz") as tf:
+            # Strip a single leading top-level dir if the tar has one.
+            members = tf.getmembers()
+            tops = {mem.name.split("/")[0] for mem in members if mem.name}
+            tf.extractall(tmp)
+        # If everything sits under one top dir, descend into it.
+        entries = [e for e in os.listdir(tmp) if not e.startswith(".")]
+        if len(entries) == 1 and os.path.isdir(os.path.join(tmp, entries[0])):
+            inner = os.path.join(tmp, entries[0])
+            if os.path.exists(os.path.join(inner, MANIFEST)):
+                return inner, (lambda: _rmtree(tmp))
+        return tmp, (lambda: _rmtree(tmp))
+    die(f"not a package directory or .tar.gz: {pkg}")
+
+
+def _rmtree(p):
+    import shutil
+
+    shutil.rmtree(p, ignore_errors=True)
+
+
+def die(msg: str, code: int = 1):
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# --------------------------------------------------------------------------- #
+# Manifest signature read/write (only the `signature = ...` top-level line).     #
+# --------------------------------------------------------------------------- #
+def write_signature(manifest_path: str, token: str):
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    out = []
+    replaced = False
+    in_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            # Insert before the first section if not yet written.
+            if not replaced and not in_section:
+                out.append(f'signature = "{token}"\n')
+                out.append("\n")
+                replaced = True
+            in_section = True
+            out.append(line)
+            continue
+        if not in_section and stripped.startswith("signature"):
+            out.append(f'signature = "{token}"\n')
+            replaced = True
+            continue
+        out.append(line)
+    if not replaced:
+        out.append(f'signature = "{token}"\n')
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        f.writelines(out)
+
+
+# --------------------------------------------------------------------------- #
+# Commands.                                                                      #
+# --------------------------------------------------------------------------- #
+def cmd_keygen(args):
+    sk = Ed25519PrivateKey.generate()
+    pk = sk.public_key()
+    raw_sk = sk.private_bytes(
+        serialization.Encoding.Raw,
+        serialization.PrivateFormat.Raw,
+        serialization.NoEncryption(),
+    )
+    raw_pk = pk.public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    import base64
+
+    prefix = args.out or "jarvis-publisher"
+    sk_path = prefix + ".key"
+    pk_path = prefix + ".pub"
+    with open(sk_path, "w") as f:
+        f.write(base64.b64encode(raw_sk).decode() + "\n")
+    os.chmod(sk_path, 0o600)
+    with open(pk_path, "w") as f:
+        f.write(base64.b64encode(raw_pk).decode() + "\n")
+    kid = key_id_for(raw_pk)
+    print(f"wrote {sk_path} (0600) and {pk_path}")
+    print(f"key id: {kid}")
+    print(f"pubkey (base64): {base64.b64encode(raw_pk).decode()}")
+    print("\nAdd to ~/.config/jarvis/plugin_keys.json:")
+    print(
+        json.dumps(
+            {"keys": {kid: {"pubkey": base64.b64encode(raw_pk).decode(), "name": prefix}}},
+            indent=2,
+        )
+    )
+
+
+def _load_secret_key(path: str) -> Ed25519PrivateKey:
+    import base64
+
+    with open(path, "r") as f:
+        raw = base64.b64decode(f.read().strip())
+    # Accept a 32-byte raw seed or a 64-byte libsodium sk (seed||pub).
+    if len(raw) == 64:
+        raw = raw[:32]
+    if len(raw) != 32:
+        die(f"bad secret key length {len(raw)} (want 32-byte raw or 64-byte sodium sk)")
+    return Ed25519PrivateKey.from_private_bytes(raw)
+
+
+def cmd_pack(args):
+    pkg_dir = args.dir
+    if not os.path.isdir(pkg_dir):
+        die(f"not a directory: {pkg_dir}")
+    if not os.path.exists(os.path.join(pkg_dir, MANIFEST)):
+        die(f"no {MANIFEST} in {pkg_dir}")
+    with open(os.path.join(pkg_dir, MANIFEST), encoding="utf-8") as f:
+        m = parse_manifest(f.read())
+    pid = m.get("id") or os.path.basename(os.path.abspath(pkg_dir))
+    out = args.output or f"{pid}-{m.get('version', '0')}.tar.gz"
+    with tarfile.open(out, "w:gz") as tf:
+        tf.add(pkg_dir, arcname=pid)
+    print(f"packed {pkg_dir} -> {out}")
+
+
+def cmd_sign(args):
+    pkg_dir, cleanup = resolve_pkg_dir(args.pkg)
+    try:
+        manifest_path = os.path.join(pkg_dir, MANIFEST)
+        with open(manifest_path, encoding="utf-8") as f:
+            m = parse_manifest(f.read())
+        if not m.get("id"):
+            die("manifest has no id")
+        sk = _load_secret_key(args.key)
+        payload_hash = hash_payload_dir(pkg_dir)
+        canon = canonical_string(m, payload_hash)
+        sig = sk.sign(canon)
+        raw_pk = sk.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
+        )
+        import base64
+
+        token = f"ed25519:{key_id_for(raw_pk)}:{base64.b64encode(sig).decode()}"
+        write_signature(manifest_path, token)
+        print(f"signed {args.pkg}")
+        print(f"  key id:        {key_id_for(raw_pk)}")
+        print(f"  payload sha256: {payload_hash}")
+        print(f"  signature:     {token}")
+        # If the source was a tarball, re-pack it with the signed manifest.
+        if args.pkg.endswith((".tar.gz", ".tgz")):
+            with tarfile.open(args.pkg, "w:gz") as tf:
+                tf.add(pkg_dir, arcname=m["id"])
+            print(f"  re-packed signed tarball: {args.pkg}")
+    finally:
+        cleanup()
+
+
+def cmd_verify(args):
+    pkg_dir, cleanup = resolve_pkg_dir(args.pkg)
+    try:
+        manifest_path = os.path.join(pkg_dir, MANIFEST)
+        with open(manifest_path, encoding="utf-8") as f:
+            m = parse_manifest(f.read())
+        token = m.get("signature", "")
+        if not token:
+            die("manifest is unsigned")
+        parts = token.split(":")
+        if len(parts) != 3 or parts[0] != "ed25519":
+            die("malformed signature token")
+        kid, sig_b64 = parts[1], parts[2]
+        import base64
+
+        sig = base64.b64decode(sig_b64)
+
+        keys_path = args.keys or os.path.expanduser(
+            "~/.config/jarvis/plugin_keys.json"
+        )
+        trusted = {}
+        if os.path.exists(keys_path):
+            with open(keys_path) as f:
+                doc = json.load(f)
+            for k, v in (doc.get("keys") or {}).items():
+                b64 = v if isinstance(v, str) else v.get("pubkey", "")
+                try:
+                    trusted[k] = base64.b64decode(b64)
+                except Exception:
+                    pass
+        if kid not in trusted:
+            die(f"signing key not trusted: {kid} (keys file: {keys_path})")
+        pub = Ed25519PublicKey.from_public_bytes(trusted[kid])
+
+        payload_hash = hash_payload_dir(pkg_dir)
+        canon = canonical_string(m, payload_hash)
+        try:
+            pub.verify(sig, canon)
+        except InvalidSignature:
+            die("signature does NOT verify (tampered manifest/payload)")
+        print(f"VERIFIED {args.pkg}")
+        print(f"  signer key id:  {kid}")
+        print(f"  payload sha256: {payload_hash}")
+        print(f"  permissions:    {m.get('permissions', [])}")
+    finally:
+        cleanup()
+
+
+def cmd_publish(args):
+    pkg_dir, cleanup = resolve_pkg_dir(args.pkg)
+    try:
+        manifest_path = os.path.join(pkg_dir, MANIFEST)
+        with open(manifest_path, encoding="utf-8") as f:
+            text = f.read()
+        m = parse_manifest(text)
+        if not m.get("id"):
+            die("manifest has no id")
+        if not m.get("signature"):
+            die("refusing to publish an unsigned plugin — run `sign` first")
+
+        catalog_dir = args.catalog
+        os.makedirs(catalog_dir, exist_ok=True)
+
+        # 1. Drop the manifest into the catalog as <id>.toml (the flat on-disk
+        #    catalog the daemon's PluginRegistry reads).
+        dest = os.path.join(catalog_dir, f"{m['id']}.toml")
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(text)
+
+        # 1b. Copy the package PAYLOAD into <catalog>/<id>/ (everything except the
+        #     manifest), preserving relative paths, so the daemon verifies the
+        #     signature over the SAME bytes the publisher signed and can resolve
+        #     skill.path from there.
+        import shutil
+
+        payload_dest = os.path.join(catalog_dir, m["id"])
+        if os.path.isdir(payload_dest):
+            shutil.rmtree(payload_dest)
+        for root, _dirs, files in os.walk(pkg_dir):
+            for fn in files:
+                full = os.path.join(root, fn)
+                rel = os.path.relpath(full, pkg_dir)
+                if rel == MANIFEST:
+                    continue
+                out_path = os.path.join(payload_dest, rel)
+                os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                shutil.copy2(full, out_path)
+
+        # 2. Maintain an index.json so a marketplace front-end can list entries.
+        index_path = os.path.join(catalog_dir, "index.json")
+        index = {"plugins": []}
+        if os.path.exists(index_path):
+            try:
+                with open(index_path) as f:
+                    index = json.load(f)
+            except Exception:
+                pass
+        entry = {
+            "id": m["id"],
+            "name": m.get("name", m["id"]),
+            "author": m.get("author", ""),
+            "version": m.get("version", ""),
+            "kind": m.get("kind", ""),
+            "permissions": m.get("permissions", []),
+            "signature": m.get("signature", ""),
+            "manifest": f"{m['id']}.toml",
+        }
+        index["plugins"] = [p for p in index.get("plugins", []) if p.get("id") != m["id"]]
+        index["plugins"].append(entry)
+        index["plugins"].sort(key=lambda p: p.get("id", ""))
+        with open(index_path, "w") as f:
+            json.dump(index, f, indent=2)
+            f.write("\n")
+        print(f"published {m['id']} -> {dest}")
+        print(f"updated catalog index: {index_path} ({len(index['plugins'])} plugins)")
+    finally:
+        cleanup()
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="jarvis-plugin", description=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("pack", help="tar.gz a package directory")
+    p.add_argument("dir")
+    p.add_argument("-o", "--output")
+    p.set_defaults(func=cmd_pack)
+
+    p = sub.add_parser("keygen", help="make an Ed25519 publisher keypair")
+    p.add_argument("--out", help="output path prefix (default jarvis-publisher)")
+    p.set_defaults(func=cmd_keygen)
+
+    p = sub.add_parser("sign", help="sign a package")
+    p.add_argument("pkg")
+    p.add_argument("--key", required=True, help="Ed25519 private key (base64)")
+    p.set_defaults(func=cmd_sign)
+
+    p = sub.add_parser("verify", help="verify a package signature")
+    p.add_argument("pkg")
+    p.add_argument("--keys", help="trusted plugin_keys.json (default ~/.config/jarvis)")
+    p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser("publish", help="add a signed entry to a catalog dir")
+    p.add_argument("pkg")
+    p.add_argument("catalog")
+    p.set_defaults(func=cmd_publish)
+
+    args = ap.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

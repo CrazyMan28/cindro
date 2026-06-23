@@ -1,4 +1,5 @@
 #include "jarvis/PluginRegistry.h"
+#include "jarvis/PluginSigner.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -7,6 +8,24 @@
 #include <QStringList>
 
 namespace jarvis {
+
+QString PluginManifest::effectiveTransport() const
+{
+    if (!mcpUrl.isEmpty())
+        return QStringLiteral("http");
+    if (!mcpCommand.isEmpty())
+        return QStringLiteral("stdio");
+    return transport;
+}
+
+QString PluginManifest::effectiveEndpoint() const
+{
+    if (!mcpUrl.isEmpty())
+        return mcpUrl;
+    if (!mcpCommand.isEmpty())
+        return mcpCommand;
+    return endpoint;
+}
 
 QJsonObject PluginManifest::toJson() const
 {
@@ -23,10 +42,31 @@ QJsonObject PluginManifest::toJson() const
     o.insert(QStringLiteral("description"), description);
     o.insert(QStringLiteral("installed"), installed);
     o.insert(QStringLiteral("enabled"), enabled);
-    if (!transport.isEmpty())
-        o.insert(QStringLiteral("transport"), transport);
-    if (!endpoint.isEmpty())
-        o.insert(QStringLiteral("endpoint"), endpoint);
+    // Wave 7: surface the signature verdict + the permissions granted at install
+    // so the desktop Plugins page can render a "verified / unverified" badge and
+    // show exactly what a plugin is allowed to touch.
+    o.insert(QStringLiteral("verified"), verified);
+    o.insert(QStringLiteral("signed"), !signature.isEmpty());
+    if (!grantedPermissions.isEmpty()) {
+        QJsonArray g;
+        for (const QString &p : grantedPermissions)
+            g.append(p);
+        o.insert(QStringLiteral("granted_permissions"), g);
+    }
+    const QString tr = effectiveTransport();
+    const QString ep = effectiveEndpoint();
+    if (!tr.isEmpty())
+        o.insert(QStringLiteral("transport"), tr);
+    if (!ep.isEmpty())
+        o.insert(QStringLiteral("endpoint"), ep);
+    if (!mcpEnvKeys.isEmpty()) {
+        QJsonArray e;
+        for (const QString &k : mcpEnvKeys)
+            e.append(k);
+        o.insert(QStringLiteral("env_keys"), e);
+    }
+    if (!skillPath.isEmpty())
+        o.insert(QStringLiteral("skill_path"), skillPath);
     return o;
 }
 
@@ -74,16 +114,40 @@ QStringList parseStringArray(QString v)
 std::optional<PluginManifest> PluginRegistry::parseManifest(const QString &tomlText)
 {
     PluginManifest m;
+    QString section; // "" (top-level) | "mcp" | "skill" | other
     for (QString line : tomlText.split(QLatin1Char('\n'))) {
         line = line.trimmed();
-        if (line.isEmpty() || line.startsWith(QLatin1Char('#')) ||
-            line.startsWith(QLatin1Char('[')))
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
             continue;
+        if (line.startsWith(QLatin1Char('[')) && line.endsWith(QLatin1Char(']'))) {
+            section = line.mid(1, line.size() - 2).trimmed();
+            continue;
+        }
         const int eq = line.indexOf(QLatin1Char('='));
         if (eq < 0)
             continue;
         const QString key = line.left(eq).trimmed();
         const QString rawVal = line.mid(eq + 1).trimmed();
+
+        if (section == QStringLiteral("mcp")) {
+            // [mcp] transport / command / url / env_keys
+            if (key == QStringLiteral("transport"))
+                m.transport = unquote(rawVal);
+            else if (key == QStringLiteral("command"))
+                m.mcpCommand = unquote(rawVal);
+            else if (key == QStringLiteral("url"))
+                m.mcpUrl = unquote(rawVal);
+            else if (key == QStringLiteral("env_keys"))
+                m.mcpEnvKeys = parseStringArray(rawVal);
+            continue;
+        }
+        if (section == QStringLiteral("skill")) {
+            if (key == QStringLiteral("path"))
+                m.skillPath = unquote(rawVal);
+            continue;
+        }
+        if (!section.isEmpty())
+            continue; // ignore unknown sections
 
         if (key == QStringLiteral("id"))
             m.id = unquote(rawVal);
@@ -101,6 +165,8 @@ std::optional<PluginManifest> PluginRegistry::parseManifest(const QString &tomlT
             m.transport = unquote(rawVal);
         else if (key == QStringLiteral("endpoint"))
             m.endpoint = unquote(rawVal);
+        else if (key == QStringLiteral("signature"))
+            m.signature = unquote(rawVal);
         else if (key == QStringLiteral("permissions"))
             m.permissions = parseStringArray(rawVal);
         else if (key == QStringLiteral("installed"))
@@ -205,6 +271,9 @@ QVector<PluginManifest> PluginRegistry::catalog(const QString &catalogDir)
     for (const PluginRow &pr : m_store.listPlugins())
         state.insert(pr.id, pr);
 
+    // Verify against the trusted-keys file ONCE per catalog read.
+    const QHash<QString, QByteArray> trusted = PluginSigner::loadTrustedKeys();
+
     QVector<PluginManifest> out;
     QDir dir(effectiveDir(catalogDir));
     if (!dir.exists())
@@ -218,9 +287,20 @@ QVector<PluginManifest> PluginRegistry::catalog(const QString &catalogDir)
         auto man = parseManifest(text);
         if (!man)
             continue;
+        // A published plugin's payload (skill SKILL.md / launcher) lives in a
+        // sibling dir `<catalogDir>/<id>/` (see `jarvis-plugin publish`). Hash
+        // it so the signature is checked over the SAME bytes the publisher
+        // signed; a flat manifest with no payload dir verifies over "" (the
+        // empty-payload case for manifest-only entries).
+        const QString payloadHash =
+            PluginSigner::hashPayloadDir(dir.filePath(man->id));
+        const VerifyResult vr = PluginSigner::verify(*man, payloadHash, trusted);
+        man->verified = vr.verified;
         if (state.contains(man->id)) {
-            man->installed = state.value(man->id).installed;
-            man->enabled = state.value(man->id).enabled;
+            const PluginRow &pr = state.value(man->id);
+            man->installed = pr.installed;
+            man->enabled = pr.enabled;
+            man->grantedPermissions = pr.grantedPermissions;
         }
         out.push_back(*man);
     }
@@ -236,15 +316,23 @@ std::optional<PluginManifest> PluginRegistry::get(const QString &id, const QStri
     return std::nullopt;
 }
 
-bool PluginRegistry::install(const QString &id)
+bool PluginRegistry::install(const QString &id, bool verified,
+                             const QStringList &grantedPermissions)
 {
-    if (!get(id)) {
+    auto man = get(id);
+    if (!man) {
         m_lastError = QStringLiteral("unknown plugin: ") + id;
         return false;
     }
     PluginRow row;
     row.id = id;
     row.installed = true;
+    row.verified = verified;
+    // Record the granted permissions explicitly passed by the caller; if none
+    // were passed, fall back to the manifest's declared permissions (the
+    // implicit grant for a trusted/verified plugin).
+    row.grantedPermissions =
+        grantedPermissions.isEmpty() ? man->permissions : grantedPermissions;
     if (auto cur = m_store.getPlugin(id))
         row.enabled = cur->enabled;
     else
@@ -255,6 +343,31 @@ bool PluginRegistry::install(const QString &id)
         return false;
     }
     return true;
+}
+
+PluginRegistry::VerifyVerdict
+PluginRegistry::verify(const QString &id, const QString &catalogDir,
+                       const QString &trustedKeysPath)
+{
+    VerifyVerdict v;
+    auto man = get(id, catalogDir);
+    if (!man) {
+        v.error = QStringLiteral("unknown plugin: ") + id;
+        return v;
+    }
+    const QHash<QString, QByteArray> trusted =
+        PluginSigner::loadTrustedKeys(trustedKeysPath);
+    // Hash the colocated payload dir (<catalogDir>/<id>/) so verification is
+    // over the publisher-signed bytes (matches catalog()).
+    const QString payloadDir =
+        QDir(effectiveDir(catalogDir)).filePath(man->id);
+    const QString payloadHash = PluginSigner::hashPayloadDir(payloadDir);
+    const VerifyResult vr = PluginSigner::verify(*man, payloadHash, trusted);
+    v.verified = vr.verified;
+    v.permissions = man->permissions;
+    v.keyId = vr.keyId;
+    v.error = vr.error;
+    return v;
 }
 
 bool PluginRegistry::setEnabled(const QString &id, bool enabled)

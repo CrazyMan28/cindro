@@ -1,0 +1,17 @@
+{
+  "plugins": [
+    {
+      "id": "hello-mcp",
+      "name": "Hello MCP",
+      "author": "Jarvis Labs",
+      "version": "1.0.0",
+      "kind": "both",
+      "permissions": [
+        "filesystem:/tmp/hello-mcp",
+        "network:api.hello.test"
+      ],
+      "signature": "ed25519:45663c69d74bb710:dCY21/ZhvGebuVUqvws4n7MBzdM/BPn2BiZdSRKHlYS5VpoB5fJ7q88s1yR4miojdBHAwDa7ZUJmjXqUY72JDQ==",
+      "manifest": "hello-mcp.toml"
+    }
+  ]
+}

@@ -5,6 +5,7 @@
 #include "jarvis/ClaudeBrain.h"
 #include "jarvis/CodexBrain.h"
 #include "jarvis/InjectionGuard.h"
+#include "jarvis/PluginSigner.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -1063,10 +1064,79 @@ Response ControlServer::handlePluginsCatalog(const Request &req)
 Response ControlServer::handlePluginsInstall(const Request &req)
 {
     const QString id = req.params.value(QStringLiteral("id")).toString();
-    if (!m_plugins->install(id))
+    // The client may pre-approve an unverified / permission-escalating plugin
+    // (biometric tier on the device): plugins.install{id,approve:true}.
+    const bool approve = req.params.value(QStringLiteral("approve")).toBool();
+
+    auto man = m_plugins->get(id);
+    if (!man)
+        return Response::failure(req.id, QStringLiteral("unknown_plugin"),
+                                 QStringLiteral("unknown plugin: ") + id);
+
+    // VERIFY FIRST. The verdict + the declared permissions decide whether this
+    // can install silently or needs explicit (biometric) approval.
+    const PluginRegistry::VerifyVerdict v = m_plugins->verify(id);
+    const bool requestsComputerUse =
+        man->permissions.contains(QStringLiteral("computer-use"));
+
+    if (!v.verified && !approve) {
+        // UNVERIFIED -> require approval. Surface the reason + the exact
+        // permission set the user would be granting so the UI can prompt.
+        m_audit.record(QStringLiteral("plugins.install"), false,
+                       QStringLiteral("high"),
+                       QStringLiteral("blocked unverified plugin ") + id +
+                           QStringLiteral(": ") + v.error);
+        QJsonObject result;
+        result.insert(QStringLiteral("ok"), false);
+        result.insert(QStringLiteral("needs_approval"), true);
+        result.insert(QStringLiteral("approval_tier"), QStringLiteral("biometric"));
+        result.insert(QStringLiteral("verified"), false);
+        result.insert(QStringLiteral("reason"),
+                      v.error.isEmpty() ? QStringLiteral("plugin is not signed by a "
+                                                         "trusted publisher")
+                                        : v.error);
+        QJsonArray perms;
+        for (const QString &p : man->permissions)
+            perms.append(p);
+        result.insert(QStringLiteral("permissions"), perms);
+        return Response::success(req.id, result);
+    }
+
+    // A verified plugin that nonetheless asks for computer-use (the highest
+    // privilege) still requires explicit approval the first time.
+    if (v.verified && requestsComputerUse && !approve) {
+        QJsonObject result;
+        result.insert(QStringLiteral("ok"), false);
+        result.insert(QStringLiteral("needs_approval"), true);
+        result.insert(QStringLiteral("approval_tier"), QStringLiteral("biometric"));
+        result.insert(QStringLiteral("verified"), true);
+        result.insert(QStringLiteral("reason"),
+                      QStringLiteral("plugin requests the computer-use permission"));
+        QJsonArray perms;
+        for (const QString &p : man->permissions)
+            perms.append(p);
+        result.insert(QStringLiteral("permissions"), perms);
+        return Response::success(req.id, result);
+    }
+
+    // Record verified + the granted permission set (the manifest's declared
+    // permissions, which the user has now approved if unverified).
+    if (!m_plugins->install(id, v.verified, man->permissions))
         return Response::failure(req.id, QStringLiteral("store_error"), m_plugins->lastError());
+
+    m_audit.record(QStringLiteral("plugins.install"), true,
+                   v.verified ? QStringLiteral("low") : QStringLiteral("medium"),
+                   QStringLiteral("installed ") + id +
+                       (v.verified ? QStringLiteral(" (verified)")
+                                   : QStringLiteral(" (UNVERIFIED, user-approved)")));
+
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
+    ok.insert(QStringLiteral("verified"), v.verified);
+    QJsonArray perms;
+    for (const QString &p : man->permissions)
+        perms.append(p);
+    ok.insert(QStringLiteral("permissions"), perms);
     return Response::success(req.id, ok);
 }
 
@@ -1074,8 +1144,34 @@ Response ControlServer::handlePluginsSetEnabled(const Request &req)
 {
     const QString id = req.params.value(QStringLiteral("id")).toString();
     const bool enabled = req.params.value(QStringLiteral("enabled")).toBool();
+
+    auto man = m_plugins->get(id);
+    if (!man)
+        return Response::failure(req.id, QStringLiteral("unknown_plugin"),
+                                 QStringLiteral("unknown plugin: ") + id);
+
+    if (enabled) {
+        // Enabling activates the capability under the granted permissions: a
+        // sandboxed stdio MCP, an http MCP url, and/or a dropped SKILL.md.
+        QString err;
+        if (!applyPluginEnable(*man, &err)) {
+            m_audit.record(QStringLiteral("plugins.set_enabled"), false,
+                           QStringLiteral("high"),
+                           QStringLiteral("enable failed for ") + id +
+                               QStringLiteral(": ") + err);
+            return Response::failure(req.id, QStringLiteral("enable_failed"), err);
+        }
+    } else {
+        applyPluginDisable(*man);
+    }
+
     if (!m_plugins->setEnabled(id, enabled))
         return Response::failure(req.id, QStringLiteral("store_error"), m_plugins->lastError());
+
+    m_audit.record(QStringLiteral("plugins.set_enabled"), true,
+                   QStringLiteral("medium"),
+                   (enabled ? QStringLiteral("enabled ") : QStringLiteral("disabled ")) + id);
+
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
@@ -1084,11 +1180,128 @@ Response ControlServer::handlePluginsSetEnabled(const Request &req)
 Response ControlServer::handlePluginsRemove(const Request &req)
 {
     const QString id = req.params.value(QStringLiteral("id")).toString();
+    // Tear down any live capability before forgetting the plugin's state.
+    if (auto man = m_plugins->get(id))
+        applyPluginDisable(*man);
     if (!m_plugins->remove(id))
         return Response::failure(req.id, QStringLiteral("store_error"), m_plugins->lastError());
+    m_audit.record(QStringLiteral("plugins.remove"), true, QStringLiteral("low"),
+                   QStringLiteral("removed plugin ") + id);
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
+}
+
+// --- Wave 7: sandboxed activation + http-mcp/skill wiring -------------------
+
+QString ControlServer::pluginMcpServerId(const QString &pluginId)
+{
+    // Stable, recognizable id so disable can find + remove exactly this row.
+    return QStringLiteral("plugin:") + pluginId;
+}
+
+bool ControlServer::applyPluginEnable(const PluginManifest &m, QString *err)
+{
+    // The permission set the user approved at install time (falls back to the
+    // manifest's declared permissions for a pre-seeded/built-in plugin).
+    QStringList granted = m.grantedPermissions;
+    if (granted.isEmpty())
+        granted = m.permissions;
+
+    const QString kind = m.kind;
+    const bool isMcp = (kind == QStringLiteral("mcp") || kind == QStringLiteral("both"));
+    const bool isSkill = (kind == QStringLiteral("skill") || kind == QStringLiteral("both"));
+
+    if (isMcp) {
+        const QString transport = m.effectiveTransport();
+        const QString endpoint = m.effectiveEndpoint();
+        if (transport == QStringLiteral("http")) {
+            // HTTP-MCP plugins are just URLs the brains can reach; add (or keep)
+            // a registry row with the declared bearer env var resolved if set.
+            const QString sid = pluginMcpServerId(m.id);
+            if (!m_store.getMcpServer(sid)) {
+                McpServerRow row;
+                row.id = sid;
+                row.name = m.name.isEmpty() ? m.id : m.name;
+                row.transport = QStringLiteral("http");
+                row.endpoint = endpoint;
+                // Bearer from the first declared env_key, if present in the env.
+                if (!m.mcpEnvKeys.isEmpty())
+                    row.token = qEnvironmentVariable(m.mcpEnvKeys.first().toUtf8().constData());
+                row.enabled = true;
+                row.builtin = false;
+                row.risk = QStringLiteral("medium");
+                if (!m_store.addMcpServer(row)) {
+                    if (err) *err = m_store.lastError();
+                    return false;
+                }
+            } else {
+                m_store.setMcpEnabled(sid, true);
+            }
+        } else if (transport == QStringLiteral("stdio")) {
+            // Launch the plugin's MCP server SANDBOXED, confined by `granted`.
+            if (!m_sandbox.start(m, granted)) {
+                if (err) *err = m_sandbox.lastError();
+                return false;
+            }
+        }
+    }
+
+    if (isSkill) {
+        // Drop the plugin's SKILL.md into the skills dir under a "plugin" group
+        // so the brains can discover it. Source: the manifest's skill.path
+        // resolved relative to the catalog dir; if absent, synthesize a stub.
+        const QString group = QStringLiteral("plugin");
+        const QString dir = m_skills.root() + QStringLiteral("/") + group +
+                            QStringLiteral("/") + m.id;
+        QDir().mkpath(dir);
+        const QString dest = dir + QStringLiteral("/SKILL.md");
+
+        QByteArray content;
+        if (!m.skillPath.isEmpty()) {
+            // The published payload lives under <catalog>/<id>/<skillPath>.
+            const QString src = PluginRegistry::defaultCatalogDir() +
+                                QStringLiteral("/") + m.id +
+                                QStringLiteral("/") + m.skillPath;
+            QFile sf(src);
+            if (sf.open(QIODevice::ReadOnly)) {
+                content = sf.readAll();
+                sf.close();
+            }
+        }
+        if (content.isEmpty()) {
+            content = (QStringLiteral("---\n") +
+                       QStringLiteral("name: ") + m.id + QStringLiteral("\n") +
+                       QStringLiteral("description: ") + m.description + QStringLiteral("\n") +
+                       QStringLiteral("---\n\n# ") + m.name + QStringLiteral("\n\n") +
+                       m.description + QStringLiteral("\n")).toUtf8();
+        }
+        QFile df(dest);
+        if (!df.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            if (err) *err = QStringLiteral("cannot write skill: ") + dest;
+            return false;
+        }
+        df.write(content);
+        df.close();
+    }
+
+    return true;
+}
+
+void ControlServer::applyPluginDisable(const PluginManifest &m)
+{
+    // Tear down the sandboxed PID (scoped — never pkill-by-name).
+    m_sandbox.stop(m.id);
+
+    // Disable (don't delete) the http MCP row so re-enabling is cheap.
+    const QString sid = pluginMcpServerId(m.id);
+    if (m_store.getMcpServer(sid))
+        m_store.setMcpEnabled(sid, false);
+
+    // Remove the dropped skill so the brains stop discovering it.
+    const QString dir = m_skills.root() + QStringLiteral("/plugin/") + m.id;
+    if (QDir(dir).exists())
+        QDir(dir).removeRecursively();
 }
 
 // --- Contract A v2: device pairing/management ------------------------------

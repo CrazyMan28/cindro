@@ -30,10 +30,31 @@ struct PluginManifest {
     QString transport;     // "http" | "stdio" | "" (mcp/both only)
     QString endpoint;      // url or command line (mcp/both only)
 
+    // Wave 7 signed-manifest fields (jarvis-plugin.toml).
+    //   [mcp]   transport/command|url/env_keys  — how to launch / reach the MCP.
+    //   [skill] path                            — relative path to SKILL.md.
+    //   signature                               — "ed25519:<keyId>:<b64 sig>".
+    QString mcpCommand;    // [mcp] command  (stdio launcher argv string)
+    QString mcpUrl;        // [mcp] url      (http endpoint)
+    QStringList mcpEnvKeys;// [mcp] env_keys (env var names the launcher may see)
+    QString skillPath;     // [skill] path   (relative path to SKILL.md)
+    QString signature;     // "ed25519:<keyId>:<base64 sig>"
+
     // installed/enabled reflect DB state when a row exists, else the manifest's
     // own installed=/enabled= defaults (a built-in plugin can ship pre-enabled).
     bool installed = false;
     bool enabled = false;
+
+    // Set by PluginRegistry::catalog()/get() from a signature check: true iff
+    // the package is signed by a trusted publisher key. `grantedPermissions` is
+    // the permission set recorded at install time (empty until installed).
+    bool verified = false;
+    QStringList grantedPermissions;
+
+    // Effective transport/endpoint for MCP wiring, preferring [mcp] over the
+    // legacy flat transport/endpoint keys.
+    QString effectiveTransport() const;
+    QString effectiveEndpoint() const;
 
     QJsonObject toJson() const;
 };
@@ -53,9 +74,29 @@ public:
     std::optional<PluginManifest> get(const QString &id,
                                       const QString &catalogDir = QString());
 
-    bool install(const QString &id);
+    // install() now records the verification verdict + granted permissions so a
+    // later set_enabled can launch the plugin under exactly the granted perms.
+    // `verified` and `grantedPermissions` come from a prior verify() check.
+    bool install(const QString &id, bool verified = false,
+                 const QStringList &grantedPermissions = QStringList());
     bool setEnabled(const QString &id, bool enabled);
     bool remove(const QString &id);
+
+    // Verify the signature of the catalog manifest `id` against the trusted-keys
+    // file (~/.config/jarvis/plugin_keys.json). The catalog stores a flat
+    // manifest (no payload alongside it), so verification is over the manifest's
+    // canonical string with an empty payload hash unless a package dir is given.
+    // Returns the verdict (verified flag + declared permissions). `catalogDir`
+    // and `trustedKeysPath` override locations for tests.
+    struct VerifyVerdict {
+        bool verified = false;
+        QStringList permissions;
+        QString keyId;
+        QString error;
+    };
+    VerifyVerdict verify(const QString &id,
+                         const QString &catalogDir = QString(),
+                         const QString &trustedKeysPath = QString());
 
     QString lastError() const { return m_lastError; }
 

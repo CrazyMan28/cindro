@@ -19,6 +19,7 @@
 #include "jarvis/NotifyService.h"
 #include "jarvis/PairingManager.h"
 #include "jarvis/PluginRegistry.h"
+#include "jarvis/PluginSandbox.h"
 #include "jarvis/Protocol.h"
 #include "jarvis/Scheduler.h"
 #include "jarvis/SessionStore.h"
@@ -187,6 +188,18 @@ private:
     Response handlePluginsSetEnabled(const Request &req);
     Response handlePluginsRemove(const Request &req);
 
+    // Wave 7 install gating + sandboxed activation helpers.
+    //   applyPluginEnable: on enable, wire the plugin's capability —
+    //     - kind=mcp/both, stdio  -> launch SANDBOXED via PluginSandbox.
+    //     - kind=mcp/both, http   -> add a URL+bearer MCP server to the registry.
+    //     - kind=skill/both       -> drop the plugin's SKILL.md into the skills dir.
+    //   applyPluginDisable: tear down the sandboxed PID / remove the MCP row.
+    // Both are best-effort and audited; failures are returned to the caller.
+    bool applyPluginEnable(const PluginManifest &m, QString *err);
+    void applyPluginDisable(const PluginManifest &m);
+    // The MCP-registry id derived for an http plugin (stable per plugin id).
+    static QString pluginMcpServerId(const QString &pluginId);
+
     // Contract A v2 device pairing/management (surfaced in desktop Settings).
     Response handleDevicesPairStart(const Request &req);
     Response handleDevicesList(const Request &req);
@@ -281,6 +294,10 @@ private:
     SettingsStore m_settings;
     std::unique_ptr<McpRegistry> m_mcp;
     std::unique_ptr<PluginRegistry> m_plugins;
+    // Wave 7: sandboxed launcher for kind=mcp/both stdio plugins (systemd-run
+    // --user --scope, confined by the plugin's granted permissions; teardown by
+    // PID). Tracks live plugin PIDs for the lifetime of the daemon.
+    PluginSandbox m_sandbox;
 
     // Contract C shared machinery: paired-device store + daemon ed25519
     // identity, short-lived pairing codes, and the FCM push sender. Owned here

@@ -8,6 +8,7 @@
 #include <QDateTime>
 #include <QSqlDatabase>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <optional>
 
@@ -51,11 +52,16 @@ struct McpServerRow {
 };
 
 // A plugin's installed/enabled state (catalog manifest lives on disk; this row
-// tracks only the mutable state the user toggles).
+// tracks only the mutable state the user toggles). Wave 7 also records the
+// signature verdict (`verified`) and the permission set GRANTED at install
+// time (`grantedPermissions`, a comma-joined list on disk) so a later enable
+// launches the plugin under exactly the perms the user approved.
 struct PluginRow {
     QString id;
     bool installed = false;
     bool enabled = false;
+    bool verified = false;
+    QStringList grantedPermissions;
     qint64 updated = 0;
 };
 

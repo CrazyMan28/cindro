@@ -139,8 +139,16 @@ bool SessionStore::migrate()
             " id TEXT PRIMARY KEY,"
             " installed INTEGER,"
             " enabled INTEGER,"
+            " verified INTEGER DEFAULT 0,"
+            " granted_perms TEXT DEFAULT '',"
             " updated INTEGER)")))
         return false;
+    // Wave 7 migration: add the verification verdict + granted-permissions
+    // columns to a plugins table created before they existed. SQLite has no
+    // "ADD COLUMN IF NOT EXISTS"; a duplicate-column error on an already-migrated
+    // DB is expected and ignored.
+    exec(QStringLiteral("ALTER TABLE plugins ADD COLUMN verified INTEGER DEFAULT 0"));
+    exec(QStringLiteral("ALTER TABLE plugins ADD COLUMN granted_perms TEXT DEFAULT ''"));
 
     // Contract C: queued tasks (task.queue / task.list).
     if (!exec(QStringLiteral(
@@ -495,7 +503,11 @@ static PluginRow readPluginRow(QSqlQuery &q)
     r.id = q.value(0).toString();
     r.installed = q.value(1).toInt() != 0;
     r.enabled = q.value(2).toInt() != 0;
-    r.updated = q.value(3).toLongLong();
+    r.verified = q.value(3).toInt() != 0;
+    const QString perms = q.value(4).toString();
+    if (!perms.isEmpty())
+        r.grantedPermissions = perms.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    r.updated = q.value(5).toLongLong();
     return r;
 }
 
@@ -504,7 +516,7 @@ QVector<PluginRow> SessionStore::listPlugins()
     QVector<PluginRow> out;
     QSqlQuery q(m_db);
     if (!q.exec(QStringLiteral(
-            "SELECT id,installed,enabled,updated FROM plugins"))) {
+            "SELECT id,installed,enabled,verified,granted_perms,updated FROM plugins"))) {
         m_lastError = q.lastError().text();
         return out;
     }
@@ -517,7 +529,8 @@ std::optional<PluginRow> SessionStore::getPlugin(const QString &id)
 {
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "SELECT id,installed,enabled,updated FROM plugins WHERE id=?"));
+        "SELECT id,installed,enabled,verified,granted_perms,updated"
+        " FROM plugins WHERE id=?"));
     q.addBindValue(id);
     if (!q.exec()) {
         m_lastError = q.lastError().text();
@@ -532,11 +545,14 @@ bool SessionStore::upsertPlugin(const PluginRow &row)
 {
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "INSERT OR REPLACE INTO plugins (id,installed,enabled,updated)"
-        " VALUES (?,?,?,?)"));
+        "INSERT OR REPLACE INTO plugins"
+        " (id,installed,enabled,verified,granted_perms,updated)"
+        " VALUES (?,?,?,?,?,?)"));
     q.addBindValue(row.id);
     q.addBindValue(row.installed ? 1 : 0);
     q.addBindValue(row.enabled ? 1 : 0);
+    q.addBindValue(row.verified ? 1 : 0);
+    q.addBindValue(row.grantedPermissions.join(QLatin1Char(',')));
     q.addBindValue(row.updated != 0 ? row.updated
                                     : QDateTime::currentMSecsSinceEpoch());
     if (!q.exec()) {
