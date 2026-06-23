@@ -21,7 +21,7 @@ QStringList SettingsStore::providerKeys()
 {
     return {QStringLiteral("codex"), QStringLiteral("claude"),
             QStringLiteral("openai"), QStringLiteral("anthropic"),
-            QStringLiteral("ollama")};
+            QStringLiteral("mistral"), QStringLiteral("ollama")};
 }
 
 void SettingsStore::load()

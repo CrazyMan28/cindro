@@ -21,6 +21,7 @@
 #include "jarvis/SessionStore.h"
 #include "jarvis/SettingsStore.h"
 #include "jarvis/SkillStore.h"
+#include "jarvis/VoiceService.h"
 
 #include <QHash>
 #include <QObject>
@@ -64,6 +65,28 @@ public:
     // the phone can use memory + skills too. (handleRequest also routes here.)
     Response dispatchMemoryOrSkill(const Request &req); // memory.*/skills.* or {} ok=false
     static bool isMemoryOrSkillMethod(const QString &method);
+
+    // FULL Contract-C exposure: the daemon mirrors its whole config surface over
+    // the device channel so the phone can configure everything. The DeviceServer
+    // forwards reads/actions here; biometric-tier methods (settings.set, mcp.add,
+    // take_over.request, plugins install/remove) are gated by the phone before
+    // they reach this dispatcher. Returns ok=false unknown_method if `method` is
+    // not part of the shared config surface.
+    Response dispatchConfigMethod(const Request &req);
+    static bool isConfigMethod(const QString &method);
+
+    // Voice (Mistral Voxtral, laptop-proxied). Shared by Contract A + Contract C.
+    Response handleVoiceStt(const Request &req);
+    Response handleVoiceTts(const Request &req);
+
+    // device->phone FILE PUSH (Contract C). Stores the bytes under the jarvis
+    // inbox and returns a {file_id,name,size,mime,session_id} descriptor the
+    // DeviceServer emits to phones as a 'file.offer' event. b64 OR an on-disk
+    // path is accepted. Returns ok=false on bad input / write failure.
+    Response handleFilePush(const Request &req);
+    // Read a previously pushed file back (for the phone's download). Returns
+    // {name,mime,b64} or ok=false.
+    Response handleFileGet(const Request &req);
 
     // Build a "what I'm working on today" digest from project-tracker MCP
     // (project_list / agent_checkin), recent sessions, and recent memories.
@@ -112,6 +135,10 @@ signals:
     // target="real" take-over state changed: the desktop overlay subscribes to
     // this to show / hide the "JARVIS IS DRIVING" layer-shell banner + cursor.
     void agentDrivingChanged(const QString &sessionId, bool driving);
+
+    // A pushed file is available for the phone(s) to download (Contract C
+    // 'file.offer' event). `descriptor` = {file_id,name,size,mime,session_id?}.
+    void filePushed(const QJsonObject &descriptor);
 
 private slots:
     void onNewConnection();
@@ -168,6 +195,11 @@ private:
     Response handleSkillsInvoke(const Request &req);
     Response handleSkillsRemove(const Request &req);
     Response handleSkillsToday(const Request &req);
+
+    // The Mistral bearer for the Voxtral voice proxy: the SettingsStore "mistral"
+    // secret (loaded from ~/.config/jarvis/mistral_api_key on start). Empty when
+    // unconfigured (voice handlers then return an error).
+    QString mistralKey() const;
 
     // Create + wire a brain for a session row. Returns nullptr on unknown brain.
     // `agentMcpOverrides` (non-empty for coworker+agent) replaces the global

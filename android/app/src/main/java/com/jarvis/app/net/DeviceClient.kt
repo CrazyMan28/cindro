@@ -4,6 +4,9 @@ import android.util.Log
 import com.google.gson.JsonObject
 import com.jarvis.app.crypto.DeviceIdentity
 import com.jarvis.app.protocol.Protocol
+import com.jarvis.app.protocol.FileOfferEvent
+import com.jarvis.app.protocol.FileOffer
+import com.jarvis.app.protocol.MirrorFrame
 import com.jarvis.app.protocol.SessionEvent
 import com.jarvis.app.protocol.WsResponse
 import kotlinx.coroutines.CompletableDeferred
@@ -14,14 +17,13 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -60,6 +62,20 @@ class DeviceClient(
     private val _events = MutableSharedFlow<SessionEvent>(extraBufferCapacity = 256)
     val events: SharedFlow<SessionEvent> = _events.asSharedFlow()
 
+    /**
+     * Decoded binary `mirror.frame` JPEGs (Contract C video). Buffer is kept shallow
+     * and overflow drops the oldest so a slow renderer can't back-pressure the socket.
+     */
+    private val _frames = MutableSharedFlow<MirrorFrame>(
+        extraBufferCapacity = 4,
+        onBufferOverflow = kotlinx.coroutines.channels.BufferOverflow.DROP_OLDEST,
+    )
+    val frames: SharedFlow<MirrorFrame> = _frames.asSharedFlow()
+
+    /** `file.offer` events: the daemon pushed a file (device->phone). */
+    private val _fileOffers = MutableSharedFlow<FileOffer>(extraBufferCapacity = 16)
+    val fileOffers: SharedFlow<FileOffer> = _fileOffers.asSharedFlow()
+
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
 
@@ -70,7 +86,6 @@ class DeviceClient(
     @Volatile private var authed = false
     @Volatile private var deviceName: String = "Android phone"
 
-    private val connectMutex = Mutex()
     @Volatile private var shouldRun = false
     @Volatile private var wsUrl: String? = null
     private var reconnectAttempts = 0
@@ -197,10 +212,21 @@ class DeviceClient(
                 _events.tryEmit(ev)
                 return
             }
+            FileOfferEvent.from(obj)?.let { fo ->
+                _fileOffers.tryEmit(fo.offer)
+                return
+            }
             WsResponse.from(obj)?.let { resp ->
                 pending.remove(resp.id)?.complete(resp)
                 return
             }
+        }
+
+        override fun onMessage(ws: WebSocket, bytes: ByteString) {
+            // Binary frame layout (Contract C video):
+            //   [4-byte BE header length][header JSON utf8][JPEG bytes]
+            //   header = {"t":"mirror.frame","session_id":..,"ts":..,"len":..}
+            MirrorFrame.parse(bytes.toByteArray())?.let { _frames.tryEmit(it) }
         }
 
         override fun onClosing(ws: WebSocket, code: Int, reason: String) {

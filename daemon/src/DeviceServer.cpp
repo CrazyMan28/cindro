@@ -95,9 +95,13 @@ bool DeviceServer::start()
     }
 
     // Fan brain events out to subscribed device sockets + push.
-    if (m_control)
+    if (m_control) {
         connect(m_control, &ControlServer::sessionEvent,
                 this, &DeviceServer::onSessionEvent);
+        // device->phone file push -> 'file.offer' event to phones.
+        connect(m_control, &ControlServer::filePushed,
+                this, &DeviceServer::onFilePushed);
+    }
 
     return localOk || m_tailnet != nullptr;
 }
@@ -282,7 +286,15 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("memory.search") ||
         method == QStringLiteral("skills.list") ||
         method == QStringLiteral("skills.get") ||
-        method == QStringLiteral("skills.today"))
+        method == QStringLiteral("skills.today") ||
+        // Full config surface — reads are read tier.
+        method == QStringLiteral("settings.get") ||
+        method == QStringLiteral("model.list") ||
+        method == QStringLiteral("mcp.list") ||
+        method == QStringLiteral("plugins.catalog") ||
+        method == QStringLiteral("devices.list") ||
+        method == QStringLiteral("agent_desktop.info") ||
+        method == QStringLiteral("file.get"))
         return QStringLiteral("read");
     if (method == QStringLiteral("session.create") ||
         method == QStringLiteral("session.send") ||
@@ -293,11 +305,28 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("memory.remove") ||
         method == QStringLiteral("skills.create") ||
         method == QStringLiteral("skills.invoke") ||
-        method == QStringLiteral("skills.remove"))
+        method == QStringLiteral("skills.remove") ||
+        // Config actions that aren't security-sensitive.
+        method == QStringLiteral("mcp.remove") ||
+        method == QStringLiteral("mcp.set_enabled") ||
+        method == QStringLiteral("mcp.test") ||
+        method == QStringLiteral("plugins.install") ||
+        method == QStringLiteral("plugins.set_enabled") ||
+        method == QStringLiteral("plugins.remove") ||
+        method == QStringLiteral("devices.pair_start") ||
+        method == QStringLiteral("voice.stt") ||
+        method == QStringLiteral("voice.tts") ||
+        method == QStringLiteral("file.push"))
         return QStringLiteral("action");
     if (method == QStringLiteral("approval.respond") ||
         method == QStringLiteral("mirror.start") ||
-        method == QStringLiteral("mirror.stop"))
+        method == QStringLiteral("mirror.stop") ||
+        // Security-sensitive config: settings.set, mcp.add, devices.revoke,
+        // and real-screen take-over require a biometric confirmation.
+        method == QStringLiteral("settings.set") ||
+        method == QStringLiteral("mcp.add") ||
+        method == QStringLiteral("devices.revoke") ||
+        method == QStringLiteral("take_over.request"))
         return QStringLiteral("biometric");
     return QStringLiteral("action");
 }
@@ -317,6 +346,20 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("skills.list"),     QStringLiteral("skills.get"),
         QStringLiteral("skills.create"),   QStringLiteral("skills.invoke"),
         QStringLiteral("skills.remove"),   QStringLiteral("skills.today"),
+        // FULL Contract-C config surface: the phone can configure everything.
+        QStringLiteral("settings.get"),    QStringLiteral("settings.set"),
+        QStringLiteral("model.list"),
+        QStringLiteral("mcp.list"),        QStringLiteral("mcp.add"),
+        QStringLiteral("mcp.remove"),      QStringLiteral("mcp.set_enabled"),
+        QStringLiteral("mcp.test"),
+        QStringLiteral("plugins.catalog"), QStringLiteral("plugins.install"),
+        QStringLiteral("plugins.set_enabled"), QStringLiteral("plugins.remove"),
+        QStringLiteral("devices.pair_start"), QStringLiteral("devices.list"),
+        QStringLiteral("devices.revoke"),  QStringLiteral("agent_desktop.info"),
+        QStringLiteral("take_over.request"),
+        // Voice (Mistral Voxtral, laptop-proxied) + device->phone file push.
+        QStringLiteral("voice.stt"),       QStringLiteral("voice.tts"),
+        QStringLiteral("file.push"),       QStringLiteral("file.get"),
     };
     QJsonObject map;
     for (const QString &m : methods)
@@ -361,6 +404,19 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         // Contract A v3 mirror: memory + skills share the SAME store as the
         // desktop, so the phone curates one coherent memory/skill world.
         resp = m_control->dispatchMemoryOrSkill(req);
+    } else if (ControlServer::isConfigMethod(m)) {
+        // FULL Contract-C exposure: settings/model/mcp/plugins/voice/devices/
+        // take_over/file.* all mirror to the phone via the SAME ControlServer
+        // machinery, so the phone configures one coherent world. Biometric-tier
+        // methods are gated on the phone before they're sent.
+        // A device that pushes a session-scoped file should also RECEIVE the
+        // resulting file.offer event, so subscribe it to that session first.
+        if (m == QStringLiteral("file.push")) {
+            const QString sid = req.params.value(QStringLiteral("session_id")).toString();
+            if (!sid.isEmpty())
+                c.subscribedSessions.insert(sid);
+        }
+        resp = m_control->dispatchConfigMethod(req);
     } else {
         resp = Response::failure(req.id, QStringLiteral("unknown_method"),
                                  QStringLiteral("unknown method: ") + m);
@@ -788,6 +844,47 @@ void DeviceServer::onSessionEvent(const QString &sessionId, const NormalizedBrai
 
     if (wantPush && m_control && m_control->fcm()) {
         msg.data.insert(QStringLiteral("session_id"), sessionId);
+        for (const PushTokenRow &t : m_control->store().listPushTokens())
+            m_control->fcm()->send(t.fcmToken, msg);
+    }
+}
+
+void DeviceServer::onFilePushed(const QJsonObject &descriptor)
+{
+    // Emit a Contract C 'file.offer' event so phones know a file is downloadable
+    // via file.get{file_id, session_id?}. The local path is NOT sent.
+    QJsonObject data = descriptor;
+    data.remove(QStringLiteral("path"));
+
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), kProtocolVersion);
+    frame.insert(QStringLiteral("event"), QStringLiteral("file.offer"));
+    frame.insert(QStringLiteral("data"), data);
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+
+    const QString sessionId = descriptor.value(QStringLiteral("session_id")).toString();
+    for (auto it = m_conns.begin(); it != m_conns.end(); ++it) {
+        Conn &c = it.value();
+        if (!c.authed)
+            continue;
+        // Deliver to phones subscribed to this session, or to all when the file
+        // isn't tied to a session.
+        if (sessionId.isEmpty() || c.subscribedSessions.contains(sessionId))
+            it.key()->sendTextMessage(payload);
+    }
+
+    // Also push a notification so the phone surfaces the new file when backgrounded.
+    if (m_control && m_control->fcm()) {
+        PushMessage msg;
+        msg.title = QStringLiteral("File ready");
+        msg.body = descriptor.value(QStringLiteral("name"))
+                       .toString(QStringLiteral("A file is ready to download."));
+        msg.data.insert(QStringLiteral("kind"), QStringLiteral("file_offer"));
+        msg.data.insert(QStringLiteral("file_id"),
+                        descriptor.value(QStringLiteral("file_id")));
+        if (!sessionId.isEmpty())
+            msg.data.insert(QStringLiteral("session_id"), sessionId);
         for (const PushTokenRow &t : m_control->store().listPushTokens())
             m_control->fcm()->send(t.fcmToken, msg);
     }

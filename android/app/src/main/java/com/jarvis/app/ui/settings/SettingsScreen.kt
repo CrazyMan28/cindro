@@ -1,5 +1,8 @@
 package com.jarvis.app.ui.settings
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,6 +11,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -15,6 +20,8 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -22,28 +29,54 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jarvis.app.ui.ConnectionPill
 import com.jarvis.app.ui.theme.GlowCard
 import com.jarvis.app.ui.theme.JarvisPalette
+import com.jarvis.app.ui.util.Biometric
+import com.jarvis.app.voice.WakeService
+import kotlinx.coroutines.launch
+
+private val BRAINS = listOf("codex", "claude", "api")
+private val API_PROVIDERS = listOf("openai", "anthropic", "ollama", "mistral")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
+    activity: FragmentActivity,
     onUnpaired: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val conn by viewModel.connection.collectAsStateWithLifecycle()
     val lastError by viewModel.lastError.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    val micLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            viewModel.setWakeEnabled(true)
+            WakeService.start(context)
+        }
+    }
 
     Scaffold(
         containerColor = JarvisPalette.Background,
@@ -65,7 +98,7 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            // Connection
+            // --- Connection ---
             GlowCard(modifier = Modifier.fillMaxWidth()) {
                 Column {
                     Row(
@@ -90,7 +123,121 @@ fun SettingsScreen(
                 }
             }
 
-            // Device identity
+            // --- Brain & model (settings.set / model.list) ---
+            GlowCard(modifier = Modifier.fillMaxWidth()) {
+                Column {
+                    Text("Default brain", style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextPrimary)
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        BRAINS.forEach { b ->
+                            FilterChip(
+                                selected = state.defaultBrain == b,
+                                onClick = {
+                                    scope.launch {
+                                        if (Biometric.authenticate(activity, "Change default brain", b)) {
+                                            viewModel.setDefaultBrain(b)
+                                        }
+                                    }
+                                },
+                                label = { Text(b) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = JarvisPalette.AccentDim,
+                                    selectedLabelColor = JarvisPalette.TextPrimary,
+                                ),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text("Model (${state.modelsBrain})", style = MaterialTheme.typography.labelLarge, color = JarvisPalette.TextSecondary)
+                    Spacer(Modifier.height(6.dp))
+                    if (state.models.isEmpty()) {
+                        Text("No models reported.", color = JarvisPalette.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(state.models, key = { it.id }) { m ->
+                                FilterChip(
+                                    selected = state.defaultModel == m.id,
+                                    onClick = {
+                                        scope.launch {
+                                            if (Biometric.authenticate(activity, "Set default model", m.display)) {
+                                                viewModel.setDefaultModel(m.id)
+                                            }
+                                        }
+                                    },
+                                    label = { Text(m.display, maxLines = 1) },
+                                )
+                            }
+                        }
+                    }
+                    state.daemonError?.let {
+                        Spacer(Modifier.height(6.dp))
+                        Text(it, color = JarvisPalette.Error, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+
+            // --- API keys (incl. Mistral) ---
+            GlowCard(modifier = Modifier.fillMaxWidth()) {
+                Column {
+                    Text("API keys", style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextPrimary)
+                    Spacer(Modifier.height(8.dp))
+                    API_PROVIDERS.forEach { provider ->
+                        ApiKeyRow(
+                            provider = provider,
+                            isSet = state.apiKeysSet[provider] == true,
+                            onSave = { key ->
+                                scope.launch {
+                                    if (Biometric.authenticate(activity, "Set $provider key", "Stored on the laptop")) {
+                                        viewModel.setApiKey(provider, key)
+                                    }
+                                }
+                            },
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                }
+            }
+
+            // --- Voice ---
+            GlowCard(modifier = Modifier.fillMaxWidth()) {
+                Column {
+                    Text("Voice (Mistral Voxtral)", style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextPrimary)
+                    Spacer(Modifier.height(10.dp))
+                    ToggleRow(
+                        title = "\"Hey Jarvis\" wake",
+                        subtitle = "Foreground mic service with a visible notification",
+                        checked = state.wakeEnabled,
+                        onChange = { on ->
+                            if (on) {
+                                micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            } else {
+                                viewModel.setWakeEnabled(false)
+                                WakeService.stop(context)
+                            }
+                        },
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    ToggleRow(
+                        title = "Speak replies",
+                        subtitle = "Read assistant answers aloud via voice.tts",
+                        checked = state.readBackEnabled,
+                        onChange = viewModel::setReadBack,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    var voice by remember(state.ttsVoice) { mutableStateOf(state.ttsVoice) }
+                    OutlinedTextField(
+                        value = voice,
+                        onValueChange = { voice = it },
+                        label = { Text("TTS voice id (blank = default)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    TextButton(onClick = { viewModel.setTtsVoice(voice) }) { Text("Save voice") }
+                }
+            }
+
+            // --- Device identity ---
             GlowCard(modifier = Modifier.fillMaxWidth()) {
                 Column {
                     Text("This device", style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextPrimary)
@@ -113,29 +260,17 @@ fun SettingsScreen(
                 }
             }
 
-            // Notifications
+            // --- Notifications ---
             GlowCard(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Notifications", style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextPrimary)
-                        Text(
-                            "Push when an approval is needed, a task finishes, or a file is ready.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = JarvisPalette.TextSecondary,
-                        )
-                    }
-                    Switch(
-                        checked = state.notificationsEnabled,
-                        onCheckedChange = viewModel::setNotificationsEnabled,
-                    )
-                }
+                ToggleRow(
+                    title = "Notifications",
+                    subtitle = "Push when an approval is needed, a task finishes, or a file is ready.",
+                    checked = state.notificationsEnabled,
+                    onChange = viewModel::setNotificationsEnabled,
+                )
             }
 
-            // Unpair
+            // --- Unpair ---
             Button(
                 onClick = { viewModel.unpair(onUnpaired) },
                 modifier = Modifier.fillMaxWidth(),
@@ -145,5 +280,48 @@ fun SettingsScreen(
                 ),
             ) { Text("Unpair this device") }
         }
+    }
+}
+
+@Composable
+private fun ApiKeyRow(provider: String, isSet: Boolean, onSave: (String) -> Unit) {
+    var value by remember { mutableStateOf("") }
+    Column {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(provider.replaceFirstChar { it.uppercase() }, color = JarvisPalette.TextPrimary, style = MaterialTheme.typography.bodyLarge)
+            Text(if (isSet) "SET" else "—", color = if (isSet) JarvisPalette.Success else JarvisPalette.TextSecondary, style = MaterialTheme.typography.labelLarge)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = value,
+                onValueChange = { value = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text(if (isSet) "Replace key…" else "Paste key…") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+            )
+            TextButton(onClick = { if (value.isNotBlank()) { onSave(value); value = "" } }, enabled = value.isNotBlank()) {
+                Text("Save")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextPrimary)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }

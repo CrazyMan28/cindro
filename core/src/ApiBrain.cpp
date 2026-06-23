@@ -50,6 +50,17 @@ QString ApiBrain::resolveProvider(const Options &opts)
     const QString m = opts.model.toLower();
     if (m.startsWith(QStringLiteral("claude")) || m.contains(QStringLiteral("anthropic")))
         return QStringLiteral("anthropic");
+    // Mistral chat models (mistral-large-latest, mistral-small-*, ministral-*,
+    // open-mistral-*, magistral-*, codestral-*, pixtral-*) speak the
+    // OpenAI-compatible dialect at api.mistral.ai.
+    if (m.startsWith(QStringLiteral("mistral")) ||
+        m.startsWith(QStringLiteral("ministral")) ||
+        m.startsWith(QStringLiteral("magistral")) ||
+        m.startsWith(QStringLiteral("open-mistral")) ||
+        m.startsWith(QStringLiteral("open-mixtral")) ||
+        m.startsWith(QStringLiteral("codestral")) ||
+        m.startsWith(QStringLiteral("pixtral")))
+        return QStringLiteral("mistral");
     // Ollama tags look like "qwen2.5:3b", "llama3.2:latest" — a colon with a
     // non-numeric right side and no provider key is the ollama heuristic.
     if (m.contains(QLatin1Char(':')) && opts.apiKey.isEmpty())
@@ -63,6 +74,9 @@ QString ApiBrain::defaultBaseUrl(const QString &provider)
         return QStringLiteral("https://api.anthropic.com/v1");
     if (provider == QStringLiteral("ollama"))
         return QStringLiteral("http://127.0.0.1:11434/v1");
+    // Mistral is OpenAI-compatible (/v1/chat/completions, SSE deltas).
+    if (provider == QStringLiteral("mistral"))
+        return QStringLiteral("https://api.mistral.ai/v1");
     return QStringLiteral("https://api.openai.com/v1");
 }
 
@@ -121,11 +135,14 @@ void ApiBrain::startOpenAi(const QString &text)
     body.insert(QStringLiteral("model"), m_opts.model);
     body.insert(QStringLiteral("messages"), messages);
     body.insert(QStringLiteral("stream"), true);
-    // Ask for usage in the final SSE chunk (OpenAI streaming option; ignored by
-    // backends that don't support it).
-    QJsonObject streamOpts;
-    streamOpts.insert(QStringLiteral("include_usage"), true);
-    body.insert(QStringLiteral("stream_options"), streamOpts);
+    // Ask for usage in the final SSE chunk (OpenAI streaming option). Mistral
+    // (and other strict OpenAI-compatible backends) reject unknown fields, so
+    // only attach it for the canonical openai provider.
+    if (m_provider == QStringLiteral("openai")) {
+        QJsonObject streamOpts;
+        streamOpts.insert(QStringLiteral("include_usage"), true);
+        body.insert(QStringLiteral("stream_options"), streamOpts);
+    }
 
     m_reply = m_nam->post(rq, QJsonDocument(body).toJson(QJsonDocument::Compact));
     connect(m_reply, &QNetworkReply::readyRead, this, &ApiBrain::onReadyRead);

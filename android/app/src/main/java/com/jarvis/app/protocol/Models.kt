@@ -2,6 +2,7 @@ package com.jarvis.app.protocol
 
 import android.net.Uri
 import com.google.gson.JsonObject
+import java.nio.ByteBuffer
 
 /**
  * Capability tier a method requires (Contract C). The daemon tags each method; the
@@ -60,6 +61,168 @@ data class PairedDevice(
     val pairedAt: Long?,
     val lastSeen: Long?,
 )
+
+/**
+ * A decoded Contract C binary video frame:
+ *   [4-byte big-endian header length][header JSON utf8][JPEG bytes]
+ * The header carries {t:"mirror.frame", session_id, ts, len}.
+ */
+data class MirrorFrame(
+    val sessionId: String,
+    val ts: Long,
+    val jpeg: ByteArray,
+) {
+    companion object {
+        fun parse(bytes: ByteArray): MirrorFrame? {
+            if (bytes.size < 4) return null
+            val hlen = ByteBuffer.wrap(bytes, 0, 4).int
+            if (hlen <= 0 || 4 + hlen > bytes.size) return null
+            val header = runCatching {
+                com.google.gson.JsonParser
+                    .parseString(String(bytes, 4, hlen, Charsets.UTF_8))
+                    .asJsonObject
+            }.getOrNull() ?: return null
+            if (header.get("t")?.asString != "mirror.frame") return null
+            val jpeg = bytes.copyOfRange(4 + hlen, bytes.size)
+            if (jpeg.isEmpty()) return null
+            return MirrorFrame(
+                sessionId = header.get("session_id")?.asString.orEmpty(),
+                ts = header.get("ts")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                jpeg = jpeg,
+            )
+        }
+    }
+}
+
+/** A model id offered for a brain (from model.list). */
+data class ModelInfo(val id: String, val label: String?, val brain: String?) {
+    val display: String get() = label?.takeIf { it.isNotBlank() } ?: id
+
+    companion object {
+        fun from(o: JsonObject): ModelInfo = ModelInfo(
+            id = o.get("id")?.asString ?: o.get("model")?.asString.orEmpty(),
+            label = o.get("label")?.takeIf { !it.isJsonNull }?.asString
+                ?: o.get("name")?.takeIf { !it.isJsonNull }?.asString,
+            brain = o.get("brain")?.takeIf { !it.isJsonNull }?.asString,
+        )
+    }
+}
+
+/** An MCP server entry (from mcp.list). */
+data class McpServer(
+    val name: String,
+    val url: String?,
+    val command: String?,
+    val enabled: Boolean,
+    val status: String?,
+) {
+    companion object {
+        fun from(o: JsonObject): McpServer = McpServer(
+            name = o.get("name")?.asString.orEmpty(),
+            url = o.get("url")?.takeIf { !it.isJsonNull }?.asString,
+            command = o.get("command")?.takeIf { !it.isJsonNull }?.asString,
+            enabled = o.get("enabled")?.takeIf { !it.isJsonNull }?.asBoolean ?: true,
+            status = o.get("status")?.takeIf { !it.isJsonNull }?.asString,
+        )
+    }
+}
+
+/** A plugin from plugins.catalog / plugins.list. */
+data class Plugin(
+    val id: String,
+    val name: String?,
+    val description: String?,
+    val version: String?,
+    val installed: Boolean,
+    val enabled: Boolean,
+) {
+    val display: String get() = name?.takeIf { it.isNotBlank() } ?: id
+
+    companion object {
+        fun from(o: JsonObject): Plugin = Plugin(
+            id = o.get("id")?.asString ?: o.get("name")?.asString.orEmpty(),
+            name = o.get("name")?.takeIf { !it.isJsonNull }?.asString,
+            description = o.get("description")?.takeIf { !it.isJsonNull }?.asString,
+            version = o.get("version")?.takeIf { !it.isJsonNull }?.asString,
+            installed = o.get("installed")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
+            enabled = o.get("enabled")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
+        )
+    }
+}
+
+/** A memory entry (from memory.list / memory.search). */
+data class MemoryEntry(
+    val id: String,
+    val content: String,
+    val target: String?,
+    val createdAt: Long?,
+) {
+    companion object {
+        fun from(o: JsonObject): MemoryEntry = MemoryEntry(
+            id = o.get("id")?.asString.orEmpty(),
+            content = o.get("content")?.takeIf { !it.isJsonNull }?.asString
+                ?: o.get("text")?.takeIf { !it.isJsonNull }?.asString.orEmpty(),
+            target = o.get("target")?.takeIf { !it.isJsonNull }?.asString,
+            createdAt = o.get("created_at")?.takeIf { !it.isJsonNull }?.asLong
+                ?: o.get("ts")?.takeIf { !it.isJsonNull }?.asLong,
+        )
+    }
+}
+
+/** A self-authored skill (from skills.list / skills.get). */
+data class Skill(
+    val name: String,
+    val group: String?,
+    val description: String?,
+    val tags: List<String>,
+    val body: String?,
+) {
+    val invokeName: String get() = name
+    val display: String get() = name
+
+    companion object {
+        fun from(o: JsonObject): Skill = Skill(
+            name = o.get("name")?.asString.orEmpty(),
+            group = o.get("group")?.takeIf { !it.isJsonNull }?.asString,
+            description = o.get("description")?.takeIf { !it.isJsonNull }?.asString,
+            tags = o.getAsJsonArray("tags")?.mapNotNull {
+                it.takeIf { t -> t.isJsonPrimitive }?.asString
+            } ?: emptyList(),
+            body = o.get("body")?.takeIf { !it.isJsonNull }?.asString,
+        )
+    }
+}
+
+/** A "today" agenda item (from skills.today). */
+data class TodayItem(val title: String, val detail: String?) {
+    companion object {
+        fun from(o: JsonObject): TodayItem = TodayItem(
+            title = o.get("title")?.asString ?: o.get("text")?.asString.orEmpty(),
+            detail = o.get("detail")?.takeIf { !it.isJsonNull }?.asString,
+        )
+    }
+}
+
+/** A file offered by the daemon (file.offer Contract C event). */
+data class FileOffer(
+    val id: String,
+    val name: String,
+    val mime: String?,
+    val size: Long?,
+    val sessionId: String?,
+    val b64: String?,
+) {
+    companion object {
+        fun from(o: JsonObject): FileOffer = FileOffer(
+            id = o.get("id")?.asString ?: o.get("file_id")?.asString.orEmpty(),
+            name = o.get("name")?.asString ?: "file",
+            mime = o.get("mime")?.takeIf { !it.isJsonNull }?.asString,
+            size = o.get("size")?.takeIf { !it.isJsonNull }?.asLong,
+            sessionId = o.get("session_id")?.takeIf { !it.isJsonNull }?.asString,
+            b64 = o.get("b64")?.takeIf { !it.isJsonNull }?.asString,
+        )
+    }
+}
 
 /**
  * Decoded `jarvis://pair?host=<tailnet-ip>:8796&code=<code>&fp=<daemon-pubkey-fp>` payload

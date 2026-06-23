@@ -1,8 +1,11 @@
 package com.jarvis.app.ui.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,8 +26,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,10 +48,12 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -66,12 +74,21 @@ fun ChatScreen(
     viewModel: ChatViewModel,
     activity: FragmentActivity,
     onBack: () -> Unit,
+    autoStartVoice: Boolean = false,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val voicePhase by viewModel.voicePhase.collectAsStateWithLifecycle()
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var draft by remember { mutableStateOf("") }
+    var micGranted by remember {
+        mutableStateOf(
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                context, Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED,
+        )
+    }
 
     val pickImage = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent(),
@@ -82,6 +99,15 @@ fun ChatScreen(
                     ?.let(viewModel::attach)
             }
         }
+    }
+
+    val requestMic = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> micGranted = granted }
+
+    // "Hey Jarvis" wake deep-link: start a push-to-talk capture on entry.
+    LaunchedEffect(autoStartVoice) {
+        if (autoStartVoice && micGranted) viewModel.startRecording()
     }
 
     LaunchedEffect(state.items.size) {
@@ -174,11 +200,26 @@ fun ChatScreen(
                 draft = draft,
                 onDraftChange = { draft = it },
                 sending = state.sending,
+                voicePhase = voicePhase,
                 onAttach = { pickImage.launch("image/*") },
                 onSend = {
                     viewModel.send(draft)
                     draft = ""
                 },
+                onMicDown = {
+                    if (!micGranted) {
+                        requestMic.launch(Manifest.permission.RECORD_AUDIO)
+                    } else {
+                        viewModel.startRecording()
+                    }
+                },
+                onMicUp = {
+                    viewModel.stopAndTranscribe { text ->
+                        draft = if (draft.isBlank()) text else "$draft $text"
+                    }
+                },
+                onMicCancel = { viewModel.cancelRecording() },
+                onStopSpeaking = { viewModel.stopSpeaking() },
             )
         }
     }
@@ -189,40 +230,100 @@ private fun InputRow(
     draft: String,
     onDraftChange: (String) -> Unit,
     sending: Boolean,
+    voicePhase: com.jarvis.app.voice.VoiceController.Phase,
     onAttach: () -> Unit,
     onSend: () -> Unit,
+    onMicDown: () -> Unit,
+    onMicUp: () -> Unit,
+    onMicCancel: () -> Unit,
+    onStopSpeaking: () -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        IconButton(onClick = onAttach) {
-            Icon(Icons.Filled.Image, contentDescription = "Attach photo", tint = JarvisPalette.Accent)
+    val recording = voicePhase == com.jarvis.app.voice.VoiceController.Phase.RECORDING
+    val transcribing = voicePhase == com.jarvis.app.voice.VoiceController.Phase.TRANSCRIBING
+    val speaking = voicePhase == com.jarvis.app.voice.VoiceController.Phase.SPEAKING
+
+    Column(Modifier.fillMaxWidth()) {
+        if (recording || transcribing || speaking) {
+            val label = when {
+                recording -> "Listening… release to send"
+                transcribing -> "Transcribing via Voxtral…"
+                else -> "Speaking…"
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Filled.GraphicEq,
+                    contentDescription = null,
+                    tint = JarvisPalette.Accent,
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(label, color = JarvisPalette.Accent, style = MaterialTheme.typography.bodySmall)
+                if (speaking) {
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(onClick = onStopSpeaking, modifier = Modifier.size(22.dp)) {
+                        Icon(Icons.Filled.VolumeOff, contentDescription = "Stop voice", tint = JarvisPalette.Error)
+                    }
+                }
+            }
         }
-        TextField(
-            value = draft,
-            onValueChange = onDraftChange,
-            modifier = Modifier.weight(1f),
-            placeholder = { Text("Message Jarvis…") },
-            maxLines = 5,
-            shape = RoundedCornerShape(14.dp),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = JarvisPalette.Surface,
-                unfocusedContainerColor = JarvisPalette.Surface,
-                focusedIndicatorColor = JarvisPalette.Accent,
-                unfocusedIndicatorColor = JarvisPalette.Outline,
-            ),
-        )
-        Spacer(Modifier.width(6.dp))
-        IconButton(
-            onClick = onSend,
-            enabled = !sending && draft.isNotBlank(),
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(
-                Icons.AutoMirrored.Filled.Send,
-                contentDescription = "Send",
-                tint = if (draft.isNotBlank()) JarvisPalette.Accent else JarvisPalette.TextSecondary,
+            IconButton(onClick = onAttach) {
+                Icon(Icons.Filled.Image, contentDescription = "Attach photo", tint = JarvisPalette.Accent)
+            }
+            // Push-to-talk: hold to record, release to transcribe + drop into the draft.
+            val micUp by rememberUpdatedState(onMicUp)
+            val micDown by rememberUpdatedState(onMicDown)
+            val micCancel by rememberUpdatedState(onMicCancel)
+            IconButton(
+                onClick = {},
+                modifier = Modifier.pointerInput(Unit) {
+                    detectTapGestures(
+                        onPress = {
+                            micDown()
+                            val released = tryAwaitRelease()
+                            if (released) micUp() else micCancel()
+                        },
+                    )
+                },
+            ) {
+                Icon(
+                    Icons.Filled.Mic,
+                    contentDescription = "Hold to talk",
+                    tint = if (recording) JarvisPalette.Error else JarvisPalette.Accent,
+                )
+            }
+            TextField(
+                value = draft,
+                onValueChange = onDraftChange,
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Message Jarvis…") },
+                maxLines = 5,
+                shape = RoundedCornerShape(14.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = JarvisPalette.Surface,
+                    unfocusedContainerColor = JarvisPalette.Surface,
+                    focusedIndicatorColor = JarvisPalette.Accent,
+                    unfocusedIndicatorColor = JarvisPalette.Outline,
+                ),
             )
+            Spacer(Modifier.width(6.dp))
+            IconButton(
+                onClick = onSend,
+                enabled = !sending && draft.isNotBlank(),
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.Send,
+                    contentDescription = "Send",
+                    tint = if (draft.isNotBlank()) JarvisPalette.Accent else JarvisPalette.TextSecondary,
+                )
+            }
         }
     }
 }

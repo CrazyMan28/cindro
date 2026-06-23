@@ -64,6 +64,9 @@ private slots:
     void onTextMessage(const QString &message);
     void onSocketDisconnected();
     void onSessionEvent(const QString &sessionId, const jarvis::NormalizedBrainEvent &ev);
+    // A daemon-side file.push -> emit a Contract C 'file.offer' event to phones
+    // subscribed to the file's session (or to all authed phones if session-less).
+    void onFilePushed(const QJsonObject &descriptor);
 
 private:
     // Per-connection state.

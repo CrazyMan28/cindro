@@ -13,6 +13,7 @@ import androidx.fragment.app.FragmentActivity
 import com.jarvis.app.fcm.JarvisNotifier
 import com.jarvis.app.ui.AppNav
 import com.jarvis.app.ui.theme.JarvisTheme
+import com.jarvis.app.voice.WakeService
 
 /**
  * Single-activity host. Extends [FragmentActivity] so the BiometricPrompt (used to gate
@@ -27,17 +28,23 @@ class MainActivity : FragmentActivity() {
         JarvisNotifier.ensureChannels(this)
 
         val initialSession = intent?.getStringExtra(JarvisNotifier.EXTRA_SESSION_ID)
+        val wokeViaWake = intent?.getBooleanExtra(WakeService.EXTRA_WAKE, false) == true
 
         setContent {
             JarvisTheme {
                 val activity = this
                 val deepLinkSession = remember { mutableStateOf(initialSession) }
+                val deepLinkWake = remember { mutableStateOf(wokeViaWake) }
                 Surface(modifier = Modifier.fillMaxSize()) {
                     AppNav(
                         app = application as JarvisApp,
                         activity = activity,
                         deepLinkSessionId = deepLinkSession.value,
-                        onDeepLinkConsumed = { deepLinkSession.value = null },
+                        deepLinkWake = deepLinkWake.value,
+                        onDeepLinkConsumed = {
+                            deepLinkSession.value = null
+                            deepLinkWake.value = false
+                        },
                     )
                 }
             }
