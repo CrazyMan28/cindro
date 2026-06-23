@@ -1,6 +1,10 @@
 #include "jarvis/AgentDesktop.h"
 
+#include <signal.h> // kill, SIGTERM, SIGKILL
+#include <sys/types.h>
 #include <unistd.h> // getuid
+
+#include <QSet>
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -259,6 +263,46 @@ bool AgentDesktop::waitForEngineHealth(const Desk &d, int timeoutMs)
     return false;
 }
 
+bool AgentDesktop::waitForEngineReady(const Desk &d, int timeoutMs)
+{
+    QNetworkAccessManager nam;
+    const QString url =
+        QStringLiteral("http://127.0.0.1:%1/ready").arg(d.info.port);
+    QElapsedTimer clock;
+    clock.start();
+    while (clock.elapsed() < timeoutMs) {
+        if (d.engine && d.engine->state() == QProcess::NotRunning)
+            return false; // engine exited early
+        QNetworkRequest rq{QUrl(url)};
+        // /ready is unauthenticated (leaks nothing), but send the bearer too in
+        // case a future build gates it — never breaks the probe.
+        if (!d.info.bearer.isEmpty())
+            rq.setRawHeader("Authorization", QByteArray("Bearer ") + d.info.bearer.toUtf8());
+        QNetworkReply *reply = nam.get(rq);
+        QEventLoop loop;
+        QTimer t;
+        t.setSingleShot(true);
+        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        QObject::connect(&t, &QTimer::timeout, &loop, [&]() {
+            reply->abort();
+            loop.quit();
+        });
+        // The /ready grab can take a moment on a cold compositor; allow it.
+        t.start(5000);
+        loop.exec();
+        const bool ok = reply->isFinished() &&
+                        reply->error() == QNetworkReply::NoError &&
+                        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 200;
+        reply->deleteLater();
+        if (ok)
+            return true;
+        QEventLoop wait;
+        QTimer::singleShot(350, &wait, &QEventLoop::quit);
+        wait.exec();
+    }
+    return false;
+}
+
 AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
 {
     m_lastError.clear();
@@ -467,6 +511,23 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
         return {};
     }
 
+    // DEEP readiness gate (reliability fix): block until the engine can actually
+    // serve a tool call against the nested compositor — a live grim grab of
+    // HEADLESS-1 via /ready — NOT merely answer /health. This closes the
+    // first-tool-call race (the flaky empty-desktop + single-failed-tool_result
+    // failure) for BOTH codex and claude, because no session is allowed to run a
+    // tool until the engine has proven it can do real work.
+    if (!waitForEngineReady(d, m_opts.startupTimeoutMs)) {
+        m_lastError = QStringLiteral("agent engine /ready (nested compositor not "
+                                     "tool-serviceable) never succeeded on port ") +
+                      QString::number(d.info.port);
+        killProc(d.engine);
+        killProc(d.sway);
+        if (err)
+            *err = m_lastError;
+        return {};
+    }
+
     d.info.up = true;
     AgentDesktopInfo result = d.info;
     m_desks.emplace(sessionId, std::move(desk));
@@ -521,6 +582,142 @@ void AgentDesktop::teardownAll()
         ids << id;
     for (const QString &id : ids)
         teardown(id);
+}
+
+namespace {
+
+// Read /proc/<pid>/cmdline as a single space-joined string ('\0'-separated on
+// disk). Empty on any error (pid gone, unreadable).
+QString procCmdline(qint64 pid)
+{
+    QFile f(QStringLiteral("/proc/%1/cmdline").arg(pid));
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    QByteArray raw = f.readAll();
+    f.close();
+    raw.replace('\0', ' ');
+    return QString::fromLocal8Bit(raw).trimmed();
+}
+
+// All numeric pids currently under /proc.
+QList<qint64> allPids()
+{
+    QList<qint64> out;
+    const QDir proc(QStringLiteral("/proc"));
+    const auto entries = proc.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString &e : entries) {
+        bool ok = false;
+        const qint64 pid = e.toLongLong(&ok);
+        if (ok)
+            out << pid;
+    }
+    return out;
+}
+
+} // namespace
+
+int AgentDesktop::sweepOrphans()
+{
+    // The marker every nested agent compositor carries on its command line.
+    // Matching this directory fragment means we ONLY ever reap a sway we spawned
+    // (its config lives under ~/.local/share/jarvis/agent/) — never the user's
+    // real `sway -c ~/.config/sway/config`.
+    const QString swayConfMarker =
+        QDir::homePath() + QStringLiteral("/.local/share/jarvis/agent/sway-");
+    // Per-session engines + swaybg are bound to a per-session runtime dir under
+    // the real runtime root: <runtimeRoot>/jarvis-agent-<sessionId>.
+    const QString agentRuntimeMarker =
+        runtimeRoot() + QStringLiteral("/jarvis-agent-");
+    // Per-session engine bootstrap lives under the agent config dir.
+    const QString engineMarker =
+        QDir::homePath() + QStringLiteral("/.local/share/jarvis/agent/cu-");
+
+    // Don't touch anything we currently track.
+    QSet<qint64> tracked;
+    for (const auto &[id, desk] : m_desks) {
+        if (desk->info.swayPid > 0)
+            tracked.insert(desk->info.swayPid);
+        if (desk->info.enginePid > 0)
+            tracked.insert(desk->info.enginePid);
+        if (desk->sway && desk->sway->processId() > 0)
+            tracked.insert(desk->sway->processId());
+        if (desk->engine && desk->engine->processId() > 0)
+            tracked.insert(desk->engine->processId());
+    }
+
+    const QList<qint64> pids = allPids();
+
+    auto signalPid = [](qint64 pid, int sig) {
+        if (pid > 1)
+            ::kill(pid_t(pid), sig);
+    };
+
+    int reaped = 0;
+    // 1) Reap orphaned nested compositors (the headline leak) + their swaybg +
+    //    engines by matching our own markers in /proc/<pid>/cmdline.
+    QList<qint64> toKill;
+    for (qint64 pid : pids) {
+        if (tracked.contains(pid))
+            continue;
+        const QString cmd = procCmdline(pid);
+        if (cmd.isEmpty())
+            continue;
+        const bool isAgentSway =
+            cmd.contains(QStringLiteral("sway")) && cmd.contains(swayConfMarker);
+        const bool isAgentEngine =
+            cmd.contains(engineMarker) || cmd.contains(agentRuntimeMarker);
+        const bool isAgentSwaybg =
+            cmd.contains(QStringLiteral("swaybg")) && cmd.contains(agentRuntimeMarker);
+        if (isAgentSway || isAgentEngine || isAgentSwaybg) {
+            toKill << pid;
+            if (isAgentSway)
+                ++reaped;
+        }
+    }
+    // Graceful first, then hard. swaybg/engines die with their compositor's
+    // wayland socket, but we kill them explicitly to be sure.
+    for (qint64 pid : std::as_const(toKill))
+        signalPid(pid, SIGTERM);
+    if (!toKill.isEmpty()) {
+        QEventLoop loop;
+        QTimer::singleShot(800, &loop, &QEventLoop::quit);
+        loop.exec();
+    }
+    for (qint64 pid : std::as_const(toKill)) {
+        // /proc/<pid> still present => didn't exit on TERM; SIGKILL it.
+        if (QFileInfo::exists(QStringLiteral("/proc/%1").arg(pid)))
+            signalPid(pid, SIGKILL);
+    }
+
+    // 2) Tidy stale on-disk artifacts of dead sessions: the generated
+    //    sway-*.conf, the per-session config dir, and the per-session runtime
+    //    dir. We only remove ones with NO live process left (so we never yank a
+    //    socket out from under a desk we still track).
+    auto isOrphanDir = [&](const QString &needle) {
+        for (qint64 pid : pids) {
+            if (procCmdline(pid).contains(needle))
+                return false;
+        }
+        return true;
+    };
+    const QString agentDir =
+        QDir::homePath() + QStringLiteral("/.local/share/jarvis/agent");
+    QDir ad(agentDir);
+    for (const QString &conf : ad.entryList({QStringLiteral("sway-sess_*.conf")},
+                                            QDir::Files)) {
+        const QString sid = conf.mid(5, conf.size() - 5 - 5); // strip "sway-" + ".conf"
+        if (m_desks.count(sid))
+            continue;
+        const QString rt = runtimeRoot() + QStringLiteral("/jarvis-agent-") + sid;
+        const QString cu = agentDir + QStringLiteral("/cu-") + sid;
+        if (isOrphanDir(QStringLiteral("jarvis-agent-") + sid) &&
+            isOrphanDir(QStringLiteral("/cu-") + sid)) {
+            QFile::remove(ad.absoluteFilePath(conf));
+            QDir(rt).removeRecursively();
+            QDir(cu).removeRecursively();
+        }
+    }
+    return reaped;
 }
 
 } // namespace jarvis

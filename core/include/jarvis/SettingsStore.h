@@ -39,6 +39,13 @@ public:
     void setDefaultModel(const QString &m) { m_defaultModel = m; }
     void setTheme(const QJsonObject &t) { m_theme = t; }
 
+    // "Let Jarvis use a computer/browser" (default ON). When set, EVERY session
+    // (not just coworker+agent) gets the computer-use MCP injected against a
+    // lazily-provisioned nested agent desktop, so a plain chat can drive the
+    // computer/Chrome on demand with no manual "Computer" tab / co-work step.
+    bool letJarvisUseComputer() const { return m_letJarvisUseComputer; }
+    void setLetJarvisUseComputer(bool v) { m_letJarvisUseComputer = v; }
+
     // Which claude OAuth account the claude brain spawns against.
     //   "pro" -> ~/.claude          (ogkihi2024@gmail.com, the default)
     //   "max" -> ~/.claude-secondary (issac676767@proton.me, uses Max quota)
@@ -73,6 +80,7 @@ private:
     QString m_defaultBrain = QStringLiteral("codex");
     QString m_defaultModel = QStringLiteral("gpt-5.5");
     QString m_claudeAccount = QStringLiteral("pro"); // default: Pro (~/.claude)
+    bool m_letJarvisUseComputer = true; // default ON (auto computer-use in chat)
     QJsonObject m_theme;
     QJsonObject m_apiKeys; // provider -> value
     QString m_lastError;

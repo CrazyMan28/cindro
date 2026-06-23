@@ -42,6 +42,9 @@ void SettingsStore::load()
     setClaudeAccount(cfg.claudeAccount); // normalizes to pro|max
 
     // theme round-trips as `theme_json = '<compact json>'` in config.toml.
+    // let_jarvis_use_computer round-trips as a bare `true`/`false` flat key
+    // (default true when absent).
+    m_letJarvisUseComputer = true;
     m_theme = QJsonObject();
     {
         QFile f(Config::configFilePath());
@@ -50,6 +53,15 @@ void SettingsStore::load()
             f.close();
             for (const QString &raw : text.split(QLatin1Char('\n'))) {
                 const QString line = raw.trimmed();
+                if (line.startsWith(QStringLiteral("let_jarvis_use_computer"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        const QString v = line.mid(eq + 1).trimmed().toLower();
+                        m_letJarvisUseComputer =
+                            !(v == QStringLiteral("false") || v == QStringLiteral("0"));
+                    }
+                    continue;
+                }
                 if (!line.startsWith(QStringLiteral("theme_json")))
                     continue;
                 const int eq = line.indexOf(QLatin1Char('='));
@@ -129,6 +141,7 @@ bool SettingsStore::saveConfig()
                 if (t.startsWith(QStringLiteral("default_brain")) ||
                     t.startsWith(QStringLiteral("default_model")) ||
                     t.startsWith(QStringLiteral("claude_account")) ||
+                    t.startsWith(QStringLiteral("let_jarvis_use_computer")) ||
                     t.startsWith(QStringLiteral("theme_json")))
                     continue;
                 preserved << raw;
@@ -141,6 +154,7 @@ bool SettingsStore::saveConfig()
     ts << "default_brain = \"" << m_defaultBrain << "\"\n";
     ts << "default_model = \"" << m_defaultModel << "\"\n";
     ts << "claude_account = \"" << m_claudeAccount << "\"\n";
+    ts << "let_jarvis_use_computer = " << (m_letJarvisUseComputer ? "true" : "false") << "\n";
     if (!m_theme.isEmpty()) {
         const QByteArray tj = QJsonDocument(m_theme).toJson(QJsonDocument::Compact);
         ts << "theme_json = '" << QString::fromUtf8(tj) << "'\n";

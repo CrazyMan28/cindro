@@ -130,6 +130,17 @@ bool ControlServer::start()
     m_deviceReg.load();
     m_fcm = FcmSender::makeDefault();
 
+    // TEARDOWN-LEAK GUARD: reap any nested agent compositors (+ per-session
+    // engines + on-disk artifacts) orphaned by a previous daemon (crash / abrupt
+    // restart). Matches ONLY our own ~/.local/share/jarvis/agent/sway-*.conf
+    // marker, so it can never touch the user's real sway/KDE.
+    {
+        const int reaped = m_agentDesktops.sweepOrphans();
+        if (reaped > 0)
+            qInfo("jarvisd: swept %d orphaned nested agent compositor(s) at start",
+                  reaped);
+    }
+
     m_wsServer = new QWebSocketServer(QStringLiteral("jarvisd-control"),
                                       QWebSocketServer::NonSecureMode, this);
     connect(m_wsServer, &QWebSocketServer::newConnection,
@@ -365,6 +376,12 @@ Response ControlServer::handleSettingsGet(const Request &req)
     // Booleans only — raw secret values are NEVER returned.
     s.insert(QStringLiteral("api_keys_set"), m_settings.apiKeysSet());
 
+    // "Let Jarvis use a computer/browser" (default ON): when on, every session
+    // gets the computer-use MCP injected against a lazily-spun nested desktop so
+    // a plain chat can drive the computer/Chrome on demand.
+    s.insert(QStringLiteral("let_jarvis_use_computer"),
+             m_settings.letJarvisUseComputer());
+
     // Theme prefs (persisted in config.toml as theme_json). Fall back to a
     // sane default HUD theme when none has been set yet.
     QJsonObject theme = m_settings.theme();
@@ -410,6 +427,11 @@ Response ControlServer::handleSettingsSet(const Request &req)
         m_config.defaultCwd = patch.value(QStringLiteral("default_cwd")).toString();
     if (patch.contains(QStringLiteral("theme"))) {
         m_settings.setTheme(patch.value(QStringLiteral("theme")).toObject());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("let_jarvis_use_computer"))) {
+        m_settings.setLetJarvisUseComputer(
+            patch.value(QStringLiteral("let_jarvis_use_computer")).toBool());
         prefsTouched = true;
     }
     if (prefsTouched)
@@ -781,16 +803,36 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
                                                 : QStringLiteral("real"))
                                   : target;
 
+    // AUTO-SPAWN (headline): when "Let Jarvis use a computer/browser" is ON, ANY
+    // session — a plain chat included — gets a per-session nested agent desktop +
+    // computer-use MCP injected so the brain CAN drive the computer/Chrome on
+    // demand with no manual "Computer" tab / co-work step. We only need a desktop
+    // for a brain that can actually call MCP tools headless (codex/claude always;
+    // api only with a key); for one that can't we just skip the desktop (the chat
+    // still works, it just can't use the computer). A coworker+agent session
+    // always provisions (its whole point); target="real" take-over uses the
+    // global engine, not a nested desktop, so it is never auto-provisioned here.
+    const bool apiCanDrive = m_settings.hasApiKey(QStringLiteral("openai")) ||
+                             m_settings.hasApiKey(QStringLiteral("anthropic"));
+    const bool brainCanDrive =
+        row.brain == QStringLiteral("codex") || row.brain == QStringLiteral("claude") ||
+        (row.brain == QStringLiteral("api") && apiCanDrive);
+    const bool explicitAgent = isCoworker && effTarget == QStringLiteral("agent");
+    // A take-over is ONLY an explicit target="real" request (the caller asked to
+    // drive the user's real screen via the global engine). A plain chat passes NO
+    // target — its effTarget defaults to "real" but it is NOT a take-over, so it
+    // should still auto-provision a nested desktop. Distinguish by the RAW target.
+    const bool explicitTakeOver = (target == QStringLiteral("real"));
+    const bool autoComputer = m_settings.letJarvisUseComputer() &&
+                              !explicitTakeOver && !explicitAgent && brainCanDrive;
+
     CodexMcpOverrides agentOverrides;
-    if (isCoworker && effTarget == QStringLiteral("agent")) {
-        // HONEST DRIVE GATE: only brains that can actually call MCP tools
-        // headless may drive the nested desktop. codex (danger-full-access) and
-        // claude (bypassPermissions) both can. The `api` brain can only drive
-        // when it has tool-calling + a usable key; otherwise refuse clearly
-        // instead of spinning up a desktop the brain can never touch.
-        const bool apiCanDrive = m_settings.hasApiKey(QStringLiteral("openai")) ||
-                                 m_settings.hasApiKey(QStringLiteral("anthropic"));
-        if (row.brain == QStringLiteral("api") && !apiCanDrive) {
+    if (explicitAgent || autoComputer) {
+        // For an EXPLICIT coworker+agent session a brain that can't drive is a
+        // hard error (the user asked for a co-work). For the AUTO path it isn't —
+        // we already gated on brainCanDrive above, so this only fires for the
+        // explicit case with the api brain + no key.
+        if (explicitAgent && row.brain == QStringLiteral("api") && !apiCanDrive) {
             m_store.updateState(row.id, QStringLiteral("error"));
             if (err)
                 *err = QStringLiteral(
@@ -802,12 +844,30 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
         QString deskErr;
         const AgentDesktopInfo desk = m_agentDesktops.ensure(row.id, &deskErr);
         if (!desk.up) {
-            m_store.updateState(row.id, QStringLiteral("error"));
-            if (err)
-                *err = QStringLiteral("agent desktop failed: ") + deskErr;
-            return QString();
+            if (explicitAgent) {
+                // Explicit co-work: failing to spin the desktop is fatal.
+                m_store.updateState(row.id, QStringLiteral("error"));
+                if (err)
+                    *err = QStringLiteral("agent desktop failed: ") + deskErr;
+                return QString();
+            }
+            // AUTO path: degrade gracefully — the chat session still runs without
+            // computer-use rather than failing the whole session.
+            qWarning("jarvisd: auto computer-use desktop unavailable for %s (%s); "
+                     "session continues without computer-use",
+                     qPrintable(row.id), qPrintable(deskErr));
+        } else {
+            agentOverrides = agentMcpOverridesFor(desk);
+            // Track AUTO-spawned desktops (for diagnostics / future idle policy).
+            // They live for the session's lifetime — like an explicit co-work
+            // desktop — so a multi-turn chat keeps the SAME engine/port/bearer
+            // baked into the brain and can use the computer again next turn. Both
+            // AUTO and explicit desktops are torn down on session cancel/delete
+            // (the session's release signal) and any crash leftovers are reaped
+            // by sweepOrphans() at daemon start.
+            if (!explicitAgent)
+                m_autoComputerSessions.insert(row.id);
         }
-        agentOverrides = agentMcpOverridesFor(desk);
     }
 
     Brain *brain = makeBrain(row, cwd, agentOverrides);
@@ -891,6 +951,7 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     // desktop is spun up if the session is recreated.
     if (m_agentDesktops.has(sessionId))
         m_agentDesktops.teardown(sessionId);
+    m_autoComputerSessions.remove(sessionId);
     return true;
 }
 
@@ -909,6 +970,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     // 3) Tear down the nested agent desktop (compositor + per-session engine).
     if (m_agentDesktops.has(sessionId))
         m_agentDesktops.teardown(sessionId);
+    m_autoComputerSessions.remove(sessionId);
     // 4) Drop the row + its event stream from the store.
     if (!m_store.deleteSession(sessionId)) {
         if (err)

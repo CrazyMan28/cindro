@@ -35,11 +35,25 @@ class Haptics(context: Context) {
     private val hasAmplitude = vibrator?.hasAmplitudeControl() == true
 
     @Volatile private var lastStreamTickAt = 0L
+    @Volatile private var lastTapAt = 0L
 
     /** Light tick on send. */
     fun send(enabled: Boolean) {
         if (!enabled) return
         vibrate(durationMs = 12, amplitude = 90)
+    }
+
+    /**
+     * Crisp tick on ANY button / control tap, app-wide (via [hapticClickable] /
+     * the LocalHaptics wrapper). Lightly throttled so a double-fire (e.g. ripple +
+     * onClick) doesn't double-buzz.
+     */
+    fun tap(enabled: Boolean) {
+        if (!enabled) return
+        val now = SystemClock.uptimeMillis()
+        if (now - lastTapAt < TAP_MIN_GAP_MS) return
+        lastTapAt = now
+        vibrate(durationMs = 10, amplitude = 110)
     }
 
     /**
@@ -75,5 +89,6 @@ class Haptics(context: Context) {
 
     companion object {
         private const val STREAM_MIN_GAP_MS = 90L
+        private const val TAP_MIN_GAP_MS = 40L
     }
 }

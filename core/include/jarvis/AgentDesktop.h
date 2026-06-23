@@ -97,6 +97,14 @@ public:
     void teardown(const QString &sessionId);
     void teardownAll();
 
+    // ORPHAN SWEEP (teardown-leak guard). Reap nested agent compositors (+ their
+    // swaybg + per-session engines) that survived a previous daemon (crash,
+    // SIGKILL, abrupt restart) and are NOT currently tracked in m_desks. Matches
+    // ONLY our own marker — a nested `sway -c <…>/jarvis/agent/sway-*.conf` — so
+    // it can never touch the user's real sway/KDE. Called at daemon start and is
+    // safe to call repeatedly. Returns the number of orphan compositors reaped.
+    int sweepOrphans();
+
     // Engine endpoints for the daemon's video pump.
     //   <base>/video/frame  (single JPEG)   |  <base>/video/mjpeg (stream)
     QString engineBase(const QString &sessionId) const; // http://127.0.0.1:<port>
@@ -128,6 +136,10 @@ private:
     bool waitForHeadlessOutput(const Desk &d, int timeoutMs);
     // Poll GET <base>/health (bearer) until 200 or timeout.
     bool waitForEngineHealth(const Desk &d, int timeoutMs);
+    // DEEP readiness: poll GET <base>/ready until 200 {ready:true} or timeout.
+    // /ready does a real grim grab of the nested compositor, so a 200 proves the
+    // engine can actually serve a tool call (closes the first-tool-call race).
+    bool waitForEngineReady(const Desk &d, int timeoutMs);
     // Generate a per-session bearer token (hex).
     static QString genBearer();
     static void killProc(QProcess *p, int graceMs = 1500);
