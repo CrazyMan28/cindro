@@ -58,9 +58,23 @@ Window {
     }
 
     // Register both windows once the tree is up, then apply the persisted mode.
+    // The driving overlay is configured lazily the first time it's needed.
     Component.onCompleted: {
         WindowController.registerWindows(floatWin, dockWin)
         applyInitialMode()
+    }
+
+    // ---- distinct-cursor overlay: show/hide it as the take-over state flips --
+    Connections {
+        target: bridge
+        function onDrivingChanged() {
+            if (bridge.driving) {
+                WindowController.configureOverlay(overlayWin)
+                WindowController.showOverlay()
+            } else {
+                WindowController.hideOverlay()
+            }
+        }
     }
 
     // ---- Floating shell -----------------------------------------------------
@@ -162,6 +176,27 @@ Window {
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
             }
+        }
+    }
+
+    // ====================================================================
+    //  DRIVING OVERLAY WINDOW  (full-screen, click-through wlr-layer-shell
+    //  OVERLAY; role + empty input region installed in C++ by
+    //  WindowController.configureOverlay). Hosts the distinct agent cursor +
+    //  "JARVIS IS DRIVING" banner while a real-screen take-over is live.
+    // ====================================================================
+    Window {
+        id: overlayWin
+        objectName: "overlayWin"
+        width: 1920
+        height: 1080
+        visible: false
+        color: "transparent"
+        flags: Qt.FramelessWindowHint | Qt.WindowTransparentForInput
+        title: "JARVIS DRIVING"
+
+        DrivingOverlay {
+            anchors.fill: parent
         }
     }
 

@@ -38,6 +38,8 @@
 QT_BEGIN_NAMESPACE
 class QWebSocketServer;
 class QWebSocket;
+class QNetworkAccessManager;
+class QNetworkReply;
 QT_END_NAMESPACE
 
 namespace jarvis {
@@ -72,6 +74,16 @@ private:
         QString name;
         QByteArray challenge;    // nonce we asked the device to sign
         QSet<QString> subscribedSessions; // sessions this device created/opened
+        QSet<QString> mirroring;          // sessions whose video this device gets
+    };
+
+    // One running MJPEG read of an agent desktop's engine /video/mjpeg, fanned
+    // out to every device that called mirror.start for that session.
+    struct MirrorPump {
+        QNetworkReply *reply = nullptr; // streaming GET on /video/mjpeg
+        QByteArray buf;                 // multipart re-assembly buffer
+        QByteArray boundary;            // multipart boundary (e.g. --frame)
+        int refcount = 0;               // number of subscribed device sockets
     };
 
     void handleHello(QWebSocket *client, Conn &c, const QJsonObject &obj);
@@ -89,7 +101,23 @@ private:
     Response devPushRegister(Conn &c, const Request &req);
     Response devApprovalRespond(const Request &req);
 
+    // Contract C video mirror (biometric tier). mirror.start subscribes the
+    // device to a coworker+agent session's nested-desktop video; the daemon
+    // reads the per-session engine's /video/mjpeg and re-publishes each JPEG as
+    // a binary 'mirror.frame' to subscribed phones. mirror.stop unsubscribes.
+    Response devMirrorStart(Conn &c, QWebSocket *client, const Request &req);
+    Response devMirrorStop(Conn &c, QWebSocket *client, const Request &req);
+
+    // Start/stop the shared MJPEG pump for a session (ref-counted across
+    // devices). pumpFrame() parses a complete JPEG out of the multipart stream.
+    void startPump(const QString &sessionId);
+    void stopPump(const QString &sessionId);
+    void onPumpReadyRead();
+    void onPumpFinished();
+    void emitMirrorFrame(const QString &sessionId, const QByteArray &jpeg);
+
     void sendJson(QWebSocket *client, const QJsonObject &obj);
+    void sendBinary(QWebSocket *client, const QByteArray &bytes);
     void sendResponse(QWebSocket *client, const Response &resp);
 
     // The capability tier ("read" | "action" | "biometric") for a method, plus
@@ -109,6 +137,12 @@ private:
     QWebSocketServer *m_tailnet = nullptr; // tailnet IP (may be null)
 
     QHash<QWebSocket *, Conn> m_conns;
+
+    // Video mirror pumps, keyed by session id (shared across subscribed phones).
+    QNetworkAccessManager *m_nam = nullptr;
+    QHash<QString, MirrorPump> m_pumps;
+    // reverse map: streaming reply -> session id (to route ready-read signals).
+    QHash<QNetworkReply *, QString> m_pumpReply;
 };
 
 } // namespace jarvis

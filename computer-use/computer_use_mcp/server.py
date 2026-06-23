@@ -2,17 +2,20 @@
 the Chrome-extension WebSocket at /ws/extension, and /health."""
 
 import asyncio
+import json
 import os
 from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from computer_use_mcp import __version__, auth, session, tools_browser, tools_desktop
+from computer_use_mcp import (
+    __version__, agent_bus, auth, screen, session, tools_browser, tools_desktop,
+)
 from computer_use_mcp.browser_bridge import bridge
 from computer_use_mcp.config import load_config
 
@@ -70,9 +73,21 @@ async def auth_middleware(request: Request, call_next):
 @app.get("/health")
 async def health():
     cfg = load_config()
+    # /health must answer FAST and unconditionally — the daemon (AgentDesktop)
+    # polls it as the per-session engine's readiness gate. The full
+    # session.detect() shells out to kscreen-doctor (KDE output enumeration),
+    # which BLOCKS for its whole timeout whenever the host session bus / runtime
+    # dir is reachable-but-slow. In a per-session *agent* engine (spawned with an
+    # isolated XDG_RUNTIME_DIR) those host probes repeatedly time out, the daemon
+    # hammers /health, and a pile of stuck kscreen-doctor children starves the
+    # engine so readiness never flips. So: only report the *cheap* compositor
+    # hint (the agent session is known from env; otherwise a quick kwin/sway pgrep
+    # via session.detect_compositor_fast), and never run the kscreen path here.
     try:
-        active = session.detect()["active"]
-        compositor = active.kind if active else None
+        compositor = await asyncio.wait_for(
+            asyncio.to_thread(session.compositor_hint), timeout=2.0)
+    except asyncio.TimeoutError:
+        compositor = "detect-timeout"
     except Exception as exc:
         compositor = f"detect-error: {exc}"
     return {
@@ -90,7 +105,131 @@ async def ws_extension(websocket: WebSocket):
     await bridge.handle(websocket)
 
 
-# Mounted last so /health and /ws/extension win routing.
+# -- live video for the daemon (Wave 4 MJPEG -> Wave 6 WebRTC) ------------------
+#
+# Fed by screen.video_source (grim/wlr per-frame) + the agent-pointer bus. These
+# are auth-gated by auth_middleware like every non-/health path (the tailnet
+# bearer model) — no exemption is added. `?which=agent|active` selects the source
+# (default agent = the nested headless desktop, per spikes/RESULTS.md).
+
+_MJPEG_BOUNDARY = "jarvisframe"
+
+
+def _video_params(request: Request) -> dict:
+    cfg = load_config()
+    q = request.query_params
+    which = q.get("which", "agent")
+    if which not in ("agent", "active", "kde", "sway"):
+        which = "agent"
+    try:
+        width = int(q["width"]) if "width" in q else int(cfg.get("video_width", 1280))
+    except ValueError:
+        width = int(cfg.get("video_width", 1280))
+    try:
+        fps = float(q["fps"]) if "fps" in q else float(cfg.get("video_fps", 6))
+    except ValueError:
+        fps = float(cfg.get("video_fps", 6))
+    try:
+        quality = int(q.get("quality", 70))
+    except ValueError:
+        quality = 70
+    cursor = q.get("cursor", "").lower() in ("1", "true", "yes")
+    return {"which": which, "width": width, "fps": fps, "quality": quality,
+            "cursor": cursor}
+
+
+@app.get("/video/frame")
+async def video_frame(request: Request):
+    """Single JPEG frame of the selected session (default the agent desktop)."""
+    p = _video_params(request)
+    try:
+        jpeg = await asyncio.to_thread(
+            screen.grab_jpeg_frame, p["which"],
+            width=p["width"], quality=p["quality"], include_cursor=p["cursor"],
+        )
+    except Exception as exc:
+        return JSONResponse(status_code=503,
+                            content={"error": "capture failed", "message": str(exc)})
+    return Response(content=jpeg, media_type="image/jpeg")
+
+
+@app.get("/video/mjpeg")
+async def video_mjpeg(request: Request):
+    """multipart/x-mixed-replace MJPEG stream the daemon re-publishes to phones."""
+    p = _video_params(request)
+
+    async def gen():
+        gen_it = screen.video_source(
+            p["which"], fps=p["fps"], width=p["width"],
+            quality=p["quality"], include_cursor=p["cursor"],
+        )
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                frame = await asyncio.to_thread(next, gen_it, None)
+                if frame is None:
+                    break
+                yield (
+                    b"--" + _MJPEG_BOUNDARY.encode() + b"\r\n"
+                    b"Content-Type: image/jpeg\r\n"
+                    b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
+                    + frame + b"\r\n"
+                )
+        finally:
+            gen_it.close()
+
+    return StreamingResponse(
+        gen(),
+        media_type=f"multipart/x-mixed-replace; boundary={_MJPEG_BOUNDARY}",
+    )
+
+
+@app.websocket("/video/stream")
+async def video_stream(websocket: WebSocket):
+    """Continuous JPEG frames (binary) multiplexed with agent-pointer events
+    (text JSON). The daemon consumes this to drive both the phone mirror and the
+    distinct-cursor overlay from one connection. Auth: ?token= or Bearer."""
+    if not auth.ws_ok(websocket):
+        await websocket.close(code=4401)
+        return
+    await websocket.accept()
+    cfg = load_config()
+    q = websocket.query_params
+    which = q.get("which", "agent")
+    if which not in ("agent", "active", "kde", "sway"):
+        which = "agent"
+    width = int(q.get("width", cfg.get("video_width", 1280)))
+    fps = float(q.get("fps", cfg.get("video_fps", 6)))
+    quality = int(q.get("quality", 70))
+
+    pointer_q = agent_bus.subscribe()
+    gen_it = screen.video_source(which, fps=fps, width=width, quality=quality)
+
+    async def pump_pointers():
+        try:
+            while True:
+                ev = await pointer_q.get()
+                await websocket.send_text(json.dumps({"type": "pointer", **ev}))
+        except Exception:
+            pass
+
+    pointer_task = asyncio.create_task(pump_pointers())
+    try:
+        while True:
+            frame = await asyncio.to_thread(next, gen_it, None)
+            if frame is None:
+                break
+            await websocket.send_bytes(frame)
+    except Exception:
+        pass
+    finally:
+        pointer_task.cancel()
+        agent_bus.unsubscribe(pointer_q)
+        gen_it.close()
+
+
+# Mounted last so /health, /ws/extension and /video/* win routing.
 app.mount("/", mcp_app)
 
 

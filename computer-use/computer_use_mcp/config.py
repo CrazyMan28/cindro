@@ -22,6 +22,9 @@ DEFAULT_CONFIG = {
     "max_image_width": 1536,
     "ws_command_timeout": 30,
     "screenshot_tool": "auto",  # auto | grim | spectacle
+    "video_source": "auto",     # auto | wlr | portal (live-video backend pref)
+    "video_width": 1280,        # default JPEG frame width for /video endpoints
+    "video_fps": 6,             # default frame cadence for /video/mjpeg
     "scroll_invert": False,
     "accel_autoconfig": True,
     "ydotool_socket": f"/run/user/{os.getuid()}/.ydotool_socket",

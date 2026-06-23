@@ -65,12 +65,15 @@ def register(mcp: FastMCP) -> None:
     # -- mouse ----------------------------------------------------------------
 
     @mcp.tool()
-    def mouse_move(x: float, y: float, coord_space: str = "image") -> str:
+    def mouse_move(x: float, y: float, coord_space: str = "image",
+                   which: str = "active") -> str:
         """Move the mouse. coord_space: 'image' (coords measured on the last
         desktop_screenshot — the default), 'desktop' (global pixels), or
-        'output:NAME' (pixels relative to that monitor's top-left)."""
+        'output:NAME' (pixels relative to that monitor's top-left). which:
+        'active' (the real host seat, default) or 'agent' (the nested co-worker
+        desktop, driven via the nested compositor — never touches your screen)."""
         try:
-            gx, gy = inp.move(x, y, coord_space)
+            gx, gy = inp.move(x, y, coord_space, which)
             return json.dumps({"moved_to_desktop": [gx, gy]})
         except Exception as exc:
             return _err(exc)
@@ -82,12 +85,14 @@ def register(mcp: FastMCP) -> None:
         button: str = "left",
         double: bool = False,
         coord_space: str = "image",
+        which: str = "active",
     ) -> str:
         """Click (optionally moving first — omit x/y to click in place).
         button: left/right/middle. Set double=True for a double-click.
-        Input always lands in the ACTIVE session."""
+        which='active' targets the real host seat (default); which='agent' drives
+        the nested co-worker desktop."""
         try:
-            return json.dumps(inp.click(x, y, button, double, coord_space))
+            return json.dumps(inp.click(x, y, button, double, coord_space, which))
         except Exception as exc:
             return _err(exc)
 
@@ -96,11 +101,13 @@ def register(mcp: FastMCP) -> None:
         x1: float, y1: float, x2: float, y2: float,
         button: str = "left",
         coord_space: str = "image",
+        which: str = "active",
     ) -> str:
         """Press at (x1,y1), drag to (x2,y2), release. Motion is interpolated
-        so drag-and-drop grab thresholds fire."""
+        so drag-and-drop grab thresholds fire. which: 'active' (default) or
+        'agent' (nested co-worker desktop)."""
         try:
-            return json.dumps(inp.drag(x1, y1, x2, y2, button, coord_space))
+            return json.dumps(inp.drag(x1, y1, x2, y2, button, coord_space, which=which))
         except Exception as exc:
             return _err(exc)
 
@@ -111,11 +118,13 @@ def register(mcp: FastMCP) -> None:
         x: float | None = None,
         y: float | None = None,
         coord_space: str = "image",
+        which: str = "active",
     ) -> str:
         """Scroll the mouse wheel (amount = notches). Optionally move to x/y
-        first so the scroll lands on a specific element/window."""
+        first so the scroll lands on a specific element/window. which: 'active'
+        (default) or 'agent' (nested co-worker desktop)."""
         try:
-            return json.dumps(inp.scroll(amount, direction, x, y, coord_space))
+            return json.dumps(inp.scroll(amount, direction, x, y, coord_space, which))
         except Exception as exc:
             return _err(exc)
 

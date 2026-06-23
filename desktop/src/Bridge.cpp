@@ -1,4 +1,5 @@
 #include "Bridge.h"
+#include "FrameProvider.h"
 
 #include <QWebSocket>
 #include <QJsonDocument>
@@ -7,9 +8,15 @@
 #include <QJsonValue>
 #include <QFile>
 #include <QDir>
+#include <QFileInfo>
 #include <QStandardPaths>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QTimer>
+#include <QNetworkAccessManager>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QFileSystemWatcher>
 #include <QDebug>
 
 Bridge::Bridge(QObject *parent)
@@ -21,9 +28,19 @@ Bridge::Bridge(QObject *parent)
     connect(m_socket, &QWebSocket::textMessageReceived, this, &Bridge::onTextMessageReceived);
     connect(m_socket, QOverload<QAbstractSocket::SocketError>::of(&QWebSocket::errorOccurred),
             this, &Bridge::onSocketError);
+
+    // ---- COMPUTER page: live-video poller (engine GET /video/frame) ---------
+    m_net = new QNetworkAccessManager(this);
+    m_videoBearer = computeUseBearer();
+    m_frameTimer = new QTimer(this);
+    m_frameTimer->setInterval(125);   // ~8 fps local preview poll
+    connect(m_frameTimer, &QTimer::timeout, this, &Bridge::pollFrame);
 }
 
-Bridge::~Bridge() = default;
+Bridge::~Bridge()
+{
+    stopPointerTail();
+}
 
 QString Bridge::readControlToken()
 {
@@ -38,6 +55,39 @@ QString Bridge::readControlToken()
         return QString();
     QString tok = QString::fromUtf8(f.readAll()).trimmed();
     return tok;
+}
+
+QString Bridge::computeUseBearer()
+{
+    // The per-session computer-use engine inherits the tailnet bearer from
+    // ~/.computer-use/config.yaml (key: bearer_token / token). We only need it to
+    // poll GET /video/frame for the local preview. Parse leniently — it is a tiny
+    // YAML file of "key: value" lines, so a regex-free line scan is enough and
+    // avoids pulling in a YAML dependency.
+    const QString path = QDir::homePath() + QStringLiteral("/.computer-use/config.yaml");
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString();
+    const QStringList lines = QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'));
+    for (const QString &raw : lines) {
+        const QString line = raw.trimmed();
+        for (const QString &key : { QStringLiteral("bearer_token"),
+                                    QStringLiteral("bearer"),
+                                    QStringLiteral("token") }) {
+            if (line.startsWith(key + QLatin1Char(':'))) {
+                QString val = line.mid(key.size() + 1).trimmed();
+                if (val.startsWith(QLatin1Char('"')) && val.endsWith(QLatin1Char('"'))
+                    && val.size() >= 2)
+                    val = val.mid(1, val.size() - 2);
+                if (val.startsWith(QLatin1Char('\'')) && val.endsWith(QLatin1Char('\''))
+                    && val.size() >= 2)
+                    val = val.mid(1, val.size() - 2);
+                if (!val.isEmpty())
+                    return val;
+            }
+        }
+    }
+    return QString();
 }
 
 QString Bridge::controlUrl()
@@ -304,6 +354,303 @@ void Bridge::devicesRevoke(const QString &id)
     request(QStringLiteral("devices.revoke"), params);
 }
 
+// ---- COMPUTER page ---------------------------------------------------------
+
+void Bridge::setDriving(bool d)
+{
+    if (m_driving == d)
+        return;
+    m_driving = d;
+    emit drivingChanged();
+    // The distinct-cursor overlay only needs the agent-pointer feed while a
+    // real-screen take-over is live; tail the fallback bus accordingly.
+    if (d)
+        startPointerTail();
+    else
+        stopPointerTail();
+}
+
+void Bridge::setMirroring(bool m)
+{
+    if (m_mirroring == m)
+        return;
+    m_mirroring = m;
+    emit mirroringChanged();
+}
+
+void Bridge::setCoworkerSessionId(const QString &id)
+{
+    if (m_coworkerSessionId == id)
+        return;
+    m_coworkerSessionId = id;
+    emit coworkerSessionIdChanged();
+}
+
+void Bridge::startCoworker(const QString &brain, const QString &model)
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("profile"), QStringLiteral("coworker"));
+    params.insert(QStringLiteral("brain"), brain.isEmpty() ? QStringLiteral("codex") : brain);
+    params.insert(QStringLiteral("target"), QStringLiteral("agent"));
+    if (!model.isEmpty())
+        params.insert(QStringLiteral("model"), model);
+    // Tag the request so the response handler knows to wire up the co-worker
+    // session + auto-start the agent-desktop mirror.
+    request(QStringLiteral("session.create"), params, QStringLiteral("coworker:agent"));
+}
+
+void Bridge::stopCoworker()
+{
+    mirrorStop();
+    if (!m_coworkerSessionId.isEmpty()) {
+        QVariantMap params;
+        params.insert(QStringLiteral("session_id"), m_coworkerSessionId);
+        request(QStringLiteral("session.cancel"), params);
+    }
+    setCoworkerSessionId(QString());
+}
+
+void Bridge::takeOver(const QString &brain, const QString &model)
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("profile"), QStringLiteral("coworker"));
+    params.insert(QStringLiteral("brain"), brain.isEmpty() ? QStringLiteral("codex") : brain);
+    params.insert(QStringLiteral("target"), QStringLiteral("real"));
+    if (!model.isEmpty())
+        params.insert(QStringLiteral("model"), model);
+    // target="real" is approval/biometric gated by the daemon; the driving flag
+    // only flips once the daemon confirms via a driving.state event.
+    request(QStringLiteral("session.create"), params, QStringLiteral("coworker:real"));
+}
+
+void Bridge::releaseScreen()
+{
+    // Tell the daemon to end the take-over; optimistically drop the overlay so the
+    // user is never left with a stuck "JARVIS IS DRIVING" banner if the daemon is
+    // slow to confirm.
+    QVariantMap params;
+    if (!m_sessionId.isEmpty())
+        params.insert(QStringLiteral("session_id"), m_sessionId);
+    request(QStringLiteral("session.set_target"), params);   // best-effort; daemon may ignore
+    setDriving(false);
+}
+
+void Bridge::setVideoEndpoint(const QString &baseUrl)
+{
+    m_videoBase = baseUrl;
+}
+
+QString Bridge::videoFrameUrl() const
+{
+    QString base = m_videoBase;
+    if (base.isEmpty())
+        base = QStringLiteral("http://127.0.0.1:8810");   // per-session engine default
+    if (base.endsWith(QLatin1Char('/')))
+        base.chop(1);
+    return base + QStringLiteral("/video/frame?which=agent");
+}
+
+void Bridge::mirrorStart()
+{
+    if (m_mirroring)
+        return;
+    setMirroring(true);
+    // Ask the daemon to begin mirroring on the device channel too (biometric
+    // gated there); locally we just poll the engine for the preview.
+    if (!m_coworkerSessionId.isEmpty()) {
+        QVariantMap params;
+        params.insert(QStringLiteral("session_id"), m_coworkerSessionId);
+        request(QStringLiteral("mirror.start"), params);
+    }
+    m_frameTimer->start();
+    pollFrame();
+}
+
+void Bridge::mirrorStop()
+{
+    if (!m_mirroring && !m_frameTimer->isActive())
+        return;
+    m_frameTimer->stop();
+    if (m_frameReply) {
+        m_frameReply->abort();
+        m_frameReply = nullptr;
+    }
+    if (!m_coworkerSessionId.isEmpty()) {
+        QVariantMap params;
+        params.insert(QStringLiteral("session_id"), m_coworkerSessionId);
+        request(QStringLiteral("mirror.stop"), params);
+    }
+    if (m_frameProvider)
+        m_frameProvider->clear();
+    setMirroring(false);
+}
+
+void Bridge::pollFrame()
+{
+    // Skip if a request is already in flight (avoid pile-up on a slow engine).
+    if (m_frameReply)
+        return;
+    QNetworkRequest req{ QUrl(videoFrameUrl()) };
+    if (!m_videoBearer.isEmpty())
+        req.setRawHeader("Authorization",
+                         QByteArray("Bearer ") + m_videoBearer.toUtf8());
+    req.setTransferTimeout(2000);
+    m_frameReply = m_net->get(req);
+    connect(m_frameReply, &QNetworkReply::finished, this, [this]() {
+        QNetworkReply *r = m_frameReply;
+        m_frameReply = nullptr;
+        onFrameReplyFinished(r);
+    });
+}
+
+void Bridge::onFrameReplyFinished(QNetworkReply *reply)
+{
+    if (!reply)
+        return;
+    reply->deleteLater();
+    if (reply->error() != QNetworkReply::NoError)
+        return;   // transient; the timer will retry. No error toast for video.
+    const QByteArray body = reply->readAll();
+    if (body.isEmpty() || !m_frameProvider)
+        return;
+    if (m_frameProvider->setFrame(body)) {
+        ++m_frameSeq;
+        emit frameReady(m_frameSeq);
+    }
+}
+
+// agent_pointer.jsonl fallback tail ------------------------------------------
+
+void Bridge::startPointerTail()
+{
+    if (m_pointerWatcher)
+        return;
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    const QString path = (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share")
+                                         : base)
+                         + QStringLiteral("/jarvis/agent_pointer.jsonl");
+    // Start reading from the end so we only see new pointer events.
+    QFileInfo fi(path);
+    m_pointerOffset = fi.exists() ? fi.size() : 0;
+    m_pointerWatcher = new QFileSystemWatcher(this);
+    if (fi.exists())
+        m_pointerWatcher->addPath(path);
+    // Also watch the directory so we pick the file up when it is first created.
+    const QString dir = fi.absolutePath();
+    if (QFileInfo::exists(dir))
+        m_pointerWatcher->addPath(dir);
+    connect(m_pointerWatcher, &QFileSystemWatcher::fileChanged,
+            this, &Bridge::readPointerTail);
+    connect(m_pointerWatcher, &QFileSystemWatcher::directoryChanged, this,
+            [this, path]() {
+        if (QFileInfo::exists(path)
+            && !m_pointerWatcher->files().contains(path)) {
+            m_pointerWatcher->addPath(path);
+            readPointerTail();
+        }
+    });
+}
+
+void Bridge::stopPointerTail()
+{
+    if (!m_pointerWatcher)
+        return;
+    m_pointerWatcher->deleteLater();
+    m_pointerWatcher = nullptr;
+    m_pointerOffset = 0;
+}
+
+void Bridge::readPointerTail()
+{
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    const QString path = (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share")
+                                         : base)
+                         + QStringLiteral("/jarvis/agent_pointer.jsonl");
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    // Truncation/rotation guard: if the file shrank, restart from the top.
+    if (f.size() < m_pointerOffset)
+        m_pointerOffset = 0;
+    if (!f.seek(m_pointerOffset))
+        return;
+    const QByteArray chunk = f.readAll();
+    m_pointerOffset = f.pos();
+    // Some watchers drop the path after a change event; re-add to keep watching.
+    if (m_pointerWatcher && !m_pointerWatcher->files().contains(path))
+        m_pointerWatcher->addPath(path);
+
+    for (const QByteArray &lineRaw : chunk.split('\n')) {
+        const QByteArray line = lineRaw.trimmed();
+        if (line.isEmpty())
+            continue;
+        QJsonParseError perr;
+        const QJsonDocument d = QJsonDocument::fromJson(line, &perr);
+        if (perr.error != QJsonParseError::NoError || !d.isObject())
+            continue;
+        const QJsonObject o = d.object();
+        // The engine writes screen-space x,y; normalize if a w/h is present,
+        // otherwise pass nx/ny straight through if already normalized.
+        double nx = o.value(QStringLiteral("nx")).toDouble(-1.0);
+        double ny = o.value(QStringLiteral("ny")).toDouble(-1.0);
+        if (nx < 0.0 || ny < 0.0) {
+            const double x = o.value(QStringLiteral("x")).toDouble();
+            const double y = o.value(QStringLiteral("y")).toDouble();
+            const double w = o.value(QStringLiteral("w")).toDouble(0.0);
+            const double h = o.value(QStringLiteral("h")).toDouble(0.0);
+            nx = (w > 0.0) ? x / w : x;
+            ny = (h > 0.0) ? y / h : y;
+        }
+        const QString action = o.value(QStringLiteral("kind")).toString(
+            o.value(QStringLiteral("action")).toString(QStringLiteral("move")));
+        const QString button = o.value(QStringLiteral("button")).toString();
+        emit agentPointer(nx, ny, action, button);
+    }
+}
+
+bool Bridge::handleComputerEvent(const QString &sessionId, const QVariantMap &ev)
+{
+    const QString kind = ev.value(QStringLiteral("kind")).toString();
+    if (kind == QStringLiteral("agent_pointer")) {
+        // Daemon-forwarded agent pointer (preferred over the file tail). The
+        // values arrive as a QVariantMap, so coerce with QVariant::toDouble()
+        // (which has no default-value overload) and substitute defaults manually.
+        double nx = ev.contains(QStringLiteral("nx")) ? ev.value(QStringLiteral("nx")).toDouble() : -1.0;
+        double ny = ev.contains(QStringLiteral("ny")) ? ev.value(QStringLiteral("ny")).toDouble() : -1.0;
+        if (nx < 0.0 || ny < 0.0) {
+            const double x = ev.value(QStringLiteral("x")).toDouble();
+            const double y = ev.value(QStringLiteral("y")).toDouble();
+            const double w = ev.value(QStringLiteral("w")).toDouble();
+            const double h = ev.value(QStringLiteral("h")).toDouble();
+            nx = (w > 0.0) ? x / w : x;
+            ny = (h > 0.0) ? y / h : y;
+        }
+        QString action = ev.value(QStringLiteral("action")).toString();
+        if (action.isEmpty())
+            action = QStringLiteral("move");
+        const QString button = ev.value(QStringLiteral("button")).toString();
+        emit agentPointer(nx, ny, action, button);
+        return true;
+    }
+    if (kind == QStringLiteral("driving.state") || kind == QStringLiteral("driving")) {
+        setDriving(ev.value(QStringLiteral("active")).toBool());
+        return true;
+    }
+    if (kind == QStringLiteral("mirror.state")) {
+        const QString engineUrl = ev.value(QStringLiteral("engine_url")).toString();
+        if (!engineUrl.isEmpty())
+            setVideoEndpoint(engineUrl);
+        if (ev.value(QStringLiteral("active")).toBool()) {
+            if (sessionId == m_coworkerSessionId && !m_mirroring)
+                mirrorStart();
+        } else {
+            mirrorStop();
+        }
+        return true;
+    }
+    return false;
+}
+
 void Bridge::onTextMessageReceived(const QString &message)
 {
     QJsonParseError perr;
@@ -321,6 +668,10 @@ void Bridge::onTextMessageReceived(const QString &message)
         const QJsonObject ev = data.value(QStringLiteral("ev")).toObject();
 
         QVariantMap evMap = ev.toVariantMap();
+        // COMPUTER-page events (agent_pointer / driving.state / mirror.state) are
+        // consumed by the overlay + video poller and are NOT chat transcript rows.
+        if (handleComputerEvent(sid, evMap))
+            return;
         // Fold the session id in so the UI can route by session.
         evMap.insert(QStringLiteral("session_id"), sid);
         emit sessionEvent(evMap);
@@ -353,6 +704,15 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             emit mcpTested(ctx, false, 0, msg.isEmpty() ? code : msg);
             return;
         }
+        // Forward-compatible COMPUTER-page control methods: the daemon may not
+        // implement these yet (Wave 5 lands them). Swallow "unknown_method" so the
+        // desktop preview/overlay degrade gracefully instead of toasting an error.
+        if (code == QStringLiteral("unknown_method")
+            && (method == QStringLiteral("mirror.start")
+                || method == QStringLiteral("mirror.stop")
+                || method == QStringLiteral("session.set_target"))) {
+            return;
+        }
         emit errorOccurred(QStringLiteral("%1 failed: [%2] %3")
                                .arg(method.isEmpty() ? QStringLiteral("request") : method, code, msg));
         return;
@@ -364,6 +724,29 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             m_sessionId = sid;
             emit sessionIdChanged();
             setStatus(QStringLiteral("session ready"));
+
+            // The engine url for this session's per-session computer-use engine,
+            // if the daemon reports it (else the per-session-port default is used).
+            const QString engineUrl = result.value(QStringLiteral("engine_url")).toString();
+            if (!engineUrl.isEmpty())
+                setVideoEndpoint(engineUrl);
+
+            if (ctx == QStringLiteral("coworker:agent")) {
+                // Co-worker on the NESTED agent desktop: wire it up + start the
+                // local mirror preview immediately (the user keeps their screen).
+                setCoworkerSessionId(sid);
+                emit coworkerStarted(sid);
+                mirrorStart();
+            } else if (ctx == QStringLiteral("coworker:real")) {
+                // REAL-screen take-over: the daemon now runs its approval flow;
+                // `driving` stays false until it confirms via a driving.state
+                // event. Surface the pending request so the UI can show it.
+                emit takeOverRequested(sid);
+                // If the daemon reports the take-over is already active (auto-
+                // approved tier), honor it.
+                if (result.value(QStringLiteral("driving")).toBool())
+                    setDriving(true);
+            }
         }
     } else if (method == QStringLiteral("model.list")) {
         QStringList models;

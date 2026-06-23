@@ -34,6 +34,7 @@ add_library(jarvis-core STATIC
     src/DeviceRegistry.cpp
     src/PairingManager.cpp
     src/FcmSender.cpp
+    src/AgentDesktop.cpp
     # Headers listed so AUTOMOC processes the Q_OBJECT types (Brain, CodexBrain),
     # generating their staticMetaObject + vtable into this static lib.
     include/jarvis/Protocol.h
@@ -48,6 +49,7 @@ add_library(jarvis-core STATIC
     include/jarvis/DeviceRegistry.h
     include/jarvis/PairingManager.h
     include/jarvis/FcmSender.h
+    include/jarvis/AgentDesktop.h
 )
 
 target_include_directories(jarvis-core

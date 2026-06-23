@@ -11,6 +11,7 @@
 #include <QtQml>
 
 #include "Bridge.h"
+#include "FrameProvider.h"
 #include "WindowController.h"
 
 namespace {
@@ -66,8 +67,15 @@ int main(int argc, char **argv)
 
     QQmlApplicationEngine engine;
 
+    // FrameProvider: serves the latest agent-desktop video frame to QML via the
+    // "jarvisframe" image provider (COMPUTER page live preview). The engine takes
+    // ownership of the provider, so the Bridge only borrows the pointer.
+    auto *frameProvider = new FrameProvider();
+    engine.addImageProvider(QStringLiteral("jarvisframe"), frameProvider);
+
     // Bridge (Contract A WS client) — context property + QML_ELEMENT registered.
     auto *bridge = new Bridge(&app);
+    bridge->setFrameProvider(frameProvider);
     engine.rootContext()->setContextProperty(QStringLiteral("bridge"), bridge);
 
     // WindowController is QML_SINGLETON; register the concrete instance so C++
