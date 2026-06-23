@@ -139,8 +139,28 @@ Item {
         function onSessionEvent(ev) {
             panel.appendEvent(ev)
             chatView.positionViewAtEnd()
+            // optional TTS read-back of the assistant's final message
+            if (panel.ttsReadback && ev.kind === "message"
+                && (ev.role === undefined || ev.role === "assistant")
+                && ev.text !== undefined && ("" + ev.text).trim().length > 0)
+                bridge.voiceSpeak(ev.text)
+        }
+
+        // voice dictation: drop the transcript into the input (don't auto-send).
+        function onVoiceTranscribed(text) {
+            if (text && text.length > 0) {
+                if (inputArea.text.trim().length > 0)
+                    inputArea.text = inputArea.text + " " + text
+                else
+                    inputArea.text = text
+                inputArea.cursorPosition = inputArea.text.length
+                inputArea.forceActiveFocus()
+            }
         }
     }
+
+    // TTS read-back toggle (Mistral voice.tts on assistant finals).
+    property bool ttsReadback: false
 
     ColumnLayout {
         anchors.fill: parent
@@ -187,6 +207,49 @@ Item {
             }
 
             Item { Layout.fillWidth: true }
+
+            // TTS read-back toggle (speaker icon)
+            Item {
+                Layout.alignment: Qt.AlignVCenter
+                width: 30; height: 26
+                Rectangle {
+                    anchors.fill: parent
+                    radius: Theme.radiusXs
+                    color: panel.ttsReadback ? Theme.accentFaint : "transparent"
+                    border.width: 1
+                    border.color: panel.ttsReadback ? Theme.accentDim
+                                  : (ttsMa.containsMouse ? Theme.hairlineSoft : "transparent")
+                    Behavior on border.color { ColorAnimation { duration: Theme.durFast } }
+                }
+                Canvas {
+                    anchors.centerIn: parent
+                    width: 16; height: 16
+                    property color ink: panel.ttsReadback ? Theme.accent : Theme.textMuted
+                    onInkChanged: requestPaint()
+                    onPaint: {
+                        var ctx = getContext("2d"); ctx.reset()
+                        ctx.strokeStyle = ink; ctx.fillStyle = ink
+                        ctx.lineWidth = 1.3; ctx.lineCap = "round"; ctx.lineJoin = "round"
+                        // speaker body
+                        ctx.beginPath()
+                        ctx.moveTo(3, 6); ctx.lineTo(6, 6); ctx.lineTo(9, 3)
+                        ctx.lineTo(9, 13); ctx.lineTo(6, 10); ctx.lineTo(3, 10); ctx.closePath()
+                        ctx.fill()
+                        // waves only when on
+                        if (panel.ttsReadback) {
+                            ctx.beginPath(); ctx.arc(9, 8, 3.4, -0.9, 0.9); ctx.stroke()
+                            ctx.beginPath(); ctx.arc(9, 8, 5.6, -0.8, 0.8); ctx.stroke()
+                        }
+                    }
+                }
+                MouseArea {
+                    id: ttsMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: panel.ttsReadback = !panel.ttsReadback
+                }
+            }
 
             Text {
                 text: "MODEL"
@@ -447,6 +510,94 @@ Item {
                             } else {
                                 event.accepted = true
                                 panel.submit()
+                            }
+                        }
+                    }
+                }
+
+                // mic button (push-to-dictate; ~6s capture via pw-record -> voice.stt)
+                Item {
+                    id: micWrap
+                    Layout.alignment: Qt.AlignBottom
+                    Layout.bottomMargin: 2
+                    width: 38; height: 38
+                    readonly property bool recording: bridge.recordingState === "recording"
+                    readonly property bool transcribing: bridge.recordingState === "transcribing"
+                    visible: bridge.voiceAvailable()
+
+                    // recording pulse halo
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: 44; height: 44; radius: 22
+                        color: "transparent"
+                        border.color: Theme.danger
+                        border.width: 2
+                        opacity: micWrap.recording ? 0.6 : 0.0
+                        SequentialAnimation on scale {
+                            running: micWrap.recording
+                            loops: Animation.Infinite
+                            NumberAnimation { from: 0.9; to: 1.15; duration: 700; easing.type: Easing.InOutSine }
+                            NumberAnimation { from: 1.15; to: 0.9; duration: 700; easing.type: Easing.InOutSine }
+                        }
+                    }
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 19
+                        color: micWrap.recording ? Theme.dangerDim
+                               : (micMa.containsMouse ? Theme.surfaceStrong : Theme.surface)
+                        border.width: 1
+                        border.color: micWrap.recording ? Theme.danger
+                                      : micWrap.transcribing ? Theme.accent
+                                      : (micMa.containsMouse ? Theme.accentDim : Theme.hairlineSoft)
+                        Behavior on border.color { ColorAnimation { duration: Theme.durFast } }
+
+                        // transcribing spinner ring
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: 22; height: 22; radius: 11
+                            visible: micWrap.transcribing
+                            color: "transparent"
+                            border.width: 2
+                            border.color: Theme.accent
+                            opacity: 0.4
+                            RotationAnimation on rotation {
+                                running: micWrap.transcribing
+                                loops: Animation.Infinite
+                                from: 0; to: 360; duration: 900
+                            }
+                        }
+
+                        Canvas {
+                            anchors.centerIn: parent
+                            width: 16; height: 16
+                            property color ink: micWrap.recording ? Theme.danger
+                                                : micWrap.transcribing ? Theme.accent
+                                                : Theme.textMuted
+                            onInkChanged: requestPaint()
+                            onPaint: {
+                                var ctx = getContext("2d"); ctx.reset()
+                                ctx.strokeStyle = ink; ctx.fillStyle = ink
+                                ctx.lineWidth = 1.4; ctx.lineCap = "round"; ctx.lineJoin = "round"
+                                // mic capsule (rounded top + bottom)
+                                ctx.beginPath()
+                                ctx.moveTo(6, 4); ctx.arc(8, 4, 2, Math.PI, 0)
+                                ctx.lineTo(10, 8); ctx.arc(8, 8, 2, 0, Math.PI)
+                                ctx.closePath(); ctx.stroke()
+                                // stand
+                                ctx.beginPath(); ctx.arc(8, 9, 4, 0.2, Math.PI - 0.2); ctx.stroke()
+                                ctx.beginPath(); ctx.moveTo(8, 13); ctx.lineTo(8, 15); ctx.stroke()
+                                ctx.beginPath(); ctx.moveTo(5.5, 15); ctx.lineTo(10.5, 15); ctx.stroke()
+                            }
+                        }
+                        MouseArea {
+                            id: micMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            enabled: bridge.connected && !micWrap.transcribing
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                if (micWrap.recording) bridge.voiceDictateStop()
+                                else bridge.voiceDictate(6)
                             }
                         }
                     }

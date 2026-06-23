@@ -10,17 +10,21 @@
 // sockets as session.event frames.
 
 #include "jarvis/AgentDesktop.h"
+#include "jarvis/AuditLog.h"
 #include "jarvis/Config.h"
 #include "jarvis/DeviceRegistry.h"
 #include "jarvis/FcmSender.h"
 #include "jarvis/McpRegistry.h"
 #include "jarvis/MemoryStore.h"
+#include "jarvis/NotifyService.h"
 #include "jarvis/PairingManager.h"
 #include "jarvis/PluginRegistry.h"
 #include "jarvis/Protocol.h"
+#include "jarvis/Scheduler.h"
 #include "jarvis/SessionStore.h"
 #include "jarvis/SettingsStore.h"
 #include "jarvis/SkillStore.h"
+#include "jarvis/SshAllowList.h"
 #include "jarvis/VoiceService.h"
 
 #include <QHash>
@@ -59,6 +63,9 @@ public:
     AgentDesktop &agentDesktops() { return m_agentDesktops; }
     MemoryStore &memory() { return m_memory; }
     SkillStore &skills() { return m_skills; }
+    Scheduler &scheduler() { return m_scheduler; }
+    SshAllowList &sshAllow() { return m_sshAllow; }
+    AuditLog &audit() { return m_audit; }
 
     // Contract A v3 method dispatch shared with the device channel mirror. Each
     // returns the Response for the request; the device server forwards these so
@@ -78,6 +85,12 @@ public:
     // Voice (Mistral Voxtral, laptop-proxied). Shared by Contract A + Contract C.
     Response handleVoiceStt(const Request &req);
     Response handleVoiceTts(const Request &req);
+
+    // Wave 8 co-worker ops, mirrored over the device channel (schedule.* +
+    // ssh.allow_list/add/remove + ssh.exec + audit.list). ssh.exec and
+    // schedule.create are biometric-tier on the device side.
+    Response dispatchOpsMethod(const Request &req, bool remote = false);
+    static bool isOpsMethod(const QString &method);
 
     // device->phone FILE PUSH (Contract C). Stores the bytes under the jarvis
     // inbox and returns a {file_id,name,size,mime,session_id} descriptor the
@@ -196,6 +209,31 @@ private:
     Response handleSkillsRemove(const Request &req);
     Response handleSkillsToday(const Request &req);
 
+    // Wave 8: scheduler (cron/at) — schedule.create/list/set_enabled/remove.
+    Response handleScheduleCreate(const Request &req);
+    Response handleScheduleList(const Request &req);
+    Response handleScheduleSetEnabled(const Request &req);
+    Response handleScheduleRemove(const Request &req);
+    // Wave 8: SSH allow-list + gated exec.
+    Response handleSshAllowList(const Request &req);
+    Response handleSshAllowAdd(const Request &req);
+    Response handleSshAllowRemove(const Request &req);
+    Response handleSshExec(const Request &req, bool remote);
+    // Wave 8: audit log surface.
+    Response handleAuditList(const Request &req);
+
+    // Fire a scheduled job: create a session + send its prompt (Scheduler's
+    // FireFn). Returns the new session id (empty on failure).
+    QString fireScheduledJob(const ScheduleRow &row);
+
+    // PROMPT-INJECTION GATING (BUILD_SPEC). Scan a user turn / page text for an
+    // ApiBrain session; if risky, emit an 'approval' NormalizedBrainEvent, audit
+    // it, notify, and return true (caller BLOCKS the turn until approval). For
+    // CLI brains this only audits (they run their own tool loop). `text` is the
+    // user's turn (+ any screenshot/page text the daemon can see).
+    bool gateForInjection(const QString &sessionId, const QString &brain,
+                          const QString &text);
+
     // The Mistral bearer for the Voxtral voice proxy: the SettingsStore "mistral"
     // secret (loaded from ~/.config/jarvis/mistral_api_key on start). Empty when
     // unconfigured (voice handlers then return an error).
@@ -256,6 +294,22 @@ private:
     // turn and synced after; skills are invokable + self-authoring.
     MemoryStore m_memory;
     SkillStore m_skills;
+
+    // Wave 8 co-worker ops backend: cron/at scheduler (fires session.create+send
+    // via a QTimer tick), the SSH allow-list (gated ssh.exec), the audit log
+    // (every tool/action with risk), the injection gate's notifier. All share
+    // the same jarvis.db file via distinct connection names.
+    Scheduler m_scheduler;
+    SshAllowList m_sshAllow;
+    AuditLog m_audit;
+    NotifyService m_notify;
+    // Sessions currently BLOCKED awaiting an injection-gate approval, mapped to
+    // the held user turn (text + image paths) so an 'allow' can resume it.
+    struct HeldTurn {
+        QString text;
+        QStringList images;
+    };
+    QHash<QString, HeldTurn> m_injectionHeld;
 
     // Wave 5: per-coworker(agent) nested desktops + their bound engines.
     AgentDesktop m_agentDesktops{AgentDesktop::Options{}};

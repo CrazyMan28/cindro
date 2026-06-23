@@ -67,7 +67,17 @@ Item {
             Widgets.PillButton {
                 label: "Refresh"
                 Layout.alignment: Qt.AlignTop
-                onClicked: page.refresh()
+                onClicked: { page.refresh(); subTree.refresh() }
+            }
+        }
+
+        // sub-agent tree (child sessions, indented) — built from parent links
+        Widgets.SectionCard {
+            Layout.fillWidth: true
+            SubAgentTree {
+                id: subTree
+                Layout.fillWidth: true
+                onOpenSession: function(sid) { page.openInChat(sid) }
             }
         }
 

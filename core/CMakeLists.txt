@@ -41,6 +41,13 @@ add_library(jarvis-core STATIC
     src/FcmSender.cpp
     src/AgentDesktop.cpp
     src/VoiceService.cpp
+    # Wave 8 co-worker ops backend: scheduler (cron/at), SSH allow-list, audit
+    # log + prompt-injection gate, desktop notifications.
+    src/Scheduler.cpp
+    src/SshAllowList.cpp
+    src/AuditLog.cpp
+    src/InjectionGuard.cpp
+    src/NotifyService.cpp
     # Headers listed so AUTOMOC processes the Q_OBJECT types (Brain, CodexBrain),
     # generating their staticMetaObject + vtable into this static lib.
     include/jarvis/Protocol.h
@@ -62,6 +69,11 @@ add_library(jarvis-core STATIC
     include/jarvis/FcmSender.h
     include/jarvis/AgentDesktop.h
     include/jarvis/VoiceService.h
+    include/jarvis/Scheduler.h
+    include/jarvis/SshAllowList.h
+    include/jarvis/AuditLog.h
+    include/jarvis/InjectionGuard.h
+    include/jarvis/NotifyService.h
 )
 
 target_include_directories(jarvis-core
@@ -137,3 +149,21 @@ add_test(NAME memory_store_test COMMAND memory_store_test)
 add_executable(skill_store_test tests/skill_store_test.cpp)
 target_link_libraries(skill_store_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME skill_store_test COMMAND skill_store_test)
+
+# Wave 8 co-worker ops backend tests.
+# Scheduler: cron / "every Nm" / "at HH:MM" next-run calculation + a temp-DB
+# create/tick fire roundtrip.
+add_executable(scheduler_test tests/scheduler_test.cpp)
+target_link_libraries(scheduler_test PRIVATE jarvis-core Qt6::Core Qt6::Sql)
+add_test(NAME scheduler_test COMMAND scheduler_test)
+
+# SshAllowList: a non-allow-listed host is rejected with host_not_allowed and
+# ssh is never spawned; allow_add/remove persistence roundtrip.
+add_executable(ssh_allowlist_test tests/ssh_allowlist_test.cpp)
+target_link_libraries(ssh_allowlist_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME ssh_allowlist_test COMMAND ssh_allowlist_test)
+
+# InjectionGuard: a known-bad injection string flags risky; benign text does not.
+add_executable(injection_guard_test tests/injection_guard_test.cpp)
+target_link_libraries(injection_guard_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME injection_guard_test COMMAND injection_guard_test)

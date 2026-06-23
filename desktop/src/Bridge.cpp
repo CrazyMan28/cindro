@@ -17,6 +17,9 @@
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QFileSystemWatcher>
+#include <QProcess>
+#include <QStandardPaths>
+#include <QDateTime>
 #include <QtMath>
 #include <QDebug>
 
@@ -455,6 +458,444 @@ void Bridge::skillsToday()
     request(QStringLiteral("skills.today"), {});
 }
 
+// ---- Schedules (Contract A additions) --------------------------------------
+
+void Bridge::scheduleList()
+{
+    request(QStringLiteral("schedule.list"), {});
+}
+
+void Bridge::scheduleCreate(const QVariantMap &spec)
+{
+    // Required: name + prompt + (cron | when). brain/model/profile/enabled optional.
+    QVariantMap params = spec;
+    if (params.value(QStringLiteral("name")).toString().trimmed().isEmpty()
+        || params.value(QStringLiteral("prompt")).toString().trimmed().isEmpty()) {
+        emit errorOccurred(QStringLiteral("schedule needs a name and a prompt"));
+        return;
+    }
+    if (params.value(QStringLiteral("cron")).toString().trimmed().isEmpty()
+        && params.value(QStringLiteral("when")).toString().trimmed().isEmpty()) {
+        emit errorOccurred(QStringLiteral("schedule needs a cron or a 'when'"));
+        return;
+    }
+    request(QStringLiteral("schedule.create"), params);
+}
+
+void Bridge::scheduleSetEnabled(const QString &id, bool enabled)
+{
+    if (id.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    params.insert(QStringLiteral("enabled"), enabled);
+    request(QStringLiteral("schedule.set_enabled"), params);
+}
+
+void Bridge::scheduleRemove(const QString &id)
+{
+    if (id.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    request(QStringLiteral("schedule.remove"), params);
+}
+
+void Bridge::scheduleRunNow(const QString &id)
+{
+    if (id.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    request(QStringLiteral("schedule.run_now"), params);
+}
+
+// ---- SSH allow-list + gated exec -------------------------------------------
+
+void Bridge::sshAllowList()
+{
+    request(QStringLiteral("ssh.allow_list"), {});
+}
+
+void Bridge::sshAllowAdd(const QString &host)
+{
+    const QString h = host.trimmed();
+    if (h.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("host"), h);
+    request(QStringLiteral("ssh.allow_add"), params);
+}
+
+void Bridge::sshAllowRemove(const QString &host)
+{
+    const QString h = host.trimmed();
+    if (h.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("host"), h);
+    request(QStringLiteral("ssh.allow_remove"), params);
+}
+
+void Bridge::sshExec(const QString &host, const QString &cmd)
+{
+    const QString h = host.trimmed();
+    const QString c = cmd.trimmed();
+    if (h.isEmpty() || c.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("host"), h);
+    params.insert(QStringLiteral("cmd"), c);
+    // Tag the request with the host so the response can label the output line.
+    request(QStringLiteral("ssh.exec"), params, h);
+}
+
+// ---- Audit log -------------------------------------------------------------
+
+void Bridge::auditList(int limit)
+{
+    QVariantMap params;
+    if (limit > 0)
+        params.insert(QStringLiteral("limit"), limit);
+    request(QStringLiteral("audit.list"), params);
+}
+
+// ---- Diff review actions ---------------------------------------------------
+
+void Bridge::diffStage(const QString &path)
+{
+    QVariantMap params;
+    if (!m_sessionId.isEmpty())
+        params.insert(QStringLiteral("session_id"), m_sessionId);
+    if (!path.isEmpty())
+        params.insert(QStringLiteral("path"), path);
+    request(QStringLiteral("diff.stage"), params, path);
+}
+
+void Bridge::diffRevert(const QString &path)
+{
+    QVariantMap params;
+    if (!m_sessionId.isEmpty())
+        params.insert(QStringLiteral("session_id"), m_sessionId);
+    if (!path.isEmpty())
+        params.insert(QStringLiteral("path"), path);
+    request(QStringLiteral("diff.revert"), params, path);
+}
+
+void Bridge::diffCommit(const QString &message)
+{
+    QVariantMap params;
+    if (!m_sessionId.isEmpty())
+        params.insert(QStringLiteral("session_id"), m_sessionId);
+    if (!message.trimmed().isEmpty())
+        params.insert(QStringLiteral("message"), message.trimmed());
+    request(QStringLiteral("diff.commit"), params, QStringLiteral("__commit__"));
+}
+
+void Bridge::diffOpenPr(const QString &title)
+{
+    QVariantMap params;
+    if (!m_sessionId.isEmpty())
+        params.insert(QStringLiteral("session_id"), m_sessionId);
+    if (!title.trimmed().isEmpty())
+        params.insert(QStringLiteral("title"), title.trimmed());
+    request(QStringLiteral("diff.open_pr"), params, QStringLiteral("__pr__"));
+}
+
+// ---- Notifications ---------------------------------------------------------
+
+void Bridge::setNotificationsEnabled(bool enabled)
+{
+    if (m_notify == enabled) {
+        // still emit once so an initial bind settles
+        emit notificationsChanged();
+        return;
+    }
+    m_notify = enabled;
+    emit notificationsChanged();
+    // Persist so the daemon's NotifyService honors the same flag.
+    QVariantMap patch;
+    QVariantMap n;
+    n.insert(QStringLiteral("enabled"), enabled);
+    patch.insert(QStringLiteral("notifications"), n);
+    saveSettings(patch);
+}
+
+void Bridge::notify(const QString &title, const QString &body)
+{
+    if (!m_notify)
+        return;
+    if (!hasExecutable(QStringLiteral("notify-send")))
+        return;
+    QStringList args;
+    args << QStringLiteral("-a") << QStringLiteral("Jarvis")
+         << (title.isEmpty() ? QStringLiteral("Jarvis") : title)
+         << body;
+    QProcess::startDetached(QStringLiteral("notify-send"), args);
+}
+
+// ---- Voice dictation (pw-record -> voice.stt; voice.tts -> playback) --------
+
+bool Bridge::hasExecutable(const QString &name)
+{
+    return !QStandardPaths::findExecutable(name).isEmpty();
+}
+
+bool Bridge::voiceAvailable() const
+{
+    return hasExecutable(QStringLiteral("pw-record"));
+}
+
+void Bridge::setRecordingState(const QString &s)
+{
+    if (m_recordingState == s)
+        return;
+    m_recordingState = s;
+    emit recordingStateChanged();
+}
+
+QString Bridge::recordWavPath() const
+{
+    QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    if (base.isEmpty())
+        base = QDir::tempPath();
+    return base + QStringLiteral("/jarvis_dictate.wav");
+}
+
+void Bridge::voiceDictate(int seconds)
+{
+    if (m_recProc) {
+        emit errorOccurred(QStringLiteral("already recording"));
+        return;
+    }
+    if (!voiceAvailable()) {
+        emit errorOccurred(QStringLiteral("pw-record (PipeWire) not found; voice dictation unavailable"));
+        return;
+    }
+    m_recPath = recordWavPath();
+    QFile::remove(m_recPath);
+
+    m_recProc = new QProcess(this);
+    // pw-record writes a WAV; cap the capture so a forgotten recording self-stops.
+    const int secs = (seconds > 0 && seconds <= 30) ? seconds : 6;
+    m_recAutoStop = true;
+    QStringList args;
+    // Mono 16k is plenty for speech and keeps the upload small.
+    args << QStringLiteral("--rate") << QStringLiteral("16000")
+         << QStringLiteral("--channels") << QStringLiteral("1")
+         << m_recPath;
+    connect(m_recProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this](int, QProcess::ExitStatus) { finishDictation(); });
+    setRecordingState(QStringLiteral("recording"));
+    m_recProc->start(QStringLiteral("pw-record"), args);
+    if (!m_recProc->waitForStarted(1500)) {
+        emit errorOccurred(QStringLiteral("failed to start pw-record"));
+        m_recProc->deleteLater();
+        m_recProc = nullptr;
+        setRecordingState(QStringLiteral("idle"));
+        return;
+    }
+    // Auto-stop after `secs`; SIGTERM lets pw-record finalize the WAV header.
+    QTimer::singleShot(secs * 1000, this, [this]() {
+        if (m_recProc && m_recProc->state() != QProcess::NotRunning && m_recAutoStop)
+            m_recProc->terminate();
+    });
+}
+
+void Bridge::voiceDictateStop()
+{
+    if (m_recProc && m_recProc->state() != QProcess::NotRunning) {
+        m_recAutoStop = false;
+        m_recProc->terminate();   // finished() -> finishDictation()
+    }
+}
+
+void Bridge::finishDictation()
+{
+    if (m_recProc) {
+        m_recProc->deleteLater();
+        m_recProc = nullptr;
+    }
+    QFile f(m_recPath);
+    if (!f.open(QIODevice::ReadOnly)) {
+        setRecordingState(QStringLiteral("idle"));
+        emit errorOccurred(QStringLiteral("no audio captured"));
+        return;
+    }
+    const QByteArray wav = f.readAll();
+    f.close();
+    if (wav.size() < 256) {   // an empty/aborted capture
+        setRecordingState(QStringLiteral("idle"));
+        return;
+    }
+    setRecordingState(QStringLiteral("transcribing"));
+    QVariantMap params;
+    params.insert(QStringLiteral("audio_b64"), QString::fromLatin1(wav.toBase64()));
+    params.insert(QStringLiteral("mime"), QStringLiteral("audio/wav"));
+    request(QStringLiteral("voice.stt"), params);
+}
+
+void Bridge::voiceSpeak(const QString &text)
+{
+    if (text.trimmed().isEmpty())
+        return;
+    m_ttsRequested = true;
+    QVariantMap params;
+    params.insert(QStringLiteral("text"), text.trimmed());
+    params.insert(QStringLiteral("format"), QStringLiteral("mp3"));
+    request(QStringLiteral("voice.tts"), params);
+}
+
+// ---- In-app browser (per-session engine bridge) ----------------------------
+
+QString Bridge::engineBase() const
+{
+    QString base = m_videoBase;
+    if (base.isEmpty())
+        base = QStringLiteral("http://127.0.0.1:8810");
+    if (base.endsWith(QLatin1Char('/')))
+        base.chop(1);
+    return base;
+}
+
+void Bridge::engineBrowserCall(const QString &tag, const QVariantMap &body)
+{
+    // The desktop never embeds QtWebEngine — it asks the per-session computer-use
+    // engine to drive its controlled Chrome tab and renders the returned image.
+    // The engine exposes /browser/<op>; tag routes the async reply.
+    QString op = tag;
+    QUrl url(engineBase() + QStringLiteral("/browser/") + op);
+    QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    if (!m_videoBearer.isEmpty())
+        req.setRawHeader("Authorization", QByteArray("Bearer ") + m_videoBearer.toUtf8());
+    req.setTransferTimeout(5000);
+    const QByteArray payload = QJsonDocument(QJsonObject::fromVariantMap(body)).toJson(QJsonDocument::Compact);
+    QNetworkReply *reply = m_net->post(req, payload);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, tag]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError) {
+            // Engine may not implement the browser bridge yet; stay quiet so the
+            // page shows an empty preview rather than a transport error toast.
+            return;
+        }
+        const QByteArray b = reply->readAll();
+        const QJsonDocument d = QJsonDocument::fromJson(b);
+        const QJsonObject o = d.object();
+        if (tag == QStringLiteral("screenshot")) {
+            const QString shot = o.value(QStringLiteral("image_b64")).toString(
+                o.value(QStringLiteral("screenshot")).toString());
+            if (!shot.isEmpty())
+                emit browserShot(shot);
+        } else if (tag == QStringLiteral("snapshot")) {
+            emit browserSnapshotReady(o.value(QStringLiteral("nodes")).toArray().toVariantList());
+        } else {
+            // navigate/back/forward/reload/click + status all report status fields.
+            emit browserStatusReady(o.value(QStringLiteral("url")).toString(),
+                                    o.value(QStringLiteral("title")).toString(),
+                                    o.value(QStringLiteral("can_back")).toBool(),
+                                    o.value(QStringLiteral("can_forward")).toBool());
+            // A navigation usually changes the page; pull a fresh screenshot.
+            if (tag != QStringLiteral("status"))
+                browserScreenshot();
+        }
+    });
+}
+
+void Bridge::browserStatus()
+{
+    engineBrowserCall(QStringLiteral("status"), {});
+}
+
+void Bridge::browserNavigate(const QString &url)
+{
+    QVariantMap b;
+    b.insert(QStringLiteral("url"), url.trimmed());
+    engineBrowserCall(QStringLiteral("navigate"), b);
+}
+
+void Bridge::browserBack()    { engineBrowserCall(QStringLiteral("back"), {}); }
+void Bridge::browserForward() { engineBrowserCall(QStringLiteral("forward"), {}); }
+void Bridge::browserReload()  { engineBrowserCall(QStringLiteral("reload"), {}); }
+void Bridge::browserScreenshot() { engineBrowserCall(QStringLiteral("screenshot"), {}); }
+void Bridge::browserSnapshot()   { engineBrowserCall(QStringLiteral("snapshot"), {}); }
+
+void Bridge::browserClick(const QString &ref)
+{
+    if (ref.isEmpty())
+        return;
+    QVariantMap b;
+    b.insert(QStringLiteral("ref"), ref);
+    engineBrowserCall(QStringLiteral("click"), b);
+}
+
+// ---- Sub-agent tree --------------------------------------------------------
+
+void Bridge::loadSubAgentTree()
+{
+    // Reuse session.list; the response handler builds the tree and emits it.
+    request(QStringLiteral("session.list"), {}, QStringLiteral("__subtree__"));
+}
+
+QVariantList Bridge::buildSubAgentTree(const QVariantList &sessions) const
+{
+    // Index sessions by id and collect children by parent_session_id.
+    QHash<QString, QVariantMap> byId;
+    QHash<QString, QStringList> children;
+    QStringList roots;
+    QStringList order;   // preserve daemon order for stable rendering
+
+    for (const QVariant &v : sessions) {
+        const QVariantMap s = v.toMap();
+        const QString id = s.value(QStringLiteral("id")).toString();
+        if (id.isEmpty())
+            continue;
+        byId.insert(id, s);
+        order << id;
+        const QString parent = s.value(QStringLiteral("parent_session_id")).toString();
+        if (parent.isEmpty())
+            roots << id;
+        else
+            children[parent] << id;
+    }
+    // A child whose parent isn't in the list is treated as a root too.
+    for (const QString &id : order) {
+        const QString parent = byId.value(id).value(QStringLiteral("parent_session_id")).toString();
+        if (!parent.isEmpty() && !byId.contains(parent) && !roots.contains(id))
+            roots << id;
+    }
+
+    QVariantList rows;
+    // Depth-first walk preserving order.
+    QList<QPair<QString, int>> stack;
+    // Push roots in reverse so the first root is processed first.
+    for (int i = roots.size() - 1; i >= 0; --i)
+        stack.append(qMakePair(roots[i], 0));
+    QSet<QString> seen;
+    while (!stack.isEmpty()) {
+        const QPair<QString, int> top = stack.takeLast();
+        const QString id = top.first;
+        const int depth = top.second;
+        if (seen.contains(id))
+            continue;
+        seen.insert(id);
+        const QVariantMap s = byId.value(id);
+        QVariantMap row;
+        row.insert(QStringLiteral("id"), id);
+        row.insert(QStringLiteral("title"), s.value(QStringLiteral("title")));
+        row.insert(QStringLiteral("brain"), s.value(QStringLiteral("brain")));
+        row.insert(QStringLiteral("profile"), s.value(QStringLiteral("profile")));
+        row.insert(QStringLiteral("status"), s.value(QStringLiteral("status")));
+        row.insert(QStringLiteral("depth"), depth);
+        row.insert(QStringLiteral("parent"), s.value(QStringLiteral("parent_session_id")));
+        rows << row;
+        const QStringList kids = children.value(id);
+        for (int i = kids.size() - 1; i >= 0; --i)
+            stack.append(qMakePair(kids[i], depth + 1));
+    }
+    return rows;
+}
+
 // ---- COMPUTER page ---------------------------------------------------------
 
 void Bridge::setDriving(bool d)
@@ -843,6 +1284,17 @@ void Bridge::onTextMessageReceived(const QString &message)
         // consumed by the overlay + video poller and are NOT chat transcript rows.
         if (handleComputerEvent(sid, evMap))
             return;
+        // Attention notifications (approval needed / task done). Reuse notify-send
+        // via the local NotifyService path; the daemon may also push these, so the
+        // toggle gates duplicates on the user's side.
+        const QString kind = evMap.value(QStringLiteral("kind")).toString();
+        if (kind == QStringLiteral("approval")) {
+            notify(QStringLiteral("Approval needed"),
+                   evMap.value(QStringLiteral("summary")).toString());
+        } else if (kind == QStringLiteral("final")) {
+            notify(QStringLiteral("Task complete"),
+                   QStringLiteral("Jarvis finished a turn."));
+        }
         // Fold the session id in so the UI can route by session.
         evMap.insert(QStringLiteral("session_id"), sid);
         emit sessionEvent(evMap);
@@ -901,6 +1353,48 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                 emit todayDigest(QString());
             return;
         }
+        // Schedules / SSH / audit / diff-review land daemon-side later (these are
+        // owned by other agents). Until then degrade to clean empty states /
+        // best-effort results instead of an error toast.
+        if (code == QStringLiteral("unknown_method")) {
+            if (method == QStringLiteral("schedule.list")) {
+                emit schedulesListed(QVariantList());
+                return;
+            }
+            if (method.startsWith(QStringLiteral("schedule.")))
+                return;
+            if (method == QStringLiteral("ssh.allow_list")) {
+                emit sshHostsListed(QStringList());
+                return;
+            }
+            if (method == QStringLiteral("ssh.exec")) {
+                emit sshExecResult(ctx, false, QStringLiteral("ssh.exec is not available yet"));
+                return;
+            }
+            if (method.startsWith(QStringLiteral("ssh.")))
+                return;
+            if (method == QStringLiteral("audit.list")) {
+                emit auditListed(QVariantList());
+                return;
+            }
+            if (method.startsWith(QStringLiteral("diff."))) {
+                emit diffActionResult(method.mid(5), ctx, false,
+                                      QStringLiteral("not available yet"));
+                return;
+            }
+        }
+        // SSH exec can also fail with the daemon's allow-list / tier errors; route
+        // those to the console rather than a toast so the user sees the reason.
+        if (method == QStringLiteral("ssh.exec")) {
+            emit sshExecResult(ctx, false, msg.isEmpty() ? code : (code + QStringLiteral(": ") + msg));
+            return;
+        }
+        // Voice STT failed (no key / network): clear the indicator quietly-ish.
+        if (method == QStringLiteral("voice.stt")) {
+            setRecordingState(QStringLiteral("idle"));
+        }
+        if (method == QStringLiteral("voice.tts"))
+            m_ttsRequested = false;
         emit errorOccurred(QStringLiteral("%1 failed: [%2] %3")
                                .arg(method.isEmpty() ? QStringLiteral("request") : method, code, msg));
         return;
@@ -944,6 +1438,15 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         const QString brain = result.value(QStringLiteral("brain")).toString();
         emit modelsListed(brain, models);
     } else if (method == QStringLiteral("settings.get")) {
+        // Sync the desktop notifications toggle from persisted settings.
+        const QVariantMap n = result.value(QStringLiteral("notifications")).toMap();
+        if (n.contains(QStringLiteral("enabled"))) {
+            const bool en = n.value(QStringLiteral("enabled")).toBool();
+            if (en != m_notify) {
+                m_notify = en;
+                emit notificationsChanged();
+            }
+        }
         emit settingsLoaded(result);
     } else if (method == QStringLiteral("settings.set")) {
         emit settingsSaved();
@@ -967,7 +1470,11 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         emit pluginsChanged();
         loadPlugins(); // refresh the catalog after a mutation
     } else if (method == QStringLiteral("session.list")) {
-        emit sessionsListed(result.value(QStringLiteral("sessions")).toList());
+        const QVariantList sessions = result.value(QStringLiteral("sessions")).toList();
+        if (ctx == QStringLiteral("__subtree__"))
+            emit subAgentTree(buildSubAgentTree(sessions));
+        else
+            emit sessionsListed(sessions);
     } else if (method == QStringLiteral("session.history")) {
         // events: [{seq,ts,ev:{kind,...}}] — fold the inner ev out for QML.
         QVariantList events;
@@ -1006,6 +1513,88 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         emit skillInvoked(ctx, result.value(QStringLiteral("message")).toString());
     } else if (method == QStringLiteral("skills.today")) {
         emit todayDigest(result.value(QStringLiteral("digest")).toString());
+    } else if (method == QStringLiteral("schedule.list")) {
+        emit schedulesListed(result.value(QStringLiteral("schedules")).toList());
+    } else if (method == QStringLiteral("schedule.create")
+               || method == QStringLiteral("schedule.remove")
+               || method == QStringLiteral("schedule.set_enabled")
+               || method == QStringLiteral("schedule.run_now")) {
+        emit schedulesChanged();
+        scheduleList();   // refresh after a mutation
+    } else if (method == QStringLiteral("ssh.allow_list")) {
+        QStringList hosts;
+        for (const QVariant &v : result.value(QStringLiteral("hosts")).toList())
+            hosts << v.toString();
+        emit sshHostsListed(hosts);
+    } else if (method == QStringLiteral("ssh.allow_add")
+               || method == QStringLiteral("ssh.allow_remove")) {
+        emit sshHostsChanged();
+        sshAllowList();   // refresh after a mutation
+    } else if (method == QStringLiteral("ssh.exec")) {
+        const bool sok = result.contains(QStringLiteral("ok"))
+                             ? result.value(QStringLiteral("ok")).toBool() : true;
+        emit sshExecResult(ctx, sok, result.value(QStringLiteral("output")).toString());
+    } else if (method == QStringLiteral("audit.list")) {
+        emit auditListed(result.value(QStringLiteral("entries")).toList());
+    } else if (method == QStringLiteral("diff.stage")
+               || method == QStringLiteral("diff.revert")
+               || method == QStringLiteral("diff.commit")
+               || method == QStringLiteral("diff.open_pr")) {
+        const QString action = method.mid(5);   // strip "diff."
+        const bool dok = result.contains(QStringLiteral("ok"))
+                             ? result.value(QStringLiteral("ok")).toBool() : true;
+        QString detail = result.value(QStringLiteral("message")).toString();
+        if (detail.isEmpty())
+            detail = result.value(QStringLiteral("url")).toString();
+        emit diffActionResult(action, ctx, dok, detail);
+        if (m_notify && action == QStringLiteral("open_pr")) {
+            const QString url = result.value(QStringLiteral("url")).toString();
+            if (!url.isEmpty())
+                notify(QStringLiteral("Pull request opened"), url);
+        }
+    } else if (method == QStringLiteral("voice.stt")) {
+        setRecordingState(QStringLiteral("idle"));
+        emit voiceTranscribed(result.value(QStringLiteral("text")).toString());
+    } else if (method == QStringLiteral("voice.tts")) {
+        m_ttsRequested = false;
+        const QByteArray audio = QByteArray::fromBase64(
+            result.value(QStringLiteral("audio_b64")).toString().toLatin1());
+        if (audio.isEmpty())
+            return;
+        QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+        if (base.isEmpty())
+            base = QDir::tempPath();
+        const QString mime = result.value(QStringLiteral("mime")).toString();
+        const QString ext = mime.contains(QStringLiteral("mpeg")) || mime.contains(QStringLiteral("mp3"))
+                                ? QStringLiteral(".mp3") : QStringLiteral(".wav");
+        const QString outPath = base + QStringLiteral("/jarvis_tts") + ext;
+        QFile out(outPath);
+        if (out.open(QIODevice::WriteOnly)) {
+            out.write(audio);
+            out.close();
+            // Prefer a player that handles mp3; fall back through common ones.
+            QString player;
+            for (const QString &cand : { QStringLiteral("mpv"), QStringLiteral("ffplay"),
+                                         QStringLiteral("paplay"), QStringLiteral("pw-play") }) {
+                if (hasExecutable(cand)) { player = cand; break; }
+            }
+            if (!player.isEmpty()) {
+                emit voiceSpeaking(true);
+                auto *p = new QProcess(this);
+                QStringList args;
+                if (player == QStringLiteral("ffplay"))
+                    args << QStringLiteral("-nodisp") << QStringLiteral("-autoexit");
+                else if (player == QStringLiteral("mpv"))
+                    args << QStringLiteral("--no-video") << QStringLiteral("--really-quiet");
+                args << outPath;
+                connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+                        this, [this, p](int, QProcess::ExitStatus) {
+                    emit voiceSpeaking(false);
+                    p->deleteLater();
+                });
+                p->start(player, args);
+            }
+        }
     } else if (method == QStringLiteral("devices.pair_start")) {
         // { code, payload, qr_svg, expires_at }
         const QString qrSvg = result.value(QStringLiteral("qr_svg")).toString();

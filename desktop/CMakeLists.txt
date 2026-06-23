@@ -47,6 +47,12 @@ qt_add_qml_module(jarvis-sidebar
         qml/SkillsPage.qml
         qml/TodayBriefing.qml
         qml/ComputerPage.qml
+        qml/SchedulesPage.qml
+        qml/SshPage.qml
+        qml/ActivityPage.qml
+        qml/BrowserPage.qml
+        qml/SubAgentTree.qml
+        qml/DiffReviewPanel.qml
         qml/DrivingOverlay.qml
         qml/TitleBar.qml
         qml/Theme.qml

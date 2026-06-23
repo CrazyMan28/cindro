@@ -4,6 +4,7 @@
 #include "jarvis/Brain.h"
 #include "jarvis/ClaudeBrain.h"
 #include "jarvis/CodexBrain.h"
+#include "jarvis/InjectionGuard.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -70,6 +71,31 @@ bool ControlServer::start()
     if (!m_memory.open())
         qWarning("jarvisd: memory store unavailable: %s",
                  qPrintable(m_memory.lastError()));
+
+    // Wave 8 co-worker ops backend. All share jarvis.db via distinct connection
+    // names; each failure is non-fatal (that feature degrades, daemon survives).
+    if (!m_audit.open())
+        qWarning("jarvisd: audit log unavailable: %s", qPrintable(m_audit.lastError()));
+    if (!m_sshAllow.load())
+        qWarning("jarvisd: ssh allow-list load: %s", qPrintable(m_sshAllow.lastError()));
+    if (!m_scheduler.open()) {
+        qWarning("jarvisd: scheduler unavailable: %s", qPrintable(m_scheduler.lastError()));
+    } else {
+        // The scheduler fires due jobs by creating a session + sending the prompt.
+        m_scheduler.setFireCallback(
+            [this](const ScheduleRow &row) { return fireScheduledJob(row); });
+        // On a fired job: desktop notify + audit (HERMES_FEATURES §5).
+        connect(&m_scheduler, &Scheduler::jobFired, this,
+                [this](const ScheduleRow &row, const QString &sessionId) {
+                    m_notify.scheduleDone(row.name);
+                    m_audit.record(QStringLiteral("schedule.fire"), !sessionId.isEmpty(),
+                                   QStringLiteral("low"),
+                                   QStringLiteral("scheduled job '%1' -> %2")
+                                       .arg(row.name, sessionId),
+                                   sessionId);
+                });
+        m_scheduler.start(); // ~15s tick
+    }
 
     // Contract A v2 stores/registries. SettingsStore loads config.toml prefs +
     // secrets.json; the registries wrap the (now-open) SessionStore tables.
@@ -255,6 +281,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleFileGet(req);
     else if (isMemoryOrSkillMethod(m))
         resp = dispatchMemoryOrSkill(req);
+    else if (isOpsMethod(m))
+        resp = dispatchOpsMethod(req, /*remote=*/false);
     else
         resp = Response::failure(req.id, QStringLiteral("unknown_method"),
                                  QStringLiteral("unknown method: ") + m);
@@ -737,6 +765,25 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             *err = QStringLiteral("unknown or inactive session: ") + sessionId;
         return false;
     }
+
+    // PROMPT-INJECTION GATING (BUILD_SPEC): scan the user turn (+ any page/
+    // screenshot text the daemon can see) before it reaches the brain. For an
+    // ApiBrain session a risky turn BLOCKS here — we emit an approval event and
+    // do not send until approval.respond arrives. For CLI brains this only
+    // audits (they run their own tool loop and can't be intercepted mid-loop).
+    QString brainName;
+    if (auto row = m_store.get(sessionId))
+        brainName = row->brain;
+    if (gateForInjection(sessionId, brainName, text)) {
+        // Blocked: hold the turn (text+images) until the approval flips it
+        // through via approval.respond("inject-<id>").
+        m_injectionHeld.insert(sessionId, HeldTurn{text, images});
+        if (err)
+            *err = QStringLiteral("blocked pending injection approval");
+        // Not an error to the caller — the approval card carries the next step.
+        return true;
+    }
+
     m_store.updateState(sessionId, QStringLiteral("running"));
 
     // Memory PREFETCH (HERMES_FEATURES §1), applied for ALL brains: prepend a
@@ -786,6 +833,35 @@ bool ControlServer::respondApprovalFor(const QString &sessionId, const QString &
         const bool allow = (decision == QStringLiteral("allow") ||
                             decision == QStringLiteral("always"));
         setTakeOverActive(sessionId, allow);
+        return true;
+    }
+
+    // An injection-gate approval (BUILD_SPEC prompt-injection gating): the user
+    // confirmed the held turn is safe. allow/always resumes the held turn
+    // (bypassing the gate this time); deny drops it. Daemon-side, no brain call.
+    if (approvalId.startsWith(QStringLiteral("inject-"))) {
+        const HeldTurn held = m_injectionHeld.take(sessionId);
+        const bool allow = (decision == QStringLiteral("allow") ||
+                            decision == QStringLiteral("always"));
+        m_audit.record(QStringLiteral("injection.gate"), allow,
+                       allow ? QStringLiteral("high") : QStringLiteral("low"),
+                       allow ? QStringLiteral("user approved a flagged turn")
+                             : QStringLiteral("user denied a flagged turn"),
+                       sessionId);
+        if (allow && !held.text.isEmpty()) {
+            Brain *brain = m_brains.value(sessionId, nullptr);
+            if (brain) {
+                m_store.updateState(sessionId, QStringLiteral("running"));
+                QString eff = held.text;
+                const QString memBlock = prefetchMemoryBlock(held.text);
+                if (!memBlock.isEmpty())
+                    eff = memBlock + QStringLiteral("\n---\n") + held.text;
+                brain->send(eff, held.images);
+                syncTurnMemory(sessionId, held.text);
+            }
+        } else {
+            m_store.updateState(sessionId, QStringLiteral("idle"));
+        }
         return true;
     }
 
@@ -1603,6 +1679,222 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
                              QStringLiteral("unknown config method: ") + m);
 }
 
+// --- Wave 8: co-worker ops (scheduler / ssh allow-list / audit) -------------
+
+bool ControlServer::isOpsMethod(const QString &method)
+{
+    return method.startsWith(QStringLiteral("schedule.")) ||
+           method.startsWith(QStringLiteral("ssh.")) ||
+           method == QStringLiteral("audit.list");
+}
+
+Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
+{
+    const QString &m = req.method;
+    if (m == QStringLiteral("schedule.create"))      return handleScheduleCreate(req);
+    if (m == QStringLiteral("schedule.list"))        return handleScheduleList(req);
+    if (m == QStringLiteral("schedule.set_enabled")) return handleScheduleSetEnabled(req);
+    if (m == QStringLiteral("schedule.remove"))      return handleScheduleRemove(req);
+    if (m == QStringLiteral("ssh.allow_list"))       return handleSshAllowList(req);
+    if (m == QStringLiteral("ssh.allow_add"))        return handleSshAllowAdd(req);
+    if (m == QStringLiteral("ssh.allow_remove"))     return handleSshAllowRemove(req);
+    if (m == QStringLiteral("ssh.exec"))             return handleSshExec(req, remote);
+    if (m == QStringLiteral("audit.list"))           return handleAuditList(req);
+    return Response::failure(req.id, QStringLiteral("unknown_method"),
+                             QStringLiteral("unknown ops method: ") + m);
+}
+
+QString ControlServer::fireScheduledJob(const ScheduleRow &row)
+{
+    // Create a session for the scheduled prompt and send it. Uses the row's
+    // brain/model/profile overrides (else daemon defaults). Returns the new
+    // session id, or empty on failure (the Scheduler logs/notifies accordingly).
+    QString err;
+    const QString sid = createSession(row.profile, row.brain, row.model,
+                                      /*cwd=*/QString(),
+                                      row.name.isEmpty() ? QStringLiteral("Scheduled job")
+                                                         : row.name,
+                                      &err);
+    if (sid.isEmpty()) {
+        qWarning("jarvisd: scheduled job '%s' failed to create session: %s",
+                 qPrintable(row.name), qPrintable(err));
+        return QString();
+    }
+    if (!sendToSession(sid, row.prompt, {}, &err))
+        qWarning("jarvisd: scheduled job '%s' send failed: %s",
+                 qPrintable(row.name), qPrintable(err));
+    return sid;
+}
+
+Response ControlServer::handleScheduleCreate(const Request &req)
+{
+    const QJsonObject p = req.params;
+    // Accept either `cron` (5-field / "every Nm" / "at HH:MM") or `when` (alias).
+    QString cronExpr = p.value(QStringLiteral("cron")).toString();
+    if (cronExpr.isEmpty())
+        cronExpr = p.value(QStringLiteral("when")).toString();
+    const QString prompt = p.value(QStringLiteral("prompt")).toString();
+    if (cronExpr.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("cron or when is required"));
+    if (prompt.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("prompt is required"));
+
+    const QString id = m_scheduler.create(
+        p.value(QStringLiteral("name")).toString(), cronExpr, prompt,
+        p.value(QStringLiteral("brain")).toString(),
+        p.value(QStringLiteral("model")).toString(),
+        p.value(QStringLiteral("profile")).toString(),
+        p.value(QStringLiteral("enabled")).toBool(true));
+    if (id.isEmpty())
+        return Response::failure(req.id, QStringLiteral("schedule_error"),
+                                 m_scheduler.lastError());
+
+    m_audit.record(QStringLiteral("schedule.create"), true, QStringLiteral("low"),
+                   QStringLiteral("scheduled '%1' (%2)").arg(cronExpr, prompt.left(60)));
+    QJsonObject result;
+    result.insert(QStringLiteral("id"), id);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleScheduleList(const Request &req)
+{
+    QJsonArray arr;
+    for (const ScheduleRow &r : m_scheduler.list())
+        arr.append(r.toJson());
+    QJsonObject result;
+    result.insert(QStringLiteral("schedules"), arr);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleScheduleSetEnabled(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const bool enabled = req.params.value(QStringLiteral("enabled")).toBool();
+    if (!m_scheduler.setEnabled(id, enabled))
+        return Response::failure(req.id, QStringLiteral("no_schedule"),
+                                 QStringLiteral("unknown schedule: ") + id);
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleScheduleRemove(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    if (!m_scheduler.remove(id))
+        return Response::failure(req.id, QStringLiteral("no_schedule"),
+                                 QStringLiteral("unknown schedule: ") + id);
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleSshAllowList(const Request &req)
+{
+    return Response::success(req.id, m_sshAllow.toJson());
+}
+
+Response ControlServer::handleSshAllowAdd(const Request &req)
+{
+    const QString host = req.params.value(QStringLiteral("host")).toString();
+    if (host.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("host is required"));
+    const bool changed = m_sshAllow.add(host);
+    m_audit.record(QStringLiteral("ssh.allow_add"), true, QStringLiteral("medium"),
+                   QStringLiteral("allow-listed ssh host ") + host);
+    QJsonObject result = m_sshAllow.toJson();
+    result.insert(QStringLiteral("added"), changed);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleSshAllowRemove(const Request &req)
+{
+    const QString host = req.params.value(QStringLiteral("host")).toString();
+    const bool changed = m_sshAllow.remove(host);
+    if (changed)
+        m_audit.record(QStringLiteral("ssh.allow_remove"), true, QStringLiteral("low"),
+                       QStringLiteral("removed ssh host ") + host);
+    QJsonObject result = m_sshAllow.toJson();
+    result.insert(QStringLiteral("removed"), changed);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleSshExec(const Request &req, bool remote)
+{
+    const QString host = req.params.value(QStringLiteral("host")).toString();
+    const QString cmd = req.params.value(QStringLiteral("cmd")).toString();
+    if (host.trimmed().isEmpty() || cmd.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("host and cmd are required"));
+
+    // HARD GATE: ssh.exec only runs for allow-listed hosts; non-listed hosts
+    // never spawn ssh (SshAllowList::exec enforces this). Audited either way.
+    const SshAllowList::ExecResult r = m_sshAllow.exec(host, cmd);
+    if (!r.allowed) {
+        m_audit.record(QStringLiteral("ssh.exec"), false, QStringLiteral("high"),
+                       QStringLiteral("REJECTED ssh.exec to non-allow-listed host ") + host,
+                       QString(), remote);
+        return Response::failure(req.id, QStringLiteral("host_not_allowed"),
+                                 QStringLiteral("host is not in the ssh allow-list: ") + host);
+    }
+    m_audit.record(QStringLiteral("ssh.exec"), r.ok, QStringLiteral("high"),
+                   QStringLiteral("ssh %1: %2").arg(host, cmd.left(80)),
+                   QString(), remote);
+
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), r.ok);
+    result.insert(QStringLiteral("exit_code"), r.exitCode);
+    result.insert(QStringLiteral("output"), r.output);
+    if (!r.error.isEmpty())
+        result.insert(QStringLiteral("error"), r.error);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleAuditList(const Request &req)
+{
+    const int limit = req.params.value(QStringLiteral("limit")).toInt(100);
+    QJsonArray arr;
+    for (const AuditRow &a : m_audit.list(limit))
+        arr.append(a.toJson());
+    QJsonObject result;
+    result.insert(QStringLiteral("entries"), arr);
+    return Response::success(req.id, result);
+}
+
+// --- prompt-injection gating (BUILD_SPEC) -----------------------------------
+
+bool ControlServer::gateForInjection(const QString &sessionId, const QString &brain,
+                                     const QString &text)
+{
+    const InjectionGuard::Result scan = InjectionGuard::scanText(text, QStringLiteral("turn"));
+    if (!scan.risky) {
+        // Audit the (clean) turn at low risk so the log shows activity.
+        m_audit.record(QStringLiteral("session.send"), true, QStringLiteral("low"),
+                       text.left(80), sessionId);
+        return false;
+    }
+
+    // Risky. Always audit. For the ApiBrain path we can intercept BEFORE the
+    // turn reaches the model, so we BLOCK and emit an approval. CLI brains
+    // (codex/claude) run their own in-process tool loop and rely on their own
+    // approval modes (see docs/HERMES_FEATURES.md) — we audit + notify but do
+    // not block (we can't intercept mid-loop).
+    m_audit.record(QStringLiteral("injection.detect"), false, scan.risk,
+                   scan.summary(), sessionId);
+    m_notify.approvalNeeded(scan.summary(), sessionId);
+
+    if (brain == QStringLiteral("api")) {
+        NormalizedBrainEvent ev = NormalizedBrainEvent::approval(
+            QStringLiteral("inject-") + sessionId, scan.summary(), scan.risk);
+        onBrainEvent(sessionId, ev);
+        return true; // caller holds the turn
+    }
+    return false; // CLI brain: audited + notified, but not blocked
+}
+
 // --- event fan-out ---------------------------------------------------------
 
 void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrainEvent &ev)
@@ -1619,6 +1911,32 @@ void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrain
         m_store.updateState(sessionId, QStringLiteral("idle"));
     } else if (ev.kind == NormalizedBrainEvent::Kind::Error) {
         m_store.updateState(sessionId, QStringLiteral("error"));
+    }
+
+    // Desktop notifications on attention events (BUILD_SPEC: approval needed /
+    // task done). The device channel separately FCM-pushes the same events; this
+    // is the LOCAL notify-send path via NotifyService.
+    if (ev.kind == NormalizedBrainEvent::Kind::Approval) {
+        m_notify.approvalNeeded(
+            ev.fields.value(QStringLiteral("summary")).toString(
+                QStringLiteral("Jarvis needs your approval")),
+            sessionId);
+        // Audit the brain-emitted approval (computer-use / take-over etc.).
+        m_audit.record(QStringLiteral("approval"), true,
+                       ev.fields.value(QStringLiteral("risk")).toString(QStringLiteral("high")),
+                       ev.fields.value(QStringLiteral("summary")).toString(), sessionId);
+    } else if (ev.kind == NormalizedBrainEvent::Kind::Final) {
+        m_notify.taskDone(QStringLiteral("Session ") + sessionId + QStringLiteral(" finished a turn."));
+    } else if (ev.kind == NormalizedBrainEvent::Kind::ToolCall) {
+        // Audit every brain tool call with an injection-scanned risk tier.
+        const QString name = ev.fields.value(QStringLiteral("name")).toString();
+        const QJsonObject args = ev.fields.value(QStringLiteral("args")).toObject();
+        const QString argsStr =
+            QString::fromUtf8(QJsonDocument(args).toJson(QJsonDocument::Compact));
+        const InjectionGuard::Result scan = InjectionGuard::scanToolCall(name, argsStr);
+        m_audit.record(QStringLiteral("tool:") + name, true,
+                       scan.risky ? scan.risk : QStringLiteral("low"),
+                       scan.risky ? scan.summary() : name, sessionId);
     }
 
     broadcastSessionEvent(sessionId, ev);

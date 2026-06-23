@@ -11,6 +11,7 @@ class QNetworkAccessManager;
 class QNetworkReply;
 class QTimer;
 class QFileSystemWatcher;
+class QProcess;
 class FrameProvider;
 
 // Bridge: owns the Contract A control WebSocket to jarvisd.
@@ -45,6 +46,11 @@ class Bridge : public QObject
     // Monotonic frame counter; bump source on change to defeat the QML cache.
     Q_PROPERTY(int frameSeq READ frameSeq NOTIFY frameReady)
 
+    // Voice dictation indicator: "idle" | "recording" | "transcribing".
+    Q_PROPERTY(QString recordingState READ recordingState NOTIFY recordingStateChanged)
+    // Desktop notifications (notify-send) toggle; persisted via settings.
+    Q_PROPERTY(bool notify READ notificationsEnabled NOTIFY notificationsChanged)
+
 public:
     explicit Bridge(QObject *parent = nullptr);
     ~Bridge() override;
@@ -60,6 +66,7 @@ public:
     bool driving() const { return m_driving; }
     bool mirroring() const { return m_mirroring; }
     int frameSeq() const { return m_frameSeq; }
+    QString recordingState() const { return m_recordingState; }
 
     // Establish (or re-establish) the control WebSocket connection.
     Q_INVOKABLE void connectToDaemon();
@@ -145,6 +152,89 @@ public:
     // skills.today -> todayDigest(digest). A short "what I'm working on today"
     // summary built from project-tracker + recent sessions/memories.
     Q_INVOKABLE void skillsToday();
+
+    // ---- Schedules (Contract A additions) ----------------------------------
+    // schedule.list -> schedulesListed(QVariantList). Rows:
+    //   {id,name,cron,next_run,last_run,enabled}.
+    Q_INVOKABLE void scheduleList();
+    // schedule.create{name,when|cron,prompt,brain?,model?,profile?,enabled?} -> {id}.
+    // `when` is an optional natural cadence ("every day 09:00"); if `cron` is set it
+    // wins. On success the list is refreshed.
+    Q_INVOKABLE void scheduleCreate(const QVariantMap &spec);
+    // schedule.set_enabled{id,enabled}; refreshes the list on success.
+    Q_INVOKABLE void scheduleSetEnabled(const QString &id, bool enabled);
+    // schedule.remove{id}; refreshes the list on success.
+    Q_INVOKABLE void scheduleRemove(const QString &id);
+    // schedule.run_now{id} — fire a due job immediately (best-effort).
+    Q_INVOKABLE void scheduleRunNow(const QString &id);
+
+    // ---- SSH allow-list + gated exec (Contract A additions) ----------------
+    // ssh.allow_list -> sshHostsListed(QStringList).
+    Q_INVOKABLE void sshAllowList();
+    // ssh.allow_add{host}; refreshes the allow-list on success.
+    Q_INVOKABLE void sshAllowAdd(const QString &host);
+    // ssh.allow_remove{host}; refreshes the allow-list on success.
+    Q_INVOKABLE void sshAllowRemove(const QString &host);
+    // ssh.exec{host,cmd} -> sshExecResult(host,ok,output). The daemon enforces the
+    // allow-list (error 'host_not_allowed') and the biometric tier; this only sends.
+    Q_INVOKABLE void sshExec(const QString &host, const QString &cmd);
+
+    // ---- Audit log (HERMES_FEATURES risk gate) -----------------------------
+    // audit.list{limit?} -> auditListed(QVariantList). Rows:
+    //   {ts,tool,ok,risk,summary}.
+    Q_INVOKABLE void auditList(int limit = 100);
+
+    // ---- Diff review actions (chat diff panel) -----------------------------
+    // diff.stage / diff.commit / diff.revert / diff.open_pr {path?,message?} for the
+    // active session. Best-effort: the daemon/brain may not implement these yet, so
+    // results surface via diffActionResult and unknown_method degrades quietly.
+    Q_INVOKABLE void diffStage(const QString &path);
+    Q_INVOKABLE void diffRevert(const QString &path);
+    Q_INVOKABLE void diffCommit(const QString &message);
+    Q_INVOKABLE void diffOpenPr(const QString &title);
+
+    // ---- Voice dictation (Mistral via daemon voice.stt/voice.tts) ----------
+    // Record ~`seconds` of mic audio via pw-record (PipeWire) to a temp wav, then
+    // call voice.stt and emit voiceTranscribed(text). recordingState tracks the UI
+    // indicator. If pw-record is unavailable it emits errorOccurred.
+    Q_INVOKABLE void voiceDictate(int seconds);
+    // Stop an in-progress recording early and transcribe what was captured.
+    Q_INVOKABLE void voiceDictateStop();
+    // voice.tts{text,voice?,format?} -> writes the returned audio to a temp file and
+    // plays it via pw-play/paplay; emits voiceSpeaking(true/false) around playback.
+    Q_INVOKABLE void voiceSpeak(const QString &text);
+    Q_INVOKABLE bool voiceAvailable() const;
+
+    // ---- In-app browser (agent's controlled Chrome via the engine bridge) --
+    // The desktop never embeds QtWebEngine; it drives the engine's browser tools
+    // over the per-session computer-use engine and renders the returned screenshot.
+    // browser.status -> browserStatus(url,title,canBack,canForward).
+    Q_INVOKABLE void browserStatus();
+    // browser.navigate{url}; browser.back/forward/reload; refreshes status+shot.
+    Q_INVOKABLE void browserNavigate(const QString &url);
+    Q_INVOKABLE void browserBack();
+    Q_INVOKABLE void browserForward();
+    Q_INVOKABLE void browserReload();
+    // browser.screenshot -> browserShot(b64Png). Polled while the page is open.
+    Q_INVOKABLE void browserScreenshot();
+    // browser.snapshot -> browserSnapshot(QVariantList nodes) for click-by-ref.
+    Q_INVOKABLE void browserSnapshot();
+    // browser.click{ref} — click an element by its snapshot ref.
+    Q_INVOKABLE void browserClick(const QString &ref);
+
+    // ---- Sub-agent tree -----------------------------------------------------
+    // session.list with parent links folded into a tree -> subAgentTree(QVariantList).
+    // Reuses session.list; the page builds the indented tree from parent_session_id.
+    Q_INVOKABLE void loadSubAgentTree();
+
+    // ---- Notifications ------------------------------------------------------
+    // Toggle desktop notify-send on attention events. Persisted via settings.set so
+    // the daemon's NotifyService honors it too.
+    Q_INVOKABLE void setNotificationsEnabled(bool enabled);
+    Q_INVOKABLE bool notificationsEnabled() const { return m_notify; }
+    // Fire a desktop notification now (notify-send), used for client-side attention
+    // cues (approval needed / schedule done) when the daemon does not push them.
+    Q_INVOKABLE void notify(const QString &title, const QString &body);
 
     // ---- COMPUTER page (co-worker session + take-over + live video) --------
     // Start a co-worker session: session.create{profile:"coworker",target:"agent"}.
@@ -246,6 +336,44 @@ signals:
     // skills.today result.
     void todayDigest(const QString &digest);
 
+    // ---- Schedules results --------------------------------------------------
+    void schedulesListed(const QVariantList &schedules);
+    void schedulesChanged();   // emitted after create/remove/set_enabled
+
+    // ---- SSH results --------------------------------------------------------
+    void sshHostsListed(const QStringList &hosts);
+    void sshHostsChanged();    // emitted after allow_add/remove
+    void sshExecResult(const QString &host, bool ok, const QString &output);
+
+    // ---- Audit results ------------------------------------------------------
+    void auditListed(const QVariantList &entries);
+
+    // ---- Diff review results ------------------------------------------------
+    void diffActionResult(const QString &action, const QString &path,
+                          bool ok, const QString &message);
+
+    // ---- Voice dictation results --------------------------------------------
+    // recording state for the mic indicator: "idle"|"recording"|"transcribing".
+    void recordingStateChanged();
+    // Final transcript ready to drop into the input.
+    void voiceTranscribed(const QString &text);
+    // TTS playback bracket (true=started, false=finished).
+    void voiceSpeaking(bool active);
+
+    // ---- In-app browser results ---------------------------------------------
+    void browserStatusReady(const QString &url, const QString &title,
+                            bool canBack, bool canForward);
+    // Latest browser screenshot as a base64 PNG (no data: prefix).
+    void browserShot(const QString &b64Png);
+    void browserSnapshotReady(const QVariantList &nodes);
+
+    // ---- Sub-agent tree -----------------------------------------------------
+    // Flattened, ordered tree rows: {id,title,brain,status,depth,parent}.
+    void subAgentTree(const QVariantList &rows);
+
+    // ---- Notifications ------------------------------------------------------
+    void notificationsChanged();
+
     // ---- COMPUTER page signals ---------------------------------------------
     void coworkerSessionIdChanged();
     void drivingChanged();
@@ -298,6 +426,21 @@ private:
     // Driving-demo fake pointer: advance the looping path one step and emit it.
     void tickDrivingDemo();
 
+    // ---- Voice helpers ------------------------------------------------------
+    void setRecordingState(const QString &s);
+    void finishDictation();          // record stopped -> read wav -> voice.stt
+    QString recordWavPath() const;   // temp wav path for the active capture
+    static bool hasExecutable(const QString &name);
+
+    // ---- Sub-agent tree builder --------------------------------------------
+    // Build an indented tree (depth + parent) from a flat session.list result.
+    QVariantList buildSubAgentTree(const QVariantList &sessions) const;
+
+    // ---- Browser helpers (per-session engine HTTP) --------------------------
+    // POST a browser tool to the engine and route the reply to a handler tag.
+    void engineBrowserCall(const QString &tag, const QVariantMap &body);
+    QString engineBase() const;
+
     static QString readControlToken();
     static QString controlUrl();
     static QString computeUseBearer();
@@ -340,4 +483,14 @@ private:
     double m_demoPhase = 0.0;     // advances each tick; drives the lissajous path
     int m_demoStep = 0;          // frame counter, used to schedule fake clicks
     bool m_demo = false;         // true while the demo (not a real take-over) drives
+
+    // ---- Voice dictation (pw-record -> voice.stt; voice.tts -> pw-play) ------
+    QString m_recordingState = QStringLiteral("idle");
+    QProcess *m_recProc = nullptr;      // active pw-record capture
+    QString m_recPath;                  // wav path for the active capture
+    bool m_recAutoStop = false;         // a duration timer will stop the capture
+    bool m_ttsRequested = false;        // a voice.tts is in flight (route the reply)
+
+    // ---- Notifications ------------------------------------------------------
+    bool m_notify = true;               // mirror of settings.notifications.enabled
 };
