@@ -164,6 +164,21 @@ public:
     // End a real-screen take-over (release the user's screen).
     Q_INVOKABLE void releaseScreen();
 
+    // Cancel an active take-over from the overlay (Esc on the DrivingOverlay, or
+    // the in-page "Esc to cancel"). Sends control-WS `take_over.cancel`
+    // (best-effort; the daemon may not implement it yet) AND flips `driving` false
+    // locally so the overlay is dropped immediately. This is the Esc-to-cancel
+    // path required by docs/TAKEOVER_UX.md.
+    Q_INVOKABLE void takeOverCancel();
+
+    // ---- Driving DEMO (screenshot / visual verification) -------------------
+    // Force the take-over overlay visible and animate a FAKE agent pointer along a
+    // looping path (no live take-over needed). Used by `--driving-demo` and the
+    // ComputerPage preview so the overlay can be rendered/verified standalone.
+    Q_INVOKABLE void startDrivingDemo();
+    // Stop the fake-pointer animation and drop the demo overlay.
+    Q_INVOKABLE void stopDrivingDemo();
+
     // mirror.start / mirror.stop — biometric-gated on the device channel, but the
     // desktop drives its own local preview by polling the per-session engine's
     // GET /video/frame. These toggle that local polling loop.
@@ -280,6 +295,9 @@ private:
     void stopPointerTail();
     void readPointerTail();
 
+    // Driving-demo fake pointer: advance the looping path one step and emit it.
+    void tickDrivingDemo();
+
     static QString readControlToken();
     static QString controlUrl();
     static QString computeUseBearer();
@@ -316,4 +334,10 @@ private:
     // agent_pointer.jsonl fallback tail.
     QFileSystemWatcher *m_pointerWatcher = nullptr;
     qint64 m_pointerOffset = 0;
+
+    // Driving-demo fake-pointer animation.
+    QTimer *m_demoTimer = nullptr;
+    double m_demoPhase = 0.0;     // advances each tick; drives the lissajous path
+    int m_demoStep = 0;          // frame counter, used to schedule fake clicks
+    bool m_demo = false;         // true while the demo (not a real take-over) drives
 };

@@ -17,6 +17,7 @@
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QFileSystemWatcher>
+#include <QtMath>
 #include <QDebug>
 
 Bridge::Bridge(QObject *parent)
@@ -526,13 +527,83 @@ void Bridge::takeOver(const QString &brain, const QString &model)
 void Bridge::releaseScreen()
 {
     // Tell the daemon to end the take-over; optimistically drop the overlay so the
-    // user is never left with a stuck "JARVIS IS DRIVING" banner if the daemon is
-    // slow to confirm.
+    // user is never left with a stuck banner if the daemon is slow to confirm.
     QVariantMap params;
     if (!m_sessionId.isEmpty())
         params.insert(QStringLiteral("session_id"), m_sessionId);
     request(QStringLiteral("session.set_target"), params);   // best-effort; daemon may ignore
     setDriving(false);
+}
+
+void Bridge::takeOverCancel()
+{
+    // Esc-to-cancel path (docs/TAKEOVER_UX.md). If this is the screenshot/demo
+    // overlay, just stop the demo. Otherwise send control-WS `take_over.cancel`
+    // best-effort and flip `driving` false locally so the overlay drops at once.
+    if (m_demo) {
+        stopDrivingDemo();
+        return;
+    }
+    QVariantMap params;
+    if (!m_sessionId.isEmpty())
+        params.insert(QStringLiteral("session_id"), m_sessionId);
+    // Daemon may not implement this until Wave 5; the unknown_method response is
+    // swallowed in handleResponse() so cancelling never toasts an error.
+    request(QStringLiteral("take_over.cancel"), params);
+    setDriving(false);
+}
+
+// ---- Driving DEMO (screenshot / visual verification) -----------------------
+
+void Bridge::startDrivingDemo()
+{
+    m_demo = true;
+    if (!m_demoTimer) {
+        m_demoTimer = new QTimer(this);
+        m_demoTimer->setInterval(33);   // ~30 fps fake-pointer animation
+        connect(m_demoTimer, &QTimer::timeout, this, &Bridge::tickDrivingDemo);
+    }
+    m_demoPhase = 0.0;
+    m_demoStep = 0;
+    m_demoTimer->start();
+    // Force the overlay visible without a live take-over. setDriving() would also
+    // start the file tail; for the demo we drive the pointer ourselves, so set the
+    // flag directly here (the demo timer is the pointer source).
+    if (!m_driving) {
+        m_driving = true;
+        emit drivingChanged();
+    }
+    tickDrivingDemo();   // emit an initial position immediately
+}
+
+void Bridge::stopDrivingDemo()
+{
+    if (m_demoTimer)
+        m_demoTimer->stop();
+    if (m_demo) {
+        m_demo = false;
+        if (m_driving) {
+            m_driving = false;
+            emit drivingChanged();
+        }
+    }
+}
+
+void Bridge::tickDrivingDemo()
+{
+    // A smooth Lissajous-style sweep across the screen so the glowing cursor
+    // visibly glides and the halo pulse is easy to read in a screenshot.
+    m_demoPhase += 0.045;
+    const double nx = 0.5 + 0.34 * std::sin(m_demoPhase);
+    const double ny = 0.5 + 0.26 * std::sin(m_demoPhase * 1.7 + 0.6);
+
+    // Fire a "click" roughly twice per loop so the click ripple is exercised.
+    QString action = QStringLiteral("move");
+    if (m_demoStep > 0 && (m_demoStep % 60) == 0)
+        action = QStringLiteral("click");
+    ++m_demoStep;
+
+    emit agentPointer(nx, ny, action, QStringLiteral("left"));
 }
 
 void Bridge::setVideoEndpoint(const QString &baseUrl)
@@ -810,7 +881,8 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         if (code == QStringLiteral("unknown_method")
             && (method == QStringLiteral("mirror.start")
                 || method == QStringLiteral("mirror.stop")
-                || method == QStringLiteral("session.set_target"))) {
+                || method == QStringLiteral("session.set_target")
+                || method == QStringLiteral("take_over.cancel"))) {
             return;
         }
         // Memory + skills (Contract A v3) land daemon-side in Wave 6. Until then
