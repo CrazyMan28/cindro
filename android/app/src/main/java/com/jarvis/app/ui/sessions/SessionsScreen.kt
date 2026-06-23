@@ -1,6 +1,6 @@
 package com.jarvis.app.ui.sessions
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,11 +10,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -54,36 +59,71 @@ fun SessionsScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val conn by viewModel.connection.collectAsStateWithLifecycle()
     var showCreate by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
 
     Scaffold(
         containerColor = JarvisPalette.Background,
         topBar = {
-            TopAppBar(
-                title = { Text("Sessions") },
-                actions = {
-                    ConnectionPill(conn)
-                    Spacer(Modifier.height(0.dp))
-                    IconButton(onClick = { viewModel.refresh() }) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
-                    }
-                    IconButton(onClick = onOpenMore) {
-                        Icon(Icons.Filled.MoreHoriz, contentDescription = "More")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = JarvisPalette.Background,
-                    titleContentColor = JarvisPalette.TextPrimary,
-                ),
-            )
+            if (state.selecting) {
+                // Contextual selection action bar: count + delete + close.
+                TopAppBar(
+                    title = { Text("${state.selected.size} selected") },
+                    navigationIcon = {
+                        IconButton(onClick = { viewModel.clearSelection() }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Cancel selection")
+                        }
+                    },
+                    actions = {
+                        if (state.deleting) {
+                            CircularProgressIndicator(
+                                Modifier.size(22.dp).padding(end = 8.dp),
+                                strokeWidth = 2.dp,
+                                color = JarvisPalette.Error,
+                            )
+                        } else {
+                            IconButton(
+                                onClick = { confirmDelete = true },
+                                enabled = state.selected.isNotEmpty(),
+                            ) {
+                                Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = JarvisPalette.Error)
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = JarvisPalette.SurfaceVariant,
+                        titleContentColor = JarvisPalette.TextPrimary,
+                    ),
+                )
+            } else {
+                TopAppBar(
+                    title = { Text("Sessions") },
+                    actions = {
+                        ConnectionPill(conn)
+                        Spacer(Modifier.height(0.dp))
+                        IconButton(onClick = { viewModel.refresh() }) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                        }
+                        IconButton(onClick = onOpenMore) {
+                            Icon(Icons.Filled.MoreHoriz, contentDescription = "More")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = JarvisPalette.Background,
+                        titleContentColor = JarvisPalette.TextPrimary,
+                    ),
+                )
+            }
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { showCreate = true },
-                containerColor = JarvisPalette.Accent,
-                contentColor = JarvisPalette.OnAccent,
-                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                text = { Text("New") },
-            )
+            if (!state.selecting) {
+                ExtendedFloatingActionButton(
+                    onClick = { showCreate = true },
+                    containerColor = JarvisPalette.Accent,
+                    contentColor = JarvisPalette.OnAccent,
+                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    text = { Text("New") },
+                )
+            }
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
@@ -99,11 +139,43 @@ fun SessionsScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     items(state.sessions, key = { it.id }) { session ->
-                        SessionRow(session, onClick = { onOpenSession(session.id) })
+                        SessionRow(
+                            session = session,
+                            selecting = state.selecting,
+                            selected = session.id in state.selected,
+                            onClick = {
+                                if (state.selecting) viewModel.toggleSelection(session.id)
+                                else onOpenSession(session.id)
+                            },
+                            onLongClick = {
+                                if (state.selecting) viewModel.toggleSelection(session.id)
+                                else viewModel.startSelection(session.id)
+                            },
+                        )
                     }
                 }
             }
         }
+    }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            containerColor = JarvisPalette.Surface,
+            title = { Text("Delete sessions?", color = JarvisPalette.TextPrimary) },
+            text = {
+                Text(
+                    "Permanently delete ${state.selected.size} session(s) and their history. This can't be undone.",
+                    color = JarvisPalette.TextSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirmDelete = false; viewModel.deleteSelected() }) {
+                    Text("Delete", color = JarvisPalette.Error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+        )
     }
 
     if (showCreate) {
@@ -120,22 +192,46 @@ fun SessionsScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SessionRow(session: Session, onClick: () -> Unit) {
-    GlowCard(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Column {
-            Text(
-                text = session.displayTitle,
-                style = MaterialTheme.typography.titleMedium,
-                color = JarvisPalette.TextPrimary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(4.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                session.brain?.let { Tag(it) }
-                session.profile?.let { Tag(it) }
-                session.state?.let { Tag(it) }
+private fun SessionRow(
+    session: Session,
+    selecting: Boolean,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    GlowCard(
+        modifier = Modifier.fillMaxWidth().combinedClickable(
+            onClick = onClick,
+            onLongClick = onLongClick,
+        ),
+        accent = selected,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (selecting) {
+                Icon(
+                    imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                    contentDescription = if (selected) "Selected" else "Not selected",
+                    tint = if (selected) JarvisPalette.Accent else JarvisPalette.TextSecondary,
+                    modifier = Modifier.size(22.dp),
+                )
+                Spacer(Modifier.size(12.dp))
+            }
+            Column(Modifier.fillMaxWidth()) {
+                Text(
+                    text = session.displayTitle,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = JarvisPalette.TextPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    session.brain?.let { Tag(it) }
+                    session.profile?.let { Tag(it) }
+                    session.state?.let { Tag(it) }
+                }
             }
         }
     }

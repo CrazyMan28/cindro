@@ -2,6 +2,7 @@ package com.jarvis.app
 
 import android.app.Application
 import com.jarvis.app.crypto.DeviceIdentity
+import com.jarvis.app.data.AppPrefs
 import com.jarvis.app.data.PairingStore
 import com.jarvis.app.data.SecretStore
 import com.jarvis.app.data.VoiceSettings
@@ -32,6 +33,9 @@ class JarvisApp : Application() {
     lateinit var voiceSettings: VoiceSettings
         private set
 
+    lateinit var appPrefs: AppPrefs
+        private set
+
     /** Process-wide TTS player so replies keep playing across screen navigation. */
     val ttsPlayer: TtsPlayer by lazy { TtsPlayer(this) }
 
@@ -43,6 +47,7 @@ class JarvisApp : Application() {
         secretStore = SecretStore(this)
         pairingStore = PairingStore(this)
         voiceSettings = VoiceSettings(this)
+        appPrefs = AppPrefs(this)
         identity = DeviceIdentity.loadOrCreate(secretStore)
         repository = JarvisRepository(identity, pairingStore, secretStore)
         fileReceiver = FileReceiver(this, repository)

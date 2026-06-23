@@ -123,6 +123,11 @@ class JarvisRepository(
         client.request("session.cancel", Params.of("session_id" to sessionId)).orThrow()
     }
 
+    /** Permanently delete a session (daemon cancels/tears it down first, then drops the row). */
+    suspend fun deleteSession(sessionId: String) {
+        client.request("session.delete", Params.of("session_id" to sessionId)).orThrow()
+    }
+
     suspend fun queueTask(text: String, whenAt: Long? = null) {
         client.request("task.queue", Params.of("text" to text, "when" to whenAt)).orThrow()
     }
@@ -342,7 +347,7 @@ class JarvisRepository(
             "memory.list", "memory.search",
             "skills.list", "skills.get", "skills.today" -> Tier.READ
 
-            "session.create", "session.send", "session.cancel",
+            "session.create", "session.send", "session.cancel", "session.delete",
             "task.queue", "push.register", "voice.stt", "voice.tts",
             "plugins.install", "plugins.set_enabled", "plugins.remove",
             "memory.add", "memory.remove",

@@ -9,6 +9,8 @@ sealed interface ChatItem {
         override val id: String,
         val role: String, // "user" | "assistant"
         val text: String,
+        /** True while this assistant reply is still arriving — drives the typewriter reveal. */
+        val streaming: Boolean = false,
     ) : ChatItem
 
     /** Streaming reasoning ("thinking") — shown dimmed, collapsible. */

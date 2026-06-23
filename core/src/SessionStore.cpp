@@ -306,6 +306,38 @@ bool SessionStore::updateThreadId(const QString &id, const QString &threadId)
     return true;
 }
 
+bool SessionStore::deleteSession(const QString &id)
+{
+    // Remove the session row and its event stream. Done in a transaction so a
+    // crash can't leave orphaned events behind.
+    m_db.transaction();
+
+    QSqlQuery delEvents(m_db);
+    delEvents.prepare(QStringLiteral("DELETE FROM events WHERE session_id=?"));
+    delEvents.addBindValue(id);
+    if (!delEvents.exec()) {
+        m_lastError = delEvents.lastError().text();
+        m_db.rollback();
+        return false;
+    }
+
+    QSqlQuery delSession(m_db);
+    delSession.prepare(QStringLiteral("DELETE FROM sessions WHERE id=?"));
+    delSession.addBindValue(id);
+    if (!delSession.exec()) {
+        m_lastError = delSession.lastError().text();
+        m_db.rollback();
+        return false;
+    }
+
+    if (!m_db.commit()) {
+        m_lastError = m_db.lastError().text();
+        m_db.rollback();
+        return false;
+    }
+    return true;
+}
+
 int SessionStore::appendEvent(const QString &sessionId, const NormalizedBrainEvent &ev)
 {
     // Compute next seq for this session.

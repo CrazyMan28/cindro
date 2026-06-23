@@ -135,6 +135,10 @@ public:
     bool sendToSession(const QString &sessionId, const QString &text,
                        const QStringList &images, QString *err);
     bool cancelSession(const QString &sessionId, QString *err);
+    // Permanently delete a session: cancel/tear down its live brain + nested
+    // desktop first, then drop the row + its event stream from the store.
+    // Idempotent w.r.t. a missing row; false only on a store error.
+    bool deleteSession(const QString &sessionId, QString *err);
     bool respondApprovalFor(const QString &sessionId, const QString &approvalId,
                             const QString &decision, QString *err);
 
@@ -173,6 +177,7 @@ private:
     Response handleSessionCreate(const Request &req);
     Response handleSessionSend(const Request &req);
     Response handleSessionCancel(const Request &req);
+    Response handleSessionDelete(const Request &req);
     Response handleSessionList(const Request &req);
     Response handleSessionHistory(const Request &req);
     Response handleApprovalRespond(const Request &req);

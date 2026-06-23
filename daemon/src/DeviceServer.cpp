@@ -303,6 +303,7 @@ QString DeviceServer::tierFor(const QString &method)
     if (method == QStringLiteral("session.create") ||
         method == QStringLiteral("session.send") ||
         method == QStringLiteral("session.cancel") ||
+        method == QStringLiteral("session.delete") ||
         method == QStringLiteral("task.queue") ||
         method == QStringLiteral("push.register") ||
         method == QStringLiteral("memory.add") ||
@@ -351,6 +352,7 @@ QJsonObject DeviceServer::capabilityMap()
     const QStringList methods = {
         QStringLiteral("session.list"),    QStringLiteral("session.create"),
         QStringLiteral("session.send"),    QStringLiteral("session.cancel"),
+        QStringLiteral("session.delete"),
         QStringLiteral("session.history"), QStringLiteral("task.queue"),
         QStringLiteral("task.list"),       QStringLiteral("push.register"),
         QStringLiteral("approval.respond"),
@@ -408,6 +410,8 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         resp = devSessionSend(c, req);
     } else if (m == QStringLiteral("session.cancel")) {
         resp = devSessionCancel(req);
+    } else if (m == QStringLiteral("session.delete")) {
+        resp = devSessionDelete(req);
     } else if (m == QStringLiteral("session.history")) {
         resp = devSessionHistory(req);
     } else if (m == QStringLiteral("task.queue")) {
@@ -554,6 +558,21 @@ Response DeviceServer::devSessionCancel(const Request &req)
     if (!m_control->cancelSession(sessionId, &err))
         return Response::failure(req.id, QStringLiteral("no_session"), err);
     return Response::success(req.id);
+}
+
+Response DeviceServer::devSessionDelete(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    if (sessionId.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("session_id required"));
+    QString err;
+    if (!m_control->deleteSession(sessionId, &err))
+        return Response::failure(req.id, QStringLiteral("session_delete_failed"), err);
+    QJsonObject result;
+    result.insert(QStringLiteral("deleted"), true);
+    result.insert(QStringLiteral("session_id"), sessionId);
+    return Response::success(req.id, result);
 }
 
 Response DeviceServer::devSessionHistory(const Request &req)
