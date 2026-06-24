@@ -295,6 +295,10 @@ public:
         m_voiceModel = model;
     }
     Q_INVOKABLE void resetVoiceSession();
+    // Voice-mode OUTPUT (speaker) selection. audioOutputs() -> [{index,name,isDefault}];
+    // setTtsOutput(index) routes TTS playback to that sink (index < 0 = system default).
+    Q_INVOKABLE QVariantList audioOutputs() const;
+    Q_INVOKABLE void setTtsOutput(int index);
 
     // ---- In-app browser (agent's controlled Chrome via the engine bridge) --
     // The desktop never embeds QtWebEngine; it drives the engine's browser tools
@@ -712,6 +716,7 @@ private:
     // Playback (TTS): one player+output reused across utterances.
     QMediaPlayer *m_ttsPlayer = nullptr;
     QAudioOutput *m_ttsOutput = nullptr;
+    QByteArray m_ttsDeviceId;   // chosen TTS output sink id (empty = system default)
     QString m_ttsTmpPath;              // last decoded TTS file (kept until next play)
     // The dedicated voice session id (coworker/coder), so "what's on my screen"
     // works. Mirrors m_sessionId once created; we (re)use createSession.
