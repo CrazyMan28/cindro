@@ -43,6 +43,14 @@ Verified = unit tests pass, live WS check, and/or exercised on the running daemo
   opening an old session **resumes** it (re-spawns the brain) instead of "inactive session";
   `+ New` clears + drops the session; sessions are a flat, openable, deletable list. Belt-and-
   suspenders QML guard + `Bridge[session]` logging added.
+  - **Stale-history race fixed (the real "+ New shows old chat" bug):** opening a session fires an
+    **async** `session.history` fetch. If `+ New` (or opening another session) changed the current
+    session while that fetch was in flight, the late reply replayed the *old* session's events into
+    a chat that no longer owned it — leaving content on screen with no live session (the exact
+    "chat full of content + 'Type to start a session…'" screenshot). Now guarded at **both** layers:
+    `Bridge::handleResponse` drops a `session.history` reply whose id `!= m_sessionId`
+    (`DROP stale session.history` log), and `JarvisPanel.onSessionHistory` returns early unless
+    `sessionId === bridge.sessionId`. Builds clean, 16/16 ctest incl. `gui_selftest`.
 - **Voice orb animation:** smooth "breathing" while thinking/speaking + a soft mic-level swell
   while listening (replaced the abrupt size-jump).
 - **Voice mode:** hands-free (no hold-to-talk) capture via **pw-record** (the path that

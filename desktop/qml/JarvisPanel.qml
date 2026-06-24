@@ -194,14 +194,18 @@ Item {
 
         // Opening a stored session from the Sessions page: clear + replay.
         function onSessionOpened(sessionId) {
-            console.log("Jarvis[session]: onSessionOpened ->", sessionId)
             chatModel.clear()
             chatWidgets.clear()
             panel.thinking = false
             panel.busy = false
         }
         function onSessionHistory(sessionId, events) {
-            console.log("Jarvis[session]: onSessionHistory ->", sessionId, "replaying", events.length, "events")
+            // Guard against a stale async reply: if + New (or opening another
+            // session) changed the current session while this history fetch was
+            // in flight, replaying it would paint the old session's content into
+            // a chat that no longer owns it. Only replay for the CURRENT session.
+            if (sessionId !== bridge.sessionId)
+                return
             chatModel.clear()
             panel.busy = false
             // History replay: full text immediately (live=false => no typewriter).
@@ -320,7 +324,7 @@ Item {
             Widgets.PillButton {
                 label: "+ New"
                 Layout.alignment: Qt.AlignVCenter
-                onClicked: { console.log("Jarvis[+New]: button clicked"); panel.startNewChat() }
+                onClicked: panel.startNewChat()
             }
 
             // TTS read-back toggle (speaker icon)
@@ -991,7 +995,6 @@ Item {
     // bridge.newSession() clears Bridge::m_sessionId without a daemon round-trip,
     // reproducing the "no current session yet" state the composer relies on.
     function startNewChat() {
-        console.log("Jarvis[+New]: startNewChat — clearing", chatModel.count, "rows; sid was", bridge.sessionId)
         bridge.newSession()
         chatModel.clear()
         chatWidgets.clear()
@@ -999,6 +1002,5 @@ Item {
         panel.thinking = false
         inputArea.text = ""
         inputArea.forceActiveFocus()
-        console.log("Jarvis[+New]: after clear — rows now", chatModel.count)
     }
 }

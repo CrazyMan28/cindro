@@ -2393,8 +2393,17 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                                 ? result.value(QStringLiteral("session")).toMap()
                                       .value(QStringLiteral("id")).toString()
                                 : ctx;
-        emit sessionHistory(sid, events);
         m_openingSession = false;
+        // Drop a stale history reply: if the user already moved on (+ New cleared
+        // m_sessionId, or opened a different session) while this async fetch was in
+        // flight, replaying it would paint the old session's content into a chat
+        // that no longer belongs to it. Only replay history for the CURRENT session.
+        if (sid != m_sessionId) {
+            qInfo("Bridge[session]: DROP stale session.history for %s (current=%s)",
+                  qPrintable(sid), qPrintable(m_sessionId));
+            return;
+        }
+        emit sessionHistory(sid, events);
     } else if (method == QStringLiteral("memory.list")) {
         emit memoriesListed(result.value(QStringLiteral("memories")).toList(), false);
     } else if (method == QStringLiteral("memory.search")) {
