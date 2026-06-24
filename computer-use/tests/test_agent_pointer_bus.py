@@ -76,14 +76,29 @@ def test_agent_drag_emits_down_drag_up(bus_file, fake_agent_input):
     assert kinds[-1] == "up"
 
 
-def test_active_path_does_not_touch_bus(bus_file, monkeypatch):
-    """The real (active) path must NOT write to the agent bus — regression guard
-    that the default behavior is unchanged."""
+def test_active_path_publishes_global_real_event(bus_file, monkeypatch):
+    """The real (active/take-over) path publishes the GLOBAL desktop position to
+    the bus tagged session="real", so the distinct-cursor overlay (one layer-shell
+    surface per monitor) can draw the glowing cursor tracking the agent. It must
+    still drive the real screen via _emit_abs."""
+    emitted = []
     monkeypatch.setattr(inp.screen, "map_to_desktop",
                         lambda x, y, cs="image", which="active": (int(x), int(y)))
-    monkeypatch.setattr(inp, "_emit_abs", lambda gx, gy: None)
-    inp.move(5, 5, coord_space="desktop", which="active")
-    assert not bus_file.exists() or bus_file.read_text() == ""
+    # Force the stock-KWin (shared-seat uinput) path so we exercise _emit_abs.
+    # On the forked multi-seat KWin, move() drives jarvis_seat instead; here we
+    # pin the fallback so the real-screen-driving contract is deterministic.
+    monkeypatch.setattr(inp.jarvis_seat, "available", lambda: False)
+    monkeypatch.setattr(inp, "_emit_abs", lambda gx, gy: emitted.append((gx, gy)))
+    inp.move(5, 7, coord_space="desktop", which="active")
+    # Real screen was driven...
+    assert emitted == [(5, 7)]
+    # ...and the global position was published for the overlay.
+    evs = _lines(bus_file)
+    assert len(evs) == 1
+    ev = evs[0]
+    assert ev["x"] == 5 and ev["y"] == 7
+    assert ev["kind"] == "move"
+    assert ev["session"] == "real"
 
 
 def test_publish_returns_event_and_survives_bad_subscriber(bus_file):

@@ -53,7 +53,7 @@ public:
     // Build the `claude` argv for a one-shot `-p` turn. Public so a ctest can
     // assert the prompt is an isolated trailing positional after `--` (guards the
     // prior --add-dir regression where the variadic flag swallowed the prompt).
-    QStringList buildArgs(const QString &prompt) const;
+    QStringList buildArgs(const QString &prompt, const QStringList &images = {}) const;
 
 private slots:
     void onReadyReadStdout();
@@ -72,6 +72,11 @@ private:
     bool m_busy = false;
     bool m_sawFinal = false; // saw the terminal result -> final
     QString m_mcpConfigPath;  // temp file holding mcpConfigJson (cleaned per turn)
+    // Conversation continuity: a fixed session UUID set on the first turn via
+    // --session-id, then --resume'd on every later turn so the model KEEPS the
+    // whole conversation instead of starting cold each message.
+    QString m_claudeSessionId;
+    bool m_started = false;
 };
 
 } // namespace jarvis

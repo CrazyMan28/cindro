@@ -71,6 +71,22 @@ class ContractCTest {
     }
 
     @Test
+    fun decodesSessionOpenedEvent() {
+        val frame = obj(
+            """{"v":1,"event":"session.opened","data":{"session_id":"sess_42",
+               "title":"Untitled session"}}""",
+        )
+        val so = SessionOpenedEvent.from(frame)!!
+        assertEquals("sess_42", so.opened.sessionId)
+        assertEquals("Untitled session", so.opened.title)
+    }
+
+    @Test
+    fun sessionOpenedIgnoresOtherEvents() {
+        assertNull(SessionOpenedEvent.from(obj("""{"v":1,"event":"file.offer","data":{}}""")))
+    }
+
+    @Test
     fun parsesModelList() {
         val m = ModelInfo.from(obj("""{"id":"mistral-large-latest","label":"Mistral Large","brain":"api"}"""))
         assertEquals("mistral-large-latest", m.id)

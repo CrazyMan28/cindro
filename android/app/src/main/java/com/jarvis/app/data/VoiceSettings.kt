@@ -15,9 +15,10 @@ class VoiceSettings(context: Context) {
         get() = prefs.getBoolean(KEY_WAKE, false)
         set(value) = prefs.edit().putBoolean(KEY_WAKE, value).apply()
 
-    /** Speak assistant replies aloud via voice.tts after each turn. */
+    /** Speak assistant replies aloud via voice.tts after each turn. Default OFF —
+     *  the chat stays quiet unless the user explicitly turns "Speak replies" on. */
     var readBackEnabled: Boolean
-        get() = prefs.getBoolean(KEY_READBACK, true)
+        get() = prefs.getBoolean(KEY_READBACK, false)
         set(value) = prefs.edit().putBoolean(KEY_READBACK, value).apply()
 
     /** Mistral Voxtral TTS voice id (blank => daemon default). */

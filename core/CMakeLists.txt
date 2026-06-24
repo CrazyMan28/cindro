@@ -28,6 +28,7 @@ add_library(jarvis-core STATIC
     src/SessionStore.cpp
     src/SettingsStore.cpp
     src/McpRegistry.cpp
+    src/Connectors.cpp
     src/PluginRegistry.cpp
     src/PluginSigner.cpp
     src/PluginSandbox.cpp
@@ -40,9 +41,11 @@ add_library(jarvis-core STATIC
     src/SkillStore.cpp
     src/DeviceRegistry.cpp
     src/PairingManager.cpp
+    src/AuthChallengeStore.cpp
     src/FcmSender.cpp
     src/AgentDesktop.cpp
     src/VoiceService.cpp
+    src/VoiceProvider.cpp
     # Wave 8 co-worker ops backend: scheduler (cron/at), SSH allow-list, audit
     # log + prompt-injection gate, desktop notifications.
     src/Scheduler.cpp
@@ -57,6 +60,7 @@ add_library(jarvis-core STATIC
     include/jarvis/SessionStore.h
     include/jarvis/SettingsStore.h
     include/jarvis/McpRegistry.h
+    include/jarvis/Connectors.h
     include/jarvis/PluginRegistry.h
     include/jarvis/PluginSigner.h
     include/jarvis/PluginSandbox.h
@@ -70,9 +74,11 @@ add_library(jarvis-core STATIC
     include/jarvis/SkillStore.h
     include/jarvis/DeviceRegistry.h
     include/jarvis/PairingManager.h
+    include/jarvis/AuthChallengeStore.h
     include/jarvis/FcmSender.h
     include/jarvis/AgentDesktop.h
     include/jarvis/VoiceService.h
+    include/jarvis/VoiceProvider.h
     include/jarvis/Scheduler.h
     include/jarvis/SshAllowList.h
     include/jarvis/AuditLog.h
@@ -123,6 +129,15 @@ target_link_libraries(device_registry_test
 
 add_test(NAME device_registry_test COMMAND device_registry_test)
 
+# 2FA + fingerprint cross-device unlock core: AuthChallengeStore lifecycle
+# (create -> pending; approve -> approved + single-use; ttl expiry; deny;
+# unknown id reports "expired"). Pure logic, no sockets. Links libsodium for the
+# randombytes id mint.
+add_executable(auth_challenge_test tests/auth_challenge_test.cpp)
+target_link_libraries(auth_challenge_test
+    PRIVATE jarvis-core Qt6::Core PkgConfig::SODIUM)
+add_test(NAME auth_challenge_test COMMAND auth_challenge_test)
+
 # Wave 5 intelligence backend tests.
 # ClaudeBrain parser: captured `claude --output-format stream-json` sample +
 # synthetic tool turn -> Contract B normalized sequence.
@@ -160,12 +175,34 @@ add_executable(skill_store_test tests/skill_store_test.cpp)
 target_link_libraries(skill_store_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME skill_store_test COMMAND skill_store_test)
 
+# VoiceProvider: provider enumeration always includes voxtral(available); a local
+# provider with no binary/model gracefully falls back to voxtral (no crash); and
+# SettingsStore round-trips stt_provider/tts_provider through saveConfig->load
+# against a QTemporaryDir HOME (with bad values normalized to "voxtral").
+add_executable(voice_provider_test tests/voice_provider_test.cpp)
+target_link_libraries(voice_provider_test PRIVATE jarvis-core Qt6::Core Qt6::Network)
+add_test(NAME voice_provider_test COMMAND voice_provider_test)
+
+# SettingsStore: auth-lock is ON by default (no-brick) on a FRESH config; the
+# default + an explicit user OFF round-trip through saveConfig->load against a
+# QTemporaryDir HOME (a config missing the key still reads ON).
+add_executable(settings_store_test tests/settings_store_test.cpp)
+target_link_libraries(settings_store_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME settings_store_test COMMAND settings_store_test)
+
 # Wave 8 co-worker ops backend tests.
 # Scheduler: cron / "every Nm" / "at HH:MM" next-run calculation + a temp-DB
 # create/tick fire roundtrip.
 add_executable(scheduler_test tests/scheduler_test.cpp)
 target_link_libraries(scheduler_test PRIVATE jarvis-core Qt6::Core Qt6::Sql)
 add_test(NAME scheduler_test COMMAND scheduler_test)
+
+# Google connectors framework: a connector row (stdio, disabled, env JSON) is
+# stored + listed with name "google-calendar", enabled==false, env round-trips,
+# and toJson() omits env/token. Pure store-level proof (mirrors memory_store_test).
+add_executable(connectors_test tests/connectors_test.cpp)
+target_link_libraries(connectors_test PRIVATE jarvis-core Qt6::Core Qt6::Sql)
+add_test(NAME connectors_test COMMAND connectors_test)
 
 # SshAllowList: a non-allow-listed host is rejected with host_not_allowed and
 # ssh is never spawned; allow_add/remove persistence roundtrip.

@@ -127,6 +127,28 @@ data class McpServer(
     }
 }
 
+/**
+ * A per-brain CLI MCP server (from mcp.cli_list). These are the codex/claude CLI's
+ * OWN MCP servers (codex's ~/.codex/config.toml, claude's ~/.claude.json). By default
+ * the brains run ISOLATED and do NOT load them; [enabled] reflects whether it's been
+ * imported into the Jarvis registry (as "cli:<brain>:<name>").
+ */
+data class CliMcp(
+    val brain: String,
+    val name: String,
+    val transport: String,
+    val enabled: Boolean,
+) {
+    companion object {
+        fun from(o: JsonObject): CliMcp = CliMcp(
+            brain = o.get("brain")?.takeIf { !it.isJsonNull }?.asString.orEmpty(),
+            name = o.get("name")?.takeIf { !it.isJsonNull }?.asString.orEmpty(),
+            transport = o.get("transport")?.takeIf { !it.isJsonNull }?.asString ?: "stdio",
+            enabled = o.get("enabled")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
+        )
+    }
+}
+
 /** A plugin from plugins.catalog / plugins.list. */
 data class Plugin(
     val id: String,
@@ -164,6 +186,7 @@ data class MemoryEntry(
                 ?: o.get("text")?.takeIf { !it.isJsonNull }?.asString.orEmpty(),
             target = o.get("target")?.takeIf { !it.isJsonNull }?.asString,
             createdAt = o.get("created_at")?.takeIf { !it.isJsonNull }?.asLong
+                ?: o.get("created")?.takeIf { !it.isJsonNull }?.asLong
                 ?: o.get("ts")?.takeIf { !it.isJsonNull }?.asLong,
         )
     }
@@ -190,6 +213,23 @@ data class Skill(
             } ?: emptyList(),
             body = o.get("body")?.takeIf { !it.isJsonNull }?.asString,
         )
+
+        /**
+         * Build a [Skill] from the skills.get result shape:
+         * `{frontmatter:{name,description,tags}, body, path}` (no "skill" wrapper).
+         */
+        fun fromGet(result: JsonObject): Skill {
+            val fm = result.getAsJsonObject("frontmatter") ?: JsonObject()
+            return Skill(
+                name = fm.get("name")?.takeIf { !it.isJsonNull }?.asString.orEmpty(),
+                group = fm.get("group")?.takeIf { !it.isJsonNull }?.asString,
+                description = fm.get("description")?.takeIf { !it.isJsonNull }?.asString,
+                tags = fm.getAsJsonArray("tags")?.mapNotNull {
+                    it.takeIf { t -> t.isJsonPrimitive }?.asString
+                } ?: emptyList(),
+                body = result.get("body")?.takeIf { !it.isJsonNull }?.asString,
+            )
+        }
     }
 }
 
@@ -220,6 +260,16 @@ data class FileOffer(
             size = o.get("size")?.takeIf { !it.isJsonNull }?.asLong,
             sessionId = o.get("session_id")?.takeIf { !it.isJsonNull }?.asString,
             b64 = o.get("b64")?.takeIf { !it.isJsonNull }?.asString,
+        )
+    }
+}
+
+/** A session.opened event payload: a new session was created (any surface). */
+data class SessionOpened(val sessionId: String, val title: String?) {
+    companion object {
+        fun from(o: JsonObject): SessionOpened = SessionOpened(
+            sessionId = o.get("session_id")?.asString.orEmpty(),
+            title = o.get("title")?.takeIf { !it.isJsonNull }?.asString,
         )
     }
 }

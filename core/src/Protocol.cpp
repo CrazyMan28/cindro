@@ -109,6 +109,7 @@ QString NormalizedBrainEvent::kindToString(Kind k)
     case Kind::Usage:         return QStringLiteral("usage");
     case Kind::Final:         return QStringLiteral("final");
     case Kind::Error:         return QStringLiteral("error");
+    case Kind::DrivingState:  return QStringLiteral("driving.state");
     case Kind::Unknown:       break;
     }
     return QStringLiteral("unknown");
@@ -127,6 +128,7 @@ NormalizedBrainEvent::Kind NormalizedBrainEvent::kindFromString(const QString &s
     if (s == QStringLiteral("usage"))           return Kind::Usage;
     if (s == QStringLiteral("final"))           return Kind::Final;
     if (s == QStringLiteral("error"))           return Kind::Error;
+    if (s == QStringLiteral("driving.state"))   return Kind::DrivingState;
     return Kind::Unknown;
 }
 
@@ -226,6 +228,13 @@ NormalizedBrainEvent NormalizedBrainEvent::error(const QString &message)
     QJsonObject f;
     f.insert(QStringLiteral("message"), message);
     return NormalizedBrainEvent(Kind::Error, f);
+}
+
+NormalizedBrainEvent NormalizedBrainEvent::drivingState(bool active)
+{
+    QJsonObject f;
+    f.insert(QStringLiteral("active"), active);
+    return NormalizedBrainEvent(Kind::DrivingState, f);
 }
 
 // ---------------------------------------------------------------------------

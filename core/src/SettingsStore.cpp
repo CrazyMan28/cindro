@@ -43,8 +43,16 @@ void SettingsStore::load()
 
     // theme round-trips as `theme_json = '<compact json>'` in config.toml.
     // let_jarvis_use_computer round-trips as a bare `true`/`false` flat key
-    // (default true when absent).
+    // (default true when absent). auth_lock_enabled defaults ON (no-brick: lock
+    // the desktop on launch; the daemon fail-opens when no approver is reachable)
+    // so it must default true here too — the parse below only flips it OFF on an
+    // explicit `false`/`0`, matching let_jarvis_use_computer. tts_voice
+    // round-trips as `tts_voice = "..."` (empty when absent).
     m_letJarvisUseComputer = true;
+    m_authLockEnabled = true;
+    m_ttsVoice.clear();
+    m_sttProvider = QStringLiteral("voxtral");
+    m_ttsProvider = QStringLiteral("voxtral");
     m_theme = QJsonObject();
     {
         QFile f(Config::configFilePath());
@@ -59,6 +67,53 @@ void SettingsStore::load()
                         const QString v = line.mid(eq + 1).trimmed().toLower();
                         m_letJarvisUseComputer =
                             !(v == QStringLiteral("false") || v == QStringLiteral("0"));
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("auth_lock_enabled"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        const QString v = line.mid(eq + 1).trimmed().toLower();
+                        // Default ON (no-brick); only an explicit false/0 turns it
+                        // OFF (mirrors let_jarvis_use_computer above).
+                        m_authLockEnabled =
+                            !(v == QStringLiteral("false") || v == QStringLiteral("0"));
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("tts_voice"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        QString v = line.mid(eq + 1).trimmed();
+                        if (v.size() >= 2 &&
+                            ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
+                             (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
+                            v = v.mid(1, v.size() - 2);
+                        m_ttsVoice = v;
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("stt_provider"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        QString v = line.mid(eq + 1).trimmed();
+                        if (v.size() >= 2 &&
+                            ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
+                             (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
+                            v = v.mid(1, v.size() - 2);
+                        setSttProvider(v); // normalizes unknown -> voxtral
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("tts_provider"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        QString v = line.mid(eq + 1).trimmed();
+                        if (v.size() >= 2 &&
+                            ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
+                             (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
+                            v = v.mid(1, v.size() - 2);
+                        setTtsProvider(v); // normalizes unknown -> voxtral
                     }
                     continue;
                 }
@@ -142,6 +197,10 @@ bool SettingsStore::saveConfig()
                     t.startsWith(QStringLiteral("default_model")) ||
                     t.startsWith(QStringLiteral("claude_account")) ||
                     t.startsWith(QStringLiteral("let_jarvis_use_computer")) ||
+                    t.startsWith(QStringLiteral("auth_lock_enabled")) ||
+                    t.startsWith(QStringLiteral("tts_voice")) ||
+                    t.startsWith(QStringLiteral("stt_provider")) ||
+                    t.startsWith(QStringLiteral("tts_provider")) ||
                     t.startsWith(QStringLiteral("theme_json")))
                     continue;
                 preserved << raw;
@@ -155,6 +214,11 @@ bool SettingsStore::saveConfig()
     ts << "default_model = \"" << m_defaultModel << "\"\n";
     ts << "claude_account = \"" << m_claudeAccount << "\"\n";
     ts << "let_jarvis_use_computer = " << (m_letJarvisUseComputer ? "true" : "false") << "\n";
+    ts << "auth_lock_enabled = " << (m_authLockEnabled ? "true" : "false") << "\n";
+    if (!m_ttsVoice.isEmpty())
+        ts << "tts_voice = \"" << m_ttsVoice << "\"\n";
+    ts << "stt_provider = \"" << m_sttProvider << "\"\n";
+    ts << "tts_provider = \"" << m_ttsProvider << "\"\n";
     if (!m_theme.isEmpty()) {
         const QByteArray tj = QJsonDocument(m_theme).toJson(QJsonDocument::Compact);
         ts << "theme_json = '" << QString::fromUtf8(tj) << "'\n";

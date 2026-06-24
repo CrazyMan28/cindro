@@ -23,10 +23,23 @@ Item {
     anchors.fill: parent
     focus: true
 
-    // Last agent pointer, normalized [0,1] -> pixel position on this surface.
+    // This overlay's monitor, in GLOBAL virtual-desktop pixels (set by Main.qml
+    // from the screen model). Used to map the agent's global pointer into a local
+    // position and to CULL events that belong to a different monitor.
+    property real screenX: 0
+    property real screenY: 0
+    property real screenW: width
+    property real screenH: height
+
+    // Last agent pointer, normalized [0,1] -> pixel position on THIS surface.
     property real px: 0.5
     property real py: 0.5
     property string lastAction: "move"
+    // Codex-style azure blue for the driving HUD (matches the GlowCursor).
+    readonly property color driveBlue: "#3D8BFF"
+    // The agent cursor is only drawn on the monitor the pointer is currently over
+    // (multi-monitor: one overlay per output, but the cursor exists on one).
+    property bool onThisScreen: false
 
     // Cancel the take-over: tell the daemon AND drop the overlay locally so the
     // user is never stuck under a banner. bridge.takeOverCancel() flips driving
@@ -46,12 +59,20 @@ Item {
 
     Connections {
         target: bridge
-        function onAgentPointer(nx, ny, action, button) {
-            overlay.px = Math.max(0, Math.min(1, nx))
-            overlay.py = Math.max(0, Math.min(1, ny))
+        // GLOBAL desktop pixels: map into THIS monitor's local space and only show
+        // the cursor here when the point actually falls on this output.
+        function onAgentPointerGlobal(gx, gy, action, button) {
+            var lx = gx - overlay.screenX
+            var ly = gy - overlay.screenY
+            var here = lx >= 0 && lx < overlay.screenW && ly >= 0 && ly < overlay.screenH
+            overlay.onThisScreen = here
+            if (!here)
+                return
+            overlay.px = overlay.screenW > 0 ? lx / overlay.screenW : 0.5
+            overlay.py = overlay.screenH > 0 ? ly / overlay.screenH : 0.5
             overlay.lastAction = action
             if (action === "click" || action === "drag" || action === "down") {
-                clickRing.restart()
+                cursor.flash(action)
             }
         }
         // Re-assert keyboard focus whenever the overlay arms, so Esc lands here.
@@ -84,7 +105,7 @@ Item {
             radius: pillBg.radius
             color: "transparent"
             border.width: 1
-            border.color: Theme.accent
+            border.color: overlay.driveBlue
             opacity: 0.55
             layer.enabled: true
             layer.effect: MultiEffect {
@@ -93,7 +114,7 @@ Item {
                 blurMax: 28
                 brightness: 0.18
                 colorization: 1.0
-                colorizationColor: Theme.accent
+                colorizationColor: overlay.driveBlue
             }
             // gentle breathing on the glow so the banner reads as "live"
             SequentialAnimation on opacity {
@@ -111,7 +132,16 @@ Item {
             // near-black pill, ~#0A0E16 @ 0.92
             color: Qt.rgba(0.039, 0.055, 0.086, 0.92)
             border.width: 1
-            border.color: Theme.accent     // 1px cyan hairline
+            border.color: overlay.driveBlue   // 1px azure-blue hairline (matches cursor)
+
+            // The banner is the overlay's ONLY clickable region (C++ masks input to
+            // this top band). Clicking it stops the take-over; it also takes
+            // keyboard focus so Esc works right after.
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: { overlay.forceActiveFocus(); overlay.cancel() }
+            }
 
             Row {
                 id: pillRow
@@ -124,7 +154,7 @@ Item {
                     anchors.verticalCenter: parent.verticalCenter
                     onPaint: {
                         var ctx = getContext("2d"); ctx.reset()
-                        ctx.fillStyle = Theme.accentBright
+                        ctx.fillStyle = overlay.driveBlue
                         ctx.beginPath()
                         ctx.moveTo(9, 1); ctx.lineTo(1.5, 11); ctx.lineTo(6, 11)
                         ctx.lineTo(5, 19); ctx.lineTo(12.5, 8); ctx.lineTo(8, 8)
@@ -148,12 +178,14 @@ Item {
                     font.family: Theme.fontSans
                     font.pixelSize: 16
                 }
-                // dimmed "Esc to cancel"
+                // dimmed cancel hint — the banner is the ONLY clickable part of the
+                // overlay (rest is click-through); click it (or Esc once it's
+                // focused) to stop the take-over.
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "Esc to cancel"
+                    text: "click or Esc to stop"
                     color: Theme.textMuted
-                    opacity: 0.7
+                    opacity: 0.85
                     font.family: Theme.fontSans
                     font.pixelSize: 14
                     font.weight: Font.Normal
@@ -163,108 +195,20 @@ Item {
     }
 
     // ======================================================================
-    //  GLOWING AGENT CURSOR  —  cyan radial halo + distinct Jarvis arrow
+    //  GLOWING AGENT CURSOR  —  big, unmistakable cyan pointer (shared component).
+    //  Shown only on the monitor the agent pointer is currently over.
     // ======================================================================
-    Item {
+    GlowCursor {
         id: cursor
-        width: 64
-        height: 64
-        // hotspot (arrow tip) sits at the agent pointer; the Item is centered on
-        // the halo, and the arrow's tip is offset to the halo center.
+        diameter: 128                      // BIG, unmistakable blue glow (user wants it large)
+        glow: overlay.driveBlue
+        active: overlay.onThisScreen
+        lastAction: overlay.lastAction
+        // center the hotspot on the agent pointer
         x: overlay.px * overlay.width - width / 2
         y: overlay.py * overlay.height - height / 2
         // LERP toward each new agent position so the cursor glides, not jumps.
         Behavior on x { NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
         Behavior on y { NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
-
-        // soft cyan radial GLOW halo (~40px, ~40% opacity, blurred), subtly pulsing
-        Rectangle {
-            id: halo
-            anchors.centerIn: parent
-            width: 40
-            height: 40
-            radius: 20
-            color: Theme.accent
-            opacity: 0.40
-            layer.enabled: true
-            layer.effect: MultiEffect {
-                blurEnabled: true
-                blur: 1.0
-                blurMax: 40
-                brightness: 0.25
-            }
-            // subtle pulse so the agent cursor is easy to follow
-            SequentialAnimation on scale {
-                loops: Animation.Infinite
-                NumberAnimation { from: 0.82; to: 1.18; duration: 900; easing.type: Easing.InOutSine }
-                NumberAnimation { from: 1.18; to: 0.82; duration: 900; easing.type: Easing.InOutSine }
-            }
-            SequentialAnimation on opacity {
-                loops: Animation.Infinite
-                NumberAnimation { from: 0.30; to: 0.48; duration: 900; easing.type: Easing.InOutSine }
-                NumberAnimation { from: 0.48; to: 0.30; duration: 900; easing.type: Easing.InOutSine }
-            }
-        }
-
-        // the crisp Jarvis arrow sprite — clearly NOT the OS cursor: a cyan-filled
-        // arrow with a bright hot edge, tip centered on the halo.
-        Canvas {
-            id: cursorArrow
-            // place the arrow tip (its 0,0) at the halo center
-            x: parent.width / 2
-            y: parent.height / 2
-            width: 26
-            height: 30
-            onPaint: {
-                var ctx = getContext("2d"); ctx.reset()
-                ctx.beginPath()
-                ctx.moveTo(0, 0)
-                ctx.lineTo(0, 20)
-                ctx.lineTo(5.5, 15)
-                ctx.lineTo(9, 23)
-                ctx.lineTo(13, 21)
-                ctx.lineTo(9.5, 13.5)
-                ctx.lineTo(17, 13)
-                ctx.closePath()
-                // cyan body
-                ctx.fillStyle = Theme.accent
-                ctx.fill()
-                // bright hot edge so it pops on any wallpaper
-                ctx.lineWidth = 1.4
-                ctx.lineJoin = "round"
-                ctx.strokeStyle = Theme.accentBright
-                ctx.stroke()
-            }
-            // dark inner contour for contrast on light backgrounds
-            layer.enabled: true
-            layer.effect: MultiEffect {
-                shadowEnabled: true
-                shadowColor: Qt.rgba(0, 0, 0, 0.6)
-                shadowBlur: 0.6
-                shadowVerticalOffset: 1
-                shadowHorizontalOffset: 1
-            }
-        }
-    }
-
-    // ======================================================================
-    //  CLICK / DRAG RIPPLE  —  fired at the cursor on a click/drag action
-    // ======================================================================
-    Rectangle {
-        id: clickRingRect
-        width: 14; height: 14; radius: 7
-        color: "transparent"
-        border.width: 2
-        border.color: overlay.lastAction === "drag" ? Theme.amber : Theme.accentBright
-        x: overlay.px * overlay.width - width / 2
-        y: overlay.py * overlay.height - height / 2
-        visible: clickRing.running
-        SequentialAnimation {
-            id: clickRing
-            ParallelAnimation {
-                NumberAnimation { target: clickRingRect; property: "scale"; from: 0.5; to: 3.4; duration: 440; easing.type: Easing.OutCubic }
-                NumberAnimation { target: clickRingRect; property: "opacity"; from: 0.9; to: 0.0; duration: 440; easing.type: Easing.OutCubic }
-            }
-        }
     }
 }

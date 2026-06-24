@@ -12,6 +12,8 @@
     #status { margin-top: 1rem; padding: 0.5rem 0.75rem; border-radius: 6px; background: #11141a; }
     .ok { color: #4ade80; } .bad { color: #f87171; }
     code { background: #11141a; padding: 0.1rem 0.3rem; border-radius: 4px; }
+    h2 { font-size: 0.95rem; margin: 1.75rem 0 0; padding-top: 1.25rem; border-top: 1px solid #2a2f38; }
+    .hint { color: #8aa; font-size: 0.8rem; margin: 0.35rem 0 0; }
   </style>
 </head>
 <body>
@@ -22,6 +24,16 @@
   <input id="port" type="number" value="8794">
   <label for="token">Bearer token</label>
   <input id="token" type="password" placeholder="paste bearer_token here">
+
+  <h2>Jarvis co-worker side panel</h2>
+  <p class="hint">The side panel chat connects to the desktop daemon's control
+     WebSocket. Token is in <code>~/.config/jarvis/control_token</code> on this
+     machine (the desktop daemon's control token).</p>
+  <label for="controlPort">Jarvis control port</label>
+  <input id="controlPort" type="number" value="8795">
+  <label for="controlToken">Jarvis control token</label>
+  <input id="controlToken" type="password" placeholder="paste control_token here">
+
   <button id="save">Save &amp; Connect</button>
   <div id="status">…</div>
   <script src="options.js"></script>

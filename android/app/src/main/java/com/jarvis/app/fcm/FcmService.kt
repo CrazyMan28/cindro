@@ -29,9 +29,13 @@ class FcmService : FirebaseMessagingService() {
         val title = data["title"] ?: message.notification?.title ?: "Jarvis"
         val body = data["body"] ?: message.notification?.body ?: ""
         val sessionId = data["session_id"] ?: data["sessionId"]
+        // 2FA + fingerprint cross-device unlock: an "auth" push carries the
+        // challenge id; tapping the notification opens the Approve screen which
+        // runs BiometricPrompt then calls auth.approve over the device WS.
+        val challengeId = data["challenge_id"] ?: data["challengeId"]
 
-        Log.d(TAG, "push kind=$kind session=$sessionId")
-        JarvisNotifier.notify(applicationContext, kind, title, body, sessionId)
+        Log.d(TAG, "push kind=$kind session=$sessionId challenge=$challengeId")
+        JarvisNotifier.notify(applicationContext, kind, title, body, sessionId, challengeId)
     }
 
     companion object {

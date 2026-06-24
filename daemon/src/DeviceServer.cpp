@@ -101,6 +101,9 @@ bool DeviceServer::start()
         // device->phone file push -> 'file.offer' event to phones.
         connect(m_control, &ControlServer::filePushed,
                 this, &DeviceServer::onFilePushed);
+        // new session (any surface) -> 'session.opened' event + FCM to phones.
+        connect(m_control, &ControlServer::sessionOpened,
+                this, &DeviceServer::onSessionOpened);
     }
 
     return localOk || m_tailnet != nullptr;
@@ -342,7 +345,11 @@ QString DeviceServer::tierFor(const QString &method)
         // Wave 8: a scheduled job runs unattended, and ssh.exec runs a remote
         // command — both are biometric-tier on the phone.
         method == QStringLiteral("schedule.create") ||
-        method == QStringLiteral("ssh.exec"))
+        method == QStringLiteral("ssh.exec") ||
+        // 2FA unlock: approving (or denying) a desktop sign-in REQUIRES a fresh
+        // BiometricPrompt on the phone (the second factor) before it reaches here.
+        method == QStringLiteral("auth.approve") ||
+        method == QStringLiteral("auth.deny"))
         return QStringLiteral("biometric");
     return QStringLiteral("action");
 }
@@ -381,6 +388,9 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("devices.pair_start"), QStringLiteral("devices.list"),
         QStringLiteral("devices.revoke"),  QStringLiteral("agent_desktop.info"),
         QStringLiteral("take_over.request"),
+        // 2FA + fingerprint cross-device unlock: the phone approves/denies a
+        // desktop sign-in after a fresh BiometricPrompt (biometric tier).
+        QStringLiteral("auth.approve"),    QStringLiteral("auth.deny"),
         // Voice (Mistral Voxtral, laptop-proxied) + device->phone file push.
         QStringLiteral("voice.stt"),       QStringLiteral("voice.tts"),
         QStringLiteral("file.push"),       QStringLiteral("file.get"),
@@ -422,6 +432,12 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         resp = devPushRegister(c, req);
     } else if (m == QStringLiteral("approval.respond")) {
         resp = devApprovalRespond(req);
+    } else if (m == QStringLiteral("auth.approve")) {
+        // 2FA unlock: the phone passed BiometricPrompt (biometric tier) and is
+        // authed over the device WS (possession). Approve the unlock challenge.
+        resp = devAuthApprove(c, req);
+    } else if (m == QStringLiteral("auth.deny")) {
+        resp = devAuthDeny(req);
     } else if (m == QStringLiteral("mirror.start")) {
         resp = devMirrorStart(c, client, req);
     } else if (m == QStringLiteral("mirror.stop")) {
@@ -666,6 +682,31 @@ Response DeviceServer::devApprovalRespond(const Request &req)
     if (!m_control->respondApprovalFor(sessionId, approvalId, decision, &err))
         return Response::failure(req.id, QStringLiteral("no_session"), err);
     return Response::success(req.id);
+}
+
+Response DeviceServer::devAuthApprove(Conn &c, const Request &req)
+{
+    // The phone MUST have cleared BiometricPrompt before sending this (biometric
+    // tier, matching approval.respond). The device WS auth (ed25519) is the
+    // possession factor; c.deviceId identifies the approving phone.
+    const QString challengeId = req.params.value(QStringLiteral("challenge_id")).toString();
+    QString err;
+    if (!m_control->approveAuthChallenge(challengeId, c.deviceId, &err))
+        return Response::failure(req.id, QStringLiteral("challenge_not_found"), err);
+    QJsonObject r;
+    r.insert(QStringLiteral("ok"), true);
+    r.insert(QStringLiteral("state"), QStringLiteral("approved"));
+    return Response::success(req.id, r);
+}
+
+Response DeviceServer::devAuthDeny(const Request &req)
+{
+    const QString challengeId = req.params.value(QStringLiteral("challenge_id")).toString();
+    QString err;
+    m_control->denyAuthChallenge(challengeId, &err); // harmless if unknown/expired
+    QJsonObject r;
+    r.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, r);
 }
 
 // --- Contract C video mirror (biometric) ------------------------------------
@@ -932,6 +973,40 @@ void DeviceServer::onFilePushed(const QJsonObject &descriptor)
                         descriptor.value(QStringLiteral("file_id")));
         if (!sessionId.isEmpty())
             msg.data.insert(QStringLiteral("session_id"), sessionId);
+        for (const PushTokenRow &t : m_control->store().listPushTokens())
+            m_control->fcm()->send(t.fcmToken, msg);
+    }
+}
+
+void DeviceServer::onSessionOpened(const QString &sessionId, const QString &title)
+{
+    // Emit a 'session.opened' event so phones can OPEN/FOCUS the new chat. Unlike
+    // file.offer this is NOT gated on subscribedSessions: a brand-new session id
+    // can't be subscribed yet, so deliver to EVERY authed device.
+    QJsonObject data;
+    data.insert(QStringLiteral("session_id"), sessionId);
+    data.insert(QStringLiteral("title"), title);
+
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), kProtocolVersion);
+    frame.insert(QStringLiteral("event"), QStringLiteral("session.opened"));
+    frame.insert(QStringLiteral("data"), data);
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+
+    for (auto it = m_conns.begin(); it != m_conns.end(); ++it) {
+        Conn &c = it.value();
+        if (c.authed)
+            it.key()->sendTextMessage(payload);
+    }
+
+    // Also push a notification so a backgrounded phone surfaces the new chat.
+    if (m_control && m_control->fcm()) {
+        PushMessage msg;
+        msg.title = QStringLiteral("New session");
+        msg.body = title.isEmpty() ? QStringLiteral("A Jarvis chat opened") : title;
+        msg.data.insert(QStringLiteral("kind"), QStringLiteral("session_opened"));
+        msg.data.insert(QStringLiteral("session_id"), sessionId);
         for (const PushTokenRow &t : m_control->store().listPushTokens())
             m_control->fcm()->send(t.fcmToken, msg);
     }

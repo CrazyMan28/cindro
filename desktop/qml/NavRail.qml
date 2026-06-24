@@ -15,7 +15,9 @@ Item {
 
     readonly property var items: [
         { key: "chat",      label: "CHAT" },
+        { key: "voice",     label: "VOICE" },
         { key: "computer",  label: "COMPUTER" },
+        { key: "canvas",    label: "CANVAS" },
         { key: "browser",   label: "BROWSER" },
         { key: "schedules", label: "SCHEDULES" },
         { key: "memory",    label: "MEMORY" },
@@ -244,6 +246,34 @@ Item {
                     ctx.moveTo(10, 5.5); ctx.lineTo(13.5, 8.5); ctx.lineTo(11.6, 8.7)
                     ctx.lineTo(12.7, 10.6); ctx.lineTo(11.6, 11.1); ctx.lineTo(10.6, 9.1)
                     ctx.lineTo(9.2, 10.2); ctx.closePath(); ctx.stroke()
+                    break
+                case "voice":
+                    // microphone: capsule + stand + base, with a small sound arc
+                    ctx.beginPath()
+                    ctx.moveTo(6.5, 3.5)
+                    ctx.arc(9, 3.5, 2.5, Math.PI, 0)
+                    ctx.lineTo(11.5, 8)
+                    ctx.arc(9, 8, 2.5, 0, Math.PI)
+                    ctx.closePath(); ctx.stroke()
+                    // cradle + stand
+                    ctx.beginPath()
+                    ctx.arc(9, 8.5, 4.5, 0.15 * Math.PI, 0.85 * Math.PI)
+                    ctx.stroke()
+                    ctx.beginPath()
+                    ctx.moveTo(9, 13); ctx.lineTo(9, 15.5)
+                    ctx.moveTo(6, 15.5); ctx.lineTo(12, 15.5)
+                    ctx.stroke()
+                    break
+                case "canvas":
+                    // a framed canvas with a generative spark inside
+                    ctx.strokeRect(2.5, 3, 13, 12)
+                    // sparkle
+                    ctx.beginPath()
+                    ctx.moveTo(9, 6); ctx.lineTo(9, 12)
+                    ctx.moveTo(6, 9); ctx.lineTo(12, 9)
+                    ctx.moveTo(6.8, 6.8); ctx.lineTo(11.2, 11.2)
+                    ctx.moveTo(11.2, 6.8); ctx.lineTo(6.8, 11.2)
+                    ctx.stroke()
                     break
                 case "memory":
                     // a brain/recall node: a chip outline with a pulse core + leads

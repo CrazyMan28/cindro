@@ -19,6 +19,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -33,6 +36,8 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.jarvis.app.JarvisApp
 import com.jarvis.app.fcm.PushRegistrar
+import com.jarvis.app.ui.auth.ApproveScreen
+import com.jarvis.app.ui.auth.GateScreen
 import com.jarvis.app.ui.chat.ChatScreen
 import com.jarvis.app.ui.chat.ChatViewModel
 import com.jarvis.app.ui.computer.ComputerScreen
@@ -75,6 +80,9 @@ private object Routes {
     const val FILES = "files"
     const val CHAT = "chat/{sessionId}?wake={wake}"
     fun chat(id: String, wake: Boolean = false) = "chat/$id?wake=$wake"
+    // 2FA + fingerprint cross-device unlock — the phone Approve leg.
+    const val APPROVE = "approve/{challengeId}"
+    fun approve(challengeId: String) = "approve/$challengeId"
 }
 
 private data class Tab(val route: String, val label: String, val icon: ImageVector)
@@ -92,10 +100,18 @@ fun AppNav(
     activity: FragmentActivity,
     deepLinkSessionId: String?,
     deepLinkWake: Boolean,
+    deepLinkAuthChallenge: String? = null,
     onDeepLinkConsumed: () -> Unit,
 ) {
     val nav = rememberNavController()
     val context = LocalContext.current
+
+    // 2FA + fingerprint app-open gate: when paired AND the gate is enabled, hold
+    // the shell behind a BiometricPrompt for THIS app launch. Fail-open lives in
+    // GateScreen (Biometric.authenticate returns true when no secure lock exists).
+    var appUnlocked by remember {
+        mutableStateOf(!(app.pairingStore.isPaired && app.appPrefs.fingerprintGateEnabled))
+    }
 
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -126,6 +142,30 @@ fun AppNav(
         }
     }
 
+    // A session was created on ANY surface (phone/desktop/MCP/scheduler): the daemon
+    // fanned out a 'session.opened' event. While the app is in the foreground, open
+    // that session's chat — same route the FCM/wake deep-link uses.
+    LaunchedEffect(Unit) {
+        app.repository.sessionOpened.collect { opened ->
+            if (app.pairingStore.isPaired && opened.sessionId.isNotEmpty()) {
+                nav.navigate(Routes.chat(opened.sessionId))
+            }
+        }
+    }
+
+    // Deep-link from a tapped "Unlock Jarvis" push into the Approve screen (the
+    // phone leg of the 2FA + fingerprint cross-device unlock).
+    LaunchedEffect(deepLinkAuthChallenge) {
+        val cid = deepLinkAuthChallenge ?: return@LaunchedEffect
+        if (app.pairingStore.isPaired && cid.isNotEmpty()) {
+            // Approving requires the device WS + BiometricPrompt — consider the
+            // app unlocked for this launch so the gate doesn't double-prompt.
+            appUnlocked = true
+            nav.navigate(Routes.approve(cid))
+            onDeepLinkConsumed()
+        }
+    }
+
     NavHost(navController = nav, startDestination = start) {
         composable(Routes.PAIR) {
             val vm: PairingViewModel = viewModel(factory = PairingViewModel.factory(app))
@@ -140,7 +180,27 @@ fun AppNav(
         }
 
         composable(Routes.SHELL) {
-            Shell(app = app, activity = activity, parentNav = nav)
+            if (!appUnlocked) {
+                GateScreen(activity = activity, onUnlocked = { appUnlocked = true })
+            } else {
+                Shell(app = app, activity = activity, parentNav = nav)
+            }
+        }
+
+        composable(Routes.APPROVE) { entry ->
+            val cid = entry.arguments?.getString("challengeId").orEmpty()
+            ApproveScreen(
+                app = app,
+                activity = activity,
+                challengeId = cid,
+                onDone = {
+                    if (!nav.popBackStack()) {
+                        nav.navigate(Routes.SHELL) {
+                            popUpTo(Routes.APPROVE) { inclusive = true }
+                        }
+                    }
+                },
+            )
         }
 
         composable(Routes.MORE) {

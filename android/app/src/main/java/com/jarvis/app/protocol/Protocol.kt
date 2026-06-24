@@ -123,6 +123,21 @@ data class FileOfferEvent(val offer: FileOffer) {
     }
 }
 
+/**
+ * A `session.opened` event: a new session was created from ANY surface (phone,
+ * desktop, MCP/scheduler). The app raises/focuses + deep-links into that chat.
+ * Frame: {"v":1,"event":"session.opened","data":{session_id,title}}.
+ */
+data class SessionOpenedEvent(val opened: SessionOpened) {
+    companion object {
+        fun from(obj: JsonObject): SessionOpenedEvent? {
+            if (obj.get("event")?.asString != "session.opened") return null
+            val data = obj.getAsJsonObject("data") ?: return null
+            return SessionOpenedEvent(SessionOpened.from(data))
+        }
+    }
+}
+
 /** Helpers for building params payloads. */
 object Params {
     fun of(vararg pairs: Pair<String, Any?>): JsonObject {

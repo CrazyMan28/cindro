@@ -6,7 +6,7 @@ import time
 from mcp.server.fastmcp import FastMCP, Image
 
 from computer_use_mcp import (
-    apps, clipboard, input as inp, screen, session, windows, workspaces,
+    apps, ask_bus, clipboard, input as inp, screen, session, windows, workspaces,
 )
 
 
@@ -66,6 +66,22 @@ def register(mcp: FastMCP) -> None:
                 "sessions": [s.as_dict() for s in d["sessions"]],
             }, indent=2)
         except Exception as exc:
+            return _err(exc)
+
+    @mcp.tool()
+    def ask_user(question: str, options: list[str] | None = None,
+                 timeout_seconds: float = 180.0) -> str:
+        """Ask the USER a question and wait for their answer (a card with tappable
+        options appears in the Jarvis chat / phone). Use this whenever you need a
+        decision only the user can make — e.g. "Drive your REAL screen, or work on
+        my own agent desktop?", "Which file?", "OK to proceed?". Pass `options` for
+        tappable choices (the user can also type a custom answer). Returns JSON
+        {"answer": str, "answered": bool, "timed_out": bool}. Prefer this over
+        guessing; do NOT hardcode assumptions the user should decide."""
+        try:
+            res = ask_bus.ask(question, options or [], timeout=timeout_seconds)
+            return json.dumps(res)
+        except Exception as exc:  # noqa: BLE001
             return _err(exc)
 
     @mcp.tool()

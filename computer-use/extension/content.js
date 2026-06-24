@@ -136,6 +136,72 @@
     }
   }
 
+  // ---- Jarvis "using this tab" overlay: a glowing cyan cursor + chip drawn IN
+  //  the page, so when the agent drives Chrome you SEE where it's acting (mirrors
+  //  the desktop take-over overlay). Pure visual, pointer-events:none — never
+  //  interferes with the page or the agent's own clicks. Auto-hides when idle.
+  const jarvisGlow = (() => {
+    let root, chip, cursor, ring, hideTimer;
+    function ensure() {
+      if (root && document.documentElement.contains(root)) return;
+      root = document.createElement("div");
+      root.id = "__jarvis_glow_root";
+      root.style.cssText = "position:fixed;inset:0;z-index:2147483647;pointer-events:none;";
+      const st = document.createElement("style");
+      st.textContent =
+        "@keyframes __jvpulse{0%{transform:scale(.8);opacity:.35}50%{transform:scale(1.2);opacity:.6}100%{transform:scale(.8);opacity:.35}}"
+        + "@keyframes __jvripple{0%{transform:scale(.5);opacity:.9}100%{transform:scale(3.6);opacity:0}}"
+        + "#__jv_chip{position:fixed;top:14px;left:50%;transform:translateX(-50%);background:rgba(10,14,22,.92);"
+        + "border:1px solid #19E3D6;color:#DCF8F6;font:600 13px/1 system-ui,sans-serif;padding:9px 16px;border-radius:999px;"
+        + "box-shadow:0 0 18px rgba(25,227,214,.5);display:flex;gap:8px;align-items:center;opacity:0;transition:opacity .2s}"
+        + "#__jv_cur{position:fixed;left:0;top:0;width:64px;height:64px;transition:transform .11s cubic-bezier(.22,.61,.36,1)}"
+        + "#__jv_halo{position:absolute;left:14px;top:14px;width:36px;height:36px;border-radius:50%;background:#19E3D6;filter:blur(8px);opacity:.45;animation:__jvpulse 1.8s infinite}"
+        + "#__jv_ring{position:absolute;left:20px;top:20px;width:24px;height:24px;border-radius:50%;border:2px solid #7CFCEF;opacity:0}";
+      root.appendChild(st);
+      chip = document.createElement("div");
+      chip.id = "__jv_chip";
+      chip.innerHTML = '<span style="color:#7CFCEF">⚡</span><span>Jarvis is using this tab</span>';
+      cursor = document.createElement("div");
+      cursor.id = "__jv_cur";
+      cursor.innerHTML =
+        '<div id="__jv_halo"></div>'
+        + '<svg width="26" height="30" viewBox="0 0 26 30" style="position:absolute;left:24px;top:22px">'
+        + '<path d="M0 0 L0 20 L5.5 15 L9 23 L13 21 L9.5 13.5 L17 13 Z" fill="#19E3D6" stroke="#7CFCEF" stroke-width="1.4" stroke-linejoin="round"/></svg>'
+        + '<div id="__jv_ring"></div>';
+      root.appendChild(chip);
+      root.appendChild(cursor);
+      (document.documentElement || document.body).appendChild(root);
+      ring = cursor.querySelector("#__jv_ring");
+    }
+    function show() {
+      ensure();
+      chip.style.opacity = "1";
+      cursor.style.opacity = "1";
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(() => {
+        if (chip) chip.style.opacity = "0";
+        if (cursor) cursor.style.opacity = "0";
+      }, 8000);
+    }
+    function at(x, y, action) {
+      show();
+      // place the arrow tip (~ +24,+22 within the 64px cursor) at (x,y)
+      cursor.style.transform = "translate(" + (x - 24) + "px," + (y - 22) + "px)";
+      if (action === "click" || action === "type") {
+        ring.style.animation = "none";
+        void ring.offsetWidth;            // reflow so the ripple restarts
+        ring.style.animation = "__jvripple .45s ease-out";
+      }
+    }
+    function elAt(el, action) {
+      try {
+        const r = el.getBoundingClientRect();
+        at(r.left + r.width / 2, r.top + r.height / 2, action);
+      } catch (e) { /* non-fatal */ }
+    }
+    return { at, elAt, show };
+  })();
+
   const ACTIONS = {
     snapshot: (p) => snapshot(p.maxNodes || 600),
 
@@ -143,12 +209,14 @@
       const el = resolve(p.ref, p.selector);
       el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
       const r = el.getBoundingClientRect();
+      jarvisGlow.at(r.left + r.width / 2, r.top + r.height / 2, "click");
       return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
     },
 
     click: (p) => {
       const el = resolve(p.ref, p.selector);
       el.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+      jarvisGlow.elAt(el, "click");
       if (typeof el.focus === "function") el.focus();
       el.click();
       return { clicked: true, label: labelFor(el).slice(0, 60) };
@@ -157,6 +225,7 @@
     type: (p) => {
       const el = resolve(p.ref, p.selector);
       el.scrollIntoView({ block: "center", behavior: "instant" });
+      jarvisGlow.elAt(el, "type");
       if (typeof el.focus === "function") el.focus();
       if (el.isContentEditable) {
         if (p.clear) {

@@ -17,6 +17,9 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Background connection service: keeps the daemon WebSocket alive so we can post
+         local notifications WITHOUT Firebase (no FCM service account in this setup). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- Subtle haptic feedback in chat (send tick, streaming micro-ticks, completion). -->
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -61,6 +64,13 @@
             android:name=".voice.WakeService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <!-- Background connection: holds the daemon device WS open and posts local
+             notifications (new session, file offer) over it — the no-Firebase path. -->
+        <service
+            android:name=".net.JarvisConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <!-- FileProvider so file.offer downloads can be opened/shared by other apps. -->
         <provider

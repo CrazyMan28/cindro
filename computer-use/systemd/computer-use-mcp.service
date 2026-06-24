@@ -5,7 +5,9 @@ Wants=ydotoold.service
 
 [Service]
 Type=simple
-ExecStart=%h/projects/mcp/computer_use/.venv/bin/computer-use-mcp
+# The UPGRADED monorepo computer-use engine (agent-desktop + agent-pointer bus
+# for the take-over overlay). NOT the legacy ~/projects/mcp/computer_use copy.
+ExecStart=%h/projects/computer_use/computer-use/.venv/bin/computer-use-mcp
 Environment=YDOTOOL_SOCKET=%t/.ydotool_socket
 # The desktop exports a 3.14 PYTHONPATH that breaks venvs; keep it out.
 UnsetEnvironment=PYTHONPATH

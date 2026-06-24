@@ -100,9 +100,10 @@ CronSpec CronSpec::parse(const QString &expr)
         return s;
     }
 
-    // "at HH:MM" (24h clock).
+    // Daily at a clock time (24h). Accepts the natural forms users actually type:
+    //   "at HH:MM", "HH:MM", "daily HH:MM", "every day HH:MM", "each day at HH:MM"…
     static const QRegularExpression atRe(
-        QStringLiteral(R"(^at\s+(\d{1,2}):(\d{2})$)"));
+        QStringLiteral(R"(^(?:(?:every\s*day|each\s*day|daily)\s+)?(?:at\s+)?(\d{1,2}):(\d{2})$)"));
     const auto am = atRe.match(lower);
     if (am.hasMatch()) {
         const int h = am.captured(1).toInt();

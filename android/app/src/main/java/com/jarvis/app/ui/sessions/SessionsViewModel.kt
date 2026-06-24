@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.jarvis.app.JarvisApp
 import com.jarvis.app.net.DeviceClient
 import com.jarvis.app.net.JarvisRepository
+import com.jarvis.app.protocol.ModelInfo
 import com.jarvis.app.protocol.Session
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,6 +27,8 @@ data class SessionsUiState(
     val selecting: Boolean = false,
     val selected: Set<String> = emptySet(),
     val deleting: Boolean = false,
+    /** Models offered by the brain currently picked in the create dialog (empty = default). */
+    val models: List<ModelInfo> = emptyList(),
 )
 
 /** Lists sessions and creates new ones. Auto-refreshes on (re)connect. */
@@ -57,14 +60,27 @@ class SessionsViewModel(private val repo: JarvisRepository) : ViewModel() {
         }
     }
 
+    /**
+     * Load the models a brain offers (for the create dialog's model picker). On failure
+     * just clears the list so the dialog falls back to the daemon default — never blocks.
+     */
+    fun loadModels(brain: String) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.listModels(brain) } }
+                .onSuccess { list -> _uiState.update { it.copy(models = list) } }
+                .onFailure { _uiState.update { it.copy(models = emptyList()) } }
+        }
+    }
+
     fun createSession(
         profile: String,
         brain: String,
+        model: String? = null,
         onCreated: (String) -> Unit,
     ) {
         _uiState.update { it.copy(creating = true, error = null) }
         viewModelScope.launch {
-            runCatching { withContext(Dispatchers.IO) { repo.createSession(profile, brain) } }
+            runCatching { withContext(Dispatchers.IO) { repo.createSession(profile, brain, model) } }
                 .onSuccess { id ->
                     _uiState.update { it.copy(creating = false) }
                     refresh()
@@ -81,6 +97,10 @@ class SessionsViewModel(private val repo: JarvisRepository) : ViewModel() {
     /** Enter selection mode with [id] pre-selected (called from a long-press). */
     fun startSelection(id: String) =
         _uiState.update { it.copy(selecting = true, selected = setOf(id)) }
+
+    /** Enter selection mode with every current session selected (for "delete all"). */
+    fun selectAll() =
+        _uiState.update { it.copy(selecting = true, selected = it.sessions.map { s -> s.id }.toSet()) }
 
     /** Toggle a row's membership in the selection; exits selection if it empties. */
     fun toggleSelection(id: String) = _uiState.update { st ->

@@ -26,10 +26,35 @@ Item {
     property string defaultBrain: "codex"
     property string defaultModel: ""
     property string claudeAccount: "pro"        // "pro" (default) | "max"
+    property string ttsVoice: ""                 // preferred TTS voice slug
+    property var voiceList: []                   // [{id,label}] from voice.list_voices
+    property string sttProvider: "voxtral"       // STT provider id
+    property string ttsProvider: "voxtral"       // TTS provider id
+    property var sttProviders: []                // [{id,label,available}]
+    property var ttsProviders: []                // [{id,label,available}]
+    property var voicesByProvider: ({})          // {provider: [{id,label}]}
     property bool glow: true
     property bool compact: false
+    property bool authLockEnabled: false        // require phone+fingerprint to open
     property bool dirty: false
     property bool saving: false
+
+    // Google connectors (connectors.list rows: {id,name,service,enabled,risk,...}).
+    property var connectors: []
+    // The four known Google services, in display order.
+    readonly property var connectorServices: [
+        { service: "calendar", label: "Google Calendar" },
+        { service: "docs",     label: "Google Docs" },
+        { service: "drive",    label: "Google Drive" },
+        { service: "gmail",    label: "Gmail" }
+    ]
+    // The connector row (if any) already added for a given service id.
+    function connectorFor(service) {
+        for (var i = 0; i < page.connectors.length; i++)
+            if (page.connectors[i].service === service)
+                return page.connectors[i]
+        return null
+    }
 
     // ---- Devices / phone pairing state -------------------------------------
     property bool pairing: false               // waiting on devices.pair_start
@@ -46,7 +71,7 @@ Item {
         return "data:image/svg+xml;utf8," + encodeURIComponent(page.pairSvg)
     }
 
-    function load() { bridge.loadSettings() }
+    function load() { bridge.loadSettings(); bridge.listVoices(); bridge.connectorsList() }
     function loadDevices() { page.devicesLoaded = true; bridge.devicesList() }
     Component.onCompleted: if (bridge.connected) { load(); loadDevices() }
 
@@ -106,6 +131,12 @@ Item {
             page.defaultBrain = s.default_brain !== undefined ? s.default_brain : "codex"
             page.defaultModel = s.default_model !== undefined ? s.default_model : ""
             page.claudeAccount = (s.claude_account === "max") ? "max" : "pro"
+            page.ttsVoice = s.tts_voice !== undefined ? s.tts_voice : ""
+            page.sttProvider = s.stt_provider !== undefined ? s.stt_provider : "voxtral"
+            page.ttsProvider = s.tts_provider !== undefined ? s.tts_provider : "voxtral"
+            if (s.stt_providers !== undefined) page.sttProviders = s.stt_providers
+            if (s.tts_providers !== undefined) page.ttsProviders = s.tts_providers
+            page.authLockEnabled = s.auth_lock_enabled === true
             if (s.theme !== undefined) {
                 page.glow = s.theme.glow !== undefined ? s.theme.glow : true
                 page.compact = s.theme.compact !== undefined ? s.theme.compact : false
@@ -115,6 +146,23 @@ Item {
             brainCombo.syncFromState()
             modelCombo.syncFromState()
             claudeAccountCombo.syncFromState()
+            sttProviderCombo.syncFromState()
+            ttsProviderCombo.syncFromState()
+            voiceCombo.syncFromState()
+        }
+        function onVoicesListed(voices) {
+            page.voiceList = voices !== undefined ? voices : []
+            voiceCombo.refill()
+        }
+        function onVoiceProvidersListed(sttProviders, ttsProviders, voicesByProvider) {
+            if (sttProviders !== undefined && sttProviders.length) page.sttProviders = sttProviders
+            if (ttsProviders !== undefined && ttsProviders.length) page.ttsProviders = ttsProviders
+            page.voicesByProvider = voicesByProvider !== undefined ? voicesByProvider : ({})
+            // Repopulate the voice list from the active TTS provider's voices.
+            var vs = page.voicesByProvider[page.ttsProvider]
+            if (vs !== undefined && vs.length) { page.voiceList = vs; voiceCombo.refill() }
+            sttProviderCombo.syncFromState()
+            ttsProviderCombo.syncFromState()
         }
         function onSettingsSaved() {
             page.saving = false
@@ -122,6 +170,13 @@ Item {
             page.dirty = false
             // re-pull so api_keys_set badges flip to "saved"
             page.load()
+        }
+        function onConnectorsListed(connectors) {
+            page.connectors = connectors !== undefined ? connectors : []
+        }
+        function onConnectorsChanged() {
+            // a connector was added; the Bridge auto re-lists, but refresh defensively
+            bridge.connectorsList()
         }
     }
 
@@ -133,12 +188,74 @@ Item {
         return (m && m.length) ? m : [page.defaultModel].filter(function(x){return x && x.length})
     }
 
+    // Voice picker helpers: the combo shows labels, but we persist the id slug.
+    function voiceLabels() {
+        var out = []
+        var seenCurrent = false
+        for (var i = 0; i < page.voiceList.length; i++) {
+            var v = page.voiceList[i]
+            var id = (v && v.id !== undefined) ? ("" + v.id) : ""
+            var label = (v && v.label !== undefined && ("" + v.label).length) ? ("" + v.label) : id
+            out.push(label)
+            if (id === page.ttsVoice) seenCurrent = true
+        }
+        // If the saved voice isn't in the curated list, surface it so it's not lost.
+        if (page.ttsVoice.length > 0 && !seenCurrent)
+            out.unshift(page.ttsVoice + " (saved)")
+        if (out.length === 0)
+            out.push("en_paul_neutral")
+        return out
+    }
+    // Map a combo row index back to its voice id slug.
+    function voiceIdForIndex(idx) {
+        var labels = page.voiceLabels()
+        var offset = 0
+        var seenCurrent = false
+        for (var i = 0; i < page.voiceList.length; i++)
+            if (("" + page.voiceList[i].id) === page.ttsVoice) seenCurrent = true
+        if (page.ttsVoice.length > 0 && !seenCurrent) {
+            if (idx === 0) return page.ttsVoice
+            offset = 1
+        }
+        var li = idx - offset
+        if (li >= 0 && li < page.voiceList.length)
+            return "" + page.voiceList[li].id
+        return page.ttsVoice
+    }
+
+    // Provider picker helpers: combos show labels, persist the id. Unavailable
+    // local providers are shown with a "(not installed)" hint.
+    function providerLabels(list) {
+        var out = []
+        for (var i = 0; i < list.length; i++) {
+            var p = list[i]
+            var label = (p && p.label !== undefined && ("" + p.label).length) ? ("" + p.label) : ("" + p.id)
+            if (p && p.available === false) label += " (not installed)"
+            out.push(label)
+        }
+        if (out.length === 0) out.push("voxtral")
+        return out
+    }
+    function providerIdForIndex(list, idx) {
+        if (idx >= 0 && idx < list.length) return "" + list[idx].id
+        return "voxtral"
+    }
+    function providerIndexForId(list, id) {
+        for (var i = 0; i < list.length; i++)
+            if (("" + list[i].id) === id) return i
+        return 0
+    }
+
     function save() {
         page.saving = true
         var patch = {
             "default_brain": page.defaultBrain,
             "default_model": page.defaultModel,
             "claude_account": page.claudeAccount,
+            "tts_voice": page.ttsVoice,
+            "stt_provider": page.sttProvider,
+            "tts_provider": page.ttsProvider,
+            "auth_lock_enabled": page.authLockEnabled,
             "theme": { "glow": page.glow, "compact": page.compact }
         }
         // only send keys the user actually typed (write-only)
@@ -313,6 +430,100 @@ Item {
                 }
             }
 
+            // ===== Voice ====================================================
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+                Text {
+                    text: "// VOICE"
+                    color: Theme.accent
+                    font.family: Theme.fontDisplay
+                    font.pixelSize: 11
+                    font.letterSpacing: Theme.trackMid
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "Which engine Jarvis uses to hear (STT) and speak (TTS), and the voice."
+                    color: Theme.textFaint
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 14
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "STT provider"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: sttProviderCombo
+                            Layout.fillWidth: true
+                            model: page.providerLabels(page.sttProviders)
+                            function refill() { model = page.providerLabels(page.sttProviders); syncFromState() }
+                            function syncFromState() {
+                                model = page.providerLabels(page.sttProviders)
+                                currentIndex = page.providerIndexForId(page.sttProviders, page.sttProvider)
+                            }
+                            onActivated: {
+                                page.sttProvider = page.providerIdForIndex(page.sttProviders, currentIndex)
+                                page.dirty = true
+                            }
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "TTS provider"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: ttsProviderCombo
+                            Layout.fillWidth: true
+                            model: page.providerLabels(page.ttsProviders)
+                            function refill() { model = page.providerLabels(page.ttsProviders); syncFromState() }
+                            function syncFromState() {
+                                model = page.providerLabels(page.ttsProviders)
+                                currentIndex = page.providerIndexForId(page.ttsProviders, page.ttsProvider)
+                            }
+                            onActivated: {
+                                page.ttsProvider = page.providerIdForIndex(page.ttsProviders, currentIndex)
+                                page.dirty = true
+                                // Repoint the voice list at the new provider's voices.
+                                var vs = page.voicesByProvider[page.ttsProvider]
+                                page.voiceList = (vs !== undefined && vs.length) ? vs : []
+                                voiceCombo.refill()
+                            }
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 14
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "TTS voice"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: voiceCombo
+                            Layout.fillWidth: true
+                            model: page.voiceLabels()
+                            function refill() { model = page.voiceLabels(); syncFromState() }
+                            function syncFromState() {
+                                // Find the row whose id matches the saved slug.
+                                var idx = 0
+                                for (var i = 0; i < model.length; i++) {
+                                    if (page.voiceIdForIndex(i) === page.ttsVoice) { idx = i; break }
+                                }
+                                currentIndex = idx
+                            }
+                            onActivated: {
+                                page.ttsVoice = page.voiceIdForIndex(currentIndex)
+                                page.dirty = true
+                            }
+                        }
+                    }
+                }
+            }
+
             // ===== Providers ================================================
             Text {
                 text: "// API KEYS"
@@ -428,6 +639,128 @@ Item {
                         border.width: page.glow ? 2 : 0
                     }
                     Text { text: "#29E7FF"; color: Theme.textMuted; font.family: Theme.fontMono; font.pixelSize: 12 }
+                }
+            }
+
+            // ===== Security ================================================
+            Text {
+                text: "// SECURITY"
+                color: Theme.accent
+                font.family: Theme.fontDisplay
+                font.pixelSize: 11
+                font.letterSpacing: Theme.trackMid
+                font.weight: Font.DemiBold
+                Layout.topMargin: 2
+                Layout.leftMargin: 2
+            }
+
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 2
+                        Text {
+                            text: "Require phone + fingerprint to open Jarvis"
+                            color: Theme.text
+                            font.family: Theme.fontSans
+                            font.pixelSize: 13
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                        }
+                        Text {
+                            text: "Two factors: a tap on your paired phone AND its fingerprint unlock. Fails open when no phone is paired."
+                            color: Theme.textMuted
+                            font.family: Theme.fontSans
+                            font.pixelSize: 11
+                            Layout.fillWidth: true
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                    Widgets.StyledSwitch {
+                        checked: page.authLockEnabled
+                        onToggled: function(v) { page.authLockEnabled = v; page.dirty = true }
+                    }
+                }
+            }
+
+            // ===== Connectors ==============================================
+            Text {
+                text: "// CONNECTORS"
+                color: Theme.accent
+                font.family: Theme.fontDisplay
+                font.pixelSize: 11
+                font.letterSpacing: Theme.trackMid
+                font.weight: Font.DemiBold
+                Layout.topMargin: 2
+                Layout.leftMargin: 2
+            }
+
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+
+                Text {
+                    text: "Google services Jarvis can use (added disabled — authorize to enable)"
+                    color: Theme.textMuted
+                    font.family: Theme.fontSans
+                    font.pixelSize: 11
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                }
+
+                Repeater {
+                    model: page.connectorServices
+                    delegate: RowLayout {
+                        id: connRow
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 10
+
+                        property var row: page.connectorFor(connRow.modelData.service)
+                        property bool added: connRow.row !== null
+                        property bool enabled: connRow.added && connRow.row.enabled === true
+
+                        Text {
+                            text: connRow.modelData.label
+                            color: Theme.text
+                            font.family: Theme.fontSans
+                            font.pixelSize: 13
+                            Layout.fillWidth: true
+                        }
+
+                        // State badge: Enabled / Added / not added.
+                        Rectangle {
+                            visible: connRow.added
+                            radius: Theme.radiusSm
+                            color: "transparent"
+                            border.color: connRow.enabled ? Theme.accent : Theme.textFaint
+                            border.width: 1
+                            implicitHeight: badgeText.implicitHeight + 6
+                            implicitWidth: badgeText.implicitWidth + 14
+                            Text {
+                                id: badgeText
+                                anchors.centerIn: parent
+                                text: connRow.enabled ? "Enabled" : "Added"
+                                color: connRow.enabled ? Theme.accent : Theme.textMuted
+                                font.family: Theme.fontMono
+                                font.pixelSize: 10
+                            }
+                        }
+
+                        Widgets.PillButton {
+                            label: connRow.added ? "Added" : "Add"
+                            enabledBtn: !connRow.added
+                            Layout.alignment: Qt.AlignVCenter
+                            onClicked: {
+                                if (connRow.added) return
+                                // Placeholder creds for the framework/mock; real creds
+                                // come from the paste-config flow later.
+                                bridge.connectorAdd(connRow.modelData.service, "", "", "")
+                            }
+                        }
+                    }
                 }
             }
 

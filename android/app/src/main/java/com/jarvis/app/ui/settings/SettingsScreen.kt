@@ -320,6 +320,16 @@ fun SettingsScreen(
                 )
             }
 
+            // --- Fingerprint app-open gate (2FA + cross-device unlock) ---
+            GlowCard(modifier = Modifier.fillMaxWidth()) {
+                ToggleRow(
+                    title = "Require fingerprint to open",
+                    subtitle = "Ask for your fingerprint each time you open Jarvis. Approving a desktop sign-in always requires it. Fails open if no screen lock is set.",
+                    checked = state.fingerprintGateEnabled,
+                    onChange = viewModel::setFingerprintGateEnabled,
+                )
+            }
+
             // --- Device identity ---
             GlowCard(modifier = Modifier.fillMaxWidth()) {
                 Column {

@@ -67,6 +67,10 @@ private slots:
     // A daemon-side file.push -> emit a Contract C 'file.offer' event to phones
     // subscribed to the file's session (or to all authed phones if session-less).
     void onFilePushed(const QJsonObject &descriptor);
+    // A new session was created anywhere -> emit a 'session.opened' event to ALL
+    // authed phones (a fresh id can't be subscribed yet) + an FCM push so a
+    // backgrounded phone can surface the new chat.
+    void onSessionOpened(const QString &sessionId, const QString &title);
 
 private:
     // Per-connection state.
@@ -104,6 +108,11 @@ private:
     Response devTaskList(Conn &c, const Request &req);
     Response devPushRegister(Conn &c, const Request &req);
     Response devApprovalRespond(const Request &req);
+    // 2FA + fingerprint cross-device unlock: the phone has already cleared
+    // BiometricPrompt (biometric tier) before sending auth.approve over its authed
+    // device WS (ed25519 = possession). Flips the daemon's unlock challenge.
+    Response devAuthApprove(Conn &c, const Request &req);
+    Response devAuthDeny(const Request &req);
 
     // Contract C video mirror (biometric tier). mirror.start subscribes the
     // device to a coworker+agent session's nested-desktop video; the daemon

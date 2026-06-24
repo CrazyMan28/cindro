@@ -12,10 +12,13 @@ Item {
     id: page
 
     ListModel { id: mcpModel }
+    // CLI-side per-brain MCP servers (claude's ~/.claude.json, codex's config.toml).
+    // Grouped under CODEX / CLAUDE subheaders; default OFF (brains run isolated).
+    ListModel { id: cliMcpModel }
     // id -> { state: "idle"|"testing"|"ok"|"fail", tools: int, error: "" }
     property var testState: ({})
 
-    function refresh() { bridge.listMcp() }
+    function refresh() { bridge.listMcp(); bridge.mcpCliList() }
     Component.onCompleted: if (bridge.connected) refresh()
 
     Connections {
@@ -54,6 +57,44 @@ Item {
                 }
             }
         }
+        // CLI per-brain servers: codex first, then claude, each preceded by a
+        // synthetic "header" row the delegate renders as a subheader.
+        function onMcpCliListed(servers) {
+            cliMcpModel.clear()
+            var byBrain = { "codex": [], "claude": [] }
+            for (var i = 0; i < servers.length; i++) {
+                var s = servers[i]
+                var b = s.brain !== undefined ? s.brain : ""
+                if (byBrain[b] === undefined) byBrain[b] = []
+                byBrain[b].push(s)
+            }
+            var order = ["codex", "claude"]
+            // Include any unexpected brains after the known two, for safety.
+            for (var bk in byBrain) if (order.indexOf(bk) < 0) order.push(bk)
+            for (var oi = 0; oi < order.length; oi++) {
+                var brain = order[oi]
+                var rows = byBrain[brain]
+                if (rows === undefined || rows.length === 0) continue
+                cliMcpModel.append({
+                    "isHeader": true, "brain": brain, "cname": "",
+                    "transport": "", "endpoint": "", "cliEnabled": false
+                })
+                for (var r = 0; r < rows.length; r++) {
+                    var cs = rows[r]
+                    cliMcpModel.append({
+                        "isHeader": false,
+                        "brain": brain,
+                        "cname": cs.name !== undefined ? cs.name : "",
+                        "transport": cs.transport !== undefined ? cs.transport : "stdio",
+                        "endpoint": cs.endpoint !== undefined ? cs.endpoint : "",
+                        "cliEnabled": cs.enabled === true
+                    })
+                }
+            }
+        }
+        // A toggle changed the registry — re-query the CLI list (and the Jarvis list,
+        // since enabling imports a "cli:<brain>:<name>" server into it).
+        function onMcpCliChanged() { bridge.mcpCliList(); bridge.listMcp() }
     }
 
     function riskColor(r) {
@@ -274,6 +315,125 @@ Item {
                 }
             }
         }
+
+        // ===== CLI servers (per brain) ======================================
+        // The codex/claude CLI's OWN MCP servers. Off = isolated (default).
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: cliMcpModel.count > 0
+            spacing: 6
+
+            Text {
+                text: "CLI servers (per brain)"
+                color: Theme.text
+                font.family: Theme.fontDisplay
+                font.pixelSize: 14
+                font.weight: Font.DemiBold
+                font.letterSpacing: Theme.trackMid
+            }
+            Text {
+                Layout.fillWidth: true
+                text: "These are your codex/claude CLI's own MCP servers. Off = isolated (default). Toggle on to let Jarvis use one."
+                color: Theme.textMuted
+                font.family: Theme.fontSans
+                font.pixelSize: 11
+                wrapMode: Text.WordWrap
+            }
+
+            ListView {
+                id: cliList
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(contentHeight, 340)
+                clip: true
+                interactive: contentHeight > height
+                spacing: 6
+                model: cliMcpModel
+                boundsBehavior: Flickable.StopAtBounds
+
+                ScrollBar.vertical: ScrollBar {
+                    policy: ScrollBar.AsNeeded
+                    width: 5
+                    background: Item {}
+                    contentItem: Rectangle { implicitWidth: 4; radius: 2; color: Theme.hairline; opacity: 0.5 }
+                }
+
+                delegate: Item {
+                    id: cliRow
+                    required property int index
+                    required property bool isHeader
+                    required property string brain
+                    required property string cname
+                    required property string transport
+                    required property string endpoint
+                    required property bool cliEnabled
+
+                    width: ListView.view.width
+                    implicitHeight: cliRow.isHeader ? hdr.implicitHeight + 8
+                                                    : cliContent.implicitHeight + 22
+
+                    // brain subheader (CODEX / CLAUDE)
+                    Text {
+                        id: hdr
+                        visible: cliRow.isHeader
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.topMargin: 4
+                        text: cliRow.brain.toUpperCase()
+                        color: Theme.accentBright
+                        font.family: Theme.fontMono
+                        font.pixelSize: 11
+                        font.letterSpacing: Theme.trackMid
+                    }
+
+                    // server row
+                    Rectangle {
+                        visible: !cliRow.isHeader
+                        anchors.fill: parent
+                        radius: Theme.radius
+                        color: Theme.panelSoft
+                        border.color: Theme.hairlineSoft
+                        border.width: 1
+
+                        RowLayout {
+                            id: cliContent
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.margins: 12
+                            spacing: 10
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+                                Text {
+                                    text: cliRow.cname
+                                    color: Theme.text
+                                    font.family: Theme.fontSans
+                                    font.pixelSize: 13
+                                    font.weight: Font.Medium
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: cliRow.transport + (cliRow.endpoint.length ? " · " + cliRow.endpoint : "")
+                                    color: Theme.textMuted
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: 10
+                                    elide: Text.ElideMiddle
+                                }
+                            }
+
+                            Widgets.StyledSwitch {
+                                checked: cliRow.cliEnabled
+                                Layout.alignment: Qt.AlignVCenter
+                                onToggled: function(v) {
+                                    bridge.mcpCliSetEnabled(cliRow.brain, cliRow.cname, v)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     component MetaPill: Rectangle {
@@ -307,13 +467,102 @@ Item {
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
         property string transport: "http"
+        property string parseError: ""    // inline message from the JSON importer (empty = ok)
+        property bool parseOk: false       // true briefly after a successful import
 
         function openFresh() {
             nameField.text = ""
             endpointField.text = ""
             tokenField.text = ""
+            pasteField.text = ""
             addDialog.transport = "http"
+            addDialog.parseError = ""
+            addDialog.parseOk = false
             open()
+        }
+
+        // Parse a pasted MCP config and fill the dialog's name/transport/endpoint/
+        // token fields for review. Accepts:
+        //   {"mcpServers": {"<name>": {"url":..,"headers":{"Authorization":"Bearer .."}}}}
+        //   {"mcpServers": {"<name>": {"command":"npx","args":[..]}}}
+        //   bare single-server: {"url":..,"headers":{..}} / {"command":..,"args":[..]}
+        function parseConfig() {
+            addDialog.parseError = ""
+            addDialog.parseOk = false
+            var raw = pasteField.text.trim()
+            if (raw.length === 0) { addDialog.parseError = "Paste a config first."; return }
+
+            var obj
+            try {
+                obj = JSON.parse(raw)
+            } catch (e) {
+                addDialog.parseError = "Invalid JSON: " + e
+                return
+            }
+            if (!obj || typeof obj !== "object") {
+                addDialog.parseError = "Expected a JSON object."
+                return
+            }
+
+            // Resolve {name, server} from the accepted shapes.
+            var name = ""
+            var server = null
+            if (obj.mcpServers && typeof obj.mcpServers === "object") {
+                var keys = Object.keys(obj.mcpServers)
+                if (keys.length === 0) {
+                    addDialog.parseError = "mcpServers is empty."
+                    return
+                }
+                name = keys[0]
+                server = obj.mcpServers[name]
+            } else {
+                // bare single-server object
+                server = obj
+                name = (typeof obj.name === "string" && obj.name.length) ? obj.name : ""
+            }
+            if (!server || typeof server !== "object") {
+                addDialog.parseError = "No server definition found."
+                return
+            }
+            if (typeof server.name === "string" && server.name.length)
+                name = server.name
+            if (name.length === 0) name = "Unnamed"
+
+            // Strip a leading "Bearer " (any case) from an Authorization header value.
+            function stripBearer(v) {
+                if (typeof v !== "string") return ""
+                return v.replace(/^\s*Bearer\s+/i, "").trim()
+            }
+
+            if (typeof server.url === "string" && server.url.length) {
+                addDialog.transport = "http"
+                endpointField.text = server.url.trim()
+                var tok = ""
+                if (server.headers && typeof server.headers === "object") {
+                    // case-insensitive Authorization lookup
+                    for (var hk in server.headers) {
+                        if (hk.toLowerCase() === "authorization") {
+                            tok = stripBearer(server.headers[hk]); break
+                        }
+                    }
+                }
+                if (tok.length === 0 && typeof server.token === "string") tok = server.token.trim()
+                if (tok.length === 0 && typeof server.bearer === "string") tok = stripBearer(server.bearer)
+                tokenField.text = tok
+            } else if (typeof server.command === "string" && server.command.length) {
+                addDialog.transport = "stdio"
+                var args = Array.isArray(server.args) ? server.args : []
+                var parts = [server.command.trim()]
+                for (var i = 0; i < args.length; i++) parts.push("" + args[i])
+                endpointField.text = parts.join(" ").trim()
+                tokenField.text = ""
+            } else {
+                addDialog.parseError = "Config has neither \"url\" nor \"command\"."
+                return
+            }
+
+            nameField.text = name
+            addDialog.parseOk = true
         }
 
         background: Rectangle {
@@ -351,6 +600,83 @@ Item {
                     font.pixelSize: 15
                     font.weight: Font.DemiBold
                     font.letterSpacing: Theme.trackMid
+                }
+
+                // ---- Paste JSON config (optional importer) -------------------
+                // Drop a standard MCP config here and hit Import to fill the fields
+                // below for review, then Add as usual.
+                ColumnLayout {
+                    Layout.fillWidth: true; spacing: 5
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text { text: "Paste config (optional)"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12; Layout.fillWidth: true }
+                        Text {
+                            text: addDialog.parseOk ? "imported ✓" : ""
+                            visible: addDialog.parseOk
+                            color: Theme.ok
+                            font.family: Theme.fontSans
+                            font.pixelSize: 11
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        implicitHeight: 92
+                        radius: Theme.radiusSm
+                        color: Theme.surfaceInput
+                        border.width: 1
+                        border.color: pasteField.activeFocus ? Theme.accent
+                                      : (addDialog.parseError.length ? Theme.danger : Theme.hairlineSoft)
+                        Behavior on border.color { ColorAnimation { duration: Theme.durFast } }
+
+                        ScrollView {
+                            anchors.fill: parent
+                            anchors.margins: 8
+                            clip: true
+                            TextArea {
+                                id: pasteField
+                                placeholderText: "{ \"mcpServers\": { \"my-server\": { \"url\": \"https://…\", \"headers\": { \"Authorization\": \"Bearer …\" } } } }"
+                                placeholderTextColor: Theme.textFaint
+                                color: Theme.text
+                                font.family: Theme.fontMono
+                                font.pixelSize: 11
+                                wrapMode: TextArea.Wrap
+                                selectByMouse: true
+                                selectionColor: Theme.accentDim
+                                background: null
+                                onTextChanged: { addDialog.parseError = ""; addDialog.parseOk = false }
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text {
+                            Layout.fillWidth: true
+                            visible: addDialog.parseError.length > 0
+                            text: addDialog.parseError
+                            color: Theme.danger
+                            font.family: Theme.fontSans
+                            font.pixelSize: 11
+                            wrapMode: Text.WordWrap
+                        }
+                        Item { Layout.fillWidth: true; visible: addDialog.parseError.length === 0 }
+                        Widgets.PillButton {
+                            label: "Import"
+                            enabledBtn: pasteField.text.trim().length > 0
+                            onClicked: addDialog.parseConfig()
+                        }
+                    }
+
+                    // subtle divider before the manual fields
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 4
+                        height: 1
+                        color: Theme.hairlineSoft
+                        opacity: 0.6
+                    }
                 }
 
                 ColumnLayout {

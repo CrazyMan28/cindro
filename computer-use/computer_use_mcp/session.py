@@ -301,8 +301,92 @@ def _display_session_map() -> dict[str, str]:
     }
 
 
+def _wayland_outputs(info: SessionInfo) -> bool:
+    """Enumerate outputs directly via the wl_output protocol over the Wayland
+    socket. RELIABLE + fast — unlike kscreen-doctor, which routinely HANGS for 10s+
+    on this KWin (its KScreen DBus backend stalls), breaking every real-screen tool.
+    Populates info.outputs (name/pos/size/scale) and returns True on success."""
+    try:
+        from pywayland.client import Display
+        from pywayland.protocol.wayland import WlOutput
+    except Exception:
+        return False
+
+    env = info.env()
+    saved = {k: os.environ.get(k) for k in ("WAYLAND_DISPLAY", "XDG_RUNTIME_DIR")}
+    for k in ("WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"):
+        if env.get(k):
+            os.environ[k] = env[k]
+
+    recs: dict = {}
+    disp = None
+    try:
+        disp = Display()
+        disp.connect()
+        registry = disp.get_registry()
+
+        def on_global(reg, name, iface, version):
+            if iface != "wl_output":
+                return None
+            out = reg.bind(name, WlOutput, min(version, 4))
+            rec = {"name": "?", "x": 0, "y": 0, "w": 0, "h": 0, "scale": 1.0}
+            recs[name] = rec
+
+            def on_geometry(o, x, y, pw, ph, sp, mk, md, tr):
+                rec["x"] = int(x); rec["y"] = int(y); return None
+
+            def on_mode(o, flags, w, h, refresh):
+                if flags & 0x1:               # WL_OUTPUT_MODE_CURRENT
+                    rec["w"] = int(w); rec["h"] = int(h)
+                return None
+
+            def on_scale(o, factor):
+                rec["scale"] = float(factor) or 1.0; return None
+
+            def on_name(o, n):
+                rec["name"] = n; return None
+
+            out.dispatcher["geometry"] = on_geometry
+            out.dispatcher["mode"] = on_mode
+            out.dispatcher["scale"] = on_scale
+            try:
+                out.dispatcher["name"] = on_name   # wl_output v4
+            except Exception:
+                pass
+            return None
+
+        registry.dispatcher["global"] = on_global
+        for _ in range(3):                         # globals, then per-output events
+            disp.roundtrip()
+    except Exception:
+        return False
+    finally:
+        if disp is not None:
+            try:
+                disp.disconnect()
+            except Exception:
+                pass
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    for rec in recs.values():
+        if rec["w"] and rec["h"]:
+            sc = rec["scale"] or 1.0
+            info.outputs.append(Output(
+                name=rec["name"], x=rec["x"], y=rec["y"],
+                w=int(round(rec["w"] / sc)), h=int(round(rec["h"] / sc)), scale=sc))
+    return bool(info.outputs)
+
+
 def _kde_outputs(info: SessionInfo) -> None:
-    rc, out, err = _run(["kscreen-doctor", "--json"], env=info.env(), timeout=10)
+    # PRIMARY: wl_output over Wayland (kscreen-doctor HANGS for 10s+ on this KWin).
+    if _wayland_outputs(info):
+        return
+    # FALLBACK: kscreen-doctor with a SHORT timeout so we fail fast if it stalls.
+    rc, out, err = _run(["kscreen-doctor", "--json"], env=info.env(), timeout=4)
     if rc != 0 or not out:
         info.outputs_unavailable_reason = f"kscreen-doctor failed: {err or rc}"
         return

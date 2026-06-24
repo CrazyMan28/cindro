@@ -57,6 +57,11 @@ int main(int argc, char **argv)
     QCommandLineOption drivingDemoOpt(QStringLiteral("driving-demo"),
                                       QStringLiteral("Show the take-over overlay with a fake agent pointer."));
     parser.addOption(drivingDemoOpt);
+    // Start straight on the Voice Mode page (the plasmoid's "Voice Mode" button
+    // launches `jarvis-sidebar --voice`).
+    QCommandLineOption voiceOpt(QStringLiteral("voice"),
+                                QStringLiteral("Open the app on the Voice Mode page."));
+    parser.addOption(voiceOpt);
     parser.process(app);
 
     if (parser.isSet(toggleOpt)) {
@@ -82,6 +87,11 @@ int main(int argc, char **argv)
     auto *bridge = new Bridge(&app);
     bridge->setFrameProvider(frameProvider);
     engine.rootContext()->setContextProperty(QStringLiteral("bridge"), bridge);
+
+    // --voice: AppShell reads this context property in Component.onCompleted to
+    // boot onto the Voice Mode page.
+    engine.rootContext()->setContextProperty(QStringLiteral("startOnVoice"),
+                                              parser.isSet(voiceOpt));
 
     // WindowController is QML_SINGLETON; register the concrete instance so C++
     // and QML share one object that survives engine teardown order.

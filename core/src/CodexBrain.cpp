@@ -4,8 +4,62 @@
 
 #include <QProcessEnvironment>
 #include <QStringList>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 
 namespace jarvis {
+
+QString CodexBrain::ensureIsolatedHome() const
+{
+    if (m_opts.codexHome.isEmpty())
+        return QString();
+
+    const QString home = m_opts.codexHome;
+    QDir().mkpath(home);
+
+    const QString realCodex = QDir::homePath() + QStringLiteral("/.codex");
+
+    // Symlink auth so the logged-in account still works (and token refresh writes
+    // through to the real file). Re-point the link each time in case it moved.
+    for (const QString &f : { QStringLiteral("auth.json"), QStringLiteral("version.json") }) {
+        const QString src = realCodex + QStringLiteral("/") + f;
+        const QString dst = home + QStringLiteral("/") + f;
+        if (QFile::exists(src) && !QFileInfo::exists(dst))
+            QFile::link(src, dst);
+    }
+
+    // Copy the user's config.toml but STRIP every [mcp_servers.*] table, so codex
+    // sees ONLY the daemon-injected computer-use server (added via -c overrides) —
+    // never hand-desktop / desktop-use / vm-* (which drive the user's REAL screen).
+    // Preserve all non-MCP settings (model provider, base instructions, etc.).
+    QString out;
+    QFile in(realCodex + QStringLiteral("/config.toml"));
+    if (in.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        bool inMcpTable = false;
+        const QByteArray raw = in.readAll();
+        in.close();
+        const QList<QByteArray> lines = raw.split('\n');
+        for (const QByteArray &lineRaw : lines) {
+            const QString line = QString::fromUtf8(lineRaw);
+            const QString trimmed = line.trimmed();
+            if (trimmed.startsWith(QLatin1Char('['))) {
+                // A new table header — does it belong to mcp_servers?
+                inMcpTable = trimmed.startsWith(QStringLiteral("[mcp_servers"));
+            }
+            if (!inMcpTable)
+                out += line + QLatin1Char('\n');
+        }
+    }
+    out = QStringLiteral("# Jarvis-isolated CODEX_HOME — user [mcp_servers.*] stripped so the\n"
+                         "# co-work brain can ONLY use the injected nested computer-use engine.\n")
+          + out;
+    QFile cfg(home + QStringLiteral("/config.toml"));
+    if (cfg.open(QIODevice::WriteOnly | QIODevice::Text))
+        cfg.write(out.toUtf8());
+
+    return home;
+}
 
 QString CodexBrain::sandboxForProfile(const QString &profile)
 {
@@ -46,26 +100,57 @@ bool CodexBrain::isBusy() const
     return m_busy;
 }
 
-QStringList CodexBrain::buildArgs(const QString &prompt) const
+QStringList CodexBrain::buildArgs(const QString &prompt, const QStringList &images) const
 {
     QStringList args;
-    args << QStringLiteral("exec")
-         << QStringLiteral("--json")
-         // Run even when cwd is not a git repo / trusted dir (e.g. $HOME); the
-         // sandbox mode is what actually constrains writes.
-         << QStringLiteral("--skip-git-repo-check")
-         << QStringLiteral("--sandbox") << m_opts.sandboxMode;
-    // When driving the computer-use MCP, also set approval_policy=never so codex
-    // never escalates a per-call approval it can't get headless. `codex exec`
-    // has NO -a/--ask-for-approval flag, so this MUST go through `-c`.
-    if (m_opts.driveMcp)
-        args << QStringLiteral("-c") << QStringLiteral("approval_policy=\"never\"");
-    if (!m_opts.cwd.isEmpty())
-        args << QStringLiteral("-C") << m_opts.cwd;
+    args << QStringLiteral("exec");
+    // Continue the SAME conversation across turns: after the first turn we have a
+    // thread id, so resume it (codex exec resume <id>) — otherwise codex starts
+    // fresh every message and "forgets" what was said.
+    const bool resuming = !m_threadId.isEmpty();
+    if (resuming)
+        args << QStringLiteral("resume") << m_threadId;
+    args << QStringLiteral("--json")
+         // Run even when cwd is not a git repo / trusted dir (e.g. $HOME).
+         << QStringLiteral("--skip-git-repo-check");
+    // ALWAYS fully ignore the user's codex config — NOT just the global
+    // ~/.codex/config.toml (also handled by the isolated CODEX_HOME) but also the
+    // PROJECT-LOCAL config codex discovers from the cwd (e.g. cwd=$HOME finds
+    // ~/.codex/config.toml again). Without this a Jarvis session inherits the
+    // user's hand-desktop/desktop-use/vm-* mcp_servers. Injected Jarvis servers
+    // arrive via `-c mcp_servers.*` overrides, which apply regardless of this flag.
+    // Verified gpt-5.5 still resolves via auth.json under the isolated home.
+    args << QStringLiteral("--ignore-user-config");
+    if (resuming) {
+        // `codex exec resume` does NOT accept --sandbox or -C (it keeps the
+        // resumed session's cwd). When driving the computer-use MCP, bypass
+        // approvals+sandbox — the resume-supported equivalent of
+        // `--sandbox danger-full-access -c approval_policy=never` — so codex
+        // doesn't auto-cancel MCP tool calls headless.
+        if (m_opts.driveMcp)
+            args << QStringLiteral("--dangerously-bypass-approvals-and-sandbox");
+    } else {
+        // First turn: the sandbox mode constrains writes; danger-full-access is
+        // forced by the ctor when driving (codex auto-cancels MCP calls otherwise).
+        args << QStringLiteral("--sandbox") << m_opts.sandboxMode;
+        // `codex exec` has NO -a/--ask-for-approval flag, so approval_policy MUST
+        // go through `-c`.
+        if (m_opts.driveMcp)
+            args << QStringLiteral("-c") << QStringLiteral("approval_policy=\"never\"");
+        if (!m_opts.cwd.isEmpty())
+            args << QStringLiteral("-C") << m_opts.cwd;
+    }
     if (!m_opts.model.isEmpty())
         args << QStringLiteral("-m") << m_opts.model;
     for (const QString &override : m_opts.configOverrides)
         args << QStringLiteral("-c") << override;
+    // Multimodal: attach each image file so the vision model SEES it. `codex exec`
+    // takes `-i/--image <FILE>` (repeatable). Paths come from the daemon, which
+    // decoded the phone's {mime,b64} attachments to files.
+    for (const QString &img : images) {
+        if (!img.isEmpty())
+            args << QStringLiteral("--image") << img;
+    }
     // Prompt is the positional argument.
     args << prompt;
     return args;
@@ -73,8 +158,6 @@ QStringList CodexBrain::buildArgs(const QString &prompt) const
 
 void CodexBrain::send(const QString &text, const QStringList &images)
 {
-    Q_UNUSED(images); // image attachment wiring lands with the multimodal wave
-
     if (m_busy) {
         emitEvent(NormalizedBrainEvent::error(
             QStringLiteral("brain is busy; cancel the current turn first")));
@@ -98,15 +181,20 @@ void CodexBrain::send(const QString &text, const QStringList &images)
 
     m_proc = new QProcess(this);
     m_proc->setProgram(m_opts.program);
-    m_proc->setArguments(buildArgs(text));
+    m_proc->setArguments(buildArgs(text, images));
     m_proc->setProcessChannelMode(QProcess::SeparateChannels);
     // Export MCP bearer tokens that the `-c ...bearer_token_env_var=<NAME>`
-    // overrides reference. Without these, codex starts the HTTP MCP server with
-    // no Authorization header and the engine rejects every tool call.
-    if (!m_opts.extraEnv.isEmpty()) {
+    // overrides reference, plus an isolated CODEX_HOME when set (so codex can't
+    // reach the user's global MCP servers / real desktop). Without the bearers,
+    // codex starts the HTTP MCP server with no Authorization header and the engine
+    // rejects every tool call.
+    const QString isoHome = ensureIsolatedHome();
+    if (!m_opts.extraEnv.isEmpty() || !isoHome.isEmpty()) {
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
         for (auto it = m_opts.extraEnv.constBegin(); it != m_opts.extraEnv.constEnd(); ++it)
             env.insert(it.key(), it.value());
+        if (!isoHome.isEmpty())
+            env.insert(QStringLiteral("CODEX_HOME"), isoHome);
         m_proc->setProcessEnvironment(env);
     }
     // Redirect stdin from /dev/null BEFORE start so codex sees EOF immediately
@@ -180,6 +268,12 @@ void CodexBrain::drainBuffer(bool flushIncomplete)
         const QByteArray line = m_stdoutBuf.left(nl);
         m_stdoutBuf.remove(0, nl + 1);
         if (auto ev = parseCodexLine(line)) {
+            // Remember the conversation id so the NEXT turn can `resume` it.
+            if (ev->kind == NormalizedBrainEvent::Kind::ThreadStarted) {
+                const QString tid = ev->threadId();
+                if (!tid.isEmpty())
+                    m_threadId = tid;
+            }
             emitEvent(*ev);
             if (ev->kind == NormalizedBrainEvent::Kind::Usage && !m_sawUsage) {
                 m_sawUsage = true;

@@ -133,6 +133,11 @@ bool SessionStore::migrate()
             " risk TEXT,"
             " created INTEGER)")))
         return false;
+    // Google-connectors framework migration: add the brain-injectable env-var
+    // map column to an mcp_servers table created before it existed. SQLite has
+    // no "ADD COLUMN IF NOT EXISTS"; a duplicate-column error on an already-
+    // migrated DB is expected and ignored (like the plugins ALTERs below).
+    exec(QStringLiteral("ALTER TABLE mcp_servers ADD COLUMN env TEXT DEFAULT ''"));
 
     if (!exec(QStringLiteral(
             "CREATE TABLE IF NOT EXISTS plugins ("
@@ -415,8 +420,9 @@ QVector<StoredEvent> SessionStore::listEvents(const QString &sessionId, int limi
 
 QJsonObject McpServerRow::toJson() const
 {
-    // NOTE: token is intentionally never serialized. `connected`/`tools_count`
-    // are live probe results filled in by the caller (mcp.test), defaulted here.
+    // NOTE: token AND env are intentionally never serialized (env may reference
+    // secrets). `connected`/`tools_count` are live probe results filled in by the
+    // caller (mcp.test), defaulted here.
     QJsonObject o;
     o.insert(QStringLiteral("id"), id);
     o.insert(QStringLiteral("name"), name);
@@ -443,6 +449,12 @@ static McpServerRow readMcpRow(QSqlQuery &q)
     r.builtin = q.value(6).toInt() != 0;
     r.risk = q.value(7).toString();
     r.created = q.value(8).toLongLong();
+    const QString envJson = q.value(9).toString();
+    if (!envJson.isEmpty()) {
+        const QJsonDocument d = QJsonDocument::fromJson(envJson.toUtf8());
+        if (d.isObject())
+            r.env = d.object();
+    }
     return r;
 }
 
@@ -451,7 +463,7 @@ QVector<McpServerRow> SessionStore::listMcpServers()
     QVector<McpServerRow> out;
     QSqlQuery q(m_db);
     if (!q.exec(QStringLiteral(
-            "SELECT id,name,transport,endpoint,token,enabled,builtin,risk,created"
+            "SELECT id,name,transport,endpoint,token,enabled,builtin,risk,created,env"
             " FROM mcp_servers ORDER BY builtin DESC, created ASC"))) {
         m_lastError = q.lastError().text();
         return out;
@@ -465,7 +477,7 @@ std::optional<McpServerRow> SessionStore::getMcpServer(const QString &id)
 {
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "SELECT id,name,transport,endpoint,token,enabled,builtin,risk,created"
+        "SELECT id,name,transport,endpoint,token,enabled,builtin,risk,created,env"
         " FROM mcp_servers WHERE id=?"));
     q.addBindValue(id);
     if (!q.exec()) {
@@ -482,8 +494,8 @@ bool SessionStore::addMcpServer(const McpServerRow &row)
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
         "INSERT OR REPLACE INTO mcp_servers"
-        " (id,name,transport,endpoint,token,enabled,builtin,risk,created)"
-        " VALUES (?,?,?,?,?,?,?,?,?)"));
+        " (id,name,transport,endpoint,token,enabled,builtin,risk,created,env)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)"));
     q.addBindValue(row.id);
     q.addBindValue(row.name);
     q.addBindValue(row.transport);
@@ -494,6 +506,10 @@ bool SessionStore::addMcpServer(const McpServerRow &row)
     q.addBindValue(row.risk);
     q.addBindValue(row.created != 0 ? row.created
                                     : QDateTime::currentMSecsSinceEpoch());
+    q.addBindValue(row.env.isEmpty()
+                       ? QString()
+                       : QString::fromUtf8(QJsonDocument(row.env)
+                                               .toJson(QJsonDocument::Compact)));
     if (!q.exec()) {
         m_lastError = q.lastError().text();
         return false;

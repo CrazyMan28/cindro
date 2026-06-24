@@ -11,6 +11,7 @@ exits right after spawning and systemd would reap the orphaned app.
 from __future__ import annotations
 
 import configparser
+import os
 import shlex
 import shutil
 import subprocess
@@ -18,6 +19,40 @@ import time
 from pathlib import Path
 
 from computer_use_mcp import session, windows
+
+# Chromium-family browsers are SINGLE-INSTANCE per --user-data-dir: launching
+# `google-chrome` with the user's default profile reconnects to whatever Chrome
+# is already running (on the user's REAL screen) and just opens a tab there —
+# NOT in the nested agent desktop. To keep the agent's browser confined to its
+# own desktop we give it a private profile dir.
+_CHROMIUM_HINTS = ("chrome", "chromium", "brave", "msedge", "microsoft-edge",
+                   "vivaldi", "opera")
+
+
+def _agent_profile_dir(subdir: str) -> Path:
+    """A per-agent-session writable dir, e.g. ~/.local/share/jarvis/agent/<sid>/<subdir>."""
+    sid = os.environ.get("JARVIS_AGENT_SESSION", "default")
+    base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    d = base / "jarvis" / "agent" / sid / subdir
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _isolate_browser_argv(argv: list[str]) -> list[str]:
+    """For an AGENT-desktop launch of a chromium-family browser, force a private
+    --user-data-dir (+ skip first-run prompts) so it opens a FRESH instance inside
+    the nested compositor instead of hijacking the user's real Chrome window."""
+    if not argv:
+        return argv
+    exe = Path(argv[0]).name.lower()
+    if not any(h in exe for h in _CHROMIUM_HINTS):
+        return argv
+    if any(a.startswith("--user-data-dir") for a in argv):
+        return argv  # caller already pinned a profile
+    profile = _agent_profile_dir("chrome")
+    # Insert flags right after the binary so they apply before any URL args.
+    return [argv[0], f"--user-data-dir={profile}", "--no-first-run",
+            "--no-default-browser-check"] + argv[1:]
 
 APP_DIRS = [
     Path.home() / ".local/share/applications",
@@ -133,6 +168,9 @@ def launch(app: str, wait_for_window: bool = True, timeout: float = 10.0,
     before = {w["id"] for w in windows.list_windows(win_scope) if "error" not in w}
 
     if is_agent:
+        # Confine single-instance browsers to a private profile so they open in
+        # the nested desktop instead of hijacking the user's real browser window.
+        argv = _isolate_browser_argv(argv)
         # Launch INTO the nested compositor: `swaymsg exec` spawns the process as
         # a child of the nested sway, which inherits that sway's WAYLAND_DISPLAY
         # so the window maps on HEADLESS-1 (never the host seat). systemd-run with

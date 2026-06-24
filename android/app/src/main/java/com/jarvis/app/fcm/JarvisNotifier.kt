@@ -51,7 +51,12 @@ object JarvisNotifier {
     }
 
     /**
-     * @param kind one of approval_needed | task_done | file_ready (daemon-defined).
+     * @param kind one of approval_needed | task_done | file_ready | session_opened |
+     *   auth (daemon-defined). kind=="session_opened" rides the generic
+     *   session-deep-link path: it carries [sessionId], so tapping deep-links into
+     *   that session's chat (via EXTRA_SESSION_ID) — no special-casing needed.
+     * @param challengeId present only for kind=="auth" (2FA cross-device unlock):
+     *   tapping the notification deep-links into the Approve screen.
      */
     fun notify(
         context: Context,
@@ -59,24 +64,37 @@ object JarvisNotifier {
         title: String,
         body: String,
         sessionId: String?,
+        challengeId: String? = null,
     ) {
         ensureChannels(context)
-        val channel = if (kind == "approval_needed") CHANNEL_ATTENTION else CHANNEL_UPDATES
+        // An "auth" unlock is attention-critical (the user is waiting at their
+        // computer), so it rides the high-importance attention channel.
+        val channel = if (kind == "approval_needed" || kind == "auth")
+            CHANNEL_ATTENTION else CHANNEL_UPDATES
+
+        // For the unlock push, override the title/body so the notification reads
+        // as a sign-in prompt regardless of what the daemon sent.
+        val showTitle = if (kind == "auth") "Unlock Jarvis" else title
+        val showBody = if (kind == "auth") "Approve to sign in on your computer" else body
 
         val tapIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
             sessionId?.let { putExtra(EXTRA_SESSION_ID, it) }
+            challengeId?.let { putExtra(EXTRA_CHALLENGE_ID, it) }
             putExtra(EXTRA_KIND, kind)
         }
+        // A distinct request code per challenge so a new unlock push doesn't reuse
+        // a stale PendingIntent extra.
+        val requestCode = (challengeId ?: sessionId ?: kind).hashCode()
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        val pending = PendingIntent.getActivity(context, kind.hashCode(), tapIntent, flags)
+        val pending = PendingIntent.getActivity(context, requestCode, tapIntent, flags)
 
         val notif = NotificationCompat.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setColor(ACCENT)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentTitle(showTitle)
+            .setContentText(showBody)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(showBody))
             .setAutoCancel(true)
             .setPriority(
                 if (channel == CHANNEL_ATTENTION) NotificationCompat.PRIORITY_HIGH
@@ -88,7 +106,7 @@ object JarvisNotifier {
         val nm = NotificationManagerCompat.from(context)
         if (!nm.areNotificationsEnabled()) return
         try {
-            nm.notify((sessionId ?: kind).hashCode(), notif)
+            nm.notify((challengeId ?: sessionId ?: kind).hashCode(), notif)
         } catch (_: SecurityException) {
             // POST_NOTIFICATIONS not granted — silently drop.
         }
@@ -96,4 +114,5 @@ object JarvisNotifier {
 
     const val EXTRA_SESSION_ID = "jarvis.session_id"
     const val EXTRA_KIND = "jarvis.kind"
+    const val EXTRA_CHALLENGE_ID = "jarvis.challenge_id"
 }

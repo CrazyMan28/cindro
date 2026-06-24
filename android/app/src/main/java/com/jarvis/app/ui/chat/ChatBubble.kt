@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -38,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -150,7 +152,15 @@ private fun MessageBubble(
     }
 }
 
-/** Pulsing three-dot "typing" indicator shown while the brain is working. */
+// Whimsical "working" phrases (Claude-Code flavored) rotated while the brain runs.
+private val WORK_PHRASES = listOf(
+    "Conquering the world", "Just chillin", "Pondering the universe", "Cooking",
+    "Summoning electrons", "Reticulating splines", "Bending spacetime",
+    "Consulting the oracle", "Vibing", "Untangling the matrix", "Herding photons",
+    "Caffeinating neurons", "Manifesting", "Hacking the mainframe",
+    "Plotting world domination", "Overthinking it", "Galaxy-braining", "Locking in",
+)
+
 @Composable
 fun TypingIndicator(modifier: Modifier = Modifier) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
@@ -160,28 +170,39 @@ fun TypingIndicator(modifier: Modifier = Modifier) {
         ) {
             Row(
                 Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 val transition = rememberInfiniteTransition(label = "typing")
-                repeat(3) { i ->
-                    val a by transition.animateFloat(
-                        initialValue = 0.3f,
-                        targetValue = 1f,
-                        animationSpec = infiniteRepeatable(
-                            animation = tween(durationMillis = 600, delayMillis = i * 160, easing = LinearEasing),
-                            repeatMode = RepeatMode.Reverse,
-                        ),
-                        label = "dot$i",
-                    )
-                    Box(
-                        Modifier
-                            .size(7.dp)
-                            .graphicsLayer { alpha = a }
-                            .clip(CircleShape)
-                            .background(JarvisPalette.Accent),
-                    )
+                // spinning ring
+                val angle by transition.animateFloat(
+                    initialValue = 0f, targetValue = 360f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 850, easing = LinearEasing),
+                        repeatMode = RepeatMode.Restart,
+                    ),
+                    label = "spin",
+                )
+                CircularProgressIndicator(
+                    progress = { 0.75f },
+                    modifier = Modifier.size(13.dp).graphicsLayer { rotationZ = angle },
+                    color = JarvisPalette.Accent,
+                    trackColor = JarvisPalette.Accent.copy(alpha = 0.18f),
+                    strokeWidth = 2.dp,
+                )
+                // rotating funny phrase
+                var phrase by remember { mutableStateOf(WORK_PHRASES.random()) }
+                LaunchedEffect(Unit) {
+                    while (true) {
+                        kotlinx.coroutines.delay(2400)
+                        phrase = WORK_PHRASES.random()
+                    }
                 }
+                Text(
+                    text = "$phrase…",
+                    color = JarvisPalette.Accent,
+                    style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                )
             }
         }
     }

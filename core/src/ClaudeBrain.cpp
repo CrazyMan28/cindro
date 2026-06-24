@@ -4,8 +4,10 @@
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
+#include <QUuid>
 
 namespace jarvis {
 
@@ -17,6 +19,8 @@ ClaudeBrain::ClaudeBrain(Options opts, QObject *parent)
     // ambient environment might carry (e.g. the Max account ~/.claude-secondary).
     if (m_opts.configDir.isEmpty())
         m_opts.configDir = QDir::homePath() + QStringLiteral("/.claude");
+    // A stable session id for the whole conversation (set turn 1, resumed after).
+    m_claudeSessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
 ClaudeBrain::~ClaudeBrain()
@@ -37,7 +41,7 @@ bool ClaudeBrain::isBusy() const
     return m_busy;
 }
 
-QStringList ClaudeBrain::buildArgs(const QString &prompt) const
+QStringList ClaudeBrain::buildArgs(const QString &prompt, const QStringList &images) const
 {
     QStringList args;
     args << QStringLiteral("-p")
@@ -54,8 +58,31 @@ QStringList ClaudeBrain::buildArgs(const QString &prompt) const
     // single value and never consumes the prompt.
     if (!m_opts.cwd.isEmpty())
         args << (QStringLiteral("--add-dir=") + m_opts.cwd);
+    // Grant Read access to the attachment dir(s) so the model can open the images.
+    QStringList imgDirs;
+    for (const QString &img : images) {
+        const QString d = QFileInfo(img).absolutePath();
+        if (!d.isEmpty() && !imgDirs.contains(d)) {
+            imgDirs << d;
+            args << (QStringLiteral("--add-dir=") + d);
+        }
+    }
+    // Conversation continuity: turn 1 fixes the session id; every later turn
+    // resumes it so the model keeps the full chat history.
+    if (!m_started)
+        args << QStringLiteral("--session-id") << m_claudeSessionId;
+    else
+        args << QStringLiteral("--resume") << m_claudeSessionId;
     if (!m_mcpConfigPath.isEmpty())
         args << QStringLiteral("--mcp-config") << m_mcpConfigPath;
+    // ALWAYS isolate: load ONLY the Jarvis --mcp-config servers (the built-in
+    // computer-use + whatever the user enabled in Jarvis Settings) and NEVER the
+    // CLI's own ~/.claude.json / CLAUDE_CONFIG_DIR mcpServers (project-tracker,
+    // desktop-use, vm-*, …). Without --strict-mcp-config claude MERGES both sets,
+    // so a plain chat (no --mcp-config) would silently inherit all of them. With
+    // no --mcp-config, --strict-mcp-config alone yields ZERO MCP servers — the
+    // correct, safe default for a Jarvis session.
+    args << QStringLiteral("--strict-mcp-config");
     if (!m_opts.permissionMode.isEmpty())
         args << QStringLiteral("--permission-mode") << m_opts.permissionMode;
     // `--` terminates option parsing so the prompt is unambiguously the sole
@@ -66,8 +93,6 @@ QStringList ClaudeBrain::buildArgs(const QString &prompt) const
 
 void ClaudeBrain::send(const QString &text, const QStringList &images)
 {
-    Q_UNUSED(images); // multimodal image attachment wiring lands later
-
     if (m_busy) {
         emitEvent(NormalizedBrainEvent::error(
             QStringLiteral("brain is busy; cancel the current turn first")));
@@ -109,7 +134,19 @@ void ClaudeBrain::send(const QString &text, const QStringList &images)
 
     m_proc = new QProcess(this);
     m_proc->setProgram(m_opts.program);
-    m_proc->setArguments(buildArgs(text));
+    // Multimodal: `claude -p` has no base64 image flag, but its Read tool renders
+    // local image files. The daemon decoded the phone's {mime,b64} attachments to
+    // file paths; tell the model to view each, and grant access via --add-dir.
+    QString promptText = text;
+    if (!images.isEmpty()) {
+        QString note = QStringLiteral("\n\n[The user attached %1 image file(s). "
+            "View each with your Read tool:").arg(images.size());
+        for (const QString &img : images)
+            note += QStringLiteral("\n") + img;
+        note += QStringLiteral("]");
+        promptText += note;
+    }
+    m_proc->setArguments(buildArgs(promptText, images));
     if (!m_opts.cwd.isEmpty())
         m_proc->setWorkingDirectory(m_opts.cwd);
     // Pin CLAUDE_CONFIG_DIR so the brain runs as the SELECTED claude account
@@ -220,6 +257,11 @@ void ClaudeBrain::onFinished(int exitCode, QProcess::ExitStatus status)
         QFile::remove(m_mcpConfigPath);
         m_mcpConfigPath.clear();
     }
+
+    // After the first non-crash turn the session exists; resume it from now on so
+    // the conversation context carries forward.
+    if (status != QProcess::CrashExit)
+        m_started = true;
 
     m_busy = false;
     emit turnFinished(m_sessionId);

@@ -1,5 +1,6 @@
 package com.jarvis.app
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -9,10 +10,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.fragment.app.FragmentActivity
 import com.jarvis.app.fcm.JarvisNotifier
+import com.jarvis.app.net.JarvisConnectionService
 import com.jarvis.app.ui.AppNav
 import com.jarvis.app.ui.theme.JarvisTheme
 import com.jarvis.app.ui.util.HapticController
@@ -24,8 +25,20 @@ import com.jarvis.app.voice.WakeService
  * Single-activity host. Extends [FragmentActivity] so the BiometricPrompt (used to gate
  * `biometric`-tier approvals) can attach. The whole UI is Compose; navigation lives in
  * [AppNav]. FCM taps arrive as intent extras and deep-link into a session's chat.
+ *
+ * Deep-link state is hoisted to Activity-level Compose [mutableStateOf] holders so that a
+ * tapped notification works in BOTH activity lifecycles: a cold start / from-background
+ * launch (handled in [onCreate]) AND a tap while the app is already in the foreground
+ * (delivered to [onNewIntent], which the default `standard`/`singleTop` launch reuses).
+ * Without the [onNewIntent] path, an "Unlock Jarvis" push tapped while the app was already
+ * open would silently fail to open the Approve screen.
  */
 class MainActivity : FragmentActivity() {
+
+    // Compose-observable deep-link holders, updated from whichever intent arrives.
+    private val deepLinkSession = mutableStateOf<String?>(null)
+    private val deepLinkWake = mutableStateOf(false)
+    private val deepLinkAuth = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -36,8 +49,14 @@ class MainActivity : FragmentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         JarvisNotifier.ensureChannels(this)
 
-        val initialSession = intent?.getStringExtra(JarvisNotifier.EXTRA_SESSION_ID)
-        val wokeViaWake = intent?.getBooleanExtra(WakeService.EXTRA_WAKE, false) == true
+        // Keep notifications flowing WITHOUT Firebase: a foreground service holds the
+        // daemon device WS open and posts local notifications (new session, file
+        // offer). Paired users only; harmless to call repeatedly.
+        if ((application as JarvisApp).pairingStore.isPaired)
+            JarvisConnectionService.start(this)
+
+        // Seed deep-link state from the launching intent (cold start / from background).
+        applyIntentExtras(intent)
 
         val app = application as JarvisApp
         // One app-wide Haptics + a live "haptics on?" reader (re-read each tap so
@@ -51,8 +70,6 @@ class MainActivity : FragmentActivity() {
         setContent {
             JarvisTheme {
                 val activity = this
-                val deepLinkSession = remember { mutableStateOf(initialSession) }
-                val deepLinkWake = remember { mutableStateOf(wokeViaWake) }
                 CompositionLocalProvider(LocalHaptics provides hapticController) {
                     Surface(modifier = Modifier.fillMaxSize()) {
                         AppNav(
@@ -60,14 +77,40 @@ class MainActivity : FragmentActivity() {
                             activity = activity,
                             deepLinkSessionId = deepLinkSession.value,
                             deepLinkWake = deepLinkWake.value,
+                            deepLinkAuthChallenge = deepLinkAuth.value,
                             onDeepLinkConsumed = {
                                 deepLinkSession.value = null
                                 deepLinkWake.value = false
+                                deepLinkAuth.value = null
                             },
                         )
                     }
                 }
             }
         }
+    }
+
+    /**
+     * A notification tapped while this Activity is already running (foreground or
+     * background-but-alive) is delivered here rather than re-running [onCreate]. Re-point
+     * [getIntent] and re-apply the extras so the same deep-link navigation fires.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyIntentExtras(intent)
+    }
+
+    /** Read deep-link extras from [intent] into the Compose state holders (null-safe;
+     *  absent extras never clobber existing pending state). */
+    private fun applyIntentExtras(intent: Intent?) {
+        intent ?: return
+        intent.getStringExtra(JarvisNotifier.EXTRA_SESSION_ID)
+            ?.let { deepLinkSession.value = it }
+        if (intent.getBooleanExtra(WakeService.EXTRA_WAKE, false)) deepLinkWake.value = true
+        // 2FA + fingerprint cross-device unlock: a tapped "Unlock Jarvis" push carries
+        // the challenge id; deep-link into the Approve screen.
+        intent.getStringExtra(JarvisNotifier.EXTRA_CHALLENGE_ID)
+            ?.let { deepLinkAuth.value = it }
     }
 }

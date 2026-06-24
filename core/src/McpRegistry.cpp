@@ -283,7 +283,7 @@ QString McpRegistry::computerUseBearer()
 
 QString McpRegistry::add(const QString &name, const QString &transport,
                          const QString &endpoint, const QString &token, bool enabled,
-                         const QString &risk)
+                         const QString &risk, const QJsonObject &env)
 {
     McpServerRow row;
     row.id = genId();
@@ -294,6 +294,7 @@ QString McpRegistry::add(const QString &name, const QString &transport,
     row.enabled = enabled;
     row.builtin = false;
     row.risk = risk;
+    row.env = env;
     if (!m_store.addMcpServer(row))
         return QString();
     return row.id;
@@ -326,7 +327,7 @@ QString McpRegistry::bearerEnvName(const QString &codexKey)
     return QStringLiteral("JARVIS_CU_BEARER_") + k;
 }
 
-CodexMcpOverrides McpRegistry::codexOverrides()
+CodexMcpOverrides McpRegistry::codexOverrides(const EnvResolver &resolveEnv)
 {
     CodexMcpOverrides out;
     for (const McpServerRow &row : m_store.listMcpServers()) {
@@ -344,6 +345,16 @@ CodexMcpOverrides McpRegistry::codexOverrides()
                 for (const QString &a : parts.mid(1))
                     quoted << QStringLiteral("\"%1\"").arg(a);
                 out.args << QStringLiteral("mcp_servers.%1.args=[%2]").arg(key, quoted.join(QLatin1Char(',')));
+            }
+            // Connector env (Google OAuth creds): emit each name -> resolved value
+            // as a codex config override. Values may be "secret:<key>" refs the
+            // daemon resolves through SettingsStore.
+            for (auto it = row.env.constBegin(); it != row.env.constEnd(); ++it) {
+                const QString raw = it.value().toString();
+                const QString value = resolveEnv ? resolveEnv(raw) : raw;
+                if (value.isEmpty())
+                    continue;
+                out.args << QStringLiteral("mcp_servers.%1.env.%2=%3").arg(key, it.key(), value);
             }
             continue;
         }

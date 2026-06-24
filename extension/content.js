@@ -13,7 +13,7 @@
   // content script performs resolves its own target element, so the glow
   // travels (CSS transition) to that element's rect center. No libs.
   // ===================================================================
-  const ACCENT = "#29E7FF"; // HUD cyan, matches desktop Theme.accent
+  const ACCENT = "#3D8BFF"; // Jarvis azure-blue — matches the desktop driving cursor
   const CHIP_HIDE_MS = 3000; // auto-hide the chip after this much inactivity
 
   const Takeover = (() => {
@@ -22,6 +22,9 @@
     let chip = null;       // top-center "Jarvis is using this tab" pill
     let hideTimer = 0;     // chip inactivity auto-hide
     let driving = false;   // true only while the agent is in control
+    let drivingLatched = false; // true for the whole turn (side panel signal) —
+                                // suppresses the per-action 3s auto-hide
+    let lastPoint = null;  // last cursor viewport point, so latched-on keeps it put
     let injected = false;
 
     function ensure() {
@@ -91,7 +94,7 @@
       });
       chip.innerHTML =
         `<span style="font-size:14px;line-height:1">⚡</span>` +
-        `<span>Jarvis is using this tab</span>`;
+        `<span>Jarvis is controlling Chrome</span>`;
       root.appendChild(chip);
 
       // keyframes for the halo pulse (scoped style node)
@@ -111,15 +114,19 @@
       ensure();
       chip.style.opacity = "1";
       chip.style.transform = "translate(-50%, 0)";
-      if (hideTimer) clearTimeout(hideTimer);
-      // Only auto-hide while driving stays true; if driving is turned off we
-      // hide immediately via setDriving(false).
-      hideTimer = setTimeout(() => { if (chip) chip.style.opacity = "0"; }, CHIP_HIDE_MS);
+      if (hideTimer) { clearTimeout(hideTimer); hideTimer = 0; }
+      // While a turn is latched on (side panel said driving=true) the chip must
+      // STAY for the whole turn — do NOT schedule the 3s auto-hide. Only when a
+      // discrete action shows the chip outside a latched turn do we auto-hide.
+      if (!drivingLatched) {
+        hideTimer = setTimeout(() => { if (chip) chip.style.opacity = "0"; }, CHIP_HIDE_MS);
+      }
     }
 
     // Move the glow cursor to a viewport point (px from getBoundingClientRect).
     function moveToPoint(x, y) {
       ensure();
+      lastPoint = { x, y };
       cursor.style.opacity = "1";
       cursor.style.transform = `translate(${x - 9}px, ${y - 6}px)`;
     }
@@ -153,8 +160,32 @@
       }
     }
 
-    return { onAction, moveToElement, moveToPoint, setDriving, showChip,
-             isDriving: () => driving };
+    // Turn-level latch from the side panel (panel -> sw -> content). When ON the
+    // chip + blue cursor STAY for the whole turn (no 3s auto-hide); per-action
+    // moves still travel the cursor. When OFF we fade chip + cursor out.
+    function setDrivingLatched(on) {
+      ensure();
+      drivingLatched = !!on;
+      if (drivingLatched) {
+        driving = true;
+        if (hideTimer) { clearTimeout(hideTimer); hideTimer = 0; }
+        // Keep the cursor visible at its last position, or center if we have
+        // never placed it this page.
+        if (!lastPoint) lastPoint = { x: innerWidth / 2, y: innerHeight / 2 };
+        cursor.style.opacity = "1";
+        cursor.style.transform = `translate(${lastPoint.x - 9}px, ${lastPoint.y - 6}px)`;
+        showChip(); // drivingLatched is true now -> no auto-hide scheduled
+      } else {
+        // Turn ended (final/error) or user stopped: fade chip + cursor out.
+        driving = false;
+        if (hideTimer) { clearTimeout(hideTimer); hideTimer = 0; }
+        chip.style.opacity = "0";
+        cursor.style.opacity = "0";
+      }
+    }
+
+    return { onAction, moveToElement, moveToPoint, setDriving, setDrivingLatched,
+             showChip, isDriving: () => driving };
   })();
 
   // Expose so sw.js (via chrome.scripting MAIN-world is not used here) and the
@@ -372,7 +403,24 @@
     },
   };
 
+  // On (re)load — e.g. right after Jarvis navigated this tab — ask the service
+  // worker whether a turn is currently driving, and if so re-show the banner +
+  // cursor immediately so they don't flicker out across navigations.
+  try {
+    chrome.runtime.sendMessage({ type: "jarvis-driving-query" }, (r) => {
+      if (chrome.runtime.lastError) return; // sw asleep / no receiver — ignore
+      if (r && r.on) { try { Takeover.setDrivingLatched(true); } catch (e) {} }
+    });
+  } catch (e) { /* ignore */ }
+
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    // Turn-level driving latch relayed from the side panel via sw.js. Keeps the
+    // chip + blue cursor up for the WHOLE turn (no 3s flicker), hidden on end.
+    if (msg && msg.type === "__jarvis_driving") {
+      try { Takeover.setDrivingLatched(!!msg.on); } catch (e) {}
+      sendResponse({ ok: true, driving: Takeover.isDriving() });
+      return false;
+    }
     if (!msg || !ACTIONS[msg.type]) return false;
     try {
       sendResponse(ACTIONS[msg.type](msg));

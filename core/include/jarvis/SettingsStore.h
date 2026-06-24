@@ -39,12 +39,47 @@ public:
     void setDefaultModel(const QString &m) { m_defaultModel = m; }
     void setTheme(const QJsonObject &t) { m_theme = t; }
 
+    // Preferred TTS voice slug for voice.tts (Mistral Voxtral). Empty means "let
+    // the daemon/VoiceService pick its default" (en_paul_neutral). Round-tripped
+    // in config.toml as a flat key `tts_voice = "..."`.
+    QString ttsVoice() const { return m_ttsVoice; }
+    void setTtsVoice(const QString &v) { m_ttsVoice = v; }
+
+    // Pluggable STT/TTS provider ids (default "voxtral" = Mistral cloud). The
+    // local providers are "whisper" (STT) and "piper" (TTS); the daemon degrades
+    // to voxtral at call time if the local binary/model is absent. Round-tripped
+    // in config.toml as flat keys `stt_provider`/`tts_provider`. Unknown values
+    // normalize to "voxtral" so a bad pref can never select a missing provider.
+    QString sttProvider() const { return m_sttProvider; }
+    void setSttProvider(const QString &p)
+    {
+        m_sttProvider = (p == QStringLiteral("whisper")) ? QStringLiteral("whisper")
+                                                         : QStringLiteral("voxtral");
+    }
+    QString ttsProvider() const { return m_ttsProvider; }
+    void setTtsProvider(const QString &p)
+    {
+        m_ttsProvider = (p == QStringLiteral("piper")) ? QStringLiteral("piper")
+                                                       : QStringLiteral("voxtral");
+    }
+
     // "Let Jarvis use a computer/browser" (default ON). When set, EVERY session
     // (not just coworker+agent) gets the computer-use MCP injected against a
     // lazily-provisioned nested agent desktop, so a plain chat can drive the
     // computer/Chrome on demand with no manual "Computer" tab / co-work step.
     bool letJarvisUseComputer() const { return m_letJarvisUseComputer; }
     void setLetJarvisUseComputer(bool v) { m_letJarvisUseComputer = v; }
+
+    // "Require phone+fingerprint to open Jarvis" (2FA + fingerprint cross-device
+    // unlock; default ON — no-brick). When set, the desktop shows a LockGate
+    // overlay on launch that runs auth.request (FCM push to the paired phone +
+    // biometric). ANTI-BRICK: when there is no reachable approver (no paired
+    // device, OR a paired device but no way to push to it), the daemon fail-opens
+    // so the user is never permanently locked out (see ControlServer::
+    // handleAuthRequest). Round-tripped in config.toml as a flat key
+    // `auth_lock_enabled = true|false`.
+    bool authLockEnabled() const { return m_authLockEnabled; }
+    void setAuthLockEnabled(bool v) { m_authLockEnabled = v; }
 
     // Which claude OAuth account the claude brain spawns against.
     //   "pro" -> ~/.claude          (you@example.com, the default)
@@ -81,6 +116,10 @@ private:
     QString m_defaultModel = QStringLiteral("gpt-5.5");
     QString m_claudeAccount = QStringLiteral("pro"); // default: Pro (~/.claude)
     bool m_letJarvisUseComputer = true; // default ON (auto computer-use in chat)
+    bool m_authLockEnabled = true;      // default ON (require phone+fingerprint)
+    QString m_ttsVoice;                 // preferred TTS voice slug (empty = default)
+    QString m_sttProvider = QStringLiteral("voxtral"); // STT provider id
+    QString m_ttsProvider = QStringLiteral("voxtral"); // TTS provider id
     QJsonObject m_theme;
     QJsonObject m_apiKeys; // provider -> value
     QString m_lastError;

@@ -8,6 +8,8 @@ import com.jarvis.app.protocol.FileOfferEvent
 import com.jarvis.app.protocol.FileOffer
 import com.jarvis.app.protocol.MirrorFrame
 import com.jarvis.app.protocol.SessionEvent
+import com.jarvis.app.protocol.SessionOpened
+import com.jarvis.app.protocol.SessionOpenedEvent
 import com.jarvis.app.protocol.WsResponse
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
@@ -75,6 +77,10 @@ class DeviceClient(
     /** `file.offer` events: the daemon pushed a file (device->phone). */
     private val _fileOffers = MutableSharedFlow<FileOffer>(extraBufferCapacity = 16)
     val fileOffers: SharedFlow<FileOffer> = _fileOffers.asSharedFlow()
+
+    /** `session.opened` events: a new session was created (any surface) — open its chat. */
+    private val _sessionOpened = MutableSharedFlow<SessionOpened>(extraBufferCapacity = 16)
+    val sessionOpened: SharedFlow<SessionOpened> = _sessionOpened.asSharedFlow()
 
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
@@ -214,6 +220,10 @@ class DeviceClient(
             }
             FileOfferEvent.from(obj)?.let { fo ->
                 _fileOffers.tryEmit(fo.offer)
+                return
+            }
+            SessionOpenedEvent.from(obj)?.let {
+                _sessionOpened.tryEmit(it.opened)
                 return
             }
             WsResponse.from(obj)?.let { resp ->

@@ -29,6 +29,47 @@ Window {
     // state (incl. the live chat transcript) survives dock/undock.
     property AppShell panel: AppShell { parent: floatContainer }
 
+    // ---- 2FA + fingerprint cross-device unlock (LockGate) ------------------
+    // When `locked`, a LockGate overlay covers BOTH windows' content; the panel
+    // stays mounted underneath so unlocking is instant. `locked` is armed from the
+    // persisted auth_lock_enabled setting on connect; FAIL-OPEN (no phone paired)
+    // is handled INSIDE LockGate (it unlocks immediately).
+    property bool locked: false
+    property bool authChecked: false
+
+    function applyLock(enabled) {
+        // Only arm the gate ONCE per launch (never re-lock mid-session on a
+        // settings refresh).
+        if (floatWin.authChecked)
+            return
+        floatWin.authChecked = true
+        floatWin.locked = enabled === true
+    }
+
+    Connections {
+        target: bridge
+        function onSettingsLoaded(s) {
+            floatWin.applyLock(s.auth_lock_enabled === true)
+        }
+        function onConnectedChanged() {
+            if (bridge.connected)
+                bridge.loadSettings()
+        }
+        // A session was opened (locally from the Sessions page OR via a remote
+        // session.opened broadcast). Navigate the shell to the Chat page (index 0)
+        // and raise/focus the window so the new chat is surfaced.
+        function onSessionOpened(sid) {
+            floatWin.panel.currentIndex = 0
+            WindowController.present()
+        }
+        // A foreign session opened while we're already mid-chat: surface the window
+        // but keep the current transcript (no switch, no clear).
+        function onSessionFocusRequested() {
+            floatWin.panel.currentIndex = 0
+            WindowController.present()
+        }
+    }
+
     // Reparent the panel into a container and bind its geometry there.
     function mountInto(container) {
         panel.parent = container
@@ -62,20 +103,20 @@ Window {
     Component.onCompleted: {
         WindowController.registerWindows(floatWin, dockWin)
         applyInitialMode()
+        // Pull settings so the LockGate can arm from auth_lock_enabled. (Settings
+        // also re-loads on connect via the Connections block above.)
+        if (bridge.connected)
+            bridge.loadSettings()
+        // --voice: jump straight to the Voice Mode page. `startOnVoice` is a
+        // context property set in main.cpp; guard with typeof so a normal launch
+        // (where it is still defined as false) is unaffected.
+        if (typeof startOnVoice !== "undefined" && startOnVoice)
+            floatWin.panel.currentIndex = floatWin.panel.voiceIndex
     }
 
-    // ---- distinct-cursor overlay: show/hide it as the take-over state flips --
-    Connections {
-        target: bridge
-        function onDrivingChanged() {
-            if (bridge.driving) {
-                WindowController.configureOverlay(overlayWin)
-                WindowController.showOverlay()
-            } else {
-                WindowController.hideOverlay()
-            }
-        }
-    }
+    // ---- distinct-cursor overlay: one per MONITOR, created/destroyed with the
+    //  take-over state by the Instantiator below (multi-monitor: the banner +
+    //  glow appear on EVERY screen). No manual show/hide needed.
 
     // ---- Floating shell -----------------------------------------------------
     Rectangle {
@@ -117,6 +158,21 @@ Window {
         }
 
         ResizeGrip { window: floatWin }
+
+        // ---- LockGate overlay (covers the floating window content) ---------
+        // Drawn LAST so it covers floatBar + floatContainer. The panel stays
+        // mounted underneath, so an unlock is instant. Active only when the FLOAT
+        // surface is the one hosting the panel (the dock window has its own gate)
+        // so only ONE auth.request fires per launch.
+        Loader {
+            anchors.fill: parent
+            active: floatWin.locked && WindowController.mode !== "dock"
+            z: 9999
+            sourceComponent: LockGate {
+                origin: "desktop"
+                onUnlocked: floatWin.locked = false
+            }
+        }
     }
 
     // ====================================================================
@@ -176,6 +232,19 @@ Window {
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
             }
+
+            // ---- LockGate overlay (covers the docked sidebar content) ------
+            // Active only when the DOCK surface hosts the panel, so exactly one
+            // gate (and one auth.request) is live at a time.
+            Loader {
+                anchors.fill: parent
+                active: floatWin.locked && WindowController.mode === "dock"
+                z: 9999
+                sourceComponent: LockGate {
+                    origin: "desktop"
+                    onUnlocked: floatWin.locked = false
+                }
+            }
         }
     }
 
@@ -185,21 +254,78 @@ Window {
     //  WindowController.configureOverlay). Hosts the distinct agent cursor +
     //  "JARVIS IS DRIVING" banner while a real-screen take-over is live.
     // ====================================================================
-    Window {
-        id: overlayWin
-        objectName: "overlayWin"
-        width: 1920
-        height: 1080
-        visible: false
-        color: "transparent"
-        // NOTE: NOT Qt.WindowTransparentForInput — pointer click-through is done
-        // via the EMPTY input region set in WindowController.configureOverlay, so
-        // the surface can still receive the Esc key for take-over cancel.
-        flags: Qt.FramelessWindowHint
-        title: "JARVIS DRIVING"
+    //  ONE overlay per monitor: the Instantiator spawns a full-screen,
+    //  click-through wlr-layer-shell OVERLAY on EVERY screen while a real-screen
+    //  take-over is live, and destroys them all when it ends. Click-through +
+    //  Esc-to-cancel are set per-surface in WindowController.configureOverlay.
+    Instantiator {
+        id: drivingOverlays
+        active: bridge.driving
+        model: bridge.driving ? Qt.application.screens : 0
+        delegate: Window {
+            required property var modelData
+            required property int index
+            objectName: "overlayWin"
+            screen: modelData
+            width: modelData ? modelData.width : 1920
+            height: modelData ? modelData.height : 1080
+            // MUST stay hidden until the layer-shell role is installed — showing it
+            // first makes it a normal xdg-toplevel (LayerShellQt: "already has a
+            // shell integration"), which only maps on one output + is tied to the
+            // current virtual desktop. configureOverlay() installs the role THEN
+            // shows it, so all monitors get a true all-desktop overlay.
+            visible: false
+            color: "transparent"
+            flags: Qt.FramelessWindowHint
+            title: "JARVIS DRIVING"
+            // Pass the output NAME + INDEX (plain values) so C++ can resolve the
+            // real QScreen and pin this surface to its own monitor.
+            Component.onCompleted: WindowController.configureOverlay(
+                this, modelData && modelData.name ? modelData.name : "", index)
+            // Give the overlay THIS monitor's global virtual-desktop rect so it
+            // can map the agent's global pointer to a local position and cull
+            // events that belong to another output.
+            DrivingOverlay {
+                anchors.fill: parent
+                screenX: modelData ? modelData.virtualX : 0
+                screenY: modelData ? modelData.virtualY : 0
+                screenW: modelData ? modelData.width : parent.width
+                screenH: modelData ? modelData.height : parent.height
+            }
+        }
+    }
 
-        DrivingOverlay {
-            anchors.fill: parent
+    // ====================================================================
+    //  STANDALONE ("popped out") WIDGET WINDOWS
+    // ====================================================================
+    //  Each "pop out" on the CANVAS page routes through Bridge::popOutWidget,
+    //  which emits spawnStandaloneWidget({id,title,spec}). We append it here and
+    //  an Instantiator spawns a StandaloneWidget Window per row — exactly the
+    //  driving-overlay Instantiator-of-Window precedent. Closing a window removes
+    //  its row (and so destroys the Window).
+    ListModel { id: standaloneWidgetModel }
+
+    Connections {
+        target: bridge
+        function onSpawnStandaloneWidget(w) {
+            standaloneWidgetModel.append({
+                "widgetId": w.id !== undefined ? ("" + w.id) : "",
+                "widgetTitle": w.title !== undefined ? ("" + w.title) : "",
+                "widgetSpec": w.spec !== undefined ? w.spec : ({})
+            })
+        }
+    }
+
+    Instantiator {
+        id: standaloneWidgets
+        model: standaloneWidgetModel
+        delegate: StandaloneWidget {
+            required property int index
+            required property var model
+            widgetId: model.widgetId
+            widgetTitle: model.widgetTitle
+            widgetSpec: model.widgetSpec
+            onClosed: standaloneWidgetModel.remove(index)
         }
     }
 

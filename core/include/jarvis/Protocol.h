@@ -65,6 +65,7 @@ struct NormalizedBrainEvent {
         Usage,         // {input_tokens,output_tokens,...}
         Final,         // {}
         Error,         // {message}
+        DrivingState,  // {active}  — real-screen take-over on/off (drives the overlay)
         Unknown
     };
 
@@ -95,6 +96,7 @@ struct NormalizedBrainEvent {
     static NormalizedBrainEvent usage(const QJsonObject &usageFields);
     static NormalizedBrainEvent final_();
     static NormalizedBrainEvent error(const QString &message);
+    static NormalizedBrainEvent drivingState(bool active);
 
     // Helper for the field of a thread_started event.
     QString threadId() const { return fields.value(QStringLiteral("thread_id")).toString(); }
