@@ -1105,6 +1105,12 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             m_store.updateTitle(sessionId, t);
     }
 
+    // Persist the USER's turn to history so it replays on reload. Brain events are
+    // persisted via onBrainEvent; WITHOUT this the user's own message is never
+    // stored, so a reopened session shows only the assistant's side.
+    m_store.appendEvent(sessionId,
+                        NormalizedBrainEvent::message(QStringLiteral("user"), text));
+
     // Memory PREFETCH (HERMES_FEATURES §1), applied for ALL brains: prepend a
     // relevant-memory block to the user's turn so the model has context. The
     // memory tools (memory.*) let the model curate; this is the injection half.
@@ -1140,7 +1146,11 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "3) If they ask you to operate a computer or app but do NOT say whose "
             "screen (e.g. just \"open spotify\"), you MUST call ask_user(\"Use your "
             "real screen, or my own agent desktop?\", [\"My real screen\", \"Your own "
-            "agent desktop\"]) FIRST, then use the matching tool set. Never guess.");
+            "agent desktop\"]) FIRST, then use the matching tool set. Never guess.\n"
+            "VISUALS: whenever the user asks you to SHOW / DRAW / DISPLAY / VISUALIZE "
+            "something (a chart, a list, a diagram, a card, \"show me a duck\"), you "
+            "MUST CALL the render_widget tool with a JSON spec — it pops the widget on "
+            "their Canvas/chat. Do NOT just describe it in words; actually render it.");
         effectiveText = guide + QStringLiteral("\n---\n") + effectiveText;
     }
 
