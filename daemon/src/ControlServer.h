@@ -40,6 +40,7 @@
 QT_BEGIN_NAMESPACE
 class QWebSocketServer;
 class QWebSocket;
+class QNetworkAccessManager;
 QT_END_NAMESPACE
 
 namespace jarvis {
@@ -399,6 +400,12 @@ private:
     // Epoch-ms until which a desktop unlock is auto-approved (granted by a deliberate
     // phone-app action). 0 = no grace.
     qint64 m_deviceAuthGraceUntil = 0;
+
+    // Model-generated session titles: a cheap async Mistral chat call names the
+    // session from its first user message (replaces the truncated placeholder).
+    QNetworkAccessManager *m_titleNam = nullptr;
+    QSet<QString> m_titleGenStarted;   // fire once per session
+    void generateSessionTitle(const QString &sessionId, const QString &seed);
 
     // Wave 5 intelligence backend: Jarvis-level long-term memory (SQLite+FTS5)
     // and self-authored skills. Memory is prefetched/injected before every brain

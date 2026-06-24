@@ -1040,6 +1040,63 @@ void ControlServer::onTurnFinished(const QString &sessionId)
     sendToSession(sessionId, pending.text, pending.images, &err);
 }
 
+void ControlServer::generateSessionTitle(const QString &sessionId, const QString &seed)
+{
+    // Cheap, async, model-generated title from the first user message — reuses the
+    // Mistral key (already configured for voice). Replaces the truncated placeholder.
+    const QString key = m_settings.apiKey(QStringLiteral("mistral"));
+    if (key.isEmpty() || seed.trimmed().isEmpty() || m_titleGenStarted.contains(sessionId))
+        return;
+    m_titleGenStarted.insert(sessionId);
+    if (!m_titleNam)
+        m_titleNam = new QNetworkAccessManager(this);
+
+    QJsonArray msgs;
+    QJsonObject sys;
+    sys.insert(QStringLiteral("role"), QStringLiteral("system"));
+    sys.insert(QStringLiteral("content"),
+               QStringLiteral("Generate a concise 3-5 word Title Case title for a chat that "
+                              "begins with the user's message. Reply with ONLY the title — no "
+                              "quotes, no trailing punctuation."));
+    msgs.append(sys);
+    QJsonObject usr;
+    usr.insert(QStringLiteral("role"), QStringLiteral("user"));
+    usr.insert(QStringLiteral("content"), seed.left(400));
+    msgs.append(usr);
+
+    QJsonObject body;
+    body.insert(QStringLiteral("model"), QStringLiteral("mistral-small-latest"));
+    body.insert(QStringLiteral("max_tokens"), 16);
+    body.insert(QStringLiteral("temperature"), 0.3);
+    body.insert(QStringLiteral("messages"), msgs);
+
+    QNetworkRequest rq(QUrl(QStringLiteral("https://api.mistral.ai/v1/chat/completions")));
+    rq.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    rq.setRawHeader("Authorization", QByteArray("Bearer ") + key.toUtf8());
+    QNetworkReply *reply =
+        m_titleNam->post(rq, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, sessionId]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            return;
+        const QJsonObject o = QJsonDocument::fromJson(reply->readAll()).object();
+        const QJsonArray choices = o.value(QStringLiteral("choices")).toArray();
+        if (choices.isEmpty())
+            return;
+        QString title = choices.first().toObject()
+                            .value(QStringLiteral("message")).toObject()
+                            .value(QStringLiteral("content")).toString();
+        title = title.remove(QLatin1Char('"')).remove(QLatin1Char('\n')).trimmed();
+        while (!title.isEmpty() && (title.endsWith(QLatin1Char('.'))
+               || title.endsWith(QLatin1Char('!')) || title.endsWith(QLatin1Char('?'))))
+            title.chop(1);
+        if (title.length() > 60)
+            title = title.left(57).trimmed() + QStringLiteral("…");
+        if (!title.isEmpty() && m_store.get(sessionId))
+            m_store.updateTitle(sessionId, title);  // shows on the Sessions list
+    });
+}
+
 bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
                                   const QStringList &images, QString *err)
 {
@@ -1102,7 +1159,9 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         if (t.length() > 48)
             t = t.left(47).trimmed() + QStringLiteral("…");
         if (!t.isEmpty())
-            m_store.updateTitle(sessionId, t);
+            m_store.updateTitle(sessionId, t);   // immediate placeholder
+        // ...and kick off a model-generated title to replace it (async, cheap).
+        generateSessionTitle(sessionId, text);
     }
 
     // Persist the USER's turn to history so it replays on reload. Brain events are

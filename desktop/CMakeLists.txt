@@ -87,3 +87,11 @@ target_link_libraries(jarvis-sidebar PRIVATE
     Qt6::Multimedia
     LayerShellQt::Interface
 )
+
+# GUI integration smoke test: load the FULL UI offscreen (every page instantiated
+# via Main.qml), verify the QML tree renders + survives a settle window, exit 0.
+# Catches QML load/runtime regressions in CI (ctest), not just a compile.
+add_test(NAME gui_selftest COMMAND jarvis-sidebar --selftest)
+set_tests_properties(gui_selftest PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_FORCE_STDERR_LOGGING=1"
+    TIMEOUT 30)

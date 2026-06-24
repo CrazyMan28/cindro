@@ -58,6 +58,10 @@ Verified = unit tests pass, live WS check, and/or exercised on the running daemo
   (its card profile was "off"; the default source was a dead analog jack). Added a PipeWire
   source for it + set it default + sane gain. Capture verified.
 - **KDE plasmoid** to toggle the sidebar.
+- **KWin multi-seat fork — DONE & running live:** a forked `kwin 6.7.0`
+  (`~/projects/kwin-build/bin/kwin_wayland`, source in `~/projects/kwin-jarvis-fork/`)
+  gives the agent its own seat/cursor on the real screen. (Confirmed: it's the active
+  compositor.)
 
 ---
 
@@ -87,8 +91,8 @@ Verified = unit tests pass, live WS check, and/or exercised on the running daemo
 2. **Google Docs/Drive MCP** — find/ship real MCP packages (or a custom one) for those two.
 3. **2FA on-device test pass** + make the DMIC PipeWire source robust (by-path, not `hw:3,0`).
 4. **Roadmap leftovers from the plan:** WebRTC live video (currently MJPEG), plugin
-   marketplace UI polish, KWin multi-seat fork (agent's own cursor/seat — see
-   [`KWIN_MULTISEAT_FORK.md`](KWIN_MULTISEAT_FORK.md)), richer renderer widgets.
+   marketplace UI polish, richer renderer widgets. (KWin multi-seat fork is **DONE** — see
+   above — not pending.)
 5. **A real automated UI/integration test** for the desktop (most desktop verification is
    offscreen-QML-load + live WS; there's no clicking-the-GUI test).
 
