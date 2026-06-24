@@ -35,11 +35,16 @@ Verified = unit tests pass, live WS check, and/or exercised on the running daemo
   `--strict-mcp-config`) + opt-in CLI-MCP toggles.
 - **Desktop chat:** streaming/typewriter, brain+model picker, stop button, auto-titled
   sessions, in-conversation thinking orb + funny phrases.
-- **Session management (isolation):** desktop / phone / Chrome / voice sessions are now
-  **separate** — the desktop only renders its own session's events; a foreign session opening
-  only raises the window (never hijacks the chat); opening an old session **resumes** it
-  (re-spawns the brain) instead of "inactive session". Sessions list is a flat, openable,
-  deletable list.
+- **Session management (isolation) — verified with logs:** desktop / phone / Chrome / voice
+  sessions are **separate**. The daemon broadcasts every session's events to all clients, so the
+  desktop FILTERS: it renders only its own session's events. Proven live — a simulated Chrome
+  session logs `session.opened -> focus-only` then `DROP foreign session.event …`, never
+  reaching the chat. A foreign session opening only raises the window (never hijacks the chat);
+  opening an old session **resumes** it (re-spawns the brain) instead of "inactive session";
+  `+ New` clears + drops the session; sessions are a flat, openable, deletable list. Belt-and-
+  suspenders QML guard + `Bridge[session]` logging added.
+- **Voice orb animation:** smooth "breathing" while thinking/speaking + a soft mic-level swell
+  while listening (replaced the abrupt size-jump).
 - **Voice mode:** hands-free (no hold-to-talk) capture via **pw-record** (the path that
   actually works on this PipeWire box), RMS VAD calibrated to the mic noise floor (~0.5s
   end-of-turn), brain/model/**speaker** pickers, live mic-level orb. Mistral Voxtral
@@ -101,10 +106,10 @@ Verified = unit tests pass, live WS check, and/or exercised on the running daemo
 Most of the earlier "next up" list is now **done** (titles, Docs/Drive MCP, DMIC by-name, 2FA
 flow verified, GUI test) and KWin was already done. What genuinely remains:
 
-1. **WebRTC live video (Wave C)** — a smoother 30fps upgrade over the working MJPEG mirror.
-   This is the one **multi-day** item: a GStreamer `webrtcbin` pipeline in the daemon/engine +
-   signaling over the device WS + an Android **libwebrtc** client + ICE/STUN. Not landed — MJPEG
-   live video works in the meantime.
+1. **WebRTC live video (Wave C)** — **deferred by user decision** (kept out for now; MJPEG live
+   video covers it). A smoother 30fps upgrade: GStreamer `webrtcbin` pipeline + signaling over
+   the device WS + an Android **libwebrtc** client + ICE/STUN. Deps verified present
+   (GStreamer 1.28 + webrtcbin + VP8), so it's a clean future build — just multi-day.
 2. **Plugin marketplace UI polish** — the registry/install/pages all work; this is cosmetic.
 3. **Richer renderer widgets** (more DSL node types), and a true **clicking** GUI test (the
    `gui_selftest` covers load/render, not interaction).
