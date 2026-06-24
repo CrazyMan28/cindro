@@ -693,6 +693,10 @@ private:
     QProcess *m_recProc = nullptr;      // active pw-record capture
     QString m_recPath;                  // wav path for the active capture
     bool m_recAutoStop = false;         // a duration timer will stop the capture
+    // Hands-free voice mode capture: continuous pw-record streaming raw s16 to
+    // stdout (same proven path as dictation). m_pwHeaderSkip drops the WAV header.
+    QProcess *m_voiceProc = nullptr;
+    int m_pwHeaderSkip = 0;
     bool m_ttsRequested = false;        // a voice.tts is in flight (route the reply)
 
     // ---- Voice MODE (QtMultimedia capture + playback, orb state) ------------
