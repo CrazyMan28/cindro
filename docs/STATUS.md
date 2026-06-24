@@ -58,6 +58,17 @@ Verified = unit tests pass, live WS check, and/or exercised on the running daemo
   (its card profile was "off"; the default source was a dead analog jack). Added a PipeWire
   source for it + set it default + sane gain. Capture verified.
 - **KDE plasmoid** to toggle the sidebar.
+- **Live video to the phone (MJPEG):** the daemon mirrors a session's screen as
+  `mirror.frame` binary frames over the device WS; the Android Computer screen decodes
+  + displays them. (Works today; WebRTC below is a smoother upgrade, not a prerequisite.)
+- **Plugin marketplace:** `PluginRegistry` + `plugins.catalog`/`plugins.install`, a desktop
+  `PluginsPage`, an Android `PluginsScreen`, signed-package format + a seeded sample. Functional
+  (UI polish is the only open bit).
+- **Model-generated session titles:** an async Mistral call names each session from its first
+  message ("…segfault in my C++ code" → "Debugging C++ Pointer Segfault"). Verified.
+- **Real Google Docs/Drive MCP:** both route through `@modelcontextprotocol/server-gdrive`.
+- **GUI integration test:** `jarvis-sidebar --selftest` loads the whole UI offscreen + verifies
+  it renders → the `gui_selftest` ctest (16/16 total).
 - **KWin multi-seat fork — DONE & running live:** a forked `kwin 6.7.0`
   (`~/projects/kwin-build/bin/kwin_wayland`, source in `~/projects/kwin-jarvis-fork/`)
   gives the agent its own seat/cursor on the real screen. (Confirmed: it's the active
@@ -87,14 +98,18 @@ Verified = unit tests pass, live WS check, and/or exercised on the running daemo
 
 ## ⛔ Not started / next up
 
-1. **Model-generated session titles** (extra cheap LLM call to summarize → title).
-2. **Google Docs/Drive MCP** — find/ship real MCP packages (or a custom one) for those two.
-3. **2FA on-device test pass** + make the DMIC PipeWire source robust (by-path, not `hw:3,0`).
-4. **Roadmap leftovers from the plan:** WebRTC live video (currently MJPEG), plugin
-   marketplace UI polish, richer renderer widgets. (KWin multi-seat fork is **DONE** — see
-   above — not pending.)
-5. **A real automated UI/integration test** for the desktop (most desktop verification is
-   offscreen-QML-load + live WS; there's no clicking-the-GUI test).
+Most of the earlier "next up" list is now **done** (titles, Docs/Drive MCP, DMIC by-name, 2FA
+flow verified, GUI test) and KWin was already done. What genuinely remains:
+
+1. **WebRTC live video (Wave C)** — a smoother 30fps upgrade over the working MJPEG mirror.
+   This is the one **multi-day** item: a GStreamer `webrtcbin` pipeline in the daemon/engine +
+   signaling over the device WS + an Android **libwebrtc** client + ICE/STUN. Not landed — MJPEG
+   live video works in the meantime.
+2. **Plugin marketplace UI polish** — the registry/install/pages all work; this is cosmetic.
+3. **Richer renderer widgets** (more DSL node types), and a true **clicking** GUI test (the
+   `gui_selftest` covers load/render, not interaction).
+4. **2FA on real hardware:** the WS flow is verified (`auth_gate_check.py` OK); only the
+   physical phone's fingerprint UI is untested from here.
 
 ---
 
