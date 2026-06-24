@@ -270,9 +270,9 @@ Item {
                 property real phase: 0.0
                 NumberAnimation on phase {
                     from: 0.0; to: Math.PI * 2
-                    duration: page.vstate === "listening" ? 900
-                              : page.vstate === "thinking" ? 500
-                              : page.vstate === "speaking" ? 550 : 3200
+                    duration: page.vstate === "listening" ? 1100
+                              : page.vstate === "thinking" ? 950
+                              : page.vstate === "speaking" ? 900 : 2600
                     loops: Animation.Infinite
                     running: page.visible
                 }
@@ -326,13 +326,21 @@ Item {
                     tint: Theme.accent
                     spinning: true
                     thinking: page.vstate === "thinking"
-                    // a touch larger core when speaking so it "talks"; while listening
-                    // the core swells with the live mic level so you can SEE it hearing you
-                    coreScale: page.vstate === "speaking" ? 1.10
-                               : page.vstate === "listening" ? (1.0 + 0.16 * bridge.voiceLevel)
-                               : 1.0
-                    // Ease the core size so the level reaction reads smooth, not jittery.
-                    Behavior on coreScale { NumberAnimation { duration: 90; easing.type: Easing.OutQuad } }
+                    // Smooth, tasteful motion: gentle "breathing" while thinking/speaking
+                    // (no abrupt size jump), and a soft swell with the live mic level while
+                    // listening so you can see it hearing you. idle rests at 1.0.
+                    property real pulse: 0.0
+                    coreScale: page.vstate === "listening" ? (1.0 + 0.14 * bridge.voiceLevel)
+                               : (page.vstate === "thinking" || page.vstate === "speaking")
+                                 ? (1.0 + reactor.pulse)
+                                 : 1.0
+                    Behavior on coreScale { NumberAnimation { duration: 110; easing.type: Easing.OutQuad } }
+                    SequentialAnimation on pulse {
+                        running: page.vstate === "thinking" || page.vstate === "speaking"
+                        loops: Animation.Infinite
+                        NumberAnimation { from: 0.0; to: 0.08; duration: 620; easing.type: Easing.InOutSine }
+                        NumberAnimation { from: 0.08; to: 0.0; duration: 620; easing.type: Easing.InOutSine }
+                    }
                 }
 
                 // tap the orb to start/stop the hands-free conversation
