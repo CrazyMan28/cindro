@@ -71,8 +71,15 @@ private slots:
     // authed phones (a fresh id can't be subscribed yet) + an FCM push so a
     // backgrounded phone can surface the new chat.
     void onSessionOpened(const QString &sessionId, const QString &title);
+    // A new unlock challenge -> emit an 'auth.challenge' event to ALL authed phones
+    // so the app surfaces the Approve screen WITHOUT Firebase/FCM.
+    void onAuthChallengePush(const QString &challengeId, const QString &origin, qint64 expiresAt);
 
 private:
+    // True iff at least one phone is connected AND authed over the device WS (its
+    // app is open) — a reachable approver for the desktop unlock flow.
+    bool hasAuthedDevice() const;
+
     // Per-connection state.
     struct Conn {
         bool authed = false;

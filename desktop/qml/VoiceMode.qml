@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls.Basic
 import QtQuick.Effects
 import JarvisSidebar
 
@@ -24,6 +25,12 @@ Item {
     readonly property string vstate: bridge.voiceState   // idle|listening|thinking|speaking
     property string heardText: ""        // last transcript (sttText)
     property string replyText: ""        // last assistant message
+
+    // Which brain + model backs the voice session (mirrors the chat picker). The
+    // model list repopulates per brain via bridge.listModels.
+    property string selectedBrain: "codex"
+    property var modelOptions: []
+    property string selectedModel: ""
 
     // Whimsical "thinking" phrases (mirrors JarvisPanel WORK_PHRASES idea).
     property var thinkingPhrases: [
@@ -50,15 +57,29 @@ Item {
     // Ensure a dedicated voice session exists when the page first appears, so the
     // model can answer "what's on my screen" via the computer-use screenshot tool.
     Component.onCompleted: {
-        if (bridge.connected)
-            bridge.ensureVoiceSession()
+        if (bridge.connected) {
+            bridge.listModels(page.selectedBrain)
+            bridge.setVoicePreferences(page.selectedBrain, page.selectedModel)
+        }
     }
 
     Connections {
         target: bridge
         function onConnectedChanged() {
-            if (bridge.connected)
-                bridge.ensureVoiceSession()
+            if (bridge.connected) {
+                bridge.listModels(page.selectedBrain)
+                bridge.setVoicePreferences(page.selectedBrain, page.selectedModel)
+            }
+        }
+        // Populate the voice model picker for the selected brain.
+        function onModelsListed(brain, models) {
+            if (brain && brain.length > 0 && brain !== page.selectedBrain)
+                return
+            if (models && models.length > 0) {
+                page.modelOptions = models
+                page.selectedModel = models[0]
+                bridge.setVoicePreferences(page.selectedBrain, page.selectedModel)
+            }
         }
         // Push-to-talk transcript.
         function onSttText(text) { page.heardText = text }
@@ -115,6 +136,77 @@ Item {
             Layout.fillWidth: true
             title: "Voice Mode"
             subtitle: "Just talk — Jarvis is listening. Tap the orb or Space to start/stop."
+        }
+
+        // ---- which AI backs the voice session: brain + model ----------------
+        RowLayout {
+            Layout.alignment: Qt.AlignHCenter
+            spacing: 8
+
+            Text {
+                text: "BRAIN"
+                color: Theme.textFaint
+                font.family: Theme.fontDisplay
+                font.pixelSize: 9
+                font.letterSpacing: Theme.trackWide
+                Layout.alignment: Qt.AlignVCenter
+            }
+            ComboBox {
+                id: vBrainPicker
+                Layout.preferredWidth: 112
+                Layout.preferredHeight: 30
+                model: ["codex", "claude"]
+                currentIndex: Math.max(0, model.indexOf(page.selectedBrain))
+                onActivated: {
+                    page.selectedBrain = currentText
+                    page.modelOptions = []
+                    page.selectedModel = ""
+                    bridge.listModels(currentText)
+                    bridge.setVoicePreferences(currentText, "")
+                    bridge.resetVoiceSession()
+                }
+                background: Rectangle {
+                    radius: Theme.radiusSm; color: Theme.surfaceInput
+                    border.width: 1; border.color: Theme.hairlineSoft
+                }
+                contentItem: Text {
+                    leftPadding: 10; rightPadding: 24
+                    text: vBrainPicker.displayText; color: Theme.text
+                    font.pixelSize: 12; font.family: Theme.fontSans
+                    verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                }
+            }
+            Text {
+                text: "MODEL"
+                color: Theme.textFaint
+                font.family: Theme.fontDisplay
+                font.pixelSize: 9
+                font.letterSpacing: Theme.trackWide
+                Layout.alignment: Qt.AlignVCenter
+            }
+            ComboBox {
+                id: vModelPicker
+                Layout.preferredWidth: 196
+                Layout.preferredHeight: 30
+                model: page.modelOptions
+                enabled: page.modelOptions.length > 0
+                onActivated: {
+                    page.selectedModel = currentText
+                    bridge.setVoicePreferences(page.selectedBrain, currentText)
+                    bridge.resetVoiceSession()
+                }
+                background: Rectangle {
+                    radius: Theme.radiusSm; color: Theme.surfaceInput
+                    border.width: 1; border.color: Theme.hairlineSoft
+                }
+                contentItem: Text {
+                    leftPadding: 10; rightPadding: 24
+                    text: vModelPicker.displayText.length > 0 ? vModelPicker.displayText : "default"
+                    color: Theme.text
+                    font.pixelSize: 12; font.family: Theme.fontSans
+                    verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                }
+            }
         }
 
         // ---- center stage: orb + (optional) widget beside it ---------------

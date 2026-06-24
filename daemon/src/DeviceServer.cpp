@@ -104,6 +104,11 @@ bool DeviceServer::start()
         // new session (any surface) -> 'session.opened' event + FCM to phones.
         connect(m_control, &ControlServer::sessionOpened,
                 this, &DeviceServer::onSessionOpened);
+        // new unlock challenge -> 'auth.challenge' event to authed phones (no FCM).
+        connect(m_control, &ControlServer::authChallengePush,
+                this, &DeviceServer::onAuthChallengePush);
+        // Let the unlock flow know whether a phone is actually connected + authed.
+        m_control->setAuthedDeviceProbe([this]() { return hasAuthedDevice(); });
     }
 
     return localOk || m_tailnet != nullptr;
@@ -498,6 +503,11 @@ Response DeviceServer::devSessionCreate(Conn &c, const Request &req)
 
     // Subscribe this device socket to the new session's event stream.
     c.subscribedSessions.insert(sessionId);
+
+    // A deliberate action from the authed phone app: the user is present at an
+    // unlocked phone, so let the desktop "start unlocked" for a short grace window
+    // (it won't re-prompt for a fingerprint just to view this new chat).
+    m_control->grantDeviceAuthGrace();
 
     QJsonObject result;
     result.insert(QStringLiteral("session_id"), sessionId);
@@ -1009,6 +1019,38 @@ void DeviceServer::onSessionOpened(const QString &sessionId, const QString &titl
         msg.data.insert(QStringLiteral("session_id"), sessionId);
         for (const PushTokenRow &t : m_control->store().listPushTokens())
             m_control->fcm()->send(t.fcmToken, msg);
+    }
+}
+
+bool DeviceServer::hasAuthedDevice() const
+{
+    for (auto it = m_conns.begin(); it != m_conns.end(); ++it)
+        if (it.value().authed)
+            return true;
+    return false;
+}
+
+void DeviceServer::onAuthChallengePush(const QString &challengeId,
+                                       const QString &origin, qint64 expiresAt)
+{
+    // The no-Firebase delivery of an unlock challenge: every authed phone gets an
+    // 'auth.challenge' event over its socket; the app's background service posts an
+    // "Unlock Jarvis" notification that deep-links into the Approve screen.
+    QJsonObject data;
+    data.insert(QStringLiteral("challenge_id"), challengeId);
+    data.insert(QStringLiteral("origin"), origin);
+    data.insert(QStringLiteral("expires_at"), expiresAt);
+
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), kProtocolVersion);
+    frame.insert(QStringLiteral("event"), QStringLiteral("auth.challenge"));
+    frame.insert(QStringLiteral("data"), data);
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+
+    for (auto it = m_conns.begin(); it != m_conns.end(); ++it) {
+        if (it.value().authed)
+            it.key()->sendTextMessage(payload);
     }
 }
 

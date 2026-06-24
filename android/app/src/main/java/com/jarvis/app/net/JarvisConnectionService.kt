@@ -103,6 +103,21 @@ class JarvisConnectionService : Service() {
                 )
             }
         }
+        // An unlock challenge (desktop or Chrome) over the WS -> high-priority
+        // "Unlock Jarvis" notification that deep-links into the Approve screen. This
+        // is the no-Firebase path for 2FA + the Chrome lock.
+        scope.launch {
+            app.repository.authChallenges.collect { ch ->
+                JarvisNotifier.notify(
+                    applicationContext,
+                    kind = "auth",
+                    title = if (ch.origin == "extension") "Unlock Jarvis (Chrome)" else "Unlock Jarvis",
+                    body = "Approve sign-in with your fingerprint",
+                    sessionId = null,
+                    challengeId = ch.challengeId,
+                )
+            }
+        }
     }
 
     override fun onDestroy() {

@@ -274,6 +274,20 @@ data class SessionOpened(val sessionId: String, val title: String?) {
     }
 }
 
+/** A cross-device unlock challenge pushed over the device WS (the no-Firebase path):
+ *  the desktop (or Chrome) asked to unlock; the phone shows the Approve screen. */
+data class AuthChallenge(val challengeId: String, val origin: String) {
+    companion object {
+        fun from(o: JsonObject): AuthChallenge? {
+            if (o.get("event")?.asString != "auth.challenge") return null
+            val d = o.getAsJsonObject("data") ?: return null
+            val cid = d.get("challenge_id")?.asString.orEmpty()
+            if (cid.isEmpty()) return null
+            return AuthChallenge(cid, d.get("origin")?.takeIf { !it.isJsonNull }?.asString ?: "desktop")
+        }
+    }
+}
+
 /**
  * Decoded `jarvis://pair?host=<tailnet-ip>:8796&code=<code>&fp=<daemon-pubkey-fp>` payload
  * scanned from the desktop QR (or pasted manually).

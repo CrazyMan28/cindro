@@ -889,9 +889,18 @@ void Bridge::ensureVoiceSession()
         m_voiceSessionId = m_sessionId;
         return;
     }
-    // No session yet: spin one up. createSession() stashes the id on the
+    // No session yet: spin one up with the voice-mode brain/model selection
+    // (empty = daemon defaults). createSession() stashes the id on the
     // session.create reply (m_sessionId); we adopt it lazily when it arrives.
-    createSession(QStringLiteral("coworker"), QString(), QString());
+    createSession(QStringLiteral("coworker"), m_voiceBrain, m_voiceModel);
+}
+
+void Bridge::resetVoiceSession()
+{
+    // Drop the current voice session so the NEXT startConversation creates a fresh
+    // one with the currently-selected brain/model.
+    m_voiceSessionId.clear();
+    newSession();
 }
 
 QByteArray Bridge::pcmToWav(const QByteArray &pcm, int sampleRate, int channels) const

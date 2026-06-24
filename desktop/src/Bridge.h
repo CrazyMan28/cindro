@@ -283,6 +283,14 @@ public:
     // Ensure a dedicated voice coworker/coder session exists (so "what's on my
     // screen" can use the computer-use screenshot tool). Reuses createSession.
     Q_INVOKABLE void ensureVoiceSession();
+    // Voice MODE brain/model selection (mirrors the chat picker). Set before the
+    // voice session is created; resetVoiceSession() drops it so a new brain applies.
+    Q_INVOKABLE void setVoicePreferences(const QString &brain, const QString &model)
+    {
+        m_voiceBrain = brain;
+        m_voiceModel = model;
+    }
+    Q_INVOKABLE void resetVoiceSession();
 
     // ---- In-app browser (agent's controlled Chrome via the engine bridge) --
     // The desktop never embeds QtWebEngine; it drives the engine's browser tools
@@ -695,6 +703,8 @@ private:
     // The dedicated voice session id (coworker/coder), so "what's on my screen"
     // works. Mirrors m_sessionId once created; we (re)use createSession.
     QString m_voiceSessionId;
+    QString m_voiceBrain;   // preferred brain for the voice session (codex/claude)
+    QString m_voiceModel;   // preferred model for the voice session
     // True while a voice-mode STT turn is in flight, so the transcript reply is
     // auto-sent to the session (distinct from the chat-page dictation path).
     bool m_voiceModeStt = false;

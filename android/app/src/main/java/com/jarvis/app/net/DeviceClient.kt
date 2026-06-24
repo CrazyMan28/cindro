@@ -3,6 +3,7 @@ package com.jarvis.app.net
 import android.util.Log
 import com.google.gson.JsonObject
 import com.jarvis.app.crypto.DeviceIdentity
+import com.jarvis.app.protocol.AuthChallenge
 import com.jarvis.app.protocol.Protocol
 import com.jarvis.app.protocol.FileOfferEvent
 import com.jarvis.app.protocol.FileOffer
@@ -81,6 +82,10 @@ class DeviceClient(
     /** `session.opened` events: a new session was created (any surface) — open its chat. */
     private val _sessionOpened = MutableSharedFlow<SessionOpened>(extraBufferCapacity = 16)
     val sessionOpened: SharedFlow<SessionOpened> = _sessionOpened.asSharedFlow()
+
+    /** `auth.challenge` events: a desktop/Chrome unlock request (the no-Firebase path). */
+    private val _authChallenges = MutableSharedFlow<AuthChallenge>(extraBufferCapacity = 8)
+    val authChallenges: SharedFlow<AuthChallenge> = _authChallenges.asSharedFlow()
 
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
@@ -224,6 +229,10 @@ class DeviceClient(
             }
             SessionOpenedEvent.from(obj)?.let {
                 _sessionOpened.tryEmit(it.opened)
+                return
+            }
+            AuthChallenge.from(obj)?.let {
+                _authChallenges.tryEmit(it)
                 return
             }
             WsResponse.from(obj)?.let { resp ->

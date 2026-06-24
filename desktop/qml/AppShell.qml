@@ -27,6 +27,17 @@ Item {
     // Main.qml to boot straight onto it). Keep in sync with the order below.
     readonly property int voiceIndex: 1
 
+    // Drive hands-free voice capture by PAGE: start continuous listening the moment
+    // the Voice page becomes active, stop it when leaving. This is the reliable
+    // trigger (page cross-fade uses opacity, so a page's `visible` is unreliable).
+    onCurrentIndexChanged: {
+        if (currentIndex === voiceIndex) {
+            if (bridge.connected) bridge.startConversation()
+        } else {
+            bridge.stopConversation()
+        }
+    }
+
     // Set by the Chat loader so other pages (e.g. Skills /invoke) can inject into
     // the live transcript without coupling to load order.
     property var chatPanel: null

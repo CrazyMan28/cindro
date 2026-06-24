@@ -58,6 +58,9 @@ class JarvisRepository(
     /** session.opened pushes: a new session was created (any surface) — open its chat. */
     val sessionOpened: SharedFlow<SessionOpened> get() = client.sessionOpened
 
+    /** auth.challenge pushes (no-Firebase unlock requests) for the background service. */
+    val authChallenges: SharedFlow<com.jarvis.app.protocol.AuthChallenge> get() = client.authChallenges
+
     /** Open (or retarget) the device socket using the stored host:port. */
     fun connect() {
         val raw = pairingStore.hostPort ?: PairingStore.DEFAULT_HOST_PORT
