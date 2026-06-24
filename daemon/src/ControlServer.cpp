@@ -197,6 +197,8 @@ void ControlServer::onSocketDisconnected()
     if (!client)
         return;
     m_clients.remove(client);
+    m_scopedClients.remove(client);
+    m_subscriptions.remove(client);
     client->deleteLater();
 }
 
@@ -256,6 +258,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionList(req);
     else if (m == QStringLiteral("session.history"))
         resp = handleSessionHistory(req);
+    else if (m == QStringLiteral("session.subscribe"))
+        resp = handleSessionSubscribe(client, req);
     else if (m == QStringLiteral("approval.respond"))
         resp = handleApprovalRespond(req);
     else if (m == QStringLiteral("mcp.list"))
@@ -1478,6 +1482,29 @@ Response ControlServer::handleSessionHistory(const Request &req)
     QJsonObject result;
     result.insert(QStringLiteral("session"), sess->toJson());
     result.insert(QStringLiteral("events"), events);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleSessionSubscribe(QWebSocket *client, const Request &req)
+{
+    // Replace this client's subscription set with the requested session ids and mark
+    // it scoped. From now on broadcastSessionEvent() only sends it events for these
+    // ids — so events for every OTHER session (e.g. a Chrome co-work chat) are never
+    // delivered here. An empty list is valid and means "send me nothing" (a desktop
+    // sitting on a fresh, sessionless chat). The list is authoritative each call, so
+    // the client just re-sends its full current view whenever it changes.
+    QSet<QString> ids;
+    const QJsonArray arr = req.params.value(QStringLiteral("session_ids")).toArray();
+    for (const QJsonValue &v : arr) {
+        const QString s = v.toString();
+        if (!s.isEmpty())
+            ids.insert(s);
+    }
+    m_scopedClients.insert(client);
+    m_subscriptions.insert(client, ids);
+    QJsonObject result;
+    result.insert(QStringLiteral("subscribed"),
+                  QJsonArray::fromStringList(QStringList(ids.cbegin(), ids.cend())));
     return Response::success(req.id, result);
 }
 
@@ -3231,8 +3258,16 @@ void ControlServer::broadcastSessionEvent(const QString &sessionId, const Normal
     const QJsonObject frame = makeSessionEventFrame(sessionId, ev);
     const QString payload =
         QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
-    for (QWebSocket *client : std::as_const(m_clients))
+    for (QWebSocket *client : std::as_const(m_clients)) {
+        // Scoped clients (those that sent session.subscribe) only receive events for
+        // the session ids they are viewing; everything else is filtered out HERE, at
+        // the source, so a foreign session can never reach them. Clients that never
+        // subscribed keep the legacy broadcast.
+        if (m_scopedClients.contains(client)
+            && !m_subscriptions.value(client).contains(sessionId))
+            continue;
         client->sendTextMessage(payload);
+    }
 }
 
 } // namespace jarvis

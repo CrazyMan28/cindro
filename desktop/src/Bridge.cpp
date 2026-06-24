@@ -157,6 +157,28 @@ void Bridge::onConnected()
     setStatus(QStringLiteral("connected"));
     // Liveness check per Contract A.
     request(QStringLiteral("ping"), {});
+    // Declare our (currently empty) session view so the daemon scopes event delivery
+    // to us from the start — a foreign session's events are never sent here.
+    syncSubscriptions();
+}
+
+void Bridge::syncSubscriptions()
+{
+    if (!m_connected)
+        return;
+    // The complete set of sessions this desktop renders: the current chat, the
+    // co-worker (COMPUTER page), and the voice-mode session. Empty entries are
+    // skipped, so a fresh chat with no session subscribes to nothing.
+    QStringList ids;
+    if (!m_sessionId.isEmpty())
+        ids << m_sessionId;
+    if (!m_coworkerSessionId.isEmpty() && !ids.contains(m_coworkerSessionId))
+        ids << m_coworkerSessionId;
+    if (!m_voiceSessionId.isEmpty() && !ids.contains(m_voiceSessionId))
+        ids << m_voiceSessionId;
+    QVariantMap params;
+    params.insert(QStringLiteral("session_ids"), ids);
+    request(QStringLiteral("session.subscribe"), params);
 }
 
 void Bridge::onDisconnected()
@@ -275,6 +297,7 @@ void Bridge::openSession(const QString &sessionId)
         return;
     m_sessionId = sessionId;
     emit sessionIdChanged();
+    syncSubscriptions();   // start receiving THIS session's events (and only it)
     setStatus(QStringLiteral("session ready"));
     emit sessionOpened(sessionId);
     // Load this session's history so the Chat page can replay it.
@@ -308,7 +331,9 @@ void Bridge::newSession()
         m_sessionId.clear();
         emit sessionIdChanged();
     }
-    qInfo("Bridge[session]: newSession() -> current cleared (fresh chat)");
+    // Back to a sessionless chat: re-declare our (now empty, unless a coworker/voice
+    // session is still live) view so the daemon stops fanning the old session to us.
+    syncSubscriptions();
     setStatus(QStringLiteral("ready"));
 }
 
@@ -889,6 +914,7 @@ void Bridge::ensureVoiceSession()
         return;
     if (!m_sessionId.isEmpty()) {
         m_voiceSessionId = m_sessionId;
+        syncSubscriptions();   // keep the voice session subscribed if chat moves on
         return;
     }
     // No session yet: spin one up with the voice-mode brain/model selection
@@ -1484,6 +1510,7 @@ void Bridge::setCoworkerSessionId(const QString &id)
         return;
     m_coworkerSessionId = id;
     emit coworkerSessionIdChanged();
+    syncSubscriptions();   // (un)subscribe the COMPUTER page's co-worker session
 }
 
 void Bridge::startCoworker(const QString &brain, const QString &model)
@@ -2094,10 +2121,11 @@ void Bridge::onTextMessageReceived(const QString &message)
         // Fold the session id in so the UI can route by session.
         evMap.insert(QStringLiteral("session_id"), sid);
         // ONLY route to the chat transcript if it belongs to THIS desktop's active
-        // session (or its voice session). The daemon broadcasts EVERY session's
-        // events to all control clients, so without this filter a Chrome co-work /
-        // phone session pollutes the desktop chat — the "opened the app and it's in
-        // the same session as Chrome" bug. Sessions are separate; switch via Sessions.
+        // session (or its voice session). With the session manager the daemon already
+        // scopes delivery to our subscribed ids (session.subscribe), so foreign events
+        // normally never arrive; this stays as a belt-and-suspenders guard (and the
+        // fallback path against an older daemon that ignores session.subscribe) so a
+        // Chrome co-work / phone session can never pollute the desktop chat.
         if (sid == m_sessionId || (!m_voiceSessionId.isEmpty() && sid == m_voiceSessionId)) {
             emit sessionEvent(evMap);
         } else {
@@ -2128,6 +2156,11 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         const QString code = error.value(QStringLiteral("code")).toString();
         if (method == QStringLiteral("session.history"))
             m_openingSession = false;
+        // session.subscribe against an OLDER daemon that predates the session manager:
+        // swallow unknown_method. We keep the existing client-side session filter, so
+        // delivery is just unscoped (the pre-fix behavior) rather than an error toast.
+        if (method == QStringLiteral("session.subscribe"))
+            return;
         // mcp.test failures surface through mcpTested, not a generic error toast.
         if (method == QStringLiteral("mcp.test")) {
             emit mcpTested(ctx, false, 0, msg.isEmpty() ? code : msg);
@@ -2255,8 +2288,8 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         const QString sid = result.value(QStringLiteral("session_id")).toString();
         if (!sid.isEmpty()) {
             m_sessionId = sid;
-            qInfo("Bridge[session]: own session.create -> current=%s", qPrintable(sid));
             emit sessionIdChanged();
+            syncSubscriptions();   // subscribe to the session we just created
             setStatus(QStringLiteral("session ready"));
 
             // Flush a message the user typed BEFORE any session existed (the

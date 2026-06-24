@@ -95,3 +95,17 @@ add_test(NAME gui_selftest COMMAND jarvis-sidebar --selftest)
 set_tests_properties(gui_selftest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_FORCE_STDERR_LOGGING=1"
     TIMEOUT 30)
+
+# Session-reconcile regression test (QtQuick.Test): drives the chat-transcript /
+# session state machine (the onSessionIdChanged reconciler + submit/startNewChat +
+# live/history guards) across every transition that historically desynced —
+# + New, open-other, delete-current, stale history, foreign Chrome event, and the
+# first-message-survives-create race. Pure logic, no daemon needed.
+find_program(QMLTESTRUNNER NAMES qmltestrunner-qt6 qmltestrunner)
+if(QMLTESTRUNNER)
+    add_test(NAME session_reconcile
+             COMMAND ${QMLTESTRUNNER} -input ${CMAKE_CURRENT_SOURCE_DIR}/tests/tst_session_reconcile.qml)
+    set_tests_properties(session_reconcile PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 30)
+endif()
