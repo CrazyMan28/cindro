@@ -225,6 +225,11 @@ Item {
         }
 
         function onSessionEvent(ev) {
+            // Belt-and-suspenders with the Bridge-side filter: ONLY render events for
+            // this chat's current session. A Chrome/phone session (different id) must
+            // never leak into the chat the user is looking at.
+            if (ev.session_id !== undefined && ev.session_id !== bridge.sessionId)
+                return
             // Live event from the ongoing turn -> stream assistant text + track busy.
             panel.appendEvent(ev, true)
             chatView.positionViewAtEnd()

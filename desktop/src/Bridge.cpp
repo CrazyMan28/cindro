@@ -308,6 +308,7 @@ void Bridge::newSession()
         m_sessionId.clear();
         emit sessionIdChanged();
     }
+    qInfo("Bridge[session]: newSession() -> current cleared (fresh chat)");
     setStatus(QStringLiteral("ready"));
 }
 
@@ -2054,6 +2055,9 @@ void Bridge::onTextMessageReceived(const QString &message)
     if (obj.value(QStringLiteral("event")).toString() == QStringLiteral("session.opened")) {
         const QJsonObject data = obj.value(QStringLiteral("data")).toObject();
         const QString sid = data.value(QStringLiteral("session_id")).toString();
+        qInfo("Bridge[session]: session.opened sid=%s (current=%s creating=%d) -> %s",
+              qPrintable(sid), qPrintable(m_sessionId), int(m_creatingSession),
+              (!sid.isEmpty() && sid != m_sessionId && !m_creatingSession) ? "focus-only" : "ignored");
         if (!sid.isEmpty() && sid != m_sessionId && !m_creatingSession)
             emit sessionFocusRequested();  // raise the window ONLY; never switch/clear
         return;
@@ -2094,8 +2098,12 @@ void Bridge::onTextMessageReceived(const QString &message)
         // events to all control clients, so without this filter a Chrome co-work /
         // phone session pollutes the desktop chat — the "opened the app and it's in
         // the same session as Chrome" bug. Sessions are separate; switch via Sessions.
-        if (sid == m_sessionId || (!m_voiceSessionId.isEmpty() && sid == m_voiceSessionId))
+        if (sid == m_sessionId || (!m_voiceSessionId.isEmpty() && sid == m_voiceSessionId)) {
             emit sessionEvent(evMap);
+        } else {
+            qInfo("Bridge[session]: DROP foreign session.event sid=%s kind=%s (current=%s)",
+                  qPrintable(sid), qPrintable(kind), qPrintable(m_sessionId));
+        }
         return;
     }
 
@@ -2247,6 +2255,7 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         const QString sid = result.value(QStringLiteral("session_id")).toString();
         if (!sid.isEmpty()) {
             m_sessionId = sid;
+            qInfo("Bridge[session]: own session.create -> current=%s", qPrintable(sid));
             emit sessionIdChanged();
             setStatus(QStringLiteral("session ready"));
 
