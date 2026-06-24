@@ -2156,10 +2156,27 @@ Response ControlServer::handleAuthRequest(const Request &req)
     // In both cases return an immediate "approved" with paired:false so the desktop
     // LockGate unlocks now. NOTE: the lock stays STRONG whenever a phone IS
     // reachable (real FCM backend + at least one push token).
+    // Grace: the user just acted in the authed phone app, so they're demonstrably
+    // present at an unlocked phone -> auto-approve this desktop unlock (no prompt).
+    // Mere connection does NOT grant this; only a deliberate device-initiated action.
+    if (m_deviceAuthGraceUntil > 0 &&
+        QDateTime::currentMSecsSinceEpoch() < m_deviceAuthGraceUntil) {
+        QJsonObject r;
+        r.insert(QStringLiteral("challenge_id"), QString());
+        r.insert(QStringLiteral("state"), QStringLiteral("approved"));
+        r.insert(QStringLiteral("paired"), true);
+        return Response::success(req.id, r);
+    }
+
+    // A reachable approver = a phone CONNECTED + authed over the device WS (its app
+    // is open, so we can push the challenge over the socket) OR a real FCM backend
+    // with a stored push token. Mere pairing isn't enough — the challenge must
+    // actually be deliverable, else the gate would hang.
     const bool noDevice = m_deviceReg.list().isEmpty();
+    const bool deviceConnected = m_authedDeviceProbe && m_authedDeviceProbe();
     const bool canPush =
         m_fcm && m_fcm->isReal() && !m_store.listPushTokens().isEmpty();
-    if (noDevice || !canPush) {
+    if (noDevice || (!canPush && !deviceConnected)) {
         QJsonObject r;
         r.insert(QStringLiteral("challenge_id"), QString());
         r.insert(QStringLiteral("state"), QStringLiteral("approved"));
@@ -2171,6 +2188,11 @@ Response ControlServer::handleAuthRequest(const Request &req)
         req.params.value(QStringLiteral("origin")).toString(QStringLiteral("desktop"));
     const AuthChallenge ch = m_authChallenges.create(AuthChallengeStore::kDefaultTtlMs,
                                                       origin);
+
+    // No-Firebase path: deliver the challenge over the device WS to any connected
+    // authed phone (DeviceServer fans this out as an 'auth.challenge' event -> the
+    // app's background service posts an "Unlock Jarvis" notification -> Approve).
+    emit authChallengePush(ch.id, ch.origin, ch.expiresAt);
 
     // FCM-push EVERY paired phone (reuse the DeviceServer::onSessionEvent loop):
     // {kind:"auth", challenge_id, origin}. The phone opens an Approve screen,
@@ -2192,6 +2214,14 @@ Response ControlServer::handleAuthRequest(const Request &req)
     r.insert(QStringLiteral("expires_at"), ch.expiresAt);
     r.insert(QStringLiteral("paired"), true);
     return Response::success(req.id, r);
+}
+
+void ControlServer::grantDeviceAuthGrace(int ms)
+{
+    m_deviceAuthGraceUntil = QDateTime::currentMSecsSinceEpoch() + ms;
+    // Instantly unlock a desktop lock-gate that's currently waiting — the phone
+    // user just acted, so the desktop should "start unlocked" without a prompt.
+    broadcastAuthEvent(QString(), QStringLiteral("approved"));
 }
 
 Response ControlServer::handleAuthStatus(const Request &req)

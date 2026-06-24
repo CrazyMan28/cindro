@@ -34,6 +34,7 @@
 #include <QObject>
 #include <QSet>
 #include <QString>
+#include <functional>
 #include <memory>
 
 QT_BEGIN_NAMESPACE
@@ -63,6 +64,15 @@ public:
     DeviceRegistry &devices() { return m_deviceReg; }
     PairingManager &pairing() { return m_pairing; }
     FcmSender *fcm() { return m_fcm.get(); }
+    // DeviceServer registers a probe so the unlock flow knows whether a phone is
+    // actually CONNECTED + authed over the device WS (a reachable approver even
+    // when Firebase/FCM is unavailable).
+    void setAuthedDeviceProbe(std::function<bool()> probe) { m_authedDeviceProbe = std::move(probe); }
+    // A deliberate phone action (the user started a chat from the authed phone app)
+    // grants a short grace where opening/unlocking the desktop is auto-approved —
+    // the user is demonstrably present at an unlocked phone. Mere connection does
+    // NOT grant this; only an explicit device-initiated action does.
+    void grantDeviceAuthGrace(int ms = 60000);
     AgentDesktop &agentDesktops() { return m_agentDesktops; }
     MemoryStore &memory() { return m_memory; }
     SkillStore &skills() { return m_skills; }
@@ -183,6 +193,11 @@ signals:
     // expired). The DeviceServer/desktop fan-out matches the existing pattern so
     // the desktop lock-gate unlocks the instant a paired phone approves.
     void authEvent(const QString &challengeId, const QString &state);
+
+    // A fresh unlock challenge was minted — DeviceServer fans this out to authed
+    // phones as an 'auth.challenge' event over the device WS so the phone surfaces
+    // the Approve screen WITHOUT depending on Firebase/FCM.
+    void authChallengePush(const QString &challengeId, const QString &origin, qint64 expiresAt);
 
 private slots:
     void onNewConnection();
@@ -379,6 +394,11 @@ private:
     // by auth.request, approved by a paired phone (possession+biometric).
     AuthChallengeStore m_authChallenges;
     std::unique_ptr<FcmSender> m_fcm;
+    // Set by DeviceServer: true iff a phone is connected + authed over the device WS.
+    std::function<bool()> m_authedDeviceProbe;
+    // Epoch-ms until which a desktop unlock is auto-approved (granted by a deliberate
+    // phone-app action). 0 = no grace.
+    qint64 m_deviceAuthGraceUntil = 0;
 
     // Wave 5 intelligence backend: Jarvis-level long-term memory (SQLite+FTS5)
     // and self-authored skills. Memory is prefetched/injected before every brain

@@ -70,7 +70,18 @@ Design pillars:
 - `render_widget` writes `~/.local/share/jarvis/widgets.jsonl`; the desktop **tails** it (polls by
   byte offset from EOF). Same path on both sides or widgets never appear.
 - Notifications do **not** use Firebase in this setup (no service account). The Android foreground
-  `JarvisConnectionService` posts local notifications off the device WS instead.
+  `JarvisConnectionService` holds the device WS open and posts local notifications off it —
+  `session.opened`, `file.offer`, and **`auth.challenge`** (the desktop/Chrome unlock prompt).
+- **Cross-device unlock semantics** (subtle, get these right):
+  - A reachable approver = a phone **connected AND authed over the device WS** (`auth.challenge` is
+    pushed to it) OR a real FCM backend + token. If neither, `handleAuthRequest` **fail-opens** so the
+    user is never bricked. Mere pairing is not "reachable".
+  - "phone connected ≠ authed-by-biometric": a connected phone gets the challenge and must clear
+    `BiometricPrompt` (fingerprint) → `auth.approve` over its authed WS → desktop unlocks.
+  - A **deliberate phone action** (the user starts a chat from the authed app) calls
+    `grantDeviceAuthGrace()` → a short window where the desktop **auto-approves** unlock (the user is
+    demonstrably present at an unlocked phone) and any waiting LockGate unlocks. Connection alone does
+    NOT grant grace.
 - Brain output schemas drift between CLI versions — parsers are defensive; prefer adding a case over
   tightening existing ones.
 
