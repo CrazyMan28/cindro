@@ -299,18 +299,11 @@ Item {
                     thinking: page.vstate === "thinking"
                     // a touch larger core when speaking so it "talks"; while listening
                     // the core swells with the live mic level so you can SEE it hearing you
-                    coreScale: page.vstate === "speaking" ? 1.18
-                               : page.vstate === "listening" ? (1.0 + 0.30 * bridge.voiceLevel)
+                    coreScale: page.vstate === "speaking" ? 1.14
+                               : page.vstate === "listening" ? (1.0 + 0.26 * bridge.voiceLevel)
                                : 1.0
-                    // talking pulse — the whole orb visibly throbs while TTS plays
-                    property bool talking: page.vstate === "speaking"
-                    onTalkingChanged: if (!talking) scale = 1.0
-                    SequentialAnimation on scale {
-                        running: reactor.talking
-                        loops: Animation.Infinite
-                        NumberAnimation { from: 1.0; to: 1.07; duration: 240; easing.type: Easing.InOutSine }
-                        NumberAnimation { from: 1.07; to: 1.0; duration: 240; easing.type: Easing.InOutSine }
-                    }
+                    // Ease the core size so the level reaction reads smooth, not jittery.
+                    Behavior on coreScale { NumberAnimation { duration: 90; easing.type: Easing.OutQuad } }
                 }
 
                 // tap the orb to start/stop the hands-free conversation

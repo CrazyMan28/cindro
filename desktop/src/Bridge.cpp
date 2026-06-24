@@ -1021,34 +1021,46 @@ void Bridge::startConversation()
         return;
     ensureVoiceSession();
 
-    QAudioFormat fmt;
-    fmt.setSampleRate(16000);
-    fmt.setChannelCount(1);
-    fmt.setSampleFormat(QAudioFormat::Int16);
-
-    const QAudioDevice dev = QMediaDevices::defaultAudioInput();
-    if (dev.isNull()) {
-        emit errorOccurred(QStringLiteral("no audio input device for voice mode"));
+    // Capture via pw-record streaming raw s16 mono 16k to stdout — the SAME proven
+    // PipeWire path the chat mic uses (Qt's QAudioSource does not capture on this
+    // PipeWire setup, which is why voice mode "heard nothing" while chat dictation
+    // worked). We strip the leading 44-byte WAV header, then feed PCM to the VAD.
+    if (!voiceAvailable()) {
+        emit errorOccurred(QStringLiteral("pw-record (PipeWire) not found; voice mode unavailable"));
         return;
     }
-    if (m_audioSource) {
-        m_audioSource->deleteLater();
-        m_audioSource = nullptr;
-        m_voiceIo = nullptr;
+    if (m_voiceProc) {
+        m_voiceProc->kill();
+        m_voiceProc->deleteLater();
+        m_voiceProc = nullptr;
     }
-    m_audioSource = new QAudioSource(dev, fmt, this);
     m_voicePcm.clear();
-    m_voiceIo = m_audioSource->start();
-    if (!m_voiceIo) {
-        emit errorOccurred(QStringLiteral("failed to start audio capture"));
-        m_audioSource->deleteLater();
-        m_audioSource = nullptr;
+    m_pwHeaderSkip = 44;
+    m_voiceProc = new QProcess(this);
+    connect(m_voiceProc, &QProcess::readyReadStandardOutput, this, [this]() {
+        if (!m_voiceProc)
+            return;
+        QByteArray chunk = m_voiceProc->readAllStandardOutput();
+        if (m_pwHeaderSkip > 0) {
+            const int drop = qMin(m_pwHeaderSkip, int(chunk.size()));
+            chunk.remove(0, drop);
+            m_pwHeaderSkip -= drop;
+        }
+        if (!chunk.isEmpty())
+            handsFreeFeed(chunk);
+    });
+    QStringList args;
+    args << QStringLiteral("--rate") << QStringLiteral("16000")
+         << QStringLiteral("--channels") << QStringLiteral("1")
+         << QStringLiteral("--format") << QStringLiteral("s16")
+         << QStringLiteral("-");  // stream to stdout
+    m_voiceProc->start(QStringLiteral("pw-record"), args);
+    if (!m_voiceProc->waitForStarted(1500)) {
+        emit errorOccurred(QStringLiteral("failed to start pw-record for voice mode"));
+        m_voiceProc->deleteLater();
+        m_voiceProc = nullptr;
         return;
     }
-    connect(m_voiceIo, &QIODevice::readyRead, this, [this]() {
-        if (m_voiceIo)
-            handsFreeFeed(m_voiceIo->readAll());
-    });
     m_handsFree = true;
     m_vadSpeech = false;
     m_vadPaused = false;
@@ -1076,11 +1088,10 @@ void Bridge::stopConversation()
     m_vadPaused = false;
     if (m_vadWatchdog)
         m_vadWatchdog->stop();
-    if (m_audioSource) {
-        m_audioSource->stop();
-        m_audioSource->deleteLater();
-        m_audioSource = nullptr;
-        m_voiceIo = nullptr;
+    if (m_voiceProc) {
+        m_voiceProc->kill();
+        m_voiceProc->deleteLater();
+        m_voiceProc = nullptr;
     }
     m_voicePcm.clear();
     if (m_voiceLevel != 0.0) {
