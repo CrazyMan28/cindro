@@ -582,6 +582,15 @@ private:
     void setStatus(const QString &s);
     void handleResponse(int id, bool ok, const QVariantMap &result, const QVariantMap &error);
 
+    // Session manager (Contract A): tell the daemon EXACTLY which session ids this
+    // desktop is currently viewing (current chat + coworker + voice) so it fans only
+    // those sessions' events to us. A foreign Chrome/phone session therefore never
+    // reaches this client at all. Called on connect and whenever any of those ids
+    // change; on a fresh, sessionless chat the set is empty (we receive nothing).
+    // Older daemons answer unknown_method, which is swallowed (we then rely on the
+    // existing client-side session filter as before).
+    void syncSubscriptions();
+
     // COMPUTER page helpers.
     void setDriving(bool d);
     void setMirroring(bool m);

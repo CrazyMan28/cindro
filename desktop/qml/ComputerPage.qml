@@ -100,6 +100,15 @@ Item {
             txModel.clear()
             page.thinking = false
         }
+        // The co-worker session ended / was cleared (stopped, deleted, or replaced):
+        // wipe its transcript so a finished agent conversation can never linger on
+        // this page under "no active session". Mirrors the chat page's reconciler.
+        function onCoworkerSessionIdChanged() {
+            if (bridge.coworkerSessionId.length === 0) {
+                txModel.clear()
+                page.thinking = false
+            }
+        }
         // Only render events for the co-worker (agent) session on this page.
         function onSessionEvent(ev) {
             if (ev.session_id !== undefined && ev.session_id === bridge.coworkerSessionId) {

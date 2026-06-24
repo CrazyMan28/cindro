@@ -36,21 +36,55 @@ Verified = unit tests pass, live WS check, and/or exercised on the running daemo
 - **Desktop chat:** streaming/typewriter, brain+model picker, stop button, auto-titled
   sessions, in-conversation thinking orb + funny phrases.
 - **Session management (isolation) — verified with logs:** desktop / phone / Chrome / voice
-  sessions are **separate**. The daemon broadcasts every session's events to all clients, so the
-  desktop FILTERS: it renders only its own session's events. Proven live — a simulated Chrome
-  session logs `session.opened -> focus-only` then `DROP foreign session.event …`, never
-  reaching the chat. A foreign session opening only raises the window (never hijacks the chat);
-  opening an old session **resumes** it (re-spawns the brain) instead of "inactive session";
-  `+ New` clears + drops the session; sessions are a flat, openable, deletable list. Belt-and-
-  suspenders QML guard + `Bridge[session]` logging added.
-  - **Stale-history race fixed (the real "+ New shows old chat" bug):** opening a session fires an
-    **async** `session.history` fetch. If `+ New` (or opening another session) changed the current
-    session while that fetch was in flight, the late reply replayed the *old* session's events into
-    a chat that no longer owned it — leaving content on screen with no live session (the exact
-    "chat full of content + 'Type to start a session…'" screenshot). Now guarded at **both** layers:
-    `Bridge::handleResponse` drops a `session.history` reply whose id `!= m_sessionId`
-    (`DROP stale session.history` log), and `JarvisPanel.onSessionHistory` returns early unless
-    `sessionId === bridge.sessionId`. Builds clean, 16/16 ctest incl. `gui_selftest`.
+  sessions are **separate**. A foreign session opening only raises the window (never hijacks the
+  chat); opening an old session **resumes** it (re-spawns the brain) instead of "inactive session";
+  `+ New` clears + drops the session; sessions are a flat, openable, deletable list.
+  - **Session manager — per-client `session.subscribe` scoping (the real fix for "a Chrome chat
+    shows in the desktop"):** the daemon used to **broadcast every session's `session.event` to
+    every connected control client**, leaving each client to filter client-side — so a Chrome
+    co-work transcript reached the desktop and could linger (the desktop is a singleton; "opening"
+    Jarvis just toggles the same process, so stale page content survived). Now a client declares the
+    session ids it is viewing via **`session.subscribe {session_ids}`** and the daemon fans
+    `session.event` **only** for those ids to it (`m_scopedClients` + `m_subscriptions` in
+    `ControlServer`). The desktop subscribes to its current chat + coworker + voice sessions on
+    connect and on every change (`Bridge::syncSubscriptions`); a fresh, sessionless chat subscribes
+    to **nothing**, so a foreign session can never arrive. Back-compat: clients that never subscribe
+    keep the legacy broadcast, and the **phone uses a separate `DeviceServer` channel** (unaffected);
+    an older daemon answers `unknown_method`, which the desktop swallows and falls back to the
+    existing client-side filter. Proven end-to-end by **`scripts/session_subscribe_ws.py`**: a
+    bystander scoped to `[]` receives **zero** `session.event` frames while another session emits
+    five to its subscriber. The COMPUTER page now also clears its transcript when its coworker
+    session ends, mirroring the chat reconciler.
+  - **Transcript↔session reconciler (the real root cause of "+ New won't clear" / "mirrors Chrome"
+    / "shows the old chat"):** the chat transcript (`chatModel`) and the current session
+    (`m_sessionId`) had no single binding — every transition (+ New, open, delete, create, coworker,
+    voice) was responsible for clearing the transcript itself, and several didn't (`deleteSession`,
+    the coworker create, and an async `session.history` race all left old content under a different/
+    empty session — the "chat full of content + 'Type to start a session…'" screenshot). Fixed by
+    making the transcript a **strict function of the session**: `JarvisPanel` tracks
+    `chatSessionId`, and a single `onSessionIdChanged` reconciler wipes the transcript whenever
+    `bridge.sessionId` changes to anything else. A `pendingNewSession` flag lets the reconciler
+    *adopt* (not wipe) when the user's own first message is mid-create, so "it removes what I said"
+    can't recur. Belt-and-suspenders guards remain: `Bridge::handleResponse` drops a stale
+    `session.history` reply (`!= m_sessionId`), and the live/history handlers re-check
+    `=== bridge.sessionId`. Covered by a new **`session_reconcile` QtQuick.Test** (8 cases: + New,
+    open-other, delete-current, stale-history, foreign-Chrome-event, first-message-survives-create).
+    **17/17 ctest** (incl. `gui_selftest` + `session_reconcile`).
+  - **Transcript↔session reconciler (the real root cause of "+ New won't clear" / "mirrors Chrome"
+    / "shows the old chat"):** the chat transcript (`chatModel`) and the current session
+    (`m_sessionId`) had no single binding — every transition (+ New, open, delete, create, coworker,
+    voice) was responsible for clearing the transcript itself, and several didn't (`deleteSession`,
+    the coworker create, and an async `session.history` race all left old content under a different/
+    empty session — the "chat full of content + 'Type to start a session…'" screenshot). Fixed by
+    making the transcript a **strict function of the session**: `JarvisPanel` tracks
+    `chatSessionId`, and a single `onSessionIdChanged` reconciler wipes the transcript whenever
+    `bridge.sessionId` changes to anything else. A `pendingNewSession` flag lets the reconciler
+    *adopt* (not wipe) when the user's own first message is mid-create, so "it removes what I said"
+    can't recur. Belt-and-suspenders guards remain: `Bridge::handleResponse` drops a stale
+    `session.history` reply (`!= m_sessionId`), and the live/history handlers re-check
+    `=== bridge.sessionId`. Covered by a new **`session_reconcile` QtQuick.Test** (8 cases: + New,
+    open-other, delete-current, stale-history, foreign-Chrome-event, first-message-survives-create).
+    **17/17 ctest** (incl. `gui_selftest` + `session_reconcile`).
 - **Voice orb animation:** smooth "breathing" while thinking/speaking + a soft mic-level swell
   while listening (replaced the abrupt size-jump).
 - **Voice mode:** hands-free (no hold-to-talk) capture via **pw-record** (the path that

@@ -19,6 +19,24 @@ Item {
     // event and the turn's "final"/"error"). Drives the composer's Stop button.
     property bool busy: false
 
+    // The session id the transcript currently represents. The chat transcript is a
+    // STRICT FUNCTION of this: the reconciler (onSessionIdChanged) wipes the
+    // transcript whenever bridge.sessionId changes to anything else — + New, opening
+    // another session, deleting the current one, a coworker/voice session taking
+    // over, or the daemon assigning a fresh id. This is the single source of truth
+    // that previously kept drifting (old/Chrome content lingering under a different
+    // or empty session, "+ New" not clearing). Handlers that legitimately (re)load a
+    // session set this themselves right after wiping.
+    property string chatSessionId: ""
+
+    // Set true between "user sent the first message of a fresh chat" and the daemon
+    // assigning that new session its id. In that window the transcript already holds
+    // the user's just-typed message FOR the session being born, so the reconciler
+    // must ADOPT the incoming id rather than wipe (else the user's own message
+    // vanishes the instant the session.create reply lands — the "it removes what I
+    // said" bug). Any OTHER session change still wipes.
+    property bool pendingNewSession: false
+
     // Whimsical "working" status — a spinning mark + a rotating funny phrase shown
     // while busy (Claude-Code flavored). Pure cosmetics.
     property var thinkingPhrases: [
@@ -192,6 +210,35 @@ Item {
                 panel.startNewChat()
         }
 
+        // THE reconciler. The transcript belongs to exactly ONE session
+        // (panel.chatSessionId). The moment the live session changes out from under
+        // it — via ANY path (+ New clears it, opening another session, deleting the
+        // current one, a coworker/voice session, the daemon minting a fresh id) — wipe
+        // the transcript so content from the old session can never linger under a
+        // different (or empty) session. Every m_sessionId transition emits
+        // sessionIdChanged, so this one handler closes all the leaks the per-path
+        // fixes kept missing. onSessionHistory/onSessionEvent re-stamp chatSessionId
+        // when they legitimately (re)populate the transcript.
+        function onSessionIdChanged() {
+            if (bridge.sessionId === panel.chatSessionId)
+                return
+            // Our own fresh chat just got its daemon id: the transcript already holds
+            // the user's first message for THIS session — adopt, don't wipe.
+            if (panel.pendingNewSession && bridge.sessionId.length > 0) {
+                panel.pendingNewSession = false
+                panel.chatSessionId = bridge.sessionId
+                return
+            }
+            // Genuine switch (open another / delete current / + New / coworker /
+            // voice / cleared): the transcript no longer belongs here — wipe it.
+            chatModel.clear()
+            chatWidgets.clear()
+            panel.thinking = false
+            panel.busy = false
+            panel.pendingNewSession = false
+            panel.chatSessionId = bridge.sessionId
+        }
+
         // Opening a stored session from the Sessions page: clear + replay.
         function onSessionOpened(sessionId) {
             chatModel.clear()
@@ -208,6 +255,7 @@ Item {
                 return
             chatModel.clear()
             panel.busy = false
+            panel.chatSessionId = sessionId   // the transcript now represents this session
             // History replay: full text immediately (live=false => no typewriter).
             for (var i = 0; i < events.length; i++)
                 panel.appendEvent(events[i], false)
@@ -243,6 +291,9 @@ Item {
             // never leak into the chat the user is looking at.
             if (ev.session_id !== undefined && ev.session_id !== bridge.sessionId)
                 return
+            // This live turn belongs to the current session; the transcript now
+            // represents it (covers the type-on-fresh-chat create-then-stream path).
+            panel.chatSessionId = bridge.sessionId
             // Live event from the ongoing turn -> stream assistant text + track busy.
             panel.appendEvent(ev, true)
             chatView.positionViewAtEnd()
@@ -927,8 +978,10 @@ Item {
         var t = ("" + message).trim()
         if (t.length === 0 || !bridge.connected)
             return
-        if (bridge.sessionId.length === 0)
+        if (bridge.sessionId.length === 0) {
+            panel.pendingNewSession = true
             bridge.createSession("coder", panel.selectedBrain, panel.selectedModel)
+        }
         chatModel.append({
             "kind": "message", "role": "user", "text": t,
             "callId": "", "toolName": "", "approvalId": "", "risk": "", "ok": true,
@@ -946,8 +999,10 @@ Item {
         var t = ("" + message).trim()
         if (t.length === 0 || !bridge.connected)
             return
-        if (bridge.sessionId.length === 0)
+        if (bridge.sessionId.length === 0) {
+            panel.pendingNewSession = true
             bridge.createSession("coder", panel.selectedBrain, panel.selectedModel)
+        }
         chatModel.append({
             "kind": "message", "role": "user",
             "text": "/" + name + (t.length ? "\n\n" + t : ""),
@@ -966,8 +1021,12 @@ Item {
             return
 
         // First message creates a session (coder profile, selected brain + model).
-        if (bridge.sessionId.length === 0)
+        // Flag the create so the reconciler ADOPTS the new id instead of wiping the
+        // user message we're about to echo.
+        if (bridge.sessionId.length === 0) {
+            panel.pendingNewSession = true
             bridge.createSession("coder", panel.selectedBrain, panel.selectedModel)
+        }
 
         chatModel.append({
             "kind": "message", "role": "user", "text": t,
@@ -995,6 +1054,12 @@ Item {
     // bridge.newSession() clears Bridge::m_sessionId without a daemon round-trip,
     // reproducing the "no current session yet" state the composer relies on.
     function startNewChat() {
+        // Drop any half-started create and forget which session the transcript held,
+        // so the reconciler can't later "adopt" into this wipe. newSession() emits
+        // sessionIdChanged only when a session was actually set; clear explicitly too
+        // so a fresh-on-fresh + New still resets everything.
+        panel.pendingNewSession = false
+        panel.chatSessionId = ""
         bridge.newSession()
         chatModel.clear()
         chatWidgets.clear()

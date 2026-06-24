@@ -224,6 +224,13 @@ private:
     Response handleSessionDelete(const Request &req);
     Response handleSessionList(const Request &req);
     Response handleSessionHistory(const Request &req);
+    // Session manager (Contract A): a client declares which session ids it is
+    // currently viewing; the daemon then fans session.event frames ONLY for those
+    // ids to it. Needs the socket, so it is dispatched with `client` (unlike the
+    // req-only handlers). Empty list => the client wants NO session events (e.g. a
+    // freshly-opened desktop sitting on an empty chat). This is what stops a Chrome
+    // co-work session's transcript from leaking into the desktop.
+    Response handleSessionSubscribe(QWebSocket *client, const Request &req);
     Response handleApprovalRespond(const Request &req);
 
     // Contract A v2 handlers.
@@ -444,8 +451,15 @@ private:
     // desktop is NOT in this set and stays up for live-view/take-over.
     QSet<QString> m_autoComputerSessions;
 
-    // Authenticated client sockets (all are subscribed to session events).
+    // Authenticated client sockets.
     QSet<QWebSocket *> m_clients;
+    // Session-manager scoping. A client that has sent session.subscribe is "scoped":
+    // it receives session.event frames ONLY for the ids in m_subscriptions[client].
+    // Clients that never subscribe are NOT scoped and keep the legacy broadcast, so
+    // older clients (and the separate phone DeviceServer channel) are unaffected.
+    // This is the fix for "a Chrome co-work session shows up in the desktop chat".
+    QSet<QWebSocket *> m_scopedClients;
+    QHash<QWebSocket *, QSet<QString>> m_subscriptions;
     // sessionId -> live brain.
     QHash<QString, Brain *> m_brains;
 };
