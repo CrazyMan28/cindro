@@ -31,12 +31,20 @@ object Biometric {
         subtitle: String,
     ): Boolean {
         val manager = BiometricManager.from(activity)
-        val status = manager.canAuthenticate(ALLOWED)
-        if (status == BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE ||
-            status == BiometricManager.BIOMETRIC_ERROR_NONE_ENROLLED
-        ) {
-            // No secure lock configured — do not lock the user out of their own daemon.
-            return true
+        val strong = BiometricManager.Authenticators.BIOMETRIC_STRONG
+        val weak = BiometricManager.Authenticators.BIOMETRIC_WEAK
+        val cred = BiometricManager.Authenticators.DEVICE_CREDENTIAL
+
+        // Prefer the actual FINGERPRINT (STRONG). Many devices — Samsung especially —
+        // fail to DISPLAY the prompt when STRONG and DEVICE_CREDENTIAL are requested
+        // together, which left the screen stuck on "Confirm your fingerprint…". Pick
+        // the strongest authenticator that's actually enrolled, used on its own.
+        val usable: Int = when {
+            manager.canAuthenticate(strong) == BiometricManager.BIOMETRIC_SUCCESS -> strong
+            manager.canAuthenticate(weak) == BiometricManager.BIOMETRIC_SUCCESS -> weak
+            manager.canAuthenticate(cred) == BiometricManager.BIOMETRIC_SUCCESS -> cred
+            // No secure lock configured at all — don't lock the user out of their daemon.
+            else -> return true
         }
 
         return suspendCancellableCoroutine { cont ->
@@ -58,12 +66,19 @@ object Biometric {
                     }
                 },
             )
-            val info = BiometricPrompt.PromptInfo.Builder()
+            val builder = BiometricPrompt.PromptInfo.Builder()
                 .setTitle(title)
                 .setSubtitle(subtitle)
-                .setAllowedAuthenticators(ALLOWED)
-                .build()
-            prompt.authenticate(info)
+                .setAllowedAuthenticators(usable)
+            // A negative ("Cancel") button is REQUIRED unless device-credential is the
+            // chosen authenticator (which provides its own cancel affordance).
+            if (usable != cred) builder.setNegativeButtonText("Cancel")
+            try {
+                prompt.authenticate(builder.build())
+            } catch (t: Throwable) {
+                // Never leave the UI stuck on the spinner if the prompt can't show.
+                if (cont.isActive) cont.resume(false)
+            }
         }
     }
 }
