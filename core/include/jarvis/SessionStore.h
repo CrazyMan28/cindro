@@ -120,6 +120,7 @@ public:
     std::optional<SessionRow> get(const QString &id);
     QVector<SessionRow> list();
     bool updateState(const QString &id, const QString &state);
+    bool updateTitle(const QString &id, const QString &title);
     bool updateThreadId(const QString &id, const QString &threadId);
     // Delete a session row and all of its events. Returns false on error;
     // returns true even if the row didn't exist (idempotent delete).

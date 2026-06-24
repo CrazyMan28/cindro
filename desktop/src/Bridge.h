@@ -647,6 +647,10 @@ private:
     // True while a session opened from the Sessions page is being loaded, so the
     // history response can be surfaced as a chat load rather than a list refresh.
     bool m_openingSession = false;
+    // True between our OWN session.create request and its reply, so the daemon's
+    // session.opened broadcast (which arrives BEFORE the reply) isn't mistaken for a
+    // foreign session and doesn't hijack/navigate the active chat.
+    bool m_creatingSession = false;
 
     // ---- COMPUTER page state ------------------------------------------------
     QString m_coworkerSessionId;
