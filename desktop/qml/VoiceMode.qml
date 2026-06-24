@@ -32,6 +32,8 @@ Item {
     property string selectedBrain: "codex"
     property var modelOptions: []
     property string selectedModel: ""
+    // Output sinks for the speaker picker: [{index,name,isDefault}].
+    property var speakers: []
 
     // Whimsical "thinking" phrases (mirrors JarvisPanel WORK_PHRASES idea).
     property var thinkingPhrases: [
@@ -62,6 +64,7 @@ Item {
             bridge.listModels(page.selectedBrain)
             bridge.setVoicePreferences(page.selectedBrain, page.selectedModel)
         }
+        page.speakers = bridge.audioOutputs()
     }
 
     Connections {
@@ -220,6 +223,32 @@ Item {
                     verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
                 }
             }
+            Text {
+                text: "SPEAKER"
+                color: Theme.textFaint
+                font.family: Theme.fontDisplay
+                font.pixelSize: 9
+                font.letterSpacing: Theme.trackWide
+                Layout.alignment: Qt.AlignVCenter
+            }
+            ComboBox {
+                id: vSpeakerPicker
+                Layout.preferredWidth: 210
+                Layout.preferredHeight: 30
+                model: page.speakers.map(function(s) { return s.name })
+                onActivated: bridge.setTtsOutput(currentIndex)
+                background: Rectangle {
+                    radius: Theme.radiusSm; color: Theme.surfaceInput
+                    border.width: 1; border.color: Theme.hairlineSoft
+                }
+                contentItem: Text {
+                    leftPadding: 10; rightPadding: 24
+                    text: vSpeakerPicker.displayText.length > 0 ? vSpeakerPicker.displayText : "default"
+                    color: Theme.text
+                    font.pixelSize: 12; font.family: Theme.fontSans
+                    verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                }
+            }
         }
 
         // ---- center stage: orb + (optional) widget beside it ---------------
@@ -299,8 +328,8 @@ Item {
                     thinking: page.vstate === "thinking"
                     // a touch larger core when speaking so it "talks"; while listening
                     // the core swells with the live mic level so you can SEE it hearing you
-                    coreScale: page.vstate === "speaking" ? 1.14
-                               : page.vstate === "listening" ? (1.0 + 0.26 * bridge.voiceLevel)
+                    coreScale: page.vstate === "speaking" ? 1.10
+                               : page.vstate === "listening" ? (1.0 + 0.16 * bridge.voiceLevel)
                                : 1.0
                     // Ease the core size so the level reaction reads smooth, not jittery.
                     Behavior on coreScale { NumberAnimation { duration: 90; easing.type: Easing.OutQuad } }

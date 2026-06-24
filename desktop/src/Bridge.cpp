@@ -1123,39 +1123,47 @@ void Bridge::handsFreeFeed(const QByteArray &chunk)
     if (!m_handsFree || m_vadPaused || chunk.isEmpty())
         return;
 
-    // Peak amplitude over the int16 mono samples (cheap, robust enough for VAD).
+    // RMS energy over the int16 mono samples — stable (a single transient spikes
+    // PEAK and broke silence detection). Calibrated to the DMIC noise floor (~450
+    // rms at the gain we set): speech sits well above it, so the END of a sentence
+    // is detected in ~0.5s instead of waiting out the max-utterance cap (that was
+    // the 30s+ "it took forever to hear me" delay).
     const qint16 *samples = reinterpret_cast<const qint16 *>(chunk.constData());
     const int n = chunk.size() / 2;
-    int peak = 0;
+    double sumSq = 0.0;
     for (int i = 0; i < n; ++i) {
-        int a = samples[i];
-        if (a < 0) a = -a;
-        if (a > peak) peak = a;
+        const double a = samples[i];
+        sumSq += a * a;
     }
-    // Publish the live input level (0..1) so the orb visibly reacts to the user's
-    // voice — if this never moves while they talk, the mic isn't being captured.
-    const qreal lvl = qMin(1.0, double(peak) / 6000.0);
-    if (qAbs(lvl - m_voiceLevel) > 0.03) {
+    const int rms = n > 0 ? int(qSqrt(sumSq / n)) : 0;
+
+    // Publish the live input level (0..1) so the orb reacts to the user's voice.
+    const qreal lvl = qMin(1.0, double(rms) / 7000.0);
+    if (qAbs(lvl - m_voiceLevel) > 0.04) {
         m_voiceLevel = lvl;
         emit voiceLevelChanged();
     }
 
-    static const int kThreshold = 800;              // speech vs. room noise (sensitive)
-    static const qint64 kSilenceBytes = 22000;      // ~0.7s trailing silence => end
-    static const qint64 kMinSpeechBytes = 4800;     // ~0.15s voiced => real utterance
-    static const qint64 kPrerollBytes = 8000;       // keep ~0.25s before speech starts
-    static const qint64 kMaxUtterBytes = 16000 * 2 * 30; // 30s hard cap
+    static const int kSpeechRms = 1400;             // onset (noise floor ~450)
+    static const int kSilenceRms = 800;             // below this => silence
+    static const qint64 kSilenceBytes = 16000;      // ~0.5s trailing silence => end
+    static const qint64 kMinSpeechBytes = 6400;     // ~0.2s voiced => real utterance
+    static const qint64 kPrerollBytes = 6400;       // keep ~0.2s before speech starts
+    static const qint64 kMaxUtterBytes = 16000 * 2 * 15; // 15s hard cap
 
     m_voicePcm.append(chunk);
 
-    if (peak >= kThreshold) {
+    if (rms >= kSpeechRms) {
         m_vadSpeech = true;
         m_vadSilenceBytes = 0;
         m_vadSpeechBytes += chunk.size();
         if (m_voiceState != QStringLiteral("listening"))
             setVoiceState(QStringLiteral("listening"));
     } else if (m_vadSpeech) {
-        m_vadSilenceBytes += chunk.size();
+        if (rms < kSilenceRms)
+            m_vadSilenceBytes += chunk.size();   // genuine silence — counts toward end
+        else
+            m_vadSilenceBytes = 0;               // mid level — still talking
     } else if (m_voicePcm.size() > kPrerollBytes) {
         // Pre-speech: keep only a short pre-roll so silence doesn't bloat the buffer.
         m_voicePcm = m_voicePcm.right(kPrerollBytes);
@@ -1201,6 +1209,42 @@ void Bridge::speak(const QString &text)
     request(QStringLiteral("voice.tts"), params, QStringLiteral("__voicemode__"));
 }
 
+// Resolve a stored output-sink id to a QAudioDevice (empty/unknown => default).
+static QAudioDevice resolveTtsOutput(const QByteArray &id)
+{
+    if (id.isEmpty())
+        return QMediaDevices::defaultAudioOutput();
+    const auto devs = QMediaDevices::audioOutputs();
+    for (const QAudioDevice &d : devs)
+        if (d.id() == id)
+            return d;
+    return QMediaDevices::defaultAudioOutput();
+}
+
+QVariantList Bridge::audioOutputs() const
+{
+    QVariantList out;
+    const QByteArray defId = QMediaDevices::defaultAudioOutput().id();
+    const auto devs = QMediaDevices::audioOutputs();
+    for (int i = 0; i < devs.size(); ++i) {
+        QVariantMap m;
+        m.insert(QStringLiteral("index"), i);
+        m.insert(QStringLiteral("name"), devs[i].description());
+        m.insert(QStringLiteral("isDefault"), devs[i].id() == defId);
+        out.append(m);
+    }
+    return out;
+}
+
+void Bridge::setTtsOutput(int index)
+{
+    const auto devs = QMediaDevices::audioOutputs();
+    m_ttsDeviceId = (index >= 0 && index < devs.size()) ? devs[index].id() : QByteArray();
+    // Apply live if a player already exists; otherwise it's used on next creation.
+    if (m_ttsOutput)
+        m_ttsOutput->setDevice(resolveTtsOutput(m_ttsDeviceId));
+}
+
 void Bridge::playTtsAudio(const QByteArray &audio, const QString &mime)
 {
     if (audio.isEmpty())
@@ -1220,7 +1264,7 @@ void Bridge::playTtsAudio(const QByteArray &audio, const QString &mime)
 
     if (!m_ttsPlayer) {
         m_ttsPlayer = new QMediaPlayer(this);
-        m_ttsOutput = new QAudioOutput(this);
+        m_ttsOutput = new QAudioOutput(resolveTtsOutput(m_ttsDeviceId), this);
         m_ttsOutput->setVolume(1.0);
         m_ttsPlayer->setAudioOutput(m_ttsOutput);
         // Surface playback failures (missing codec/route) instead of silent no-sound.
