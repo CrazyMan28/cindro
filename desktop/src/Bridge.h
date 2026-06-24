@@ -287,6 +287,8 @@ public:
     // Ensure a dedicated voice coworker/coder session exists (so "what's on my
     // screen" can use the computer-use screenshot tool). Reuses createSession.
     Q_INVOKABLE void ensureVoiceSession();
+    // Ask the chat UI to start a fresh chat (emitted on launch/toggle-to-visible).
+    void requestNewChat() { emit newChatRequested(); }
     // Voice MODE brain/model selection (mirrors the chat picker). Set before the
     // voice session is created; resetVoiceSession() drops it so a new brain applies.
     Q_INVOKABLE void setVoicePreferences(const QString &brain, const QString &model)
@@ -432,6 +434,9 @@ signals:
     // Fired when a FOREIGN session opened but the desktop already has an active chat:
     // surface/raise the window WITHOUT switching or clearing the current transcript.
     void sessionFocusRequested();
+    // Fired when the app is brought up via launch/toggle-to-visible: the chat should
+    // reset to a fresh NEW chat (so "open Jarvis" never lands in an old/Chrome session).
+    void newChatRequested();
     // Fired when a session.delete succeeds; the Sessions page refreshes its list.
     void sessionDeleted(const QString &sessionId);
 
