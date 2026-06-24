@@ -59,6 +59,9 @@ class Bridge : public QObject
     // Hands-free conversation mode: true while continuous listen (no hold-to-talk)
     // is active. Drives the VoiceMode button label.
     Q_PROPERTY(bool handsFree READ handsFree NOTIFY handsFreeChanged)
+    // Live mic input level (0..1) while listening — lets the orb react to the user's
+    // voice so it's obvious capture is working (or not).
+    Q_PROPERTY(qreal voiceLevel READ voiceLevel NOTIFY voiceLevelChanged)
     // Desktop notifications (notify-send) toggle; persisted via settings.
     Q_PROPERTY(bool notify READ notificationsEnabled NOTIFY notificationsChanged)
 
@@ -80,6 +83,7 @@ public:
     QString recordingState() const { return m_recordingState; }
     QString voiceState() const { return m_voiceState; }
     bool handsFree() const { return m_handsFree; }
+    qreal voiceLevel() const { return m_voiceLevel; }
 
     // Establish (or re-establish) the control WebSocket connection.
     Q_INVOKABLE void connectToDaemon();
@@ -492,6 +496,7 @@ signals:
     // Orb state changed: idle|listening|thinking|speaking.
     void voiceStateChanged();
     void handsFreeChanged();
+    void voiceLevelChanged();
     // The transcript of a push-to-talk capture (also auto-sent to the session).
     void sttText(const QString &text);
 
@@ -715,6 +720,7 @@ private:
     bool m_vadPaused = false;          // capture parked while model thinks/speaks
     qint64 m_vadSilenceBytes = 0;      // trailing silence accumulated since last speech
     qint64 m_vadSpeechBytes = 0;       // voiced bytes in the current utterance
+    qreal m_voiceLevel = 0.0;          // last mic input level (0..1) for UI feedback
     QTimer *m_vadWatchdog = nullptr;   // resume-listening fallback if no TTS arrives
     void handsFreeFeed(const QByteArray &chunk);  // VAD step on a capture chunk
     void resumeListening();            // clear buffers + go back to listening

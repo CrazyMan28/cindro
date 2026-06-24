@@ -1082,6 +1082,10 @@ void Bridge::stopConversation()
         m_voiceIo = nullptr;
     }
     m_voicePcm.clear();
+    if (m_voiceLevel != 0.0) {
+        m_voiceLevel = 0.0;
+        emit voiceLevelChanged();
+    }
     emit handsFreeChanged();
     setVoiceState(QStringLiteral("idle"));
 }
@@ -1116,9 +1120,17 @@ void Bridge::handsFreeFeed(const QByteArray &chunk)
         if (a < 0) a = -a;
         if (a > peak) peak = a;
     }
-    static const int kThreshold = 1400;             // speech vs. room noise
-    static const qint64 kSilenceBytes = 24000;      // ~0.75s trailing silence => end
-    static const qint64 kMinSpeechBytes = 8000;     // ~0.25s voiced => real utterance
+    // Publish the live input level (0..1) so the orb visibly reacts to the user's
+    // voice — if this never moves while they talk, the mic isn't being captured.
+    const qreal lvl = qMin(1.0, double(peak) / 6000.0);
+    if (qAbs(lvl - m_voiceLevel) > 0.03) {
+        m_voiceLevel = lvl;
+        emit voiceLevelChanged();
+    }
+
+    static const int kThreshold = 800;              // speech vs. room noise (sensitive)
+    static const qint64 kSilenceBytes = 22000;      // ~0.7s trailing silence => end
+    static const qint64 kMinSpeechBytes = 4800;     // ~0.15s voiced => real utterance
     static const qint64 kPrerollBytes = 8000;       // keep ~0.25s before speech starts
     static const qint64 kMaxUtterBytes = 16000 * 2 * 30; // 30s hard cap
 

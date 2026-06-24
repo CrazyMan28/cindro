@@ -25,6 +25,7 @@ Item {
     readonly property string vstate: bridge.voiceState   // idle|listening|thinking|speaking
     property string heardText: ""        // last transcript (sttText)
     property string replyText: ""        // last assistant message
+    property string voiceError: ""       // capture/playback failure surfaced to the user
 
     // Which brain + model backs the voice session (mirrors the chat picker). The
     // model list repopulates per brain via bridge.listModels.
@@ -82,9 +83,21 @@ Item {
             }
         }
         // Push-to-talk transcript.
-        function onSttText(text) { page.heardText = text }
+        function onSttText(text) { page.heardText = text; page.voiceError = "" }
+        // Surface mic/capture failures so voice mode never just silently does nothing.
+        function onErrorOccurred(message) {
+            var m = ("" + message).toLowerCase()
+            if (m.indexOf("audio") !== -1 || m.indexOf("capture") !== -1
+                || m.indexOf("mic") !== -1)
+                page.voiceError = "" + message
+        }
         // Assistant reply: show it AND read it back via TTS (drives "speaking").
         function onSessionEvent(ev) {
+            // ONLY react while actively in a hands-free voice conversation. VoiceMode
+            // stays instantiated across the app, so without this guard a normal MAIN
+            // CHAT reply would get spoken here — ignoring the chat's speaker toggle.
+            if (!bridge.handsFree)
+                return
             var kind = ev.kind !== undefined ? ev.kind : ""
             if (kind === "message"
                 && (ev.role === undefined || ev.role === "assistant")
@@ -284,8 +297,11 @@ Item {
                     tint: Theme.accent
                     spinning: true
                     thinking: page.vstate === "thinking"
-                    // a touch larger core when speaking so it "talks"
-                    coreScale: page.vstate === "speaking" ? 1.18 : 1.0
+                    // a touch larger core when speaking so it "talks"; while listening
+                    // the core swells with the live mic level so you can SEE it hearing you
+                    coreScale: page.vstate === "speaking" ? 1.18
+                               : page.vstate === "listening" ? (1.0 + 0.30 * bridge.voiceLevel)
+                               : 1.0
                     // talking pulse — the whole orb visibly throbs while TTS plays
                     property bool talking: page.vstate === "speaking"
                     onTalkingChanged: if (!talking) scale = 1.0
@@ -335,6 +351,19 @@ Item {
                 default:          return "READY"
                 }
             }
+        }
+
+        // Capture failure (e.g. no microphone) — so voice mode is never silently dead.
+        Text {
+            visible: page.voiceError.length > 0
+            Layout.alignment: Qt.AlignHCenter
+            Layout.maximumWidth: 520
+            horizontalAlignment: Text.AlignHCenter
+            text: "⚠ " + page.voiceError
+            color: Theme.danger
+            font.family: Theme.fontSans
+            font.pixelSize: 12
+            wrapMode: Text.WordWrap
         }
 
         // ---- transcript + reply --------------------------------------------
