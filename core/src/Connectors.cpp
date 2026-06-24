@@ -11,9 +11,10 @@ const QVector<ConnectorService> &Connectors::catalog()
         {QStringLiteral("calendar"), QStringLiteral("Google Calendar"),
          QStringLiteral("npx -y @cocal/google-calendar-mcp"), QStringLiteral("medium")},
         {QStringLiteral("docs"), QStringLiteral("Google Docs"),
-         QStringLiteral("npx -y @google/docs-mcp"), QStringLiteral("medium")},
+         // Google Docs are Drive files; the official Drive MCP reads/exports them.
+         QStringLiteral("npx -y @modelcontextprotocol/server-gdrive"), QStringLiteral("medium")},
         {QStringLiteral("drive"), QStringLiteral("Google Drive"),
-         QStringLiteral("npx -y @google/drive-mcp"), QStringLiteral("high")},
+         QStringLiteral("npx -y @modelcontextprotocol/server-gdrive"), QStringLiteral("high")},
         {QStringLiteral("gmail"), QStringLiteral("Gmail"),
          QStringLiteral("npx -y @gongrzhe/server-gmail-autoauth-mcp"), QStringLiteral("high")},
     };

@@ -62,6 +62,12 @@ int main(int argc, char **argv)
     QCommandLineOption voiceOpt(QStringLiteral("voice"),
                                 QStringLiteral("Open the app on the Voice Mode page."));
     parser.addOption(voiceOpt);
+    // CI/integration test: load the full UI (offscreen), verify it renders, then
+    // exit 0. The QML load failing already exits non-zero (rootObjects empty); a
+    // crash within the settle window also fails. Used by the `gui_selftest` ctest.
+    QCommandLineOption selftestOpt(QStringLiteral("selftest"),
+                                   QStringLiteral("Load the UI, verify it renders, then exit."));
+    parser.addOption(selftestOpt);
     parser.process(app);
 
     if (parser.isSet(toggleOpt)) {
@@ -71,9 +77,12 @@ int main(int argc, char **argv)
     }
 
     // Become the singleton instance owner. Remove any stale socket first.
-    QLocalServer::removeServer(QString::fromLatin1(kIpcName));
     auto *server = new QLocalServer(&app);
-    server->listen(QString::fromLatin1(kIpcName));
+    if (!parser.isSet(selftestOpt)) {
+        // A --selftest run must NOT hijack a running instance's singleton socket.
+        QLocalServer::removeServer(QString::fromLatin1(kIpcName));
+        server->listen(QString::fromLatin1(kIpcName));
+    }
 
     QQmlApplicationEngine engine;
 
@@ -101,6 +110,17 @@ int main(int argc, char **argv)
     engine.loadFromModule(QStringLiteral("JarvisSidebar"), QStringLiteral("Main"));
     if (engine.rootObjects().isEmpty())
         return -1;
+
+    // --selftest: the UI loaded with a non-empty root tree. Let it settle (so
+    // Component.onCompleted across all pages runs and any load-time error surfaces),
+    // then exit 0. A crash in that window fails the test.
+    if (parser.isSet(selftestOpt)) {
+        QTimer::singleShot(2000, &app, []() {
+            qInfo("jarvis-sidebar selftest: UI rendered OK");
+            QCoreApplication::exit(0);
+        });
+        return app.exec();
+    }
 
     // IPC toggle: hide the active surface if it's visible; otherwise re-show the
     // current mode via the controller (which knows float vs dock).
