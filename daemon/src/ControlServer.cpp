@@ -1045,6 +1045,21 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
 {
     Brain *brain = m_brains.value(sessionId, nullptr);
     if (!brain) {
+        // No LIVE brain (the daemon restarted, or this is an OLD session the user
+        // just opened from the Sessions list). RESUME it: re-spawn a brain so the
+        // user can keep talking instead of hitting "inactive session". The on-disk
+        // transcript is shown by the app; the fresh brain continues the thread.
+        if (auto row = m_store.get(sessionId)) {
+            brain = makeBrain(*row, QString(), CodexMcpOverrides{});
+            if (brain) {
+                connect(brain, &Brain::event, this, &ControlServer::onBrainEvent);
+                connect(brain, &Brain::turnFinished, this, &ControlServer::onTurnFinished);
+                m_brains.insert(sessionId, brain);
+                m_store.updateState(sessionId, QStringLiteral("idle"));
+            }
+        }
+    }
+    if (!brain) {
         if (err)
             *err = QStringLiteral("unknown or inactive session: ") + sessionId;
         return false;
@@ -1077,6 +1092,18 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
     }
 
     m_store.updateState(sessionId, QStringLiteral("running"));
+
+    // Auto-title an untitled session from its FIRST user message so the Sessions
+    // list isn't a wall of "Untitled session". Only sets it while still untitled.
+    if (auto row = m_store.get(sessionId);
+        row && (row->title.isEmpty() || row->title == QStringLiteral("Untitled session"))) {
+        QString t = text.trimmed();
+        t.replace(QLatin1Char('\n'), QLatin1Char(' '));
+        if (t.length() > 48)
+            t = t.left(47).trimmed() + QStringLiteral("…");
+        if (!t.isEmpty())
+            m_store.updateTitle(sessionId, t);
+    }
 
     // Memory PREFETCH (HERMES_FEATURES §1), applied for ALL brains: prepend a
     // relevant-memory block to the user's turn so the model has context. The
@@ -1685,20 +1712,24 @@ Response ControlServer::handleConnectorsAdd(const Request &req)
         return Response::failure(req.id, QStringLiteral("bad_request"),
                                  QStringLiteral("unknown Google connector service: ") + service);
 
-    // Placeholder-empty creds are allowed (framework/mock); real activation
-    // supplies them later. The row is created DISABLED so injection never runs.
     const QString clientId = p.value(QStringLiteral("client_id")).toString();
     const QString clientSecret = p.value(QStringLiteral("client_secret")).toString();
     const QString refreshToken = p.value(QStringLiteral("refresh_token")).toString();
+
+    // Real creds (all three present) ENABLE the connector so the brain actually gets
+    // the Google MCP server (env injected with the secret refs). Empty/placeholder
+    // creds add it DISABLED (framework/mock) — injection never runs without creds.
+    const bool hasRealCreds =
+        !clientId.isEmpty() && !clientSecret.isEmpty() && !refreshToken.isEmpty();
 
     const QString name = Connectors::serverName(service);
     const QString endpoint = Connectors::defaultCommandFor(service);
     const QString risk = Connectors::riskFor(service);
 
-    // First materialize the row (disabled) so we have its id for the secret-ref
-    // env map; then PATCH the env in place with secret refs keyed by that id.
+    // First materialize the row so we have its id for the secret-ref env map; then
+    // PATCH the env in place with secret refs keyed by that id.
     const QString id = m_mcp->add(name, QStringLiteral("stdio"), endpoint,
-                                  QString() /*no http token*/, /*enabled=*/false, risk);
+                                  QString() /*no http token*/, /*enabled=*/hasRealCreds, risk);
     if (id.isEmpty())
         return Response::failure(req.id, QStringLiteral("store_error"), m_store.lastError());
 
@@ -1723,7 +1754,7 @@ Response ControlServer::handleConnectorsAdd(const Request &req)
     QJsonObject result;
     result.insert(QStringLiteral("id"), id);
     result.insert(QStringLiteral("name"), name);
-    result.insert(QStringLiteral("enabled"), false);
+    result.insert(QStringLiteral("enabled"), hasRealCreds);
     return Response::success(req.id, result);
 }
 

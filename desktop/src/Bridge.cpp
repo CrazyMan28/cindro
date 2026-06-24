@@ -212,6 +212,7 @@ void Bridge::createSession(const QString &profile, const QString &brain, const Q
     params.insert(QStringLiteral("brain"), brain.isEmpty() ? QStringLiteral("codex") : brain);
     if (!model.isEmpty())
         params.insert(QStringLiteral("model"), model);
+    m_creatingSession = true;  // ignore our own session.opened echo until the reply
     request(QStringLiteral("session.create"), params);
 }
 
@@ -1439,6 +1440,7 @@ void Bridge::startCoworker(const QString &brain, const QString &model)
         params.insert(QStringLiteral("model"), model);
     // Tag the request so the response handler knows to wire up the co-worker
     // session + auto-start the agent-desktop mirror.
+    m_creatingSession = true;
     request(QStringLiteral("session.create"), params, QStringLiteral("coworker:agent"));
 }
 
@@ -1463,6 +1465,7 @@ void Bridge::takeOver(const QString &brain, const QString &model)
         params.insert(QStringLiteral("model"), model);
     // target="real" is approval/biometric gated by the daemon; the driving flag
     // only flips once the daemon confirms via a driving.state event.
+    m_creatingSession = true;
     request(QStringLiteral("session.create"), params, QStringLiteral("coworker:real"));
 }
 
@@ -1982,23 +1985,22 @@ void Bridge::onTextMessageReceived(const QString &message)
         return;
     }
 
-    // Unsolicited "a session was opened" event: the daemon fanned out a fresh
-    // session.create from ANY surface (phone/MCP/scheduler). Open it locally so the
-    // Chat page replays its history; Main.qml's onSessionOpened raises+navigates the
-    // window. Guard against a desktop-initiated create echoing back (we already
-    // openSession'd it locally) to avoid a double-open.
+    // Unsolicited "a session was opened" event: the daemon fanned out a session.create
+    // from SOME surface (this desktop, the phone, Chrome co-work, MCP, scheduler).
+    //
+    // CRITICAL — do NOT adopt it into the active chat. The daemon broadcasts this
+    // event BEFORE our own session.create reply lands, so a naive "adopt when we have
+    // no session" hijacks the chat: voice-mode's own new session bounced us to Chat,
+    // a new chat thrashed, and a Chrome co-work session stole the app's input (saying
+    // "hello" went to the Chrome agent). Sessions are SEPARATE and live in the
+    // Sessions list; the user switches between them there. Here we only RAISE the
+    // window so "a new session opened" still surfaces Jarvis. Our own create's echo
+    // is ignored entirely via m_creatingSession.
     if (obj.value(QStringLiteral("event")).toString() == QStringLiteral("session.opened")) {
         const QJsonObject data = obj.value(QStringLiteral("data")).toObject();
         const QString sid = data.value(QStringLiteral("session_id")).toString();
-        // Only auto-SWITCH the visible chat to a foreign new session when the desktop
-        // isn't already in one — otherwise a scheduled/phone session would wipe the
-        // chat the user is in. Either way the window is surfaced (Main.qml).
-        if (!sid.isEmpty() && sid != m_sessionId) {
-            if (m_sessionId.isEmpty())
-                openSession(sid);              // adopt + replay (we had nothing open)
-            else
-                emit sessionFocusRequested();  // keep current chat; just raise the app
-        }
+        if (!sid.isEmpty() && sid != m_sessionId && !m_creatingSession)
+            emit sessionFocusRequested();  // raise the window ONLY; never switch/clear
         return;
     }
 
@@ -2170,14 +2172,17 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         }
         // If creating the session failed, drop any queued first message so it can't
         // later land in an unrelated session.
-        if (method == QStringLiteral("session.create"))
+        if (method == QStringLiteral("session.create")) {
             m_pendingText.clear();
+            m_creatingSession = false;
+        }
         emit errorOccurred(QStringLiteral("%1 failed: [%2] %3")
                                .arg(method.isEmpty() ? QStringLiteral("request") : method, code, msg));
         return;
     }
 
     if (method == QStringLiteral("session.create")) {
+        m_creatingSession = false;
         const QString sid = result.value(QStringLiteral("session_id")).toString();
         if (!sid.isEmpty()) {
             m_sessionId = sid;

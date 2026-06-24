@@ -297,6 +297,20 @@ bool SessionStore::updateState(const QString &id, const QString &state)
     return true;
 }
 
+bool SessionStore::updateTitle(const QString &id, const QString &title)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("UPDATE sessions SET title=?, updated=? WHERE id=?"));
+    q.addBindValue(title);
+    q.addBindValue(QDateTime::currentMSecsSinceEpoch());
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
 bool SessionStore::updateThreadId(const QString &id, const QString &threadId)
 {
     QSqlQuery q(m_db);

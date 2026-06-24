@@ -62,10 +62,10 @@ Window {
             floatWin.panel.currentIndex = 0
             WindowController.present()
         }
-        // A foreign session opened while we're already mid-chat: surface the window
-        // but keep the current transcript (no switch, no clear).
+        // A foreign session (Chrome/phone/scheduler) opened: ONLY raise the window so
+        // the user notices Jarvis. Do NOT switch pages or the active chat — sessions
+        // are separate and switched from the Sessions list.
         function onSessionFocusRequested() {
-            floatWin.panel.currentIndex = 0
             WindowController.present()
         }
     }

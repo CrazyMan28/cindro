@@ -699,10 +699,12 @@ Item {
             }
 
             Widgets.SectionCard {
+                id: connCard
                 Layout.fillWidth: true
+                property bool showHelp: false
 
                 Text {
-                    text: "Google services Jarvis can use (added disabled — authorize to enable)"
+                    text: "Connect Google services. Each needs OAuth credentials from Google Cloud — open the guide below, then paste Client ID / secret / refresh token and Connect."
                     color: Theme.textMuted
                     font.family: Theme.fontSans
                     font.pixelSize: 11
@@ -710,54 +712,127 @@ Item {
                     wrapMode: Text.WordWrap
                 }
 
+                // ---- "How to set up (Google Cloud)" expander --------------------
+                Text {
+                    text: (connCard.showHelp ? "▾ " : "▸ ") + "How to set up (Google Cloud)"
+                    color: Theme.accent
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                    Layout.fillWidth: true
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: connCard.showHelp = !connCard.showHelp
+                    }
+                }
+                Text {
+                    visible: connCard.showHelp
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    color: Theme.textMuted
+                    font.family: Theme.fontMono
+                    font.pixelSize: 10
+                    lineHeight: 1.35
+                    text:
+                        "1. console.cloud.google.com → create a project.\n" +
+                        "2. APIs & Services → Library → ENABLE the APIs you want: Google Calendar, Google Drive, Google Docs, Gmail.\n" +
+                        "3. APIs & Services → OAuth consent screen → External; add your own Google account under \"Test users\".\n" +
+                        "4. APIs & Services → Credentials → Create credentials → OAuth client ID → application type \"Desktop app\". Copy the Client ID + Client secret.\n" +
+                        "5. Refresh token: open developers.google.com/oauthplayground → gear ⚙ (top right) → tick \"Use your own OAuth credentials\" → paste your Client ID + secret. On the left pick the scopes for the service (e.g. Calendar API → calendar.readonly), Authorize, then \"Exchange authorization code for tokens\" and copy the refresh_token.\n" +
+                        "6. Paste the three values below for that service and tap Connect. Secrets are stored locally (0600) and never shown again.\n" +
+                        "Full guide: docs/JARVIS_GOOGLE_CONNECTORS.md"
+                }
+
                 Repeater {
                     model: page.connectorServices
-                    delegate: RowLayout {
+                    delegate: ColumnLayout {
                         id: connRow
                         required property var modelData
                         Layout.fillWidth: true
-                        spacing: 10
+                        spacing: 8
 
                         property var row: page.connectorFor(connRow.modelData.service)
                         property bool added: connRow.row !== null
-                        property bool enabled: connRow.added && connRow.row.enabled === true
+                        property bool isOn: connRow.added && connRow.row.enabled === true
+                        property bool expanded: false
 
-                        Text {
-                            text: connRow.modelData.label
-                            color: Theme.text
-                            font.family: Theme.fontSans
-                            font.pixelSize: 13
+                        RowLayout {
                             Layout.fillWidth: true
-                        }
+                            spacing: 10
 
-                        // State badge: Enabled / Added / not added.
-                        Rectangle {
-                            visible: connRow.added
-                            radius: Theme.radiusSm
-                            color: "transparent"
-                            border.color: connRow.enabled ? Theme.accent : Theme.textFaint
-                            border.width: 1
-                            implicitHeight: badgeText.implicitHeight + 6
-                            implicitWidth: badgeText.implicitWidth + 14
                             Text {
-                                id: badgeText
-                                anchors.centerIn: parent
-                                text: connRow.enabled ? "Enabled" : "Added"
-                                color: connRow.enabled ? Theme.accent : Theme.textMuted
-                                font.family: Theme.fontMono
-                                font.pixelSize: 10
+                                text: connRow.modelData.label
+                                color: Theme.text
+                                font.family: Theme.fontSans
+                                font.pixelSize: 13
+                                Layout.fillWidth: true
+                            }
+
+                            Rectangle {
+                                visible: connRow.added
+                                radius: Theme.radiusSm
+                                color: "transparent"
+                                border.color: connRow.isOn ? Theme.accent : Theme.textFaint
+                                border.width: 1
+                                implicitHeight: cbT.implicitHeight + 6
+                                implicitWidth: cbT.implicitWidth + 14
+                                Text {
+                                    id: cbT
+                                    anchors.centerIn: parent
+                                    text: connRow.isOn ? "Connected" : "Added (no creds)"
+                                    color: connRow.isOn ? Theme.accent : Theme.textMuted
+                                    font.family: Theme.fontMono
+                                    font.pixelSize: 10
+                                }
+                            }
+
+                            Widgets.PillButton {
+                                label: connRow.added ? "Added"
+                                       : (connRow.expanded ? "Cancel" : "Connect")
+                                enabledBtn: !connRow.added
+                                Layout.alignment: Qt.AlignVCenter
+                                onClicked: {
+                                    if (connRow.added) return
+                                    connRow.expanded = !connRow.expanded
+                                }
                             }
                         }
 
-                        Widgets.PillButton {
-                            label: connRow.added ? "Added" : "Add"
-                            enabledBtn: !connRow.added
-                            Layout.alignment: Qt.AlignVCenter
-                            onClicked: {
-                                if (connRow.added) return
-                                // Placeholder creds for the framework/mock; real creds
-                                // come from the paste-config flow later.
-                                bridge.connectorAdd(connRow.modelData.service, "", "", "")
+                        // Credential entry, revealed by "Connect".
+                        ColumnLayout {
+                            visible: connRow.expanded && !connRow.added
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 4
+                            spacing: 6
+
+                            Widgets.StyledField {
+                                id: fClientId
+                                Layout.fillWidth: true
+                                placeholder: "Client ID"
+                            }
+                            Widgets.StyledField {
+                                id: fSecret
+                                Layout.fillWidth: true
+                                masked: true
+                                placeholder: "Client secret"
+                            }
+                            Widgets.StyledField {
+                                id: fToken
+                                Layout.fillWidth: true
+                                masked: true
+                                placeholder: "Refresh token"
+                            }
+                            Widgets.PillButton {
+                                label: "Connect " + connRow.modelData.label
+                                Layout.alignment: Qt.AlignRight
+                                onClicked: {
+                                    bridge.connectorAdd(
+                                        connRow.modelData.service,
+                                        fClientId.text.trim(),
+                                        fSecret.text.trim(),
+                                        fToken.text.trim())
+                                    connRow.expanded = false
+                                }
                             }
                         }
                     }
