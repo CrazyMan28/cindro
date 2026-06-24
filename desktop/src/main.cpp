@@ -125,19 +125,22 @@ int main(int argc, char **argv)
     // IPC toggle: hide the active surface if it's visible; otherwise re-show the
     // current mode via the controller (which knows float vs dock).
     QObject::connect(server, &QLocalServer::newConnection, &app,
-                     [server, windowController]() {
+                     [server, windowController, bridge]() {
         QLocalSocket *conn = server->nextPendingConnection();
         if (!conn)
             return;
-        QObject::connect(conn, &QLocalSocket::readyRead, conn, [conn, windowController]() {
+        QObject::connect(conn, &QLocalSocket::readyRead, conn, [conn, windowController, bridge]() {
             const QByteArray cmd = conn->readAll().trimmed();
             if (cmd == "toggle") {
-                if (windowController->mode() == QStringLiteral("hidden"))
+                if (windowController->mode() == QStringLiteral("hidden")) {
                     windowController->dock();
-                else if (windowController->docked())
+                    bridge->requestNewChat();   // opening Jarvis -> fresh chat
+                } else if (windowController->docked()) {
                     windowController->hideDock();
-                else
+                } else {
                     windowController->undock(); // re-show floating
+                    bridge->requestNewChat();   // opening Jarvis -> fresh chat
+                }
             }
             conn->disconnectFromServer();
         });
