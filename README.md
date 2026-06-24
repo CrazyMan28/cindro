@@ -127,6 +127,7 @@ cd android && ./gradlew :app:assembleDebug
 
 ## Docs
 
+- [`docs/STATUS.md`](docs/STATUS.md) — **where the project actually is** (done vs partial vs next)
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design
 - [`docs/COMPUTER_USE.md`](docs/COMPUTER_USE.md) — the computer-use engine
 - [`docs/JARVIS_VOICE_AND_RENDERER.md`](docs/JARVIS_VOICE_AND_RENDERER.md) — voice + generative renderer
