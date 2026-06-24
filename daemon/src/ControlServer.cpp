@@ -2626,8 +2626,17 @@ QString ControlServer::buildTodayDigest()
         const QVector<MemoryRow> recent = m_memory.list(5);
         if (!recent.isEmpty()) {
             out += QStringLiteral("\n## Recent memory\n");
-            for (const MemoryRow &m : recent)
-                out += QStringLiteral("- %1\n").arg(m.text);
+            for (const MemoryRow &m : recent) {
+                // A digest is a SUMMARY: show only a one-line preview of each
+                // memory. A memory can hold a large pasted blob (e.g. a whole
+                // article a co-work session ingested); dumping it verbatim here
+                // blew the digest up to thousands of lines and overflowed the
+                // desktop's TODAY//BRIEFING panel (it looked like a stuck chat).
+                QString preview = m.text.simplified();   // collapse newlines/runs
+                if (preview.size() > 120)
+                    preview = preview.left(120) + QStringLiteral("…");
+                out += QStringLiteral("- %1\n").arg(preview);
+            }
         }
     }
 
