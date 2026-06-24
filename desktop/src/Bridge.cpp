@@ -2089,7 +2089,13 @@ void Bridge::onTextMessageReceived(const QString &message)
         }
         // Fold the session id in so the UI can route by session.
         evMap.insert(QStringLiteral("session_id"), sid);
-        emit sessionEvent(evMap);
+        // ONLY route to the chat transcript if it belongs to THIS desktop's active
+        // session (or its voice session). The daemon broadcasts EVERY session's
+        // events to all control clients, so without this filter a Chrome co-work /
+        // phone session pollutes the desktop chat — the "opened the app and it's in
+        // the same session as Chrome" bug. Sessions are separate; switch via Sessions.
+        if (sid == m_sessionId || (!m_voiceSessionId.isEmpty() && sid == m_voiceSessionId))
+            emit sessionEvent(evMap);
         return;
     }
 
