@@ -4,6 +4,7 @@
 #include "jarvis/Brain.h"
 #include "jarvis/ClaudeBrain.h"
 #include "jarvis/CodexBrain.h"
+#include "jarvis/Connectors.h"
 #include "jarvis/InjectionGuard.h"
 #include "jarvis/PluginSigner.h"
 
@@ -267,6 +268,14 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleMcpSetEnabled(req);
     else if (m == QStringLiteral("mcp.test"))
         resp = handleMcpTest(req);
+    else if (m == QStringLiteral("mcp.cli_list"))
+        resp = handleMcpCliList(req);
+    else if (m == QStringLiteral("mcp.cli_set_enabled"))
+        resp = handleMcpCliSetEnabled(req);
+    else if (m == QStringLiteral("connectors.list"))
+        resp = handleConnectorsList(req);
+    else if (m == QStringLiteral("connectors.add"))
+        resp = handleConnectorsAdd(req);
     else if (m == QStringLiteral("plugins.catalog"))
         resp = handlePluginsCatalog(req);
     else if (m == QStringLiteral("plugins.install"))
@@ -285,10 +294,20 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleAgentDesktopInfo(req);
     else if (m == QStringLiteral("take_over.request"))
         resp = handleTakeOverRequest(req);
+    else if (m == QStringLiteral("take_over.cancel"))
+        resp = handleTakeOverCancel(req);
+    else if (m == QStringLiteral("auth.request"))
+        resp = handleAuthRequest(req);
+    else if (m == QStringLiteral("auth.status"))
+        resp = handleAuthStatus(req);
+    else if (m == QStringLiteral("auth.deny"))
+        resp = handleAuthDeny(req);
     else if (m == QStringLiteral("voice.stt"))
         resp = handleVoiceStt(req);
     else if (m == QStringLiteral("voice.tts"))
         resp = handleVoiceTts(req);
+    else if (m == QStringLiteral("voice.list_voices"))
+        resp = handleVoiceListVoices(req);
     else if (m == QStringLiteral("file.push"))
         resp = handleFilePush(req);
     else if (m == QStringLiteral("file.get"))
@@ -349,6 +368,15 @@ Response ControlServer::handleSettingsGet(const Request &req)
     s.insert(QStringLiteral("default_brain"), m_settings.defaultBrain());
     s.insert(QStringLiteral("default_model"), m_settings.defaultModel());
     s.insert(QStringLiteral("claude_account"), m_settings.claudeAccount());
+    s.insert(QStringLiteral("tts_voice"), m_settings.ttsVoice());
+
+    // Pluggable STT/TTS providers (default "voxtral"). Ship the availability
+    // lists too so the picker can show-but-disable local providers when their
+    // binary is absent.
+    s.insert(QStringLiteral("stt_provider"), m_settings.sttProvider());
+    s.insert(QStringLiteral("tts_provider"), m_settings.ttsProvider());
+    s.insert(QStringLiteral("stt_providers"), VoiceProvider::sttProviders());
+    s.insert(QStringLiteral("tts_providers"), VoiceProvider::ttsProviders());
 
     QJsonArray brains;
     brains << QStringLiteral("codex") << QStringLiteral("claude") << QStringLiteral("api");
@@ -381,6 +409,11 @@ Response ControlServer::handleSettingsGet(const Request &req)
     // a plain chat can drive the computer/Chrome on demand.
     s.insert(QStringLiteral("let_jarvis_use_computer"),
              m_settings.letJarvisUseComputer());
+
+    // "Require phone+fingerprint to open Jarvis" (2FA + fingerprint cross-device
+    // unlock; default ON — no-brick). When on, the desktop shows a LockGate on
+    // launch; handleAuthRequest fail-opens when no approver is reachable.
+    s.insert(QStringLiteral("auth_lock_enabled"), m_settings.authLockEnabled());
 
     // Theme prefs (persisted in config.toml as theme_json). Fall back to a
     // sane default HUD theme when none has been set yet.
@@ -432,6 +465,23 @@ Response ControlServer::handleSettingsSet(const Request &req)
     if (patch.contains(QStringLiteral("let_jarvis_use_computer"))) {
         m_settings.setLetJarvisUseComputer(
             patch.value(QStringLiteral("let_jarvis_use_computer")).toBool());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("auth_lock_enabled"))) {
+        m_settings.setAuthLockEnabled(
+            patch.value(QStringLiteral("auth_lock_enabled")).toBool());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("tts_voice"))) {
+        m_settings.setTtsVoice(patch.value(QStringLiteral("tts_voice")).toString());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("stt_provider"))) {
+        m_settings.setSttProvider(patch.value(QStringLiteral("stt_provider")).toString());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("tts_provider"))) {
+        m_settings.setTtsProvider(patch.value(QStringLiteral("tts_provider")).toString());
         prefsTouched = true;
     }
     if (prefsTouched)
@@ -518,20 +568,34 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         // NESTED engine instead of the global :8794, so the brain drives the
         // agent's own desktop — never the user's real screen.
         if (!agentMcpOverrides.args.isEmpty()) {
+            // coworker+agent (or auto-spawned chat): drive the NESTED per-session
+            // computer-use engine.
             opts.configOverrides = agentMcpOverrides.args;
             opts.extraEnv = agentMcpOverrides.env;
-            // coworker+agent: the brain must DRIVE the computer-use MCP against
-            // the isolated nested desktop. codex auto-cancels MCP tool calls
-            // headless unless the sandbox is danger-full-access, so flag this
-            // session to drive (CodexBrain then forces the sandbox + approval).
-            // This is the codex analogue of ClaudeBrain's bypassPermissions for
-            // the same case — the agent only ever touches its OWN screen.
-            opts.driveMcp = true;
         } else if (row.profile == QStringLiteral("coworker") && m_mcp) {
-            const CodexMcpOverrides cu = m_mcp->codexOverrides();
+            const CodexMcpOverrides cu = m_mcp->codexOverrides(
+                [this](const QString &ref) { return resolveConnectorEnv(ref); });
             opts.configOverrides = cu.args;
             opts.extraEnv = cu.env;
         }
+        // ANY codex session that has a computer-use MCP injected MUST drive it
+        // headless: codex auto-CANCELS every MCP tool call ("desktop tool not
+        // allowed") under any sandbox other than danger-full-access with no
+        // approval. So whenever we injected a computer-use server, force the
+        // drive contract + an ISOLATED CODEX_HOME (only the injected server is
+        // visible — never the user's global ~/.codex servers / real desktop).
+        // This closes the path where a session had the tool but kept cancelling.
+        // ALWAYS run in an ISOLATED CODEX_HOME (its config.toml is copied with
+        // every [mcp_servers.*] stripped; auth.json symlinked) so a Jarvis session
+        // NEVER inherits the user's ~/.codex servers (hand-desktop/desktop-use/
+        // vm-*), even a plain chat with no injected computer-use. driveMcp (the
+        // danger sandbox that stops codex auto-cancelling MCP calls) is only forced
+        // when a computer-use server was actually injected.
+        opts.codexHome = QDir::homePath()
+            + QStringLiteral("/.local/share/jarvis/agent/") + row.id
+            + QStringLiteral("/codex-home");
+        if (!opts.configOverrides.isEmpty())
+            opts.driveMcp = true;
         auto *brain = new CodexBrain(opts, this);
         brain->setSessionId(row.id);
         return brain;
@@ -609,6 +673,22 @@ CodexMcpOverrides ControlServer::agentMcpOverridesFor(const AgentDesktopInfo &de
         out.args << QStringLiteral("mcp_servers.%1.bearer_token_env_var=%2").arg(key, envName);
         out.env.insert(envName, desk.bearer);
     }
+    // ALSO expose the GLOBAL :8794 engine as a SECOND server "real_screen" so the
+    // model can drive the USER'S REAL KDE screen when asked. The nested
+    // "computer_use" server only reaches the agent's own desktop and REFUSES host
+    // actions ("skipped: engine bound to nested agent desktop"); real_screen is
+    // bound to the active session and uses which="active". The model chooses per
+    // the co-work preamble (agent desktop by default; real screen only on request).
+    {
+        const QString realUrl = McpRegistry::builtinEndpoint();
+        out.args << QStringLiteral("mcp_servers.real_screen.url=%1").arg(realUrl);
+        const QString realBearer = McpRegistry::computerUseBearer();
+        if (!realBearer.isEmpty()) {
+            const QString envName = QStringLiteral("JARVIS_REAL_CU_BEARER");
+            out.args << QStringLiteral("mcp_servers.real_screen.bearer_token_env_var=%1").arg(envName);
+            out.env.insert(envName, realBearer);
+        }
+    }
     // Keep any other enabled servers (skip the built-in computer-use; we just
     // overrode it above).
     if (m_mcp) {
@@ -629,6 +709,14 @@ CodexMcpOverrides ControlServer::agentMcpOverridesFor(const AgentDesktopInfo &de
                     out.args << QStringLiteral("mcp_servers.%1.args=[%2]")
                                     .arg(k, quoted.join(QLatin1Char(',')));
                 }
+                // Connector env (Google OAuth creds), resolved through SettingsStore.
+                for (auto it = srv.env.constBegin(); it != srv.env.constEnd(); ++it) {
+                    const QString value = resolveConnectorEnv(it.value().toString());
+                    if (value.isEmpty())
+                        continue;
+                    out.args << QStringLiteral("mcp_servers.%1.env.%2=%3")
+                                    .arg(k, it.key(), value);
+                }
             } else {
                 out.args << QStringLiteral("mcp_servers.%1.url=%2").arg(k, srv.endpoint);
                 if (!srv.token.isEmpty()) {
@@ -643,14 +731,26 @@ CodexMcpOverrides ControlServer::agentMcpOverridesFor(const AgentDesktopInfo &de
     return out;
 }
 
+QString ControlServer::resolveConnectorEnv(const QString &valueOrRef) const
+{
+    // "secret:<key>" -> SettingsStore.apiKey(<key>); anything else is a literal.
+    const QString prefix = QStringLiteral("secret:");
+    if (valueOrRef.startsWith(prefix))
+        return m_settings.apiKey(valueOrRef.mid(prefix.size()));
+    return valueOrRef;
+}
+
 // --- Claude --mcp-config JSON ----------------------------------------------
 
 // Build a {"mcpServers":{<key>:{...}}} object for every enabled MCP server.
 // `computerUseEndpoint`/`computerUseBearer` override the built-in computer-use
 // entry (used to point it at a nested per-session engine for coworker+agent).
+// `resolveEnv` resolves a stdio connector row's env values ("secret:<key>" refs
+// or literals) so an enabled Google connector's OAuth creds reach the brain.
 static QJsonObject claudeMcpServersObject(McpRegistry *mcp,
                                           const QString &cuEndpoint = QString(),
-                                          const QString &cuBearer = QString())
+                                          const QString &cuBearer = QString(),
+                                          const McpRegistry::EnvResolver &resolveEnv = {})
 {
     QJsonObject servers;
     if (!mcp)
@@ -672,6 +772,18 @@ static QJsonObject claudeMcpServersObject(McpRegistry *mcp,
                 for (const QString &a : parts.mid(1))
                     args.append(a);
                 entry.insert(QStringLiteral("args"), args);
+            }
+            // Connector env (Google OAuth creds), resolved through SettingsStore.
+            if (!srv.env.isEmpty()) {
+                QJsonObject resolved;
+                for (auto it = srv.env.constBegin(); it != srv.env.constEnd(); ++it) {
+                    const QString value = resolveEnv ? resolveEnv(it.value().toString())
+                                                     : it.value().toString();
+                    if (!value.isEmpty())
+                        resolved.insert(it.key(), value);
+                }
+                if (!resolved.isEmpty())
+                    entry.insert(QStringLiteral("env"), resolved);
             }
         } else {
             QString url = srv.endpoint;
@@ -698,15 +810,35 @@ static QJsonObject claudeMcpServersObject(McpRegistry *mcp,
 QString ControlServer::claudeMcpConfigFromRegistry() const
 {
     QJsonObject root;
-    root.insert(QStringLiteral("mcpServers"), claudeMcpServersObject(m_mcp.get()));
+    root.insert(QStringLiteral("mcpServers"),
+                claudeMcpServersObject(m_mcp.get(), QString(), QString(),
+                                       [this](const QString &ref) { return resolveConnectorEnv(ref); }));
     return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
 }
 
 QString ControlServer::claudeMcpConfigForAgent(const AgentDesktopInfo &desk) const
 {
+    QJsonObject servers = claudeMcpServersObject(
+        m_mcp.get(), desk.mcpUrl, desk.bearer,
+        [this](const QString &ref) { return resolveConnectorEnv(ref); });
+    // ALSO expose the GLOBAL :8794 engine as "real_screen" so claude can drive the
+    // USER'S real KDE screen (the "computer_use" entry above is the nested agent
+    // desktop, which can't reach the host). Same rationale as the codex path.
+    {
+        QJsonObject real;
+        real.insert(QStringLiteral("type"), QStringLiteral("http"));
+        real.insert(QStringLiteral("url"), McpRegistry::builtinEndpoint());
+        const QString bearer = McpRegistry::computerUseBearer();
+        if (!bearer.isEmpty()) {
+            QJsonObject headers;
+            headers.insert(QStringLiteral("Authorization"),
+                           QStringLiteral("Bearer ") + bearer);
+            real.insert(QStringLiteral("headers"), headers);
+        }
+        servers.insert(QStringLiteral("real_screen"), real);
+    }
     QJsonObject root;
-    root.insert(QStringLiteral("mcpServers"),
-                claudeMcpServersObject(m_mcp.get(), desk.mcpUrl, desk.bearer));
+    root.insert(QStringLiteral("mcpServers"), servers);
     return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
 }
 
@@ -882,8 +1014,30 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     }
 
     connect(brain, &Brain::event, this, &ControlServer::onBrainEvent);
+    // When a turn truly finishes (process exited, brain free), flush any turn the
+    // user queued while it was still busy. The `final` event fires earlier (on the
+    // usage line) while the CLI process is still shutting down its MCP client, so
+    // a fast follow-up would hit "brain is busy" — queue + flush on turnFinished.
+    connect(brain, &Brain::turnFinished, this, &ControlServer::onTurnFinished);
     m_brains.insert(row.id, brain);
+
+    // Session is now fully live (persisted + brain wired). Surface it everywhere:
+    // signal the apps to OPEN/FOCUS this session's chat. This fires on the SINGLE
+    // shared success exit so it covers BOTH the control-WS caller path and the
+    // scheduler path; all early-error returns are above this point.
+    broadcastSessionOpened(row.id, row.title);  // control-WS fan-out (desktop)
+    emit sessionOpened(row.id, row.title);      // device-WS + FCM fan-out (phone)
     return row.id;
+}
+
+void ControlServer::onTurnFinished(const QString &sessionId)
+{
+    if (!m_pendingTurns.contains(sessionId))
+        return;
+    const HeldTurn pending = m_pendingTurns.take(sessionId);
+    QString err;
+    // Re-enter the normal send path (injection gate + memory prefetch re-applied).
+    sendToSession(sessionId, pending.text, pending.images, &err);
 }
 
 bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
@@ -894,6 +1048,14 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         if (err)
             *err = QStringLiteral("unknown or inactive session: ") + sessionId;
         return false;
+    }
+
+    // If the brain is mid-turn (or winding down after the `final` event), QUEUE
+    // this turn and flush it on turnFinished — never reject the user's message.
+    // Only the newest queued turn is kept (a rapid double-send coalesces).
+    if (brain->isBusy()) {
+        m_pendingTurns.insert(sessionId, HeldTurn{text, images});
+        return true;
     }
 
     // PROMPT-INJECTION GATING (BUILD_SPEC): scan the user turn (+ any page/
@@ -923,6 +1085,37 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
     const QString memBlock = prefetchMemoryBlock(text);
     if (!memBlock.isEmpty())
         effectiveText = memBlock + QStringLiteral("\n---\n") + text;
+
+    // ONE-TIME co-work guidance: the first turn a session has computer-use, teach
+    // the model the screen-targeting contract + the ASK-WHEN-AMBIGUOUS rule the
+    // user asked for. Every computer-use tool takes a `which` arg: "agent" = the
+    // model's own private nested desktop (default, watched on the Computer page);
+    // "real" = the user's REAL screen (glowing banner shows). If the user doesn't
+    // say whose screen, the model MUST ask_user first.
+    if (m_agentDesktops.has(sessionId) && !m_coworkGuided.contains(sessionId)) {
+        m_coworkGuided.insert(sessionId);
+        const QString guide = QStringLiteral(
+            "[Jarvis co-work — READ FIRST] You have TWO separate computer-use tool "
+            "sets, plus ask_user, schedule_task, remember/recall/forget, create_skill.\n"
+            "  * The \"real_screen\" tools operate the USER'S REAL screen + windows "
+            "(what they physically see). A glowing \"Jarvis is using this computer\" "
+            "banner appears while you act there.\n"
+            "  * The \"computer_use\" tools operate YOUR OWN private agent desktop (a "
+            "separate screen the user watches on the Computer page). This is the DEFAULT.\n"
+            "Pick the tool set by which SCREEN to use — do NOT pass a `which` "
+            "argument (each set already targets the right screen; valid `which` "
+            "values are only active/kde/agent, never \"real\").\n"
+            "RULES:\n"
+            "1) User explicitly says THEIR screen/computer/monitor -> use the "
+            "real_screen tools.\n"
+            "2) User says YOUR OWN / a new / the agent desktop -> use the "
+            "computer_use tools.\n"
+            "3) If they ask you to operate a computer or app but do NOT say whose "
+            "screen (e.g. just \"open spotify\"), you MUST call ask_user(\"Use your "
+            "real screen, or my own agent desktop?\", [\"My real screen\", \"Your own "
+            "agent desktop\"]) FIRST, then use the matching tool set. Never guess.");
+        effectiveText = guide + QStringLiteral("\n---\n") + effectiveText;
+    }
 
     brain->send(effectiveText, images);
 
@@ -1057,14 +1250,72 @@ Response ControlServer::handleSessionCreate(const Request &req)
     return Response::success(req.id, result);
 }
 
+// Decode the session.send `images` param into local file PATHS the brains can
+// attach. The phone sends [{mime, b64}]; a desktop client may send a "data:" URI
+// or an already-on-disk path string. Objects / data-URIs are written under
+// ~/.local/share/jarvis/attachments/<session>/ and their paths returned; bare
+// path strings pass through unchanged. (Previously this did v.toString() on each
+// element, which yields "" for a JSON object — so phone images were silently
+// dropped and never reached the model.)
+static QStringList decodeSendImages(const QJsonArray &arr, const QString &sessionId)
+{
+    QStringList paths;
+    if (arr.isEmpty())
+        return paths;
+    const QString dir = QDir::homePath()
+        + QStringLiteral("/.local/share/jarvis/attachments/") + sessionId;
+    QDir().mkpath(dir);
+    int n = 0;
+    for (const QJsonValue &v : arr) {
+        QByteArray bytes;
+        QString mime;
+        if (v.isObject()) {
+            const QJsonObject o = v.toObject();
+            mime = o.value(QStringLiteral("mime")).toString();
+            bytes = QByteArray::fromBase64(
+                o.value(QStringLiteral("b64")).toString().toUtf8());
+        } else if (v.isString()) {
+            const QString s = v.toString();
+            if (s.startsWith(QStringLiteral("data:"))) {
+                const int semi = s.indexOf(QLatin1Char(';'));
+                const int comma = s.indexOf(QLatin1Char(','));
+                if (comma > 0) {
+                    mime = s.mid(5, (semi > 5 ? semi : comma) - 5);
+                    bytes = QByteArray::fromBase64(s.mid(comma + 1).toUtf8());
+                }
+            } else if (!s.isEmpty()) {
+                paths << s; // already a path on disk
+                continue;
+            }
+        }
+        if (bytes.isEmpty())
+            continue;
+        QString ext = QStringLiteral("png");
+        if (mime.contains(QStringLiteral("jpeg")) || mime.contains(QStringLiteral("jpg")))
+            ext = QStringLiteral("jpg");
+        else if (mime.contains(QStringLiteral("webp")))
+            ext = QStringLiteral("webp");
+        else if (mime.contains(QStringLiteral("gif")))
+            ext = QStringLiteral("gif");
+        const QString path = dir + QStringLiteral("/img_%1_%2.%3")
+            .arg(QDateTime::currentMSecsSinceEpoch()).arg(n++).arg(ext);
+        QFile f(path);
+        if (f.open(QIODevice::WriteOnly)) {
+            f.write(bytes);
+            f.close();
+            paths << path;
+        }
+    }
+    return paths;
+}
+
 Response ControlServer::handleSessionSend(const Request &req)
 {
     const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
     const QString text = req.params.value(QStringLiteral("text")).toString();
 
-    QStringList images;
-    for (const QJsonValue &v : req.params.value(QStringLiteral("images")).toArray())
-        images << v.toString();
+    const QStringList images = decodeSendImages(
+        req.params.value(QStringLiteral("images")).toArray(), sessionId);
 
     QString err;
     if (!sendToSession(sessionId, text, images, &err))
@@ -1146,7 +1397,184 @@ Response ControlServer::handleApprovalRespond(const Request &req)
     return Response::success(req.id);
 }
 
+// Enumerate the MCP servers configured in the BRAINS' OWN CLI configs
+// (~/.claude.json mcpServers for claude, ~/.codex/config.toml [mcp_servers.*] for
+// codex). Each entry: {brain, name, transport, endpoint, token}. These are NORMALLY
+// isolated away (the brains run with --strict-mcp-config / --ignore-user-config); the
+// user re-enables specific ones via mcp.cli_set_enabled, which imports them into the
+// Jarvis registry (named "cli:<brain>:<name>") so the normal isolated injection picks
+// them up.
+static QList<QJsonObject> enumerateCliMcp()
+{
+    QList<QJsonObject> out;
+    // claude — JSON
+    {
+        QFile f(QDir::homePath() + QStringLiteral("/.claude.json"));
+        if (f.open(QIODevice::ReadOnly)) {
+            const QJsonObject servers =
+                QJsonDocument::fromJson(f.readAll()).object()
+                    .value(QStringLiteral("mcpServers")).toObject();
+            f.close();
+            for (auto it = servers.constBegin(); it != servers.constEnd(); ++it) {
+                const QJsonObject s = it.value().toObject();
+                QString transport, endpoint, token;
+                if (s.contains(QStringLiteral("url"))) {
+                    transport = QStringLiteral("http");
+                    endpoint = s.value(QStringLiteral("url")).toString();
+                    QString auth = s.value(QStringLiteral("headers")).toObject()
+                                       .value(QStringLiteral("Authorization")).toString();
+                    if (auth.startsWith(QStringLiteral("Bearer ")))
+                        token = auth.mid(7);
+                    else
+                        token = s.value(QStringLiteral("token")).toString();
+                } else if (s.contains(QStringLiteral("command"))) {
+                    transport = QStringLiteral("stdio");
+                    QStringList parts{ s.value(QStringLiteral("command")).toString() };
+                    for (const QJsonValue &a : s.value(QStringLiteral("args")).toArray())
+                        parts << a.toString();
+                    endpoint = parts.join(QLatin1Char(' '));
+                }
+                if (endpoint.isEmpty())
+                    continue;
+                out.append(QJsonObject{{QStringLiteral("brain"), QStringLiteral("claude")},
+                                       {QStringLiteral("name"), it.key()},
+                                       {QStringLiteral("transport"), transport},
+                                       {QStringLiteral("endpoint"), endpoint},
+                                       {QStringLiteral("token"), token}});
+            }
+        }
+    }
+    // codex — TOML (line-based: [mcp_servers.NAME] tables; capture url/command/args)
+    {
+        QFile f(QDir::homePath() + QStringLiteral("/.codex/config.toml"));
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QList<QByteArray> lines = f.readAll().split('\n');
+            f.close();
+            QString cur, url, command, endpoint;
+            QStringList args;
+            auto flush = [&]() {
+                if (!cur.isEmpty()) {
+                    QString tr, ep;
+                    if (!url.isEmpty()) { tr = QStringLiteral("http"); ep = url; }
+                    else if (!command.isEmpty()) {
+                        tr = QStringLiteral("stdio");
+                        ep = command;
+                        for (const QString &a : std::as_const(args)) ep += QLatin1Char(' ') + a;
+                    }
+                    if (!ep.isEmpty())
+                        out.append(QJsonObject{{QStringLiteral("brain"), QStringLiteral("codex")},
+                                               {QStringLiteral("name"), cur},
+                                               {QStringLiteral("transport"), tr},
+                                               {QStringLiteral("endpoint"), ep},
+                                               {QStringLiteral("token"), QString()}});
+                }
+                cur.clear(); url.clear(); command.clear(); args.clear();
+            };
+            for (const QByteArray &raw : lines) {
+                const QString line = QString::fromUtf8(raw).trimmed();
+                if (line.startsWith(QLatin1Char('['))) {
+                    const int close = line.indexOf(QLatin1Char(']'));
+                    const QString hdr = close > 1 ? line.mid(1, close - 1) : QString();
+                    if (hdr.startsWith(QStringLiteral("mcp_servers."))) {
+                        const QString top =
+                            hdr.mid(12).section(QLatin1Char('.'), 0, 0);
+                        if (top != cur) { flush(); cur = top; }
+                    } else {
+                        flush();
+                    }
+                    continue;
+                }
+                if (cur.isEmpty())
+                    continue;
+                const int eq = line.indexOf(QLatin1Char('='));
+                if (eq < 0)
+                    continue;
+                const QString key = line.left(eq).trimmed();
+                QString val = line.mid(eq + 1).trimmed();
+                auto unquote = [](QString v) {
+                    if (v.size() >= 2 && (v.front() == QLatin1Char('"') || v.front() == QLatin1Char('\'')))
+                        v = v.mid(1, v.size() - 2);
+                    return v;
+                };
+                if (key == QStringLiteral("url")) url = unquote(val);
+                else if (key == QStringLiteral("command")) command = unquote(val);
+                else if (key == QStringLiteral("args") && val.startsWith(QLatin1Char('['))) {
+                    val = val.mid(1, val.lastIndexOf(QLatin1Char(']')) - 1);
+                    for (const QString &p : val.split(QLatin1Char(',')))
+                        if (!p.trimmed().isEmpty()) args << unquote(p.trimmed());
+                }
+            }
+            flush();
+        }
+    }
+    return out;
+}
+
 // --- Contract A v2: MCP registry (delegates to McpRegistry) ----------------
+
+// mcp.cli_list -> the brains' own CLI MCP servers + whether each is currently
+// imported (re-enabled) into the Jarvis registry.
+Response ControlServer::handleMcpCliList(const Request &req)
+{
+    QStringList importedNames;
+    if (m_mcp)
+        for (const McpServerRow &r : m_mcp->list())
+            importedNames << r.name;
+    QJsonArray arr;
+    for (const QJsonObject &s : enumerateCliMcp()) {
+        const QString synthetic = QStringLiteral("cli:%1:%2")
+            .arg(s.value(QStringLiteral("brain")).toString(),
+                 s.value(QStringLiteral("name")).toString());
+        QJsonObject o{{QStringLiteral("brain"), s.value(QStringLiteral("brain"))},
+                      {QStringLiteral("name"), s.value(QStringLiteral("name"))},
+                      {QStringLiteral("transport"), s.value(QStringLiteral("transport"))},
+                      {QStringLiteral("endpoint"), s.value(QStringLiteral("endpoint"))},
+                      {QStringLiteral("enabled"), importedNames.contains(synthetic)}};
+        arr.append(o);
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("servers"), arr);
+    return Response::success(req.id, result);
+}
+
+// mcp.cli_set_enabled {brain,name,enabled} -> import (enabled) the CLI server into
+// the Jarvis registry as "cli:<brain>:<name>", or remove it (disabled). The registry
+// is already injected into both brains under the isolated path, so a re-enabled CLI
+// server's tools become available again.
+Response ControlServer::handleMcpCliSetEnabled(const Request &req)
+{
+    const QString brain = req.params.value(QStringLiteral("brain")).toString();
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    const bool enabled = req.params.value(QStringLiteral("enabled")).toBool();
+    if (brain.isEmpty() || name.isEmpty() || !m_mcp)
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("brain and name required"));
+    const QString synthetic = QStringLiteral("cli:%1:%2").arg(brain, name);
+    // Remove any existing import first (idempotent).
+    for (const McpServerRow &r : m_mcp->list())
+        if (r.name == synthetic)
+            m_mcp->remove(r.id);
+    if (enabled) {
+        QJsonObject match;
+        for (const QJsonObject &s : enumerateCliMcp())
+            if (s.value(QStringLiteral("brain")).toString() == brain
+                && s.value(QStringLiteral("name")).toString() == name) {
+                match = s;
+                break;
+            }
+        if (match.isEmpty())
+            return Response::failure(req.id, QStringLiteral("not_found"),
+                                     QStringLiteral("CLI server not found"));
+        m_mcp->add(synthetic, match.value(QStringLiteral("transport")).toString(),
+                   match.value(QStringLiteral("endpoint")).toString(),
+                   match.value(QStringLiteral("token")).toString(), true,
+                   QStringLiteral("medium"));
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("enabled"), enabled);
+    return Response::success(req.id, result);
+}
 
 Response ControlServer::handleMcpList(const Request &req)
 {
@@ -1216,6 +1644,86 @@ Response ControlServer::handleMcpTest(const Request &req)
     result.insert(QStringLiteral("tools_count"), tr.toolsCount);
     if (!tr.error.isEmpty())
         result.insert(QStringLiteral("error"), tr.error);
+    return Response::success(req.id, result);
+}
+
+// --- Google connectors framework (Calendar/Docs/Drive/Gmail) ---------------
+
+Response ControlServer::handleConnectorsList(const Request &req)
+{
+    // List the connector MCP servers (rows named "google-<service>"). Secrets
+    // are NEVER echoed; only has_* booleans (from SettingsStore) are surfaced.
+    QJsonArray connectors;
+    for (const McpServerRow &row : m_mcp->list()) {
+        const QString service = Connectors::serviceFromServerName(row.name);
+        if (service.isEmpty())
+            continue; // not a google connector
+        QJsonObject c;
+        c.insert(QStringLiteral("id"), row.id);
+        c.insert(QStringLiteral("name"), row.name);
+        c.insert(QStringLiteral("service"), service);
+        c.insert(QStringLiteral("enabled"), row.enabled);
+        c.insert(QStringLiteral("risk"), row.risk);
+        c.insert(QStringLiteral("has_client_id"),
+                 m_settings.hasApiKey(Connectors::secretKey(row.id, QStringLiteral("client_id"))));
+        c.insert(QStringLiteral("has_client_secret"),
+                 m_settings.hasApiKey(Connectors::secretKey(row.id, QStringLiteral("client_secret"))));
+        c.insert(QStringLiteral("has_refresh_token"),
+                 m_settings.hasApiKey(Connectors::secretKey(row.id, QStringLiteral("refresh_token"))));
+        connectors.append(c);
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("connectors"), connectors);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleConnectorsAdd(const Request &req)
+{
+    const QJsonObject p = req.params;
+    const QString service = p.value(QStringLiteral("service")).toString();
+    if (!Connectors::isKnownService(service))
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("unknown Google connector service: ") + service);
+
+    // Placeholder-empty creds are allowed (framework/mock); real activation
+    // supplies them later. The row is created DISABLED so injection never runs.
+    const QString clientId = p.value(QStringLiteral("client_id")).toString();
+    const QString clientSecret = p.value(QStringLiteral("client_secret")).toString();
+    const QString refreshToken = p.value(QStringLiteral("refresh_token")).toString();
+
+    const QString name = Connectors::serverName(service);
+    const QString endpoint = Connectors::defaultCommandFor(service);
+    const QString risk = Connectors::riskFor(service);
+
+    // First materialize the row (disabled) so we have its id for the secret-ref
+    // env map; then PATCH the env in place with secret refs keyed by that id.
+    const QString id = m_mcp->add(name, QStringLiteral("stdio"), endpoint,
+                                  QString() /*no http token*/, /*enabled=*/false, risk);
+    if (id.isEmpty())
+        return Response::failure(req.id, QStringLiteral("store_error"), m_store.lastError());
+
+    QJsonObject env;
+    env.insert(QStringLiteral("GOOGLE_OAUTH_CLIENT_ID"),
+               Connectors::secretRef(id, QStringLiteral("client_id")));
+    env.insert(QStringLiteral("GOOGLE_OAUTH_CLIENT_SECRET"),
+               Connectors::secretRef(id, QStringLiteral("client_secret")));
+    env.insert(QStringLiteral("GOOGLE_OAUTH_REFRESH_TOKEN"),
+               Connectors::secretRef(id, QStringLiteral("refresh_token")));
+    if (auto row = m_store.getMcpServer(id)) {
+        row->env = env;
+        m_store.addMcpServer(*row); // INSERT OR REPLACE keeps the same id
+    }
+
+    // Persist the three creds as write-only namespaced secrets (never echoed).
+    m_settings.setApiKey(Connectors::secretKey(id, QStringLiteral("client_id")), clientId);
+    m_settings.setApiKey(Connectors::secretKey(id, QStringLiteral("client_secret")), clientSecret);
+    m_settings.setApiKey(Connectors::secretKey(id, QStringLiteral("refresh_token")), refreshToken);
+    m_settings.saveSecrets();
+
+    QJsonObject result;
+    result.insert(QStringLiteral("id"), id);
+    result.insert(QStringLiteral("name"), name);
+    result.insert(QStringLiteral("enabled"), false);
     return Response::success(req.id, result);
 }
 
@@ -1578,8 +2086,18 @@ bool ControlServer::setTakeOverActive(const QString &sessionId, bool active)
         m_takeOverActive.insert(sessionId);
     else
         m_takeOverActive.remove(sessionId);
-    if (was != active)
+    if (was != active) {
         emit agentDrivingChanged(sessionId, active);
+        // Push the take-over state to every connected surface so the distinct-
+        // cursor overlay maps/unmaps. The desktop Bridge consumes this in
+        // handleComputerEvent (kind=="driving.state" -> setDriving(active)),
+        // which spawns one layer-shell OVERLAY per monitor. broadcastSessionEvent
+        // reaches the desktop control clients; emit sessionEvent so the phone
+        // (DeviceServer forwards it over the device WS) shows the same state.
+        const NormalizedBrainEvent ev = NormalizedBrainEvent::drivingState(active);
+        broadcastSessionEvent(sessionId, ev);
+        emit sessionEvent(sessionId, ev);
+    }
     return true;
 }
 
@@ -1594,6 +2112,165 @@ Response ControlServer::handleTakeOverRequest(const Request &req)
     result.insert(QStringLiteral("approval_id"),
                   QStringLiteral("takeover-") + sessionId);
     return Response::success(req.id, result);
+}
+
+Response ControlServer::handleTakeOverCancel(const Request &req)
+{
+    // Esc / "stop" on the take-over overlay. The overlay can't know WHICH session is
+    // driving (it may be a Chrome side-panel session, a phone session, etc.), so stop
+    // EVERY session currently driving the real screen: cancel its running turn AND
+    // clear its take-over state (which unmaps the overlay). Always succeeds.
+    QSet<QString> targets = m_takeOverActive;
+    const QString named = req.params.value(QStringLiteral("session_id")).toString();
+    if (!named.isEmpty())
+        targets.insert(named);
+    // The Chrome side-panel / auto path drives the real screen by calling the engine
+    // DIRECTLY (no explicit take_over.request), so it may not be flagged in
+    // m_takeOverActive. The overlay is only up because SOMETHING is actively acting —
+    // so also stop every session with a turn in flight. Esc means STOP.
+    for (auto it = m_brains.constBegin(); it != m_brains.constEnd(); ++it)
+        if (it.value() && it.value()->isBusy())
+            targets.insert(it.key());
+    for (const QString &sid : std::as_const(targets)) {
+        QString err;
+        cancelSession(sid, &err);            // stop the model mid-turn
+        if (m_takeOverActive.contains(sid))
+            setTakeOverActive(sid, false);   // drop the overlay everywhere
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("cancelled"), int(targets.size()));
+    return Response::success(req.id, result);
+}
+
+// --- 2FA + fingerprint cross-device unlock ----------------------------------
+
+Response ControlServer::handleAuthRequest(const Request &req)
+{
+    // FAIL-OPEN (no-brick): the user must NEVER be permanently locked out. There
+    // is NO reachable approver when EITHER:
+    //   (a) no phone is paired (the device registry is empty), OR
+    //   (b) a phone is paired but we have no way to actually reach it — the only
+    //       way the phone learns of a challenge is an FCM push, so if FCM is the
+    //       logging stub (no real backend) OR there are no stored push tokens, the
+    //       challenge would never be delivered and the gate would hang.
+    // In both cases return an immediate "approved" with paired:false so the desktop
+    // LockGate unlocks now. NOTE: the lock stays STRONG whenever a phone IS
+    // reachable (real FCM backend + at least one push token).
+    const bool noDevice = m_deviceReg.list().isEmpty();
+    const bool canPush =
+        m_fcm && m_fcm->isReal() && !m_store.listPushTokens().isEmpty();
+    if (noDevice || !canPush) {
+        QJsonObject r;
+        r.insert(QStringLiteral("challenge_id"), QString());
+        r.insert(QStringLiteral("state"), QStringLiteral("approved"));
+        r.insert(QStringLiteral("paired"), false);
+        return Response::success(req.id, r);
+    }
+
+    const QString origin =
+        req.params.value(QStringLiteral("origin")).toString(QStringLiteral("desktop"));
+    const AuthChallenge ch = m_authChallenges.create(AuthChallengeStore::kDefaultTtlMs,
+                                                      origin);
+
+    // FCM-push EVERY paired phone (reuse the DeviceServer::onSessionEvent loop):
+    // {kind:"auth", challenge_id, origin}. The phone opens an Approve screen,
+    // runs BiometricPrompt, and calls auth.approve over its authed device WS.
+    if (m_fcm) {
+        PushMessage msg;
+        msg.title = QStringLiteral("Unlock Jarvis");
+        msg.body = QStringLiteral("Approve sign-in on your phone");
+        msg.data.insert(QStringLiteral("kind"), QStringLiteral("auth"));
+        msg.data.insert(QStringLiteral("challenge_id"), ch.id);
+        msg.data.insert(QStringLiteral("origin"), ch.origin);
+        for (const PushTokenRow &t : m_store.listPushTokens())
+            m_fcm->send(t.fcmToken, msg);
+    }
+
+    QJsonObject r;
+    r.insert(QStringLiteral("challenge_id"), ch.id);
+    r.insert(QStringLiteral("state"), ch.state);
+    r.insert(QStringLiteral("expires_at"), ch.expiresAt);
+    r.insert(QStringLiteral("paired"), true);
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleAuthStatus(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("challenge_id")).toString();
+    return Response::success(req.id, m_authChallenges.statusJson(id));
+}
+
+Response ControlServer::handleAuthDeny(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("challenge_id")).toString();
+    QString err;
+    denyAuthChallenge(id, &err);
+    // Always succeed: a deny on an unknown/expired challenge is harmless.
+    QJsonObject r;
+    r.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, r);
+}
+
+bool ControlServer::approveAuthChallenge(const QString &challengeId,
+                                         const QString &deviceId, QString *err)
+{
+    if (!m_authChallenges.approve(challengeId, deviceId)) {
+        if (err)
+            *err = QStringLiteral("challenge_not_found or expired/already-decided");
+        return false;
+    }
+    m_audit.record(QStringLiteral("auth.approve"), true, QStringLiteral("high"),
+                   QStringLiteral("phone approved a sign-in (possession+biometric)"),
+                   QString(), /*remote=*/true);
+    emit authEvent(challengeId, QStringLiteral("approved"));
+    broadcastAuthEvent(challengeId, QStringLiteral("approved"));
+    return true;
+}
+
+bool ControlServer::denyAuthChallenge(const QString &challengeId, QString *err)
+{
+    if (!m_authChallenges.deny(challengeId)) {
+        if (err)
+            *err = QStringLiteral("challenge_not_found or expired/already-decided");
+        return false;
+    }
+    emit authEvent(challengeId, QStringLiteral("denied"));
+    broadcastAuthEvent(challengeId, QStringLiteral("denied"));
+    return true;
+}
+
+void ControlServer::broadcastAuthEvent(const QString &challengeId, const QString &state)
+{
+    // Clone of broadcastSessionEvent: deliver the unlock to the desktop instantly
+    // (the LockGate poll on auth.status is the fallback).
+    QJsonObject data;
+    data.insert(QStringLiteral("challenge_id"), challengeId);
+    data.insert(QStringLiteral("state"), state);
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), 1);
+    frame.insert(QStringLiteral("event"), QStringLiteral("auth.event"));
+    frame.insert(QStringLiteral("data"), data);
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+    for (QWebSocket *client : std::as_const(m_clients))
+        client->sendTextMessage(payload);
+}
+
+void ControlServer::broadcastSessionOpened(const QString &sessionId, const QString &title)
+{
+    // Clone of broadcastAuthEvent: tell every subscribed desktop control client to
+    // raise/focus + navigate to the new session's chat (no-op when no sidebar is up).
+    QJsonObject data;
+    data.insert(QStringLiteral("session_id"), sessionId);
+    data.insert(QStringLiteral("title"), title);
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), 1);
+    frame.insert(QStringLiteral("event"), QStringLiteral("session.opened"));
+    frame.insert(QStringLiteral("data"), data);
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+    for (QWebSocket *client : std::as_const(m_clients))
+        client->sendTextMessage(payload);
 }
 
 // --- Contract A v3: memory + self-authored skills ---------------------------
@@ -1808,6 +2485,23 @@ QString ControlServer::buildTodayDigest()
         }
     }
 
+    // Google Calendar connector hook: when the "google-calendar" connector
+    // exists AND is enabled, fold in a calendar section. Live Google calls are
+    // out of scope for the framework, so we emit a best-effort placeholder line
+    // here (a future live-fetch slots in at this same spot). When the connector
+    // is absent or DISABLED, NOTHING is appended (so the mock/disabled row does
+    // not pollute the digest).
+    if (m_mcp) {
+        for (const McpServerRow &row : m_mcp->list()) {
+            if (row.name != QStringLiteral("google-calendar") || !row.enabled)
+                continue;
+            out += QStringLiteral("\n## Calendar\n");
+            out += QStringLiteral("- (calendar connector enabled — events fold in "
+                                  "when authorized)\n");
+            break;
+        }
+    }
+
     out += QStringLiteral("\n(Live project list via project-tracker MCP "
                           "project_list is folded in by the client.)\n");
     return out;
@@ -1823,7 +2517,13 @@ QString ControlServer::mistralKey() const
 Response ControlServer::handleVoiceStt(const Request &req)
 {
     const QString key = mistralKey();
-    if (key.isEmpty())
+    // The effective provider: explicit param, else the persisted setting.
+    QString provider = req.params.value(QStringLiteral("provider")).toString();
+    if (provider.isEmpty())
+        provider = m_settings.sttProvider();
+    // Only hard-fail on a missing Mistral key when the effective provider would
+    // need it (i.e. it isn't a usable local provider — local whisper needs no key).
+    if (key.isEmpty() && !VoiceProvider::sttLocalUsable(provider))
         return Response::failure(req.id, QStringLiteral("no_voice_key"),
                                  QStringLiteral("Mistral API key not configured"));
 
@@ -1836,8 +2536,8 @@ Response ControlServer::handleVoiceStt(const Request &req)
     const QString lang = req.params.value(QStringLiteral("lang")).toString();
     const QString model = req.params.value(QStringLiteral("model")).toString();
 
-    VoiceService voice(key);
-    const VoiceService::Result r = voice.stt(audio, mime, lang, model);
+    const VoiceService::Result r =
+        VoiceProvider::sttWithProvider(provider, key, audio, mime, lang, model, 30000);
     if (!r.ok)
         return Response::failure(req.id, QStringLiteral("voice_stt_failed"), r.error);
 
@@ -1856,7 +2556,13 @@ Response ControlServer::handleVoiceStt(const Request &req)
 Response ControlServer::handleVoiceTts(const Request &req)
 {
     const QString key = mistralKey();
-    if (key.isEmpty())
+    // The effective provider: explicit param, else the persisted setting.
+    QString provider = req.params.value(QStringLiteral("provider")).toString();
+    if (provider.isEmpty())
+        provider = m_settings.ttsProvider();
+    // Only hard-fail on a missing Mistral key when the effective provider would
+    // need it (i.e. it isn't a usable local provider — local piper needs no key).
+    if (key.isEmpty() && !VoiceProvider::ttsLocalUsable(provider))
         return Response::failure(req.id, QStringLiteral("no_voice_key"),
                                  QStringLiteral("Mistral API key not configured"));
 
@@ -1868,14 +2574,68 @@ Response ControlServer::handleVoiceTts(const Request &req)
     const QString format = req.params.value(QStringLiteral("format")).toString();
     const QString model = req.params.value(QStringLiteral("model")).toString();
 
-    VoiceService voice(key);
-    const VoiceService::Result r = voice.tts(text, vc, format, model);
+    const VoiceService::Result r =
+        VoiceProvider::ttsWithProvider(provider, key, text, vc, format, model, 30000);
     if (!r.ok)
         return Response::failure(req.id, QStringLiteral("voice_tts_failed"), r.error);
 
     QJsonObject result;
     result.insert(QStringLiteral("audio_b64"), QString::fromLatin1(r.audio.toBase64()));
     result.insert(QStringLiteral("mime"), r.mime);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleVoiceListVoices(const Request &req)
+{
+    // A small CURATED list of Mistral Voxtral voice slugs for the TTS picker.
+    // en_paul_neutral is the VoiceService default and the one we are confident
+    // about; the others are the standard Voxtral preset speakers. If any prove
+    // invalid server-side, voice.tts simply falls back to the default voice, so
+    // listing them here is safe.
+    struct V { const char *id; const char *label; };
+    static const V voices[] = {
+        { "en_paul_neutral",   "Paul — neutral (EN)" },
+        { "en_emma_neutral",   "Emma — neutral (EN)" },
+        { "en_oliver_warm",    "Oliver — warm (EN)" },
+        { "en_sophia_bright",  "Sophia — bright (EN)" },
+        { "fr_louis_neutral",  "Louis — neutral (FR)" },
+        { "es_diego_neutral",  "Diego — neutral (ES)" },
+    };
+
+    QJsonArray voxtralVoices;
+    for (const V &v : voices) {
+        QJsonObject o;
+        o.insert(QStringLiteral("id"), QString::fromLatin1(v.id));
+        o.insert(QStringLiteral("label"), QString::fromLatin1(v.label));
+        voxtralVoices.append(o);
+    }
+
+    // Provider-aware: the active TTS provider decides which voice list is
+    // primary. Explicit param wins, else the persisted setting.
+    QString provider = req.params.value(QStringLiteral("tts_provider")).toString();
+    if (provider.isEmpty())
+        provider = m_settings.ttsProvider();
+    const QJsonArray piperVoices = VoiceProvider::piperVoices();
+
+    QJsonObject result;
+    result.insert(QStringLiteral("voices"),
+                  provider == QStringLiteral("piper") ? piperVoices : voxtralVoices);
+    // The current default: the user's tts_voice setting if set, else the
+    // VoiceService default slug.
+    const QString cur = m_settings.ttsVoice();
+    result.insert(QStringLiteral("default"),
+                  cur.isEmpty() ? QStringLiteral("en_paul_neutral") : cur);
+    // Provider lists so a single call gives the picker both, plus a per-provider
+    // voice map so the desktop can switch provider client-side without a round-trip.
+    result.insert(QStringLiteral("stt_providers"), VoiceProvider::sttProviders());
+    result.insert(QStringLiteral("tts_providers"), VoiceProvider::ttsProviders());
+    QJsonObject byProvider;
+    byProvider.insert(QStringLiteral("voxtral"), voxtralVoices);
+    byProvider.insert(QStringLiteral("piper"), piperVoices);
+    result.insert(QStringLiteral("voices_by_provider"), byProvider);
+    result.insert(QStringLiteral("note"),
+                  QStringLiteral("Voxtral preset speakers; if a slug is rejected, "
+                                 "voice.tts falls back to en_paul_neutral."));
     return Response::success(req.id, result);
 }
 
@@ -2025,11 +2785,15 @@ bool ControlServer::isConfigMethod(const QString &method)
         QStringLiteral("plugins.catalog"),   QStringLiteral("plugins.install"),
         QStringLiteral("plugins.set_enabled"), QStringLiteral("plugins.remove"),
         QStringLiteral("voice.stt"),         QStringLiteral("voice.tts"),
+        QStringLiteral("voice.list_voices"),
         QStringLiteral("take_over.request"), QStringLiteral("file.push"),
         QStringLiteral("file.get"),
         QStringLiteral("devices.pair_start"), QStringLiteral("devices.list"),
         QStringLiteral("devices.revoke"),
         QStringLiteral("agent_desktop.info"),
+        // 2FA unlock gate (read/action tier; harmless over the device channel).
+        QStringLiteral("auth.request"),      QStringLiteral("auth.status"),
+        QStringLiteral("auth.deny"),
     };
     return methods.contains(method);
 }
@@ -2051,6 +2815,7 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
     if (m == QStringLiteral("plugins.remove"))  return handlePluginsRemove(req);
     if (m == QStringLiteral("voice.stt"))       return handleVoiceStt(req);
     if (m == QStringLiteral("voice.tts"))       return handleVoiceTts(req);
+    if (m == QStringLiteral("voice.list_voices")) return handleVoiceListVoices(req);
     if (m == QStringLiteral("take_over.request")) return handleTakeOverRequest(req);
     if (m == QStringLiteral("file.push"))       return handleFilePush(req);
     if (m == QStringLiteral("file.get"))        return handleFileGet(req);
@@ -2058,6 +2823,9 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
     if (m == QStringLiteral("devices.list"))    return handleDevicesList(req);
     if (m == QStringLiteral("devices.revoke"))  return handleDevicesRevoke(req);
     if (m == QStringLiteral("agent_desktop.info")) return handleAgentDesktopInfo(req);
+    if (m == QStringLiteral("auth.request"))    return handleAuthRequest(req);
+    if (m == QStringLiteral("auth.status"))     return handleAuthStatus(req);
+    if (m == QStringLiteral("auth.deny"))       return handleAuthDeny(req);
     return Response::failure(req.id, QStringLiteral("unknown_method"),
                              QStringLiteral("unknown config method: ") + m);
 }

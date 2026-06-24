@@ -53,15 +53,30 @@ public:
     Q_INVOKABLE void registerWindows(QObject *floatWin, QObject *dockWin);
 
     // ---- distinct-cursor / "JARVIS IS DRIVING" overlay ---------------------
-    // Configure a transparent, full-screen, click-through wlr-layer-shell OVERLAY
-    // surface (layer=Overlay, exclusiveZone=0, keyboard interactivity None, empty
-    // input region so it NEVER steals input). Used while a real-screen take-over
-    // is active to draw the agent cursor + banner ON TOP of the user's desktop.
+    // Configure a transparent, full-screen, pointer-click-through wlr-layer-shell
+    // OVERLAY surface (layer=Overlay, exclusiveZone=0, EXCLUSIVE keyboard interactivity
+    // so the user's Esc reaches the QML cancel handler, empty pointer input region so
+    // it NEVER steals the mouse). Used while a real-screen take-over is active to draw
+    // the agent cursor + banner ON TOP of the user's desktop. The keyboard grab is safe
+    // because the agent types on a separate "jarvis" compositor seat.
     // Idempotent; installs the role before the first show().
-    Q_INVOKABLE void configureOverlay(QObject *overlayWin);
+    // screenName/screenIndex identify which monitor this overlay belongs to. They
+    // are passed as plain value types from QML (the QML screen wrapper does NOT
+    // cross the C++ boundary as a QScreen*), so we resolve the real QScreen here
+    // and pin the surface to it BEFORE create() — one layer-shell surface per
+    // output. screenName is matched first; screenIndex is the fallback.
+    Q_INVOKABLE void configureOverlay(QObject *overlayWin,
+                                      const QString &screenName = QString(),
+                                      int screenIndex = -1);
     // Map / unmap the overlay surface (called when bridge.driving flips).
     Q_INVOKABLE void showOverlay();
     Q_INVOKABLE void hideOverlay();
+
+    // Raise + focus whichever window is currently mapped (dock or float). Used by
+    // the session.opened flow to surface the new chat. If the app is hidden, dock
+    // first so there is something to raise. Reuses the exact raise/requestActivate
+    // calls in applyMode.
+    Q_INVOKABLE void present();
 
     // Switch to the right-anchored layer-shell sidebar.
     Q_INVOKABLE void dock();

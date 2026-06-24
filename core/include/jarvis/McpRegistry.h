@@ -17,9 +17,11 @@
 
 #include "jarvis/SessionStore.h"
 
+#include <QJsonObject>
 #include <QMap>
 #include <QString>
 #include <QStringList>
+#include <functional>
 
 namespace jarvis {
 
@@ -53,10 +55,13 @@ public:
     // --- CRUD (delegates to SessionStore) ---------------------------------
     QVector<McpServerRow> list() { return m_store.listMcpServers(); }
     std::optional<McpServerRow> get(const QString &id) { return m_store.getMcpServer(id); }
-    // Add a user server; returns its generated id (empty on error).
+    // Add a user server; returns its generated id (empty on error). `env` is the
+    // optional brain-injectable env-var map (name -> secret-ref or literal) used
+    // by Google connectors; empty for ordinary servers.
     QString add(const QString &name, const QString &transport,
                 const QString &endpoint, const QString &token, bool enabled,
-                const QString &risk = QStringLiteral("medium"));
+                const QString &risk = QStringLiteral("medium"),
+                const QJsonObject &env = {});
     bool remove(const QString &id) { return m_store.removeMcpServer(id); }
     bool setEnabled(const QString &id, bool enabled) { return m_store.setMcpEnabled(id, enabled); }
 
@@ -65,12 +70,19 @@ public:
     // (or computerUseBearer() for the built-in) is sent as Bearer.
     static McpTestResult test(const McpServerRow &server, int timeoutMs = 5000);
 
+    // Resolves a row.env value (a "secret:<key>" reference or a literal) to the
+    // concrete value to inject. The daemon supplies one backed by SettingsStore;
+    // the default (identity) leaves the token as-is.
+    using EnvResolver = std::function<QString(const QString &)>;
+
     // --- codex injection ---------------------------------------------------
     // `-c mcp_servers.<key>...` overrides for every enabled server (always
     // including the built-in computer-use with its config.yaml bearer). HTTP
     // bearers are emitted as `bearer_token_env_var=<NAME>` with the value
-    // returned in CodexMcpOverrides::env (see struct doc).
-    CodexMcpOverrides codexOverrides();
+    // returned in CodexMcpOverrides::env (see struct doc). For an enabled stdio
+    // server with a non-empty `env` map, each entry is emitted as
+    // `mcp_servers.<key>.env.<NAME>=<resolved value>` (Google connectors).
+    CodexMcpOverrides codexOverrides(const EnvResolver &resolveEnv = {});
 
     // Sanitize a server name into a codex-config-safe key (alnum + underscore).
     static QString codexKey(const McpServerRow &row);

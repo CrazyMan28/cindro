@@ -61,6 +61,15 @@ int main(int argc, char **argv)
               "'at 09:30' from 10:00 -> 09:30 next day");
     }
 
+    // Natural daily forms users actually type must ALSO parse as DailyAt.
+    for (const char *expr : {"every day 09:00", "daily 9:00", "daily at 09:00",
+                             "every day at 9:00", "9:00"}) {
+        const CronSpec s = CronSpec::parse(QString::fromLatin1(expr));
+        check(s.valid() && s.kind == CronSpec::Kind::DailyAt && s.atHour == 9
+                  && s.atMinute == 0,
+              expr);
+    }
+
     // 5-field cron: "0 9 * * 1" = 09:00 every Monday.
     {
         const CronSpec s = CronSpec::parse(QStringLiteral("0 9 * * 1"));

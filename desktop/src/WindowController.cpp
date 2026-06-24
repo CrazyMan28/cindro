@@ -3,10 +3,12 @@
 #include <QQuickWindow>
 #include <QWindow>
 #include <QScreen>
+#include <QGuiApplication>
 #include <QRect>
 #include <QSize>
 #include <QRegion>
 #include <QSettings>
+#include <QDebug>
 
 #include <LayerShellQt/Window>
 
@@ -65,18 +67,48 @@ void WindowController::configureDockSurface()
 // difference from the dock: LayerOverlay, exclusiveZone 0 (reserves no space),
 // KeyboardInteractivityNone, and an EMPTY input region (QWindow::setMask with an
 // empty QRegion) so it NEVER steals pointer/keyboard input from the real desktop.
-void WindowController::configureOverlay(QObject *overlayWin)
+void WindowController::configureOverlay(QObject *overlayWin,
+                                        const QString &screenName, int screenIndex)
 {
-    if (!m_overlay)
-        m_overlay = qobject_cast<QQuickWindow *>(overlayWin);
-    if (m_overlayConfigured || !m_overlay)
+    auto *win = qobject_cast<QQuickWindow *>(overlayWin);
+    if (!win)
         return;
+    // Resolve the real QScreen for THIS overlay and pin the QWindow to it BEFORE
+    // create(), so each output gets its own layer-shell surface (banner + glow on
+    // every monitor). Match by name first (stable across reconnects), else fall
+    // back to the screen index. The QML `screen:` binding alone does NOT move the
+    // window — it silently no-ops because the QML screen wrapper isn't a QScreen*,
+    // which left every overlay stacked on the primary output.
+    const QList<QScreen *> screens = QGuiApplication::screens();
+    QScreen *target = nullptr;
+    if (!screenName.isEmpty()) {
+        for (QScreen *s : screens) {
+            if (s->name() == screenName) { target = s; break; }
+        }
+    }
+    if (!target && screenIndex >= 0 && screenIndex < screens.size())
+        target = screens.at(screenIndex);
+    if (target)
+        win->setScreen(target);
+    m_overlay = win;
 
-    m_overlay->create();
+    win->create();
 
-    auto *w = LayerShellQt::Window::get(m_overlay);
-    if (!w)
+    auto *w = LayerShellQt::Window::get(win);
+    const QString outName = target ? target->name() : QStringLiteral("<default>");
+    const QRect outGeo = target ? target->geometry() : win->geometry();
+    if (!w) {
+        qInfo().noquote() << "[jarvis-overlay] FAILED to obtain layer-shell surface for output"
+                          << outName;
         return;
+    }
+    // Pin the layer surface to its OUTPUT explicitly (the current LayerShellQt API).
+    // QWindow::screen() is unreliable for a not-yet-shown window (it returns the
+    // PRIMARY), so the old ScreenFromQWindow stacked every surface on one monitor.
+    if (target)
+        w->setScreen(target);
+    qInfo().noquote() << "[jarvis-overlay] layer-shell OVERLAY surface on output"
+                      << outName << "geometry" << outGeo;
 
     // Anchor to all four edges so the surface spans the whole output.
     LayerShellQt::Window::Anchors anchors;
@@ -89,21 +121,40 @@ void WindowController::configureOverlay(QObject *overlayWin)
     w->setAnchors(anchors);
     w->setExclusiveZone(0);   // reserve NO space — float above the desktop
     w->setScope(QStringLiteral("jarvis-driving-overlay"));
-    // Keyboard ON DEMAND (not None): the surface must still be able to receive the
-    // Esc key so the DrivingOverlay can cancel the take-over (docs/TAKEOVER_UX.md).
-    // OnDemand only takes focus when the compositor routes it here; combined with
-    // the EMPTY pointer input region below, pointer events still pass straight
-    // through to the desktop — only Esc is acted on.
-    w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
+    // GRAB THE KEYBOARD while driving so the user's Esc reaches the QML
+    // Keys.onEscapePressed handler in DrivingOverlay.qml and STOPS the take-over.
+    // This was previously KeyboardInteractivityNone because the OnDemand grab on the
+    // OLD single-seat setup STOLE the agent's typed text (it landed in the overlay
+    // instead of the window the agent clicked). That no longer applies: the agent now
+    // types on a SEPARATE compositor seat (the KWin fork's "jarvis" seat), so giving
+    // the overlay the USER's keyboard does not touch the agent's input. The overlay
+    // only exists while driving (Main.qml's Instantiator is active: bridge.driving),
+    // so this exclusive keyboard grab is inherently scoped to the driving session.
+    //
+    // KEYBOARD vs POINTER are independent protocol concerns here: keyboard focus for a
+    // layer surface is governed by zwlr_layer_surface_v1.set_keyboard_interactivity
+    // (Exclusive => the compositor routes keys to this surface), while pointer
+    // hit-testing is governed by the wl_surface input region. So we can grab the
+    // keyboard AND keep the pointer fully click-through at the same time.
+    w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityExclusive);
 
-    // Empty POINTER input region => fully click-through for the mouse. On Wayland,
-    // setMask sets the surface input region; an empty region means no pointer
-    // events are ever delivered here (so we never grab the user's clicks). We do
-    // NOT set Qt::WindowTransparentForInput, because that would also drop the
-    // keyboard and break Esc-to-cancel.
-    m_overlay->setMask(QRegion());
+    // Pointer click-through (UNCHANGED): WindowTransparentForInput sets an EMPTY
+    // wl_surface input region at the protocol level, so the mouse passes straight
+    // through to the real desktop and the overlay NEVER eats the agent's or the user's
+    // clicks. The empty input region affects POINTER only; the exclusive keyboard grab
+    // above still delivers Esc to the QML Keys handler. (The banner MouseArea is now
+    // cosmetic for clicks while driving — Esc is the live stop path.)
+    win->setFlag(Qt::WindowTransparentForInput, true);
 
-    m_overlayConfigured = true;
+    // Show NOW — AFTER the layer-shell role is installed. The QML delegate keeps
+    // the window hidden (visible:false) precisely so this is the first map; showing
+    // earlier makes it a normal xdg-toplevel (one output, single virtual desktop).
+    // A true layer-shell OVERLAY maps on its pinned output and on ALL desktops.
+    win->show();
+    // Nudge the compositor to hand this surface keyboard focus now (the layer-shell
+    // Exclusive interactivity grants it; this just makes Esc land immediately on the
+    // first map). Pointer stays click-through via the empty input region above.
+    win->requestActivate();
 }
 
 void WindowController::showOverlay()
@@ -116,8 +167,9 @@ void WindowController::showOverlay()
     // reset the input region on (re)map).
     m_overlay->setMask(QRegion());
     m_overlay->raise();
-    // Request keyboard focus so the Esc key is routed here (OnDemand keyboard
-    // interactivity). Pointer events still pass through via the empty input mask.
+    // Request keyboard focus so the Esc key is routed here (Exclusive keyboard
+    // interactivity grabs it while driving). Pointer events still pass through via the
+    // empty input region.
     m_overlay->requestActivate();
 }
 
@@ -196,6 +248,31 @@ void WindowController::applyMode(const QString &mode, bool persist)
         s.setValue(QStringLiteral("window/mode"), m_mode);
     }
     emit modeChanged();
+}
+
+void WindowController::present()
+{
+    // Raise + focus the currently-mapped window so a new session's chat surfaces.
+    // Mirrors the raise/requestActivate path in applyMode for each surface.
+    if (m_mode == QStringLiteral("hidden")) {
+        // Nothing is mapped — re-dock so there is a window to raise.
+        applyMode(QStringLiteral("dock"), /*persist=*/false);
+        return;
+    }
+    if (m_mode == QStringLiteral("dock") && m_dock) {
+        m_dock->show();
+        m_dock->raise();
+        m_dock->requestActivate();
+    } else if (m_float) {
+        // Preserve the user's window size. present() runs on EVERY new session, so
+        // forcing Windowed here would "shrink" a Maximized/FullScreen window every
+        // time. Only un-minimize/un-hide; otherwise just raise + focus in place.
+        const QWindow::Visibility vis = m_float->visibility();
+        if (vis == QWindow::Hidden || vis == QWindow::Minimized)
+            m_float->setVisibility(QWindow::Windowed);
+        m_float->raise();
+        m_float->requestActivate();
+    }
 }
 
 void WindowController::dock()

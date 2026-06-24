@@ -11,6 +11,7 @@
 
 #include "jarvis/AgentDesktop.h"
 #include "jarvis/AuditLog.h"
+#include "jarvis/AuthChallengeStore.h"
 #include "jarvis/Config.h"
 #include "jarvis/DeviceRegistry.h"
 #include "jarvis/FcmSender.h"
@@ -26,6 +27,7 @@
 #include "jarvis/SettingsStore.h"
 #include "jarvis/SkillStore.h"
 #include "jarvis/SshAllowList.h"
+#include "jarvis/VoiceProvider.h"
 #include "jarvis/VoiceService.h"
 
 #include <QHash>
@@ -86,6 +88,9 @@ public:
     // Voice (Mistral Voxtral, laptop-proxied). Shared by Contract A + Contract C.
     Response handleVoiceStt(const Request &req);
     Response handleVoiceTts(const Request &req);
+    // Curated list of Mistral Voxtral voice slugs for the TTS picker, plus the
+    // current default (tts_voice setting / en_paul_neutral fallback).
+    Response handleVoiceListVoices(const Request &req);
 
     // Wave 8 co-worker ops, mirrored over the device channel (schedule.* +
     // ssh.allow_list/add/remove + ssh.exec + audit.list). ssh.exec and
@@ -142,6 +147,17 @@ public:
     bool respondApprovalFor(const QString &sessionId, const QString &approvalId,
                             const QString &decision, QString *err);
 
+    // 2FA + fingerprint cross-device unlock (FEATURE). Called by the DeviceServer
+    // when a paired phone (already passed BiometricPrompt) sends auth.approve over
+    // its authed device WS. Flips the in-memory challenge to "approved" and fans an
+    // auth.event out to the desktop control clients (instant unlock; poll is the
+    // fallback). Returns false (challenge_not_found / expired) when the challenge
+    // can't be approved; sets *err.
+    bool approveAuthChallenge(const QString &challengeId, const QString &deviceId,
+                              QString *err);
+    // The phone may also deny (biometric failure). Flips pending->denied + fans out.
+    bool denyAuthChallenge(const QString &challengeId, QString *err);
+
     // The tailnet (tailscale0) IPv4 address, or 127.0.0.1 if none — the host the
     // phone dials in the pairing payload and the device WS binds.
     static QString tailnetHost();
@@ -158,11 +174,23 @@ signals:
     // 'file.offer' event). `descriptor` = {file_id,name,size,mime,session_id?}.
     void filePushed(const QJsonObject &descriptor);
 
+    // A brand-new session was created (from ANY surface) — signals the apps to
+    // OPEN/FOCUS that session's chat. DeviceServer fans this out to authed phones
+    // as a 'session.opened' event (+ FCM); the control-WS leg is broadcastSessionOpened.
+    void sessionOpened(const QString &sessionId, const QString &title);
+
+    // 2FA unlock challenge changed state (created->pending->approved/denied/
+    // expired). The DeviceServer/desktop fan-out matches the existing pattern so
+    // the desktop lock-gate unlocks the instant a paired phone approves.
+    void authEvent(const QString &challengeId, const QString &state);
+
 private slots:
     void onNewConnection();
     void onTextMessage(const QString &message);
     void onSocketDisconnected();
     void onBrainEvent(const QString &sessionId, const jarvis::NormalizedBrainEvent &ev);
+    // Flush a turn queued while the brain was busy (connected to Brain::turnFinished).
+    void onTurnFinished(const QString &sessionId);
 
 private:
     void handleRequest(QWebSocket *client, const Request &req);
@@ -188,6 +216,15 @@ private:
     Response handleMcpRemove(const Request &req);
     Response handleMcpSetEnabled(const Request &req);
     Response handleMcpTest(const Request &req);
+    // CLI MCP servers (the brains' OWN configs: ~/.claude.json / ~/.codex) — list
+    // them per brain so the user can toggle specific ones back ON (default isolated).
+    Response handleMcpCliList(const Request &req);
+    Response handleMcpCliSetEnabled(const Request &req);
+    // Google connectors framework (Calendar/Docs/Drive/Gmail). A connector is a
+    // disabled-by-default stdio MCP server "google-<service>" whose OAuth creds
+    // are stored as write-only secrets and injected via the row's env map.
+    Response handleConnectorsList(const Request &req);
+    Response handleConnectorsAdd(const Request &req);
     Response handlePluginsCatalog(const Request &req);
     Response handlePluginsInstall(const Request &req);
     Response handlePluginsSetEnabled(const Request &req);
@@ -213,6 +250,25 @@ private:
     // Wave 5: nested agent desktop status + real-session take-over.
     Response handleAgentDesktopInfo(const Request &req);
     Response handleTakeOverRequest(const Request &req);
+    // Esc / "stop" on the take-over overlay: cancel WHATEVER session is currently
+    // driving the real screen (not necessarily the caller's), so Esc always stops it.
+    Response handleTakeOverCancel(const Request &req);
+
+    // 2FA + fingerprint cross-device unlock (FEATURE).
+    //   auth.request -> mint a challenge + FCM-push every paired phone; FAIL-OPEN
+    //                   {state:"approved",paired:false} when NO device is paired.
+    //   auth.status  -> the current challenge state (poll fallback).
+    //   auth.deny    -> mark a challenge denied + fan out.
+    // (auth.approve is phone-only — handled by DeviceServer::devAuthApprove.)
+    Response handleAuthRequest(const Request &req);
+    Response handleAuthStatus(const Request &req);
+    Response handleAuthDeny(const Request &req);
+    // Fan an auth.event {challenge_id,state} out to every control client (clone of
+    // broadcastSessionEvent) so the desktop lock-gate unlocks instantly.
+    void broadcastAuthEvent(const QString &challengeId, const QString &state);
+    // Fan a session.opened {session_id,title} out to every control client (clone of
+    // broadcastAuthEvent) so the desktop raises/focuses + navigates to the new chat.
+    void broadcastSessionOpened(const QString &sessionId, const QString &title);
 
     // Contract A v3: memory (HERMES_FEATURES §1).
     Response handleMemoryList(const Request &req);
@@ -288,6 +344,13 @@ private:
     // prompt at session.create time.
     QString memorySystemBlock();
 
+    // Resolve a connector env value (a "secret:<key>" reference or a literal)
+    // to the concrete value to inject into a brain's stdio MCP environment.
+    // "secret:<key>" -> SettingsStore.apiKey(<key>); anything else is returned
+    // as-is. Empty when the secret is unset (so a placeholder connector injects
+    // nothing). Used by the codex + claude stdio env builders.
+    QString resolveConnectorEnv(const QString &valueOrRef) const;
+
     Config m_config;
     QString m_controlToken;
     QString m_lastError;
@@ -312,6 +375,9 @@ private:
     // and reused by the DeviceServer.
     DeviceRegistry m_deviceReg;
     PairingManager m_pairing;
+    // 2FA + fingerprint cross-device unlock: in-memory, TTL~120s challenges minted
+    // by auth.request, approved by a paired phone (possession+biometric).
+    AuthChallengeStore m_authChallenges;
     std::unique_ptr<FcmSender> m_fcm;
 
     // Wave 5 intelligence backend: Jarvis-level long-term memory (SQLite+FTS5)
@@ -335,6 +401,11 @@ private:
         QStringList images;
     };
     QHash<QString, HeldTurn> m_injectionHeld;
+    // Turns the user sent while the brain was still busy; flushed on turnFinished
+    // so a fast follow-up is never rejected as "brain is busy".
+    QHash<QString, HeldTurn> m_pendingTurns;
+    // Sessions that have already received the one-time co-work guidance preamble.
+    QSet<QString> m_coworkGuided;
 
     // Wave 5: per-coworker(agent) nested desktops + their bound engines.
     AgentDesktop m_agentDesktops{AgentDesktop::Options{}};

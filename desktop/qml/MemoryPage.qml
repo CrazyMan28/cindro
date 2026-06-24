@@ -23,6 +23,10 @@ Item {
             bridge.memoryList()
     }
     Component.onCompleted: if (bridge.connected) refresh()
+    // Re-query every time the user NAVIGATES to this page (the page object is
+    // built once, so memories added from chat after that wouldn't show without
+    // this). Fixes the "MEMORY EMPTY" page even though memory.list has rows.
+    onVisibleChanged: if (visible && bridge.connected) refresh()
 
     Connections {
         target: bridge

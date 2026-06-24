@@ -1,6 +1,7 @@
 package com.jarvis.app.ui.sessions
 
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +14,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
@@ -21,6 +24,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SelectAll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -35,6 +39,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +49,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.jarvis.app.protocol.ModelInfo
 import com.jarvis.app.protocol.Session
 import com.jarvis.app.ui.ConnectionPill
 import com.jarvis.app.ui.theme.GlowCard
@@ -100,6 +106,11 @@ fun SessionsScreen(
                     actions = {
                         ConnectionPill(conn)
                         Spacer(Modifier.height(0.dp))
+                        if (state.sessions.isNotEmpty()) {
+                            IconButton(onClick = { viewModel.selectAll() }) {
+                                Icon(Icons.Filled.SelectAll, contentDescription = "Select all")
+                            }
+                        }
                         IconButton(onClick = { viewModel.refresh() }) {
                             Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
                         }
@@ -181,9 +192,11 @@ fun SessionsScreen(
     if (showCreate) {
         CreateSessionDialog(
             creating = state.creating,
+            models = state.models,
+            onBrainChange = { viewModel.loadModels(it) },
             onDismiss = { showCreate = false },
-            onCreate = { profile, brain ->
-                viewModel.createSession(profile, brain) { id ->
+            onCreate = { profile, brain, model ->
+                viewModel.createSession(profile, brain, model) { id ->
                     showCreate = false
                     onOpenSession(id)
                 }
@@ -268,18 +281,25 @@ private fun EmptyState(error: String?, onReconnect: () -> Unit) {
 @Composable
 private fun CreateSessionDialog(
     creating: Boolean,
+    models: List<ModelInfo>,
+    onBrainChange: (String) -> Unit,
     onDismiss: () -> Unit,
-    onCreate: (profile: String, brain: String) -> Unit,
+    onCreate: (profile: String, brain: String, model: String?) -> Unit,
 ) {
     var profile by remember { mutableStateOf("coworker") }
     var brain by remember { mutableStateOf("codex") }
+    // null = daemon default; otherwise a model id from the picked brain's models.
+    var model by remember { mutableStateOf<String?>(null) }
+
+    // Load the default brain's models on open and whenever the brain changes.
+    LaunchedEffect(brain) { onBrainChange(brain) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = JarvisPalette.Surface,
         title = { Text("New session", color = JarvisPalette.TextPrimary) },
         text = {
-            Column {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 Text("Profile", style = MaterialTheme.typography.labelLarge, color = JarvisPalette.TextSecondary)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("coder", "coworker").forEach { p ->
@@ -290,13 +310,35 @@ private fun CreateSessionDialog(
                 Text("Brain", style = MaterialTheme.typography.labelLarge, color = JarvisPalette.TextSecondary)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("codex", "claude", "api").forEach { b ->
-                        FilterChip(selected = brain == b, onClick = { brain = b }, label = { Text(b) })
+                        FilterChip(
+                            selected = brain == b,
+                            // Switching brains resets the model back to the daemon default.
+                            onClick = { brain = b; model = null },
+                            label = { Text(b) },
+                        )
+                    }
+                }
+                if (models.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("Model", style = MaterialTheme.typography.labelLarge, color = JarvisPalette.TextSecondary)
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    ) {
+                        FilterChip(selected = model == null, onClick = { model = null }, label = { Text("Default") })
+                        models.forEach { m ->
+                            FilterChip(
+                                selected = model == m.id,
+                                onClick = { model = m.id },
+                                label = { Text(m.display) },
+                            )
+                        }
                     }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onCreate(profile, brain) }, enabled = !creating) {
+            TextButton(onClick = { onCreate(profile, brain, model) }, enabled = !creating) {
                 if (creating) {
                     CircularProgressIndicator(Modifier.height(18.dp), strokeWidth = 2.dp, color = JarvisPalette.Accent)
                 } else {

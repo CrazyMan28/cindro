@@ -37,6 +37,14 @@ public:
         // gates this on coworker+agent, exactly as ClaudeBrain uses
         // bypassPermissions for the same case.
         bool driveMcp = false;
+        // When non-empty, run codex under an ISOLATED CODEX_HOME at this path so it
+        // sees ONLY the daemon-injected computer-use MCP — NOT the user's global
+        // ~/.codex/config.toml servers (hand-desktop / desktop-use / vm-*), which
+        // would let the model drive the user's REAL desktop instead of the nested
+        // agent desktop. Auth (auth.json) is symlinked so the logged-in account
+        // still works; the user's non-MCP settings are preserved (only
+        // [mcp_servers.*] tables are stripped).
+        QString codexHome;
         // Extra config overrides passed as `-c key=value` (e.g. MCP injection).
         QStringList configOverrides;
         // Extra environment variables set on the codex child process. Used to
@@ -61,7 +69,7 @@ public:
     // assert the DRIVE-mode contract: when Options.driveMcp is set the args must
     // force `--sandbox danger-full-access` and `-c approval_policy="never"`
     // (codex auto-cancels MCP tool calls under any narrower sandbox headless).
-    QStringList buildArgs(const QString &prompt) const;
+    QStringList buildArgs(const QString &prompt, const QStringList &images = {}) const;
 
 private slots:
     void onReadyReadStdout();
@@ -72,12 +80,19 @@ private slots:
 private:
     void emitEvent(const NormalizedBrainEvent &ev);
     void drainBuffer(bool flushIncomplete);
+    // Build the isolated CODEX_HOME (symlink auth, copy config.toml minus
+    // [mcp_servers.*]); returns the path, or empty if m_opts.codexHome is unset.
+    QString ensureIsolatedHome() const;
 
     Options m_opts;
     QProcess *m_proc = nullptr;
     QByteArray m_stdoutBuf;
     bool m_busy = false;
     bool m_sawUsage = false; // ensure we synthesize final after usage exactly once
+    // The codex conversation/thread id from the first turn's `thread.started`.
+    // Subsequent turns spawn `codex exec resume <id>` so the model KEEPS the
+    // conversation context instead of starting fresh every message.
+    QString m_threadId;
 };
 
 } // namespace jarvis

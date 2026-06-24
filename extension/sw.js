@@ -10,12 +10,30 @@ let reconnectDelay = 1000;
 let connecting = false;
 let lastPingTs = null;
 let lastCloseCode = null;
+// True while a side-panel turn is in flight, so the "Jarvis is controlling Chrome"
+// banner + blue cursor can be RE-ASSERTED on every page load during the turn
+// (navigations reload the content script and would otherwise lose the latch).
+let drivingTurn = false;
+
+// Re-assert the driving latch whenever a tab finishes loading mid-turn — keeps the
+// banner + cursor up across the navigations a login/multi-step flow does.
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (drivingTurn && info.status === "complete") {
+    chrome.tabs.sendMessage(tabId, { type: "__jarvis_driving", on: true }).catch(() => {});
+  }
+});
 
 function setBadge(connected) {
   chrome.action.setBadgeText({ text: connected ? "ON" : "OFF" }).catch(() => {});
   chrome.action.setBadgeBackgroundColor({ color: connected ? "#16a34a" : "#dc2626" }).catch(() => {});
 }
 setBadge(false);
+
+// Clicking the toolbar icon opens the Jarvis co-worker chat side panel.
+// (The popup was replaced by the side panel; see manifest.json.)
+if (chrome.sidePanel && chrome.sidePanel.setPanelBehavior) {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+}
 
 const attached = new Set();          // tabIds with debugger attached
 const consoleBuffers = new Map();    // tabId -> [{ts, level, text}]
@@ -93,6 +111,44 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         attachedTabs: [...attached],
         extVersion: chrome.runtime.getManifest().version,
       });
+    });
+    return true; // async sendResponse
+  } else if (msg && msg.type === "cu-tabs") {
+    // The side panel page lacks reliable tabs access, so it asks the service
+    // worker for the user's tab context (active tab + all open tabs).
+    Promise.all([
+      chrome.tabs.query({}),
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }),
+    ]).then(([all, activeArr]) => {
+      const active = activeArr && activeArr[0];
+      sendResponse({
+        active: active ? { title: active.title || "", url: active.url || "", id: active.id } : null,
+        tabs: (all || []).map((t) => ({
+          title: t.title || "", url: t.url || "", id: t.id, active: !!t.active,
+        })),
+      });
+    }).catch((e) => {
+      sendResponse({ active: null, tabs: [], error: String(e && e.message || e) });
+    });
+    return true; // async sendResponse
+  } else if (msg && msg.type === "jarvis-driving-query") {
+    // A freshly-loaded content script asks whether a turn is currently driving, so
+    // it can re-show the banner+cursor immediately after a navigation.
+    sendResponse({ on: drivingTurn });
+    return false;
+  } else if (msg && msg.type === "jarvis-driving") {
+    // Turn-level driving signal from the side panel. Remember it (so page loads
+    // re-assert) and forward to the active tab's content script so the chip + blue
+    // cursor stay up for the whole turn. Best-effort: tabs without a content script
+    // (chrome:// etc.) reject — swallow.
+    drivingTurn = !!msg.on;
+    chrome.tabs.query({ active: true, lastFocusedWindow: true }).then(([tab]) => {
+      if (!tab || tab.id == null) { sendResponse({ ok: false, reason: "no active tab" }); return; }
+      chrome.tabs.sendMessage(tab.id, { type: "__jarvis_driving", on: !!msg.on })
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: false, reason: "no content script" }));
+    }).catch((e) => {
+      sendResponse({ ok: false, reason: String(e && e.message || e) });
     });
     return true; // async sendResponse
   }

@@ -83,6 +83,28 @@ int main()
         check(!hasPair(args, QStringLiteral("-c"),
                        QStringLiteral("approval_policy=\"never\"")),
               "non-drive coder does NOT force approval_policy=never");
+        // ISOLATION: even a non-drive coder turn MUST --ignore-user-config so it
+        // never inherits the user's ~/.codex mcp_servers (hand-desktop/desktop-use).
+        check(args.contains(QStringLiteral("--ignore-user-config")),
+              "--ignore-user-config ALWAYS present (no CLI mcp_servers leak)");
+    }
+
+    // --- MULTIMODAL: each attached image becomes `--image <path>` ---
+    {
+        CodexBrain::Options opts;
+        opts.profile = QStringLiteral("coworker");
+        CodexBrain brain(opts);
+        const QStringList imgs{QStringLiteral("/tmp/a.png"), QStringLiteral("/tmp/b.jpg")};
+        const QStringList args = brain.buildArgs(prompt, imgs);
+        check(hasPair(args, QStringLiteral("--image"), QStringLiteral("/tmp/a.png")),
+              "image 1 passed as --image <path>");
+        check(hasPair(args, QStringLiteral("--image"), QStringLiteral("/tmp/b.jpg")),
+              "image 2 passed as --image <path>");
+        check(args.last() == prompt, "prompt still trailing after images");
+        // no spurious --image when there are no attachments
+        const QStringList none = brain.buildArgs(prompt);
+        check(!none.contains(QStringLiteral("--image")),
+              "no --image when no attachments");
     }
 
     if (g_failures == 0)

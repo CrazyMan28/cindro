@@ -22,6 +22,16 @@
 #include <QDateTime>
 #include <QtMath>
 #include <QDebug>
+#include <QGuiApplication>
+#include <QScreen>
+#include <QBuffer>
+#include <QDataStream>
+#include <QAudioSource>
+#include <QAudioFormat>
+#include <QAudioDevice>
+#include <QMediaDevices>
+#include <QMediaPlayer>
+#include <QAudioOutput>
 
 Bridge::Bridge(QObject *parent)
     : QObject(parent)
@@ -39,6 +49,15 @@ Bridge::Bridge(QObject *parent)
     m_frameTimer = new QTimer(this);
     m_frameTimer->setInterval(125);   // ~8 fps local preview poll
     connect(m_frameTimer, &QTimer::timeout, this, &Bridge::pollFrame);
+
+    // Watch for ask_user questions from the model (file bus → chat card).
+    startQuestionWatch();
+    // Watch for model-rendered widgets (render_widget file bus → CANVAS page).
+    startWidgetWatch();
+    // Always tail the agent-pointer bus so the take-over overlay can AUTO-ARM the
+    // instant the agent acts on the REAL screen (which="real"), even outside an
+    // explicit take-over.
+    startPointerTail();
 }
 
 Bridge::~Bridge()
@@ -199,7 +218,12 @@ void Bridge::createSession(const QString &profile, const QString &brain, const Q
 void Bridge::sendMessage(const QString &text)
 {
     if (m_sessionId.isEmpty()) {
-        emit errorOccurred(QStringLiteral("no active session; create one first"));
+        // NO BUTTONS: the composer fires createSession() (async) right before this.
+        // The session id hasn't arrived yet, so don't error — QUEUE the message and
+        // let the session.create response flush it the moment the session is ready.
+        // (Auto-creates the session + its computer-use desktop on the first turn.)
+        m_pendingText = text;
+        setStatus(QStringLiteral("starting session…"));
         return;
     }
     QVariantMap params;
@@ -237,6 +261,11 @@ void Bridge::listModels(const QString &brain)
     request(QStringLiteral("model.list"), params);
 }
 
+void Bridge::listVoices()
+{
+    request(QStringLiteral("voice.list_voices"), {});
+}
+
 // ---- Contract A v2 ---------------------------------------------------------
 
 void Bridge::openSession(const QString &sessionId)
@@ -252,6 +281,33 @@ void Bridge::openSession(const QString &sessionId)
     QVariantMap params;
     params.insert(QStringLiteral("session_id"), sessionId);
     request(QStringLiteral("session.history"), params, sessionId);
+}
+
+void Bridge::deleteSession(const QString &sessionId)
+{
+    if (sessionId.isEmpty())
+        return;
+    // If we're deleting the session that's currently loaded, drop it locally so the
+    // next send starts a fresh one (don't leave a dangling current session id).
+    if (sessionId == m_sessionId)
+        newSession();
+    QVariantMap params;
+    params.insert(QStringLiteral("session_id"), sessionId);
+    // Tag with the id so the response handler can emit sessionDeleted(id).
+    request(QStringLiteral("session.delete"), params, sessionId);
+}
+
+void Bridge::newSession()
+{
+    // Forget the current session WITHOUT touching the daemon: the next createSession
+    // (fired by the composer on first send) will spin up a brand-new one. Also drop
+    // any queued first-turn text so it can't land in a future unrelated session.
+    m_pendingText.clear();
+    if (!m_sessionId.isEmpty()) {
+        m_sessionId.clear();
+        emit sessionIdChanged();
+    }
+    setStatus(QStringLiteral("ready"));
 }
 
 void Bridge::loadSettings()
@@ -296,6 +352,40 @@ void Bridge::testMcp(const QString &id)
     QVariantMap params;
     params.insert(QStringLiteral("id"), id);
     request(QStringLiteral("mcp.test"), params, id);
+}
+
+void Bridge::mcpCliList()
+{
+    request(QStringLiteral("mcp.cli_list"), {});
+}
+
+void Bridge::mcpCliSetEnabled(const QString &brain, const QString &name, bool enabled)
+{
+    if (brain.isEmpty() || name.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("brain"), brain);
+    params.insert(QStringLiteral("name"), name);
+    params.insert(QStringLiteral("enabled"), enabled);
+    request(QStringLiteral("mcp.cli_set_enabled"), params);
+}
+
+void Bridge::connectorsList()
+{
+    request(QStringLiteral("connectors.list"), {});
+}
+
+void Bridge::connectorAdd(const QString &service, const QString &clientId,
+                          const QString &clientSecret, const QString &refreshToken)
+{
+    if (service.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("service"), service);
+    params.insert(QStringLiteral("client_id"), clientId);
+    params.insert(QStringLiteral("client_secret"), clientSecret);
+    params.insert(QStringLiteral("refresh_token"), refreshToken);
+    request(QStringLiteral("connectors.add"), params);
 }
 
 void Bridge::loadPlugins()
@@ -356,6 +446,34 @@ void Bridge::devicesRevoke(const QString &id)
     QVariantMap params;
     params.insert(QStringLiteral("id"), id);
     request(QStringLiteral("devices.revoke"), params);
+}
+
+// ---- 2FA + fingerprint cross-device unlock (LockGate) ----------------------
+
+void Bridge::authRequest(const QString &origin)
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("origin"),
+                  origin.isEmpty() ? QStringLiteral("desktop") : origin);
+    request(QStringLiteral("auth.request"), params);
+}
+
+void Bridge::authStatus(const QString &challengeId)
+{
+    if (challengeId.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("challenge_id"), challengeId);
+    request(QStringLiteral("auth.status"), params);
+}
+
+void Bridge::authDeny(const QString &challengeId)
+{
+    if (challengeId.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("challenge_id"), challengeId);
+    request(QStringLiteral("auth.deny"), params);
 }
 
 // ---- Memory (Contract A v3) ------------------------------------------------
@@ -732,6 +850,8 @@ void Bridge::finishDictation()
     QVariantMap params;
     params.insert(QStringLiteral("audio_b64"), QString::fromLatin1(wav.toBase64()));
     params.insert(QStringLiteral("mime"), QStringLiteral("audio/wav"));
+    if (!m_sttProvider.isEmpty())
+        params.insert(QStringLiteral("provider"), m_sttProvider);
     request(QStringLiteral("voice.stt"), params);
 }
 
@@ -743,7 +863,364 @@ void Bridge::voiceSpeak(const QString &text)
     QVariantMap params;
     params.insert(QStringLiteral("text"), text.trimmed());
     params.insert(QStringLiteral("format"), QStringLiteral("mp3"));
+    if (!m_ttsProvider.isEmpty())
+        params.insert(QStringLiteral("provider"), m_ttsProvider);
     request(QStringLiteral("voice.tts"), params);
+}
+
+// ---- Voice MODE (QtMultimedia capture + playback, orb state) ----------------
+
+void Bridge::setVoiceState(const QString &s)
+{
+    if (m_voiceState == s)
+        return;
+    m_voiceState = s;
+    emit voiceStateChanged();
+}
+
+void Bridge::ensureVoiceSession()
+{
+    // A dedicated coworker session so the model can use the computer-use tools
+    // (e.g. real_screen screenshot for "what's on my screen"). If we already have
+    // a current session, adopt it as the voice session; otherwise create one.
+    if (!m_voiceSessionId.isEmpty())
+        return;
+    if (!m_sessionId.isEmpty()) {
+        m_voiceSessionId = m_sessionId;
+        return;
+    }
+    // No session yet: spin one up. createSession() stashes the id on the
+    // session.create reply (m_sessionId); we adopt it lazily when it arrives.
+    createSession(QStringLiteral("coworker"), QString(), QString());
+}
+
+QByteArray Bridge::pcmToWav(const QByteArray &pcm, int sampleRate, int channels) const
+{
+    // Prepend a 44-byte canonical PCM WAV header (RIFF/WAVE, 16-bit, little-endian)
+    // to the raw int16 sample data so the daemon's voice.stt sees a valid WAV.
+    const int bitsPerSample = 16;
+    const int byteRate = sampleRate * channels * (bitsPerSample / 8);
+    const int blockAlign = channels * (bitsPerSample / 8);
+    const quint32 dataSize = static_cast<quint32>(pcm.size());
+    const quint32 chunkSize = 36 + dataSize;
+
+    QByteArray hdr;
+    QBuffer buf(&hdr);
+    buf.open(QIODevice::WriteOnly);
+    QDataStream ds(&buf);
+    ds.setByteOrder(QDataStream::LittleEndian);
+
+    auto wr4 = [&](const char *tag) { buf.write(tag, 4); };
+    wr4("RIFF");
+    ds << chunkSize;
+    wr4("WAVE");
+    wr4("fmt ");
+    ds << quint32(16);                       // PCM fmt chunk size
+    ds << quint16(1);                        // audio format = PCM
+    ds << quint16(channels);
+    ds << quint32(sampleRate);
+    ds << quint32(byteRate);
+    ds << quint16(blockAlign);
+    ds << quint16(bitsPerSample);
+    wr4("data");
+    ds << dataSize;
+    buf.close();
+
+    QByteArray out = hdr;
+    out.append(pcm);
+    return out;
+}
+
+void Bridge::startListening()
+{
+    if (m_listening)
+        return;
+    // Make sure a session exists so the transcribed turn has somewhere to land.
+    ensureVoiceSession();
+
+    QAudioFormat fmt;
+    fmt.setSampleRate(16000);
+    fmt.setChannelCount(1);
+    fmt.setSampleFormat(QAudioFormat::Int16);
+
+    const QAudioDevice dev = QMediaDevices::defaultAudioInput();
+    if (dev.isNull()) {
+        emit errorOccurred(QStringLiteral("no audio input device for voice mode"));
+        return;
+    }
+    if (m_audioSource) {
+        m_audioSource->deleteLater();
+        m_audioSource = nullptr;
+        m_voiceIo = nullptr;
+    }
+    m_audioSource = new QAudioSource(dev, fmt, this);
+    m_voicePcm.clear();
+    // Pull mode: read available bytes on readyRead into the accumulator buffer.
+    m_voiceIo = m_audioSource->start();
+    if (!m_voiceIo) {
+        emit errorOccurred(QStringLiteral("failed to start audio capture"));
+        m_audioSource->deleteLater();
+        m_audioSource = nullptr;
+        return;
+    }
+    connect(m_voiceIo, &QIODevice::readyRead, this, [this]() {
+        if (m_voiceIo)
+            m_voicePcm.append(m_voiceIo->readAll());
+    });
+    m_listening = true;
+    setVoiceState(QStringLiteral("listening"));
+}
+
+void Bridge::stopListening()
+{
+    if (!m_listening)
+        return;
+    m_listening = false;
+    if (m_audioSource) {
+        // Drain any final buffered samples before stopping.
+        if (m_voiceIo)
+            m_voicePcm.append(m_voiceIo->readAll());
+        m_audioSource->stop();
+        m_audioSource->deleteLater();
+        m_audioSource = nullptr;
+        m_voiceIo = nullptr;
+    }
+    if (m_voicePcm.size() < 1024) {   // too short — likely a stray tap
+        setVoiceState(QStringLiteral("idle"));
+        m_voicePcm.clear();
+        return;
+    }
+    const QByteArray wav = pcmToWav(m_voicePcm, 16000, 1);
+    m_voicePcm.clear();
+
+    setVoiceState(QStringLiteral("thinking"));
+    m_voiceModeStt = true;
+    QVariantMap params;
+    params.insert(QStringLiteral("audio_b64"), QString::fromLatin1(wav.toBase64()));
+    params.insert(QStringLiteral("mime"), QStringLiteral("audio/wav"));
+    if (!m_sttProvider.isEmpty())
+        params.insert(QStringLiteral("provider"), m_sttProvider);
+    request(QStringLiteral("voice.stt"), params, QStringLiteral("__voicemode__"));
+}
+
+// ---- Hands-free conversation (continuous listen, energy VAD) ----------------
+
+void Bridge::startConversation()
+{
+    if (m_handsFree)
+        return;
+    ensureVoiceSession();
+
+    QAudioFormat fmt;
+    fmt.setSampleRate(16000);
+    fmt.setChannelCount(1);
+    fmt.setSampleFormat(QAudioFormat::Int16);
+
+    const QAudioDevice dev = QMediaDevices::defaultAudioInput();
+    if (dev.isNull()) {
+        emit errorOccurred(QStringLiteral("no audio input device for voice mode"));
+        return;
+    }
+    if (m_audioSource) {
+        m_audioSource->deleteLater();
+        m_audioSource = nullptr;
+        m_voiceIo = nullptr;
+    }
+    m_audioSource = new QAudioSource(dev, fmt, this);
+    m_voicePcm.clear();
+    m_voiceIo = m_audioSource->start();
+    if (!m_voiceIo) {
+        emit errorOccurred(QStringLiteral("failed to start audio capture"));
+        m_audioSource->deleteLater();
+        m_audioSource = nullptr;
+        return;
+    }
+    connect(m_voiceIo, &QIODevice::readyRead, this, [this]() {
+        if (m_voiceIo)
+            handsFreeFeed(m_voiceIo->readAll());
+    });
+    m_handsFree = true;
+    m_vadSpeech = false;
+    m_vadPaused = false;
+    m_vadSilenceBytes = 0;
+    m_vadSpeechBytes = 0;
+    if (!m_vadWatchdog) {
+        m_vadWatchdog = new QTimer(this);
+        m_vadWatchdog->setSingleShot(true);
+        connect(m_vadWatchdog, &QTimer::timeout, this, [this]() {
+            // No TTS within the window (silent / tool-only turn) — listen again.
+            if (m_handsFree && m_vadPaused)
+                resumeListening();
+        });
+    }
+    emit handsFreeChanged();
+    setVoiceState(QStringLiteral("listening"));
+}
+
+void Bridge::stopConversation()
+{
+    if (!m_handsFree)
+        return;
+    m_handsFree = false;
+    m_vadSpeech = false;
+    m_vadPaused = false;
+    if (m_vadWatchdog)
+        m_vadWatchdog->stop();
+    if (m_audioSource) {
+        m_audioSource->stop();
+        m_audioSource->deleteLater();
+        m_audioSource = nullptr;
+        m_voiceIo = nullptr;
+    }
+    m_voicePcm.clear();
+    emit handsFreeChanged();
+    setVoiceState(QStringLiteral("idle"));
+}
+
+void Bridge::resumeListening()
+{
+    if (!m_handsFree)
+        return;
+    if (m_vadWatchdog)
+        m_vadWatchdog->stop();
+    m_voicePcm.clear();
+    m_vadSpeech = false;
+    m_vadPaused = false;
+    m_vadSilenceBytes = 0;
+    m_vadSpeechBytes = 0;
+    setVoiceState(QStringLiteral("listening"));
+}
+
+void Bridge::handsFreeFeed(const QByteArray &chunk)
+{
+    // Drop audio while parked (model thinking/speaking) so we never capture Jarvis's
+    // own TTS — the chunk was already drained from the device by the caller.
+    if (!m_handsFree || m_vadPaused || chunk.isEmpty())
+        return;
+
+    // Peak amplitude over the int16 mono samples (cheap, robust enough for VAD).
+    const qint16 *samples = reinterpret_cast<const qint16 *>(chunk.constData());
+    const int n = chunk.size() / 2;
+    int peak = 0;
+    for (int i = 0; i < n; ++i) {
+        int a = samples[i];
+        if (a < 0) a = -a;
+        if (a > peak) peak = a;
+    }
+    static const int kThreshold = 1400;             // speech vs. room noise
+    static const qint64 kSilenceBytes = 24000;      // ~0.75s trailing silence => end
+    static const qint64 kMinSpeechBytes = 8000;     // ~0.25s voiced => real utterance
+    static const qint64 kPrerollBytes = 8000;       // keep ~0.25s before speech starts
+    static const qint64 kMaxUtterBytes = 16000 * 2 * 30; // 30s hard cap
+
+    m_voicePcm.append(chunk);
+
+    if (peak >= kThreshold) {
+        m_vadSpeech = true;
+        m_vadSilenceBytes = 0;
+        m_vadSpeechBytes += chunk.size();
+        if (m_voiceState != QStringLiteral("listening"))
+            setVoiceState(QStringLiteral("listening"));
+    } else if (m_vadSpeech) {
+        m_vadSilenceBytes += chunk.size();
+    } else if (m_voicePcm.size() > kPrerollBytes) {
+        // Pre-speech: keep only a short pre-roll so silence doesn't bloat the buffer.
+        m_voicePcm = m_voicePcm.right(kPrerollBytes);
+    }
+
+    const bool endOfUtterance = m_vadSpeech &&
+        m_vadSpeechBytes >= kMinSpeechBytes && m_vadSilenceBytes >= kSilenceBytes;
+    const bool tooLong = m_vadSpeech && m_voicePcm.size() >= kMaxUtterBytes;
+    if (!endOfUtterance && !tooLong)
+        return;
+
+    const QByteArray wav = pcmToWav(m_voicePcm, 16000, 1);
+    m_voicePcm.clear();
+    m_vadSpeech = false;
+    m_vadSilenceBytes = 0;
+    m_vadSpeechBytes = 0;
+    m_vadPaused = true;                  // park capture until the reply is spoken
+    setVoiceState(QStringLiteral("thinking"));
+    m_voiceModeStt = true;
+    QVariantMap params;
+    params.insert(QStringLiteral("audio_b64"), QString::fromLatin1(wav.toBase64()));
+    params.insert(QStringLiteral("mime"), QStringLiteral("audio/wav"));
+    if (!m_sttProvider.isEmpty())
+        params.insert(QStringLiteral("provider"), m_sttProvider);
+    request(QStringLiteral("voice.stt"), params, QStringLiteral("__voicemode__"));
+    if (m_vadWatchdog)
+        m_vadWatchdog->start(20000);     // resume if no TTS arrives within 20s
+}
+
+void Bridge::speak(const QString &text)
+{
+    if (text.trimmed().isEmpty())
+        return;
+    m_ttsRequested = true;
+    QVariantMap params;
+    params.insert(QStringLiteral("text"), text.trimmed());
+    if (!m_ttsVoice.isEmpty())
+        params.insert(QStringLiteral("voice"), m_ttsVoice);
+    if (!m_ttsProvider.isEmpty())
+        params.insert(QStringLiteral("provider"), m_ttsProvider);
+    params.insert(QStringLiteral("format"), QStringLiteral("mp3"));
+    // Tag voice-mode TTS so the reply drives the orb state (speaking -> idle).
+    request(QStringLiteral("voice.tts"), params, QStringLiteral("__voicemode__"));
+}
+
+void Bridge::playTtsAudio(const QByteArray &audio, const QString &mime)
+{
+    if (audio.isEmpty())
+        return;
+    QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    if (base.isEmpty())
+        base = QDir::tempPath();
+    const QString ext = (mime.contains(QStringLiteral("mpeg"))
+                         || mime.contains(QStringLiteral("mp3")))
+                            ? QStringLiteral(".mp3") : QStringLiteral(".wav");
+    m_ttsTmpPath = base + QStringLiteral("/jarvis_voicemode_tts") + ext;
+    QFile out(m_ttsTmpPath);
+    if (!out.open(QIODevice::WriteOnly))
+        return;
+    out.write(audio);
+    out.close();
+
+    if (!m_ttsPlayer) {
+        m_ttsPlayer = new QMediaPlayer(this);
+        m_ttsOutput = new QAudioOutput(this);
+        m_ttsOutput->setVolume(1.0);
+        m_ttsPlayer->setAudioOutput(m_ttsOutput);
+        // Surface playback failures (missing codec/route) instead of silent no-sound.
+        connect(m_ttsPlayer, &QMediaPlayer::errorOccurred, this,
+                [this](QMediaPlayer::Error err, const QString &errStr) {
+            if (err == QMediaPlayer::NoError)
+                return;
+            qWarning("Bridge: TTS playback error %d: %s", int(err), qPrintable(errStr));
+            emit voiceSpeaking(false);
+            if (m_handsFree)
+                resumeListening();
+            else if (m_voiceState == QStringLiteral("speaking"))
+                setVoiceState(QStringLiteral("idle"));
+        });
+        connect(m_ttsPlayer, &QMediaPlayer::playbackStateChanged, this,
+                [this](QMediaPlayer::PlaybackState st) {
+            if (st == QMediaPlayer::StoppedState) {
+                emit voiceSpeaking(false);
+                // Hands-free: spoken reply done -> listen for the next turn.
+                if (m_handsFree)
+                    resumeListening();
+                // Otherwise only fall back to idle if still "speaking" (a new
+                // listen may have already moved us on).
+                else if (m_voiceState == QStringLiteral("speaking"))
+                    setVoiceState(QStringLiteral("idle"));
+            }
+        });
+    }
+    m_ttsOutput->setVolume(1.0);
+    setVoiceState(QStringLiteral("speaking"));
+    emit voiceSpeaking(true);
+    m_ttsPlayer->setSource(QUrl::fromLocalFile(m_ttsTmpPath));
+    m_ttsPlayer->play();
 }
 
 // ---- In-app browser (per-session engine bridge) ----------------------------
@@ -900,16 +1377,19 @@ QVariantList Bridge::buildSubAgentTree(const QVariantList &sessions) const
 
 void Bridge::setDriving(bool d)
 {
+    qInfo().noquote() << "[jarvis-bridge] setDriving(" << d << ") — overlay should"
+                      << (d ? "SPAWN on every monitor" : "drop");
     if (m_driving == d)
         return;
     m_driving = d;
     emit drivingChanged();
-    // The distinct-cursor overlay only needs the agent-pointer feed while a
-    // real-screen take-over is live; tail the fallback bus accordingly.
-    if (d)
-        startPointerTail();
-    else
-        stopPointerTail();
+    // Keep the pointer-bus tail running always (started in the ctor) so the overlay
+    // can AUTO-ARM the moment the agent touches the real screen (which="real"),
+    // not only during an explicit take-over. Manual setDriving(false) clears the
+    // auto-arm flag so a later real-pointer event can re-arm cleanly.
+    if (!d)
+        m_drivingAutoArmed = false;
+    startPointerTail();
 }
 
 void Bridge::setMirroring(bool m)
@@ -991,6 +1471,10 @@ void Bridge::takeOverCancel()
     // Daemon may not implement this until Wave 5; the unknown_method response is
     // swallowed in handleResponse() so cancelling never toasts an error.
     request(QStringLiteral("take_over.cancel"), params);
+    // Esc must TRULY STOP the model acting, not just hide the banner. take_over.cancel
+    // only ends the take-over routing; cancel the running turn too so the model stops
+    // issuing actions (same path as the chat Stop button).
+    cancelSession();
     setDriving(false);
 }
 
@@ -1045,6 +1529,15 @@ void Bridge::tickDrivingDemo()
     ++m_demoStep;
 
     emit agentPointer(nx, ny, action, QStringLiteral("left"));
+    // Also drive the multi-monitor overlay path: sweep the glow across the FULL
+    // virtual desktop (all monitors) in global pixels so the demo exercises the
+    // same per-output mapping/culling the live take-over uses.
+    if (QScreen *primary = QGuiApplication::primaryScreen()) {
+        const QRect vd = primary->virtualGeometry();
+        const double gx = vd.x() + nx * vd.width();
+        const double gy = vd.y() + ny * vd.height();
+        emit agentPointerGlobal(gx, gy, action, QStringLiteral("left"));
+    }
 }
 
 void Bridge::setVideoEndpoint(const QString &baseUrl)
@@ -1172,6 +1665,161 @@ void Bridge::stopPointerTail()
     m_pointerOffset = 0;
 }
 
+QString Bridge::questionsDir() const
+{
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    return (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share") : base)
+           + QStringLiteral("/jarvis/questions");
+}
+
+void Bridge::startQuestionWatch()
+{
+    const QString dir = questionsDir();
+    QDir().mkpath(dir);
+    if (!m_questionWatcher) {
+        m_questionWatcher = new QFileSystemWatcher(this);
+        connect(m_questionWatcher, &QFileSystemWatcher::directoryChanged,
+                this, &Bridge::scanQuestions);
+    }
+    if (!m_questionWatcher->directories().contains(dir))
+        m_questionWatcher->addPath(dir);
+    scanQuestions();
+}
+
+void Bridge::scanQuestions()
+{
+    const QString dir = questionsDir();
+    QDir d(dir);
+    const QStringList files = d.entryList({ QStringLiteral("*.json") }, QDir::Files);
+    QSet<QString> present;
+    for (const QString &fn : files) {
+        const QString id = fn.left(fn.size() - 5); // strip ".json"
+        present.insert(id);
+        if (m_seenQuestions.contains(id))
+            continue;
+        QFile f(d.filePath(fn));
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+        f.close();
+        if (!doc.isObject())
+            continue;
+        const QJsonObject o = doc.object();
+        const QString qid = o.value(QStringLiteral("id")).toString(id);
+        const QString question = o.value(QStringLiteral("question")).toString();
+        QStringList options;
+        for (const QJsonValue &v : o.value(QStringLiteral("options")).toArray())
+            options << v.toString();
+        m_seenQuestions.insert(id);
+        emit agentQuestion(qid, question, options);
+    }
+    // Forget ids whose files are gone (answered/cleaned) so a recycled id re-fires.
+    for (auto it = m_seenQuestions.begin(); it != m_seenQuestions.end();) {
+        if (!present.contains(*it))
+            it = m_seenQuestions.erase(it);
+        else
+            ++it;
+    }
+}
+
+void Bridge::answerQuestion(const QString &id, const QString &answer)
+{
+    if (id.isEmpty())
+        return;
+    QDir d(questionsDir());
+    QFile f(d.filePath(id + QStringLiteral(".answer")));
+    if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QJsonObject o;
+        o.insert(QStringLiteral("answer"), answer);
+        f.write(QJsonDocument(o).toJson(QJsonDocument::Compact));
+        f.close();
+    }
+    m_seenQuestions.remove(id);
+}
+
+// render_widget file bus (widgets.jsonl) ------------------------------------
+//
+// The engine appends one compact JSON line per widget; we POLL (a watcher on an
+// appended file can miss the change events) every 500ms, tracking the last byte
+// offset so we only emit lines that are new since the app started.
+
+QString Bridge::widgetsPath() const
+{
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    return (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share") : base)
+           + QStringLiteral("/jarvis/widgets.jsonl");
+}
+
+void Bridge::startWidgetWatch()
+{
+    if (m_widgetTimer)
+        return;
+    // Start from the END so old widgets from a previous run don't replay; only
+    // widgets the model renders while this app is open appear on the CANVAS page.
+    QFileInfo fi(widgetsPath());
+    m_widgetOffset = fi.exists() ? fi.size() : 0;
+    m_widgetTimer = new QTimer(this);
+    m_widgetTimer->setInterval(500);
+    connect(m_widgetTimer, &QTimer::timeout, this, &Bridge::readWidgetTail);
+    m_widgetTimer->start();
+}
+
+void Bridge::readWidgetTail()
+{
+    const QString path = widgetsPath();
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    // Truncation/rotation guard: if the file shrank, restart from the top.
+    if (f.size() < m_widgetOffset)
+        m_widgetOffset = 0;
+    if (!f.seek(m_widgetOffset))
+        return;
+    const QByteArray chunk = f.readAll();
+    m_widgetOffset = f.pos();
+
+    for (const QByteArray &lineRaw : chunk.split('\n')) {
+        const QByteArray line = lineRaw.trimmed();
+        if (line.isEmpty())
+            continue;
+        QJsonParseError perr;
+        const QJsonDocument d = QJsonDocument::fromJson(line, &perr);
+        if (perr.error != QJsonParseError::NoError || !d.isObject())
+            continue;
+        const QJsonObject o = d.object();
+        // {ts, title, id, spec} — spec is a nested object/array; toVariant()
+        // converts the whole tree to nested QVariantMap/QVariantList for the QML
+        // renderer. `id` lets the CANVAS page replace a card in place on update;
+        // older records without an id fall back to "<ts>" (matching the engine's
+        // "w<ts>" fallback shape closely enough for dedupe).
+        const QVariant ts = o.value(QStringLiteral("ts")).toVariant();
+        QString id = o.value(QStringLiteral("id")).toString();
+        if (id.isEmpty())
+            id = ts.toString();
+        QVariantMap widget;
+        widget.insert(QStringLiteral("ts"), ts);
+        widget.insert(QStringLiteral("title"),
+                      o.value(QStringLiteral("title")).toString());
+        widget.insert(QStringLiteral("id"), id);
+        widget.insert(QStringLiteral("spec"),
+                      o.value(QStringLiteral("spec")).toVariant());
+        emit widgetRendered(widget);
+    }
+}
+
+void Bridge::popOutWidget(const QString &id, const QString &title, const QVariant &spec)
+{
+    // Package {id,title,spec} and let QML own the standalone Window's lifetime
+    // (Main.qml's Instantiator over a ListModel, mirroring the driving-overlay
+    // Instantiator-of-Window precedent). The spec is passed straight through as
+    // a nested QVariant tree — still DATA, rendered by the safe WidgetRenderer.
+    QVariantMap widget;
+    widget.insert(QStringLiteral("id"), id);
+    widget.insert(QStringLiteral("title"), title);
+    widget.insert(QStringLiteral("spec"), spec);
+    emit spawnStandaloneWidget(widget);
+}
+
 void Bridge::readPointerTail()
 {
     const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
@@ -1201,13 +1849,16 @@ void Bridge::readPointerTail()
         if (perr.error != QJsonParseError::NoError || !d.isObject())
             continue;
         const QJsonObject o = d.object();
-        // The engine writes screen-space x,y; normalize if a w/h is present,
-        // otherwise pass nx/ny straight through if already normalized.
+        // The engine writes GLOBAL desktop pixels x,y (map_to_desktop). Keep a
+        // normalized nx/ny for legacy single-surface consumers (the in-app agent
+        // preview), but ALSO emit the raw global pixels so the multi-monitor
+        // take-over overlay can map each event to the correct output + cull it
+        // when the cursor is on a different monitor.
+        const double x = o.value(QStringLiteral("x")).toDouble();
+        const double y = o.value(QStringLiteral("y")).toDouble();
         double nx = o.value(QStringLiteral("nx")).toDouble(-1.0);
         double ny = o.value(QStringLiteral("ny")).toDouble(-1.0);
         if (nx < 0.0 || ny < 0.0) {
-            const double x = o.value(QStringLiteral("x")).toDouble();
-            const double y = o.value(QStringLiteral("y")).toDouble();
             const double w = o.value(QStringLiteral("w")).toDouble(0.0);
             const double h = o.value(QStringLiteral("h")).toDouble(0.0);
             nx = (w > 0.0) ? x / w : x;
@@ -1217,6 +1868,33 @@ void Bridge::readPointerTail()
             o.value(QStringLiteral("action")).toString(QStringLiteral("move")));
         const QString button = o.value(QStringLiteral("button")).toString();
         emit agentPointer(nx, ny, action, button);
+        emit agentPointerGlobal(x, y, action, button);
+
+        // AUTO-ARM the "Jarvis is using this computer" overlay when the agent acts
+        // on the REAL screen (engine publishes session="real"), so the user sees
+        // the banner + glow during which="real" co-work, not just explicit
+        // take-overs. Disarms ~6s after the last real event (unless an explicit
+        // take-over set driving, which is not auto-armed so this won't drop it).
+        if (o.value(QStringLiteral("session")).toString() == QStringLiteral("real")) {
+            if (!m_driving) {
+                m_drivingAutoArmed = true;
+                setDriving(true);
+            }
+            if (m_drivingAutoArmed) {
+                if (!m_realIdleTimer) {
+                    m_realIdleTimer = new QTimer(this);
+                    m_realIdleTimer->setSingleShot(true);
+                    connect(m_realIdleTimer, &QTimer::timeout, this, [this]() {
+                        if (m_drivingAutoArmed)
+                            setDriving(false);
+                    });
+                }
+                // Stay armed across the WHOLE turn (the model thinks between tool
+                // calls). Primary disarm is the session "final" event; this is just
+                // a long safety backstop if that event is missed.
+                m_realIdleTimer->start(180000);
+            }
+        }
     }
 }
 
@@ -1273,6 +1951,36 @@ void Bridge::onTextMessageReceived(const QString &message)
     }
     const QJsonObject obj = doc.object();
 
+    // Unsolicited 2FA unlock event: the daemon fanned out a challenge state change
+    // (a paired phone approved/denied). The LockGate listens on authStateChanged
+    // to unlock instantly without waiting for the next auth.status poll.
+    if (obj.value(QStringLiteral("event")).toString() == QStringLiteral("auth.event")) {
+        const QJsonObject data = obj.value(QStringLiteral("data")).toObject();
+        emit authStateChanged(data.value(QStringLiteral("challenge_id")).toString(),
+                              data.value(QStringLiteral("state")).toString());
+        return;
+    }
+
+    // Unsolicited "a session was opened" event: the daemon fanned out a fresh
+    // session.create from ANY surface (phone/MCP/scheduler). Open it locally so the
+    // Chat page replays its history; Main.qml's onSessionOpened raises+navigates the
+    // window. Guard against a desktop-initiated create echoing back (we already
+    // openSession'd it locally) to avoid a double-open.
+    if (obj.value(QStringLiteral("event")).toString() == QStringLiteral("session.opened")) {
+        const QJsonObject data = obj.value(QStringLiteral("data")).toObject();
+        const QString sid = data.value(QStringLiteral("session_id")).toString();
+        // Only auto-SWITCH the visible chat to a foreign new session when the desktop
+        // isn't already in one — otherwise a scheduled/phone session would wipe the
+        // chat the user is in. Either way the window is surfaced (Main.qml).
+        if (!sid.isEmpty() && sid != m_sessionId) {
+            if (m_sessionId.isEmpty())
+                openSession(sid);              // adopt + replay (we had nothing open)
+            else
+                emit sessionFocusRequested();  // keep current chat; just raise the app
+        }
+        return;
+    }
+
     // Unsolicited event frame.
     if (obj.value(QStringLiteral("event")).toString() == QStringLiteral("session.event")) {
         const QJsonObject data = obj.value(QStringLiteral("data")).toObject();
@@ -1294,6 +2002,12 @@ void Bridge::onTextMessageReceived(const QString &message)
         } else if (kind == QStringLiteral("final")) {
             notify(QStringLiteral("Task complete"),
                    QStringLiteral("Jarvis finished a turn."));
+            // The model's turn ended — drop the auto-armed take-over overlay now
+            // (it stays up for the WHOLE turn while the model drives the real
+            // screen, then clears here). Explicit take-overs aren't auto-armed, so
+            // this leaves them under the daemon's control.
+            if (m_drivingAutoArmed)
+                setDriving(false);
         }
         // Fold the session id in so the UI can route by session.
         evMap.insert(QStringLiteral("session_id"), sid);
@@ -1327,6 +2041,20 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             emit mcpTested(ctx, false, 0, msg.isEmpty() ? code : msg);
             return;
         }
+        // 2FA unlock against an OLDER daemon that lacks auth.*: FAIL-OPEN so the
+        // user is never locked out — treat unknown_method as "approved".
+        if (code == QStringLiteral("unknown_method")
+            && (method == QStringLiteral("auth.request")
+                || method == QStringLiteral("auth.status"))) {
+            if (method == QStringLiteral("auth.request"))
+                emit authChallengeStarted(QString(), QStringLiteral("approved"), false);
+            else
+                emit authStateChanged(QString(), QStringLiteral("approved"));
+            return;
+        }
+        if (code == QStringLiteral("unknown_method")
+            && method == QStringLiteral("auth.deny"))
+            return;
         // Forward-compatible COMPUTER-page control methods: the daemon may not
         // implement these yet (Wave 5 lands them). Swallow "unknown_method" so the
         // desktop preview/overlay degrade gracefully instead of toasting an error.
@@ -1335,6 +2063,23 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                 || method == QStringLiteral("mirror.stop")
                 || method == QStringLiteral("session.set_target")
                 || method == QStringLiteral("take_over.cancel"))) {
+            return;
+        }
+        // session.delete may not exist on an older daemon. Degrade quietly: still
+        // emit sessionDeleted so the Sessions page drops the row optimistically
+        // (a refresh will restore it if the daemon truly couldn't delete it).
+        if (code == QStringLiteral("unknown_method")
+            && method == QStringLiteral("session.delete")) {
+            emit sessionDeleted(ctx);
+            return;
+        }
+        // CLI MCP server toggles land on newer daemons only; on an older one degrade
+        // to a clean empty CLI section instead of an error toast.
+        if (code == QStringLiteral("unknown_method")
+            && (method == QStringLiteral("mcp.cli_list")
+                || method == QStringLiteral("mcp.cli_set_enabled"))) {
+            if (method == QStringLiteral("mcp.cli_list"))
+                emit mcpCliListed(QVariantList());
             return;
         }
         // Memory + skills (Contract A v3) land daemon-side in Wave 6. Until then
@@ -1392,9 +2137,20 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         // Voice STT failed (no key / network): clear the indicator quietly-ish.
         if (method == QStringLiteral("voice.stt")) {
             setRecordingState(QStringLiteral("idle"));
+            if (ctx == QStringLiteral("__voicemode__")) {
+                m_voiceModeStt = false;
+                setVoiceState(QStringLiteral("idle"));
+            }
         }
-        if (method == QStringLiteral("voice.tts"))
+        if (method == QStringLiteral("voice.tts")) {
             m_ttsRequested = false;
+            if (ctx == QStringLiteral("__voicemode__"))
+                setVoiceState(QStringLiteral("idle"));
+        }
+        // If creating the session failed, drop any queued first message so it can't
+        // later land in an unrelated session.
+        if (method == QStringLiteral("session.create"))
+            m_pendingText.clear();
         emit errorOccurred(QStringLiteral("%1 failed: [%2] %3")
                                .arg(method.isEmpty() ? QStringLiteral("request") : method, code, msg));
         return;
@@ -1406,6 +2162,18 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             m_sessionId = sid;
             emit sessionIdChanged();
             setStatus(QStringLiteral("session ready"));
+
+            // Flush a message the user typed BEFORE any session existed (the
+            // no-buttons auto-create flow queued it in sendMessage()). This makes
+            // "type and hit send on a fresh chat" just work.
+            if (!m_pendingText.isEmpty()) {
+                const QString pending = m_pendingText;
+                m_pendingText.clear();
+                QVariantMap sendParams;
+                sendParams.insert(QStringLiteral("session_id"), m_sessionId);
+                sendParams.insert(QStringLiteral("text"), pending);
+                request(QStringLiteral("session.send"), sendParams);
+            }
 
             // The engine url for this session's per-session computer-use engine,
             // if the daemon reports it (else the per-session-port default is used).
@@ -1437,7 +2205,25 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             models << v.toString();
         const QString brain = result.value(QStringLiteral("brain")).toString();
         emit modelsListed(brain, models);
+    } else if (method == QStringLiteral("voice.list_voices")) {
+        emit voicesListed(result.value(QStringLiteral("voices")).toList());
+        // Forward the per-provider extras so the picker has both provider lists
+        // and a {provider: [voices]} map without a second round-trip.
+        emit voiceProvidersListed(
+            result.value(QStringLiteral("stt_providers")).toList(),
+            result.value(QStringLiteral("tts_providers")).toList(),
+            result.value(QStringLiteral("voices_by_provider")).toMap());
     } else if (method == QStringLiteral("settings.get")) {
+        // Cache the preferred TTS voice slug so Voice Mode's speak() can pass it.
+        m_ttsVoice = result.value(QStringLiteral("tts_voice")).toString();
+        // Cache the STT/TTS provider so runtime voice calls pass it explicitly
+        // (defense in depth — the daemon already defaults from settings).
+        m_sttProvider = result.contains(QStringLiteral("stt_provider"))
+                            ? result.value(QStringLiteral("stt_provider")).toString()
+                            : QStringLiteral("voxtral");
+        m_ttsProvider = result.contains(QStringLiteral("tts_provider"))
+                            ? result.value(QStringLiteral("tts_provider")).toString()
+                            : QStringLiteral("voxtral");
         // Sync the desktop notifications toggle from persisted settings.
         const QVariantMap n = result.value(QStringLiteral("notifications")).toMap();
         if (n.contains(QStringLiteral("enabled"))) {
@@ -1450,6 +2236,15 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         emit settingsLoaded(result);
     } else if (method == QStringLiteral("settings.set")) {
         emit settingsSaved();
+    } else if (method == QStringLiteral("auth.request")) {
+        // FAIL-OPEN is folded into the result: paired=false + state="approved"
+        // means no phone is paired, so the LockGate unlocks immediately.
+        emit authChallengeStarted(result.value(QStringLiteral("challenge_id")).toString(),
+                                  result.value(QStringLiteral("state")).toString(),
+                                  result.value(QStringLiteral("paired")).toBool());
+    } else if (method == QStringLiteral("auth.status")) {
+        emit authStateChanged(result.value(QStringLiteral("challenge_id")).toString(),
+                              result.value(QStringLiteral("state")).toString());
     } else if (method == QStringLiteral("mcp.list")) {
         emit mcpListed(result.value(QStringLiteral("servers")).toList());
     } else if (method == QStringLiteral("mcp.add")
@@ -1462,6 +2257,17 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                        result.value(QStringLiteral("ok")).toBool(),
                        result.value(QStringLiteral("tools_count")).toInt(),
                        result.value(QStringLiteral("error")).toString());
+    } else if (method == QStringLiteral("mcp.cli_list")) {
+        emit mcpCliListed(result.value(QStringLiteral("servers")).toList());
+    } else if (method == QStringLiteral("mcp.cli_set_enabled")) {
+        // Importing/removing a CLI server changed the registry; the page re-queries
+        // the CLI list (and may also refresh the Jarvis list) on mcpCliChanged.
+        emit mcpCliChanged();
+    } else if (method == QStringLiteral("connectors.list")) {
+        emit connectorsListed(result.value(QStringLiteral("connectors")).toList());
+    } else if (method == QStringLiteral("connectors.add")) {
+        emit connectorsChanged();
+        connectorsList(); // refresh the list after a mutation
     } else if (method == QStringLiteral("plugins.catalog")) {
         emit pluginsListed(result.value(QStringLiteral("plugins")).toList());
     } else if (method == QStringLiteral("plugins.install")
@@ -1475,6 +2281,9 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             emit subAgentTree(buildSubAgentTree(sessions));
         else
             emit sessionsListed(sessions);
+    } else if (method == QStringLiteral("session.delete")) {
+        // ctx carries the deleted session id; the Sessions page refreshes on it.
+        emit sessionDeleted(ctx);
     } else if (method == QStringLiteral("session.history")) {
         // events: [{seq,ts,ev:{kind,...}}] — fold the inner ev out for QML.
         QVariantList events;
@@ -1553,14 +2362,44 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                 notify(QStringLiteral("Pull request opened"), url);
         }
     } else if (method == QStringLiteral("voice.stt")) {
+        const QString text = result.value(QStringLiteral("text")).toString();
+        if (ctx == QStringLiteral("__voicemode__")) {
+            // Voice MODE round-trip: surface the transcript on the orb AND auto-send
+            // it to the voice session so the model answers. Stay in "thinking" until
+            // the assistant replies (the page speaks the reply -> "speaking").
+            m_voiceModeStt = false;
+            emit sttText(text);
+            if (!text.trimmed().isEmpty()) {
+                if (m_voiceSessionId.isEmpty())
+                    m_voiceSessionId = m_sessionId;
+                sendMessage(text.trimmed());
+            } else if (m_handsFree) {
+                resumeListening();
+            } else {
+                setVoiceState(QStringLiteral("idle"));
+            }
+            return;
+        }
         setRecordingState(QStringLiteral("idle"));
-        emit voiceTranscribed(result.value(QStringLiteral("text")).toString());
+        emit voiceTranscribed(text);
     } else if (method == QStringLiteral("voice.tts")) {
         m_ttsRequested = false;
         const QByteArray audio = QByteArray::fromBase64(
             result.value(QStringLiteral("audio_b64")).toString().toLatin1());
-        if (audio.isEmpty())
+        if (audio.isEmpty()) {
+            if (ctx == QStringLiteral("__voicemode__")) {
+                if (m_handsFree)
+                    resumeListening();
+                else
+                    setVoiceState(QStringLiteral("idle"));
+            }
             return;
+        }
+        if (ctx == QStringLiteral("__voicemode__")) {
+            // Voice MODE playback via QtMultimedia (drives the speaking orb state).
+            playTtsAudio(audio, result.value(QStringLiteral("mime")).toString());
+            return;
+        }
         QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
         if (base.isEmpty())
             base = QDir::tempPath();

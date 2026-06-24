@@ -20,15 +20,40 @@ Item {
     required property string approvalId
     required property string risk
     required property bool ok
+    // True ONLY for live assistant messages — drives the typewriter reveal below.
+    required property bool streaming
 
     signal allow(string approvalId)
     signal deny(string approvalId)
     signal always(string approvalId)
+    // Emitted as the typewriter reveal grows the bubble, so the panel can keep the
+    // transcript pinned to the bottom while text streams in.
+    signal grew()
 
     implicitHeight: loader.item ? loader.item.implicitHeight : 0
 
     readonly property bool isUser: kind === "message" && role === "user"
     readonly property bool isAssistant: kind === "message" && role === "assistant"
+
+    // ---- Typewriter reveal (live assistant messages only) ------------------
+    // `shown` is the number of characters currently revealed. For a streaming
+    // assistant message it animates 0 -> text.length; otherwise it's the full
+    // length immediately (history, user messages, tool rows).
+    property int shown: (streaming && isAssistant) ? 0 : text.length
+    readonly property string displayText:
+        (streaming && isAssistant) ? text.substring(0, shown) : text
+
+    Timer {
+        id: typer
+        // ~3 chars per tick at 12ms ≈ 250 chars/s — smooth but not sluggish.
+        interval: 12
+        repeat: true
+        running: del.streaming && del.isAssistant && del.shown < del.text.length
+        onTriggered: {
+            del.shown = Math.min(del.text.length, del.shown + 3)
+            del.grew()
+        }
+    }
 
     // entrance animation
     opacity: 0
@@ -50,6 +75,7 @@ Item {
             case "tool_result":  return toolResultComp
             case "diff":         return diffComp
             case "approval":     return approvalComp
+            case "question":     return questionComp
             case "error":        return errorComp
             default:             return messageComp
             }
@@ -126,7 +152,7 @@ Item {
                     anchors.rightMargin: del.isUser ? 15 : 13
                     anchors.topMargin: 11
                     anchors.bottomMargin: 11
-                    text: del.text
+                    text: del.displayText
                     color: Theme.text
                     wrapMode: Text.Wrap
                     font.family: Theme.fontSans
@@ -363,6 +389,124 @@ Item {
                         label: "Deny"; danger: true
                         onClicked: del.deny(del.approvalId)
                     }
+                }
+            }
+        }
+    }
+
+    // ===== Question (ask_user) — cyan card with tappable answers =============
+    Component {
+        id: questionComp
+        Rectangle {
+            id: qRoot
+            anchors.left: parent.left
+            anchors.right: parent.right
+            radius: Theme.radius
+            property bool answered: false
+            property string chosen: ""
+            // del.text is a JSON envelope {q, options}; fall back to plain text.
+            property var parsed: {
+                try { return JSON.parse(del.text) }
+                catch (e) { return { "q": del.text, "options": [] } }
+            }
+            implicitHeight: qCol.implicitHeight + 28
+            color: Qt.rgba(0.0, 0.78, 0.92, 0.06)
+            border.color: Theme.accent
+            border.width: 1
+
+            function answer(a) {
+                if (qRoot.answered) return
+                qRoot.answered = true
+                qRoot.chosen = a
+                bridge.answerQuestion(del.approvalId, a)
+            }
+
+            // pulsing cyan top edge — demands attention like the approval card
+            Rectangle {
+                anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
+                anchors.leftMargin: 14; anchors.rightMargin: 14; anchors.topMargin: 1
+                height: 2; radius: 1; color: Theme.accent
+                layer.enabled: true
+                layer.effect: MultiEffect { blurEnabled: true; blur: 0.6; blurMax: 12; brightness: 0.2 }
+                SequentialAnimation on opacity {
+                    loops: Animation.Infinite
+                    NumberAnimation { from: 1.0; to: 0.45; duration: 900; easing.type: Easing.InOutSine }
+                    NumberAnimation { from: 0.45; to: 1.0; duration: 900; easing.type: Easing.InOutSine }
+                }
+            }
+
+            ColumnLayout {
+                id: qCol
+                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                anchors.leftMargin: 14; anchors.rightMargin: 14; anchors.topMargin: 14
+                spacing: 11
+
+                Text {
+                    text: "❔ JARVIS IS ASKING"
+                    color: Theme.accent
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: Theme.trackMid
+                    font.pixelSize: 11
+                    font.family: Theme.fontDisplay
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: qRoot.parsed.q ? qRoot.parsed.q : del.text
+                    color: Theme.text
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 13
+                    font.family: Theme.fontSans
+                    lineHeight: 1.4
+                    textFormat: Text.PlainText
+                }
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    visible: !qRoot.answered
+                    Repeater {
+                        model: qRoot.parsed.options ? qRoot.parsed.options : []
+                        ApprovalButton {
+                            label: modelData
+                            primary: true
+                            onClicked: qRoot.answer(modelData)
+                        }
+                    }
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    visible: !qRoot.answered
+                    radius: Theme.radiusSm
+                    color: Qt.rgba(1, 1, 1, 0.05)
+                    border.color: Theme.hairline
+                    border.width: 1
+                    implicitHeight: 34
+                    TextInput {
+                        id: customInput
+                        anchors.fill: parent
+                        anchors.leftMargin: 10
+                        anchors.rightMargin: 10
+                        verticalAlignment: TextInput.AlignVCenter
+                        color: Theme.text
+                        font.pixelSize: 13
+                        font.family: Theme.fontSans
+                        clip: true
+                        onAccepted: if (text.trim().length) qRoot.answer(text.trim())
+                        Text {
+                            anchors.fill: parent
+                            verticalAlignment: Text.AlignVCenter
+                            visible: !customInput.text.length
+                            text: "Type a custom answer, then Enter…"
+                            color: Theme.textFaint
+                            font: customInput.font
+                        }
+                    }
+                }
+                Text {
+                    visible: qRoot.answered
+                    text: "✓ " + qRoot.chosen
+                    color: Theme.success
+                    font.pixelSize: 12
+                    font.family: Theme.fontSans
                 }
             }
         }

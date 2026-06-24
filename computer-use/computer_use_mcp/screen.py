@@ -53,26 +53,36 @@ def _grim_capture(info: session.SessionInfo, rect: Rect | None, cursor: bool) ->
 
 
 def _spectacle_capture(info: session.SessionInfo, cursor: bool) -> bytes:
-    fd, fname = tempfile.mkstemp(suffix=".png", prefix="computer-use-")
-    os.close(fd)
-    try:
-        cmd = ["spectacle", "-b", "-n", "-o", fname]
-        if cursor:
-            cmd.append("-p")
-        proc = subprocess.run(cmd, capture_output=True, timeout=30, env=info.env())
+    # spectacle on this KWin intermittently exits 0 but writes NO file (a race in
+    # its background/portal path) — the first call often comes back empty and a
+    # retry succeeds. Retry a few times here so a single screenshot tool call is
+    # reliable instead of pushing the retry onto the model.
+    last_err = ""
+    attempts = 3
+    for i in range(attempts):
+        fd, fname = tempfile.mkstemp(suffix=".png", prefix="computer-use-")
+        os.close(fd)
+        os.unlink(fname)            # spectacle writes a fresh file; don't hand it an empty one
         try:
-            with open(fname, "rb") as f:
-                data = f.read()
-        except OSError:
+            cmd = ["spectacle", "-b", "-n", "-o", fname]
+            if cursor:
+                cmd.append("-p")
+            proc = subprocess.run(cmd, capture_output=True, timeout=30, env=info.env())
             data = b""
-        if not data:
-            raise RuntimeError(
-                f"spectacle produced no image: {proc.stderr.decode(errors='replace').strip()}"
-            )
-        return data
-    finally:
-        if os.path.exists(fname):
-            os.unlink(fname)
+            try:
+                with open(fname, "rb") as f:
+                    data = f.read()
+            except OSError:
+                data = b""
+            if data:
+                return data
+            last_err = proc.stderr.decode(errors="replace").strip() or "empty file"
+        finally:
+            if os.path.exists(fname):
+                os.unlink(fname)
+        if i < attempts - 1:
+            time.sleep(0.6)         # let spectacle's backend settle, then retry
+    raise RuntimeError(f"spectacle produced no image after {attempts} tries: {last_err}")
 
 
 def _grim_available(info: session.SessionInfo) -> bool:

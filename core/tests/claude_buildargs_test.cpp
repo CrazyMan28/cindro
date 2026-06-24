@@ -90,6 +90,13 @@ int main()
               "no-cwd/model: prompt still isolated after --");
         check(!args.contains(QStringLiteral("--model")),
               "no --model when model is empty");
+        // ISOLATION: even with NO --mcp-config, a Jarvis claude turn MUST pass
+        // --strict-mcp-config so it never inherits the user's ~/.claude.json
+        // mcpServers (the leak this guards). Zero config + strict = zero servers.
+        check(args.contains(QStringLiteral("--strict-mcp-config")),
+              "--strict-mcp-config ALWAYS present (no CLI mcpServers leak)");
+        check(!args.contains(QStringLiteral("--mcp-config")),
+              "no --mcp-config when none was built (strict alone = zero servers)");
     }
 
     // Case 3: a prompt that itself starts with a dash must not be parsed as a flag.
@@ -101,6 +108,24 @@ int main()
         const QStringList args = brain.buildArgs(dashy);
         check(promptIsIsolatedTrailingPositional(args, dashy),
               "dash-leading prompt is isolated after -- (not mistaken for a flag)");
+    }
+
+    // Case 4: MULTIMODAL — image attachments grant Read access via --add-dir=<dir>
+    // (the dir of each attached image), still keeping the prompt isolated after --.
+    {
+        ClaudeBrain::Options opts;
+        opts.cwd = QStringLiteral("/home/user/project");
+        ClaudeBrain brain(opts);
+        const QStringList imgs{QStringLiteral("/tmp/jarvis/a.png"),
+                               QStringLiteral("/tmp/jarvis/b.jpg")};
+        const QStringList args = brain.buildArgs(prompt, imgs);
+        check(args.contains(QStringLiteral("--add-dir=/tmp/jarvis")),
+              "image attachment dir granted via --add-dir=<dir>");
+        // both images share one dir -> only one extra --add-dir for it
+        check(args.count(QStringLiteral("--add-dir=/tmp/jarvis")) == 1,
+              "duplicate image dirs are de-duplicated");
+        check(promptIsIsolatedTrailingPositional(args, prompt),
+              "prompt still isolated after -- with image dirs added");
     }
 
     if (g_failures) {

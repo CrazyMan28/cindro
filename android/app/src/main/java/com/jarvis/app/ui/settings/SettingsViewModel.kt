@@ -48,6 +48,8 @@ data class SettingsUiState(
     val ttsVoice: String = "",
     // Haptics
     val hapticsEnabled: Boolean = true,
+    // 2FA + fingerprint cross-device unlock: gate the app itself on launch.
+    val fingerprintGateEnabled: Boolean = true,
 )
 
 /** Full settings parity: connection, identity, API keys, default brain/model, voice. */
@@ -85,6 +87,7 @@ class SettingsViewModel(
         readBackEnabled = voiceSettings.readBackEnabled,
         ttsVoice = voiceSettings.ttsVoice,
         hapticsEnabled = appPrefs.hapticsEnabled,
+        fingerprintGateEnabled = appPrefs.fingerprintGateEnabled,
     )
 
     // --- daemon settings parity -------------------------------------------
@@ -210,6 +213,11 @@ class SettingsViewModel(
     fun setHapticsEnabled(enabled: Boolean) {
         appPrefs.hapticsEnabled = enabled
         _uiState.update { it.copy(hapticsEnabled = enabled) }
+    }
+
+    fun setFingerprintGateEnabled(enabled: Boolean) {
+        appPrefs.fingerprintGateEnabled = enabled
+        _uiState.update { it.copy(fingerprintGateEnabled = enabled) }
     }
 
     fun reconnect() = repo.connect()

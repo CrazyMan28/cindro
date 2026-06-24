@@ -3,11 +3,15 @@ import QtQuick.Layouts
 import JarvisSidebar
 
 // AppShell — the full multi-page application body. A slim left NavRail routes
-// between twelve pages rendered in the content area on the right:
-//   0 Chat (the existing JarvisPanel), 1 Computer (co-worker / take-over),
-//   2 Browser (agent's controlled tab), 3 Schedules (cron jobs),
-//   4 Memory, 5 Skills, 6 Sessions (+ sub-agent tree), 7 Activity (audit),
-//   8 SSH (allow-list + gated exec), 9 Settings, 10 MCP, 11 Plugins.
+// between fourteen pages rendered in the content area on the right:
+//   0 Chat (the existing JarvisPanel), 1 Voice (the voice-mode orb),
+//   2 Computer (co-worker / take-over), 3 Canvas (model-rendered widgets),
+//   4 Browser (agent's tab), 5 Schedules (cron jobs), 6 Memory, 7 Skills,
+//   8 Sessions (+ sub-agent tree), 9 Activity (audit), 10 SSH (allow-list +
+//   gated exec), 11 Settings, 12 MCP, 13 Plugins.
+//
+// NOTE: this switch + the Repeater `model` count + NavRail.items MUST stay in
+// lock-step (same order, same length).
 //
 // This is the single shared content surface reparented between the floating
 // window and the docked layer-shell surface (see Main.qml), so all page state
@@ -19,6 +23,9 @@ Item {
     id: shell
 
     property int currentIndex: 0
+    // The NavRail/switch index of the Voice page (used by the --voice CLI flag in
+    // Main.qml to boot straight onto it). Keep in sync with the order below.
+    readonly property int voiceIndex: 1
 
     // Set by the Chat loader so other pages (e.g. Skills /invoke) can inject into
     // the live transcript without coupling to load order.
@@ -61,7 +68,7 @@ Item {
             // Each page is wrapped so we can animate opacity + a small x-slide.
             // Only the active page is interactive; the rest fade out behind it.
             Repeater {
-                model: 12
+                model: 14
                 delegate: Item {
                     id: pageWrap
                     required property int index
@@ -88,17 +95,19 @@ Item {
                         sourceComponent: {
                             switch (pageWrap.index) {
                             case 0: return chatComp
-                            case 1: return computerComp
-                            case 2: return browserComp
-                            case 3: return schedulesComp
-                            case 4: return memoryComp
-                            case 5: return skillsComp
-                            case 6: return sessionsComp
-                            case 7: return activityComp
-                            case 8: return sshComp
-                            case 9: return settingsComp
-                            case 10: return mcpComp
-                            case 11: return pluginsComp
+                            case 1: return voiceComp
+                            case 2: return computerComp
+                            case 3: return canvasComp
+                            case 4: return browserComp
+                            case 5: return schedulesComp
+                            case 6: return memoryComp
+                            case 7: return skillsComp
+                            case 8: return sessionsComp
+                            case 9: return activityComp
+                            case 10: return sshComp
+                            case 11: return settingsComp
+                            case 12: return mcpComp
+                            case 13: return pluginsComp
                             }
                         }
                     }
@@ -113,7 +122,24 @@ Item {
         id: chatComp
         JarvisPanel { Component.onCompleted: shell.chatPanel = this }
     }
+    Component { id: voiceComp;    VoiceMode {} }
     Component { id: computerComp; ComputerPage {} }
+    Component {
+        id: canvasComp
+        CanvasPage {
+            // A CANVAS widget `button` with action {"send":"…"} drops the text
+            // into the live Chat panel (creating a session if needed) and jumps to
+            // the Chat page so the user sees it land — same path as /invoke skills.
+            onSendChat: function(text) {
+                if (shell.chatPanel) {
+                    shell.chatPanel.injectUser(text)
+                    shell.currentIndex = 0
+                } else {
+                    bridge.sendMessage(text)
+                }
+            }
+        }
+    }
     Component { id: browserComp;  BrowserPage {} }
     Component { id: schedulesComp; SchedulesPage {} }
     Component { id: activityComp; ActivityPage {} }
@@ -135,6 +161,13 @@ Item {
         id: sessionsComp
         SessionsPage {
             onOpenInChat: function(sid) { shell.currentIndex = 0 }
+            // "+ New chat": jump to Chat and start a fresh conversation (drops the
+            // current session so the next send creates a new one).
+            onNewChat: function() {
+                if (shell.chatPanel)
+                    shell.chatPanel.startNewChat()
+                shell.currentIndex = 0
+            }
         }
     }
     Component { id: settingsComp; SettingsPage {} }

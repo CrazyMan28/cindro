@@ -19,7 +19,7 @@ import subprocess
 import threading
 import time
 
-from computer_use_mcp import agent_bus, clipboard, screen, session
+from computer_use_mcp import agent_bus, clipboard, jarvis_seat, screen, session
 from computer_use_mcp.config import load_config
 
 ABS_MAX = 65535
@@ -170,7 +170,16 @@ def move(x: float, y: float, coord_space: str = "image",
         _agent_cursor_set(info, gx, gy)
         agent_bus.publish(gx, gy, kind="move")
     else:
-        _emit_abs(gx, gy)
+        # REAL screen. On the FORKED KWin (multi-seat) drive the agent's OWN
+        # `jarvis` seat — its own cursor + focus, no mixing with the user. On stock
+        # KWin that iface is absent, so fall back to the shared-seat uinput pointer.
+        if jarvis_seat.available():
+            jarvis_seat.move(gx, gy)
+        else:
+            _emit_abs(gx, gy)
+        # Publish the global position so the distinct-cursor overlay can draw the
+        # glowing Jarvis cursor where the agent is acting. session="real".
+        agent_bus.publish(gx, gy, kind="move", session="real")
     return gx, gy
 
 
@@ -193,6 +202,17 @@ def click(x: float | None = None, y: float | None = None, button: str = "left",
                 time.sleep(0.12)
         if pos is not None:
             agent_bus.publish(pos[0], pos[1], button=button, kind="click")
+    elif jarvis_seat.available():
+        # Forked KWin: click on the agent's own seat (it's already focused on the
+        # window under the agent pointer from the preceding move()).
+        for i in range(2 if double else 1):
+            jarvis_seat.button(button, True)
+            time.sleep(0.04)
+            jarvis_seat.button(button, False)
+            if double and i == 0:
+                time.sleep(0.12)
+        if pos is not None:
+            agent_bus.publish(pos[0], pos[1], button=button, kind="click", session="real")
     else:
         for i in range(2 if double else 1):
             _emit_button(button, 1)
@@ -200,6 +220,11 @@ def click(x: float | None = None, y: float | None = None, button: str = "left",
             _emit_button(button, 0)
             if double and i == 0:
                 time.sleep(0.12)
+        if pos is not None:
+            # REAL-screen take-over: fire a click event on the overlay bus so the
+            # glow shows a click ripple at the action point.
+            agent_bus.publish(pos[0], pos[1], button=button, kind="click",
+                              session="real")
     return {"clicked": button, "double": double, "desktop_pos": pos}
 
 
@@ -229,19 +254,39 @@ def drag(x1: float, y1: float, x2: float, y2: float, button: str = "left",
             _agent_cursor_button(info, button, False)
             agent_bus.publish(g2[0], g2[1], button=button, kind="up")
         return {"from": g1, "to": g2, "button": button}
-    _emit_abs(*g1)
+    # Forked KWin: drag on the agent's OWN jarvis seat (no mixing). Else shared
+    # uinput seat. Both stream the path to the overlay glow.
+    use_jarvis = jarvis_seat.available()
+    if use_jarvis:
+        jarvis_seat.move(*g1)
+    else:
+        _emit_abs(*g1)
+    agent_bus.publish(g1[0], g1[1], button=button, kind="down", session="real")
     time.sleep(0.1)
-    _emit_button(button, 1)
+    if use_jarvis:
+        jarvis_seat.button(button, True)
+    else:
+        _emit_button(button, 1)
     try:
         # DnD grab thresholds need motion while the button is held.
         for i in range(1, max(2, steps) + 1):
             t = i / steps
-            _emit_abs(round(g1[0] + (g2[0] - g1[0]) * t),
-                      round(g1[1] + (g2[1] - g1[1]) * t))
+            px = round(g1[0] + (g2[0] - g1[0]) * t)
+            py = round(g1[1] + (g2[1] - g1[1]) * t)
+            if use_jarvis:
+                jarvis_seat.move(px, py)
+            else:
+                _emit_abs(px, py)
+            # REAL-screen take-over: stream the drag path to the overlay glow.
+            agent_bus.publish(px, py, button=button, kind="drag", session="real")
             time.sleep(0.02)
     finally:
         time.sleep(0.1)
-        _emit_button(button, 0)
+        if use_jarvis:
+            jarvis_seat.button(button, False)
+        else:
+            _emit_button(button, 0)
+        agent_bus.publish(g2[0], g2[1], button=button, kind="up", session="real")
     return {"from": g1, "to": g2, "button": button}
 
 
@@ -265,14 +310,29 @@ def scroll(amount: int = 3, direction: str = "down",
         return {"scrolled": direction, "notches": amount, "desktop_pos": pos,
                 "note": "agent scroll is advisory (sway IPC has no wheel event)"}
     invert = -1 if load_config()["scroll_invert"] else 1
-    # evdev semantics: REL_WHEEL +1 = up, REL_HWHEEL +1 = right.
-    code = e.REL_WHEEL if direction in ("up", "down") else e.REL_HWHEEL
-    step = invert * (1 if direction in ("up", "right") else -1)
-    ui = _pointer()
-    for _ in range(amount):
-        ui.write(e.EV_REL, code, step)
-        ui.syn()
-        time.sleep(0.02)
+    if jarvis_seat.available():
+        # Forked KWin: scroll on the agent's OWN jarvis seat. Wayland axis:
+        # +ve vertical = down, +ve horizontal = right; one notch ≈ 15px / 120 v120.
+        horiz = direction in ("left", "right")
+        sign = 1 if direction in ("down", "right") else -1
+        if not horiz:
+            sign *= invert
+        for _ in range(amount):
+            jarvis_seat.axis(1 if horiz else 0, sign * 15.0, sign * 120)
+            time.sleep(0.02)
+    else:
+        # evdev semantics: REL_WHEEL +1 = up, REL_HWHEEL +1 = right.
+        code = e.REL_WHEEL if direction in ("up", "down") else e.REL_HWHEEL
+        step = invert * (1 if direction in ("up", "right") else -1)
+        ui = _pointer()
+        for _ in range(amount):
+            ui.write(e.EV_REL, code, step)
+            ui.syn()
+            time.sleep(0.02)
+    if pos is not None:
+        # REAL-screen take-over: reflect the scroll point on the overlay glow.
+        agent_bus.publish(pos[0], pos[1], button=direction, kind="scroll",
+                          session="real")
     return {"scrolled": direction, "notches": amount, "desktop_pos": pos}
 
 
@@ -330,11 +390,17 @@ def key_press(combo: str, repeat: int = 1) -> dict:
         return {"pressed": combo, "repeat": max(1, int(repeat)), "which": "agent"}
     args = _resolve_combo(combo)
     repeat = max(1, int(repeat))
+    # Forked KWin: send the combo on the agent's OWN jarvis seat (no mixing); else
+    # fall back to the shared-seat ydotool path.
+    use_jarvis = jarvis_seat.available()
     for i in range(repeat):
-        _ydotool(["key", "-d", "12", *args])
+        if use_jarvis:
+            jarvis_seat.combo(args)
+        else:
+            _ydotool(["key", "-d", "12", *args])
         if i + 1 < repeat:
             time.sleep(0.03)
-    return {"pressed": combo, "repeat": repeat}
+    return {"pressed": combo, "repeat": repeat, "seat": "jarvis" if use_jarvis else "host"}
 
 
 def type_text(text: str, method: str = "auto") -> dict:
@@ -348,6 +414,12 @@ def type_text(text: str, method: str = "auto") -> dict:
         from computer_use_mcp import vkbd
         typed = vkbd.type_text(agent, text)
         return {"typed_chars": typed, "method": "vkbd", "which": "agent"}
+    # Forked KWin: type on the agent's OWN jarvis seat so the text lands where the
+    # agent clicked, never the user's focus (no mixing). ASCII only here; non-ASCII
+    # falls through to clipboard-paste below.
+    if jarvis_seat.available() and method != "paste" and text.isascii():
+        typed = jarvis_seat.type_text(text)
+        return {"typed_chars": typed, "method": "jarvis-seat", "seat": "jarvis"}
     if method == "auto":
         method = "type" if text.isascii() and len(text) <= 200 else "paste"
     if method == "type":

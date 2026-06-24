@@ -102,8 +102,17 @@ fun ChatScreen(
     ) { uri ->
         if (uri != null) {
             scope.launch {
-                withContext(Dispatchers.IO) { ImageEncoding.encode(context, uri) }
-                    ?.let(viewModel::attach)
+                val img = withContext(Dispatchers.IO) { ImageEncoding.encode(context, uri) }
+                if (img != null) {
+                    viewModel.attach(img)
+                } else {
+                    // Don't let the photo silently vanish — tell the user it failed.
+                    android.widget.Toast.makeText(
+                        context,
+                        "Couldn't attach that photo — try another image.",
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                }
             }
         }
     }
@@ -238,12 +247,14 @@ fun ChatScreen(
                     draft = draft,
                     onDraftChange = { draft = it },
                     sending = state.sending,
+                    busy = state.busy,
                     voicePhase = voicePhase,
                     onAttach = { pickImage.launch("image/*") },
                     onSend = {
                         viewModel.send(draft)
                         draft = ""
                     },
+                    onStop = { viewModel.cancel() },
                     onMicDown = {
                         if (!micGranted) {
                             requestMic.launch(Manifest.permission.RECORD_AUDIO)
@@ -320,9 +331,11 @@ private fun InputRow(
     draft: String,
     onDraftChange: (String) -> Unit,
     sending: Boolean,
+    busy: Boolean,
     voicePhase: com.jarvis.app.voice.VoiceController.Phase,
     onAttach: () -> Unit,
     onSend: () -> Unit,
+    onStop: () -> Unit,
     onMicDown: () -> Unit,
     onMicUp: () -> Unit,
     onMicCancel: () -> Unit,
@@ -404,15 +417,27 @@ private fun InputRow(
                 ),
             )
             Spacer(Modifier.width(6.dp))
-            HapticIconButton(
-                onClick = onSend,
-                enabled = !sending && draft.isNotBlank(),
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.Send,
-                    contentDescription = "Send",
-                    tint = if (draft.isNotBlank()) JarvisPalette.Accent else JarvisPalette.TextSecondary,
-                )
+            // While a turn is in flight, the trailing button becomes a Stop control
+            // (mid-turn cancel) so it's reachable without leaving the input row.
+            if (busy) {
+                HapticIconButton(onClick = onStop) {
+                    Icon(
+                        Icons.Filled.Stop,
+                        contentDescription = "Stop",
+                        tint = JarvisPalette.Error,
+                    )
+                }
+            } else {
+                HapticIconButton(
+                    onClick = onSend,
+                    enabled = !sending && draft.isNotBlank(),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.Send,
+                        contentDescription = "Send",
+                        tint = if (draft.isNotBlank()) JarvisPalette.Accent else JarvisPalette.TextSecondary,
+                    )
+                }
             }
         }
     }

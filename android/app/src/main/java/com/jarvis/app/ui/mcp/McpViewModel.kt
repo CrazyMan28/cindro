@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.jarvis.app.JarvisApp
 import com.jarvis.app.net.JarvisRepository
+import com.jarvis.app.protocol.CliMcp
 import com.jarvis.app.protocol.McpServer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,6 +17,8 @@ import kotlinx.coroutines.withContext
 
 data class McpUiState(
     val servers: List<McpServer> = emptyList(),
+    // Per-brain CLI MCP servers (codex/claude CLI's own). Off = isolated (default).
+    val cliServers: List<CliMcp> = emptyList(),
     val loading: Boolean = false,
     val testResults: Map<String, String> = emptyMap(),
     val error: String? = null,
@@ -36,12 +39,37 @@ class McpViewModel(private val repo: JarvisRepository) : ViewModel() {
                 .onSuccess { list -> _uiState.update { it.copy(servers = list, loading = false) } }
                 .onFailure { e -> _uiState.update { it.copy(loading = false, error = e.message) } }
         }
+        // CLI per-brain servers load independently; a daemon without them just
+        // yields an empty list (the section then hides) rather than failing the page.
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.cliListMcp() } }
+                .onSuccess { list -> _uiState.update { it.copy(cliServers = list) } }
+                .onFailure { /* leave cliServers as-is; section stays hidden if empty */ }
+        }
+    }
+
+    fun setCliEnabled(brain: String, name: String, enabled: Boolean) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.cliSetMcpEnabled(brain, name, enabled) } }
+                .onSuccess { refresh() }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
     }
 
     /** Caller MUST have cleared the BiometricPrompt (mcp.add is biometric). */
-    fun add(name: String, url: String?, command: String?, onDone: () -> Unit) {
+    fun add(
+        name: String,
+        transport: String,
+        endpoint: String,
+        token: String?,
+        onDone: () -> Unit,
+    ) {
         viewModelScope.launch {
-            runCatching { withContext(Dispatchers.IO) { repo.addMcp(name, url?.ifBlank { null }, command?.ifBlank { null }) } }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    repo.addMcp(name, transport, endpoint, token?.ifBlank { null })
+                }
+            }
                 .onSuccess { refresh(); onDone() }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }

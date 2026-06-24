@@ -1,0 +1,138 @@
+// Unit test for SettingsStore — focuses on the auth-lock default (no-brick) and
+// its config.toml round-trip. Uses an isolated $HOME so it never touches the
+// user's real ~/.config/jarvis. Pure store-level proof (no sockets).
+
+#include "jarvis/Config.h"
+#include "jarvis/SettingsStore.h"
+
+#include <QByteArray>
+#include <QDir>
+#include <QFile>
+#include <QTemporaryDir>
+
+#include <cstdio>
+#include <cstdlib>
+
+static int g_failures = 0;
+
+static void check(bool cond, const char *what)
+{
+    if (!cond) {
+        std::fprintf(stderr, "  FAIL: %s\n", what);
+        ++g_failures;
+    } else {
+        std::fprintf(stderr, "  ok:   %s\n", what);
+    }
+}
+
+// Read config.toml and return true if it contains a line `auth_lock_enabled = <want>`.
+static bool configHasAuthLock(bool want)
+{
+    QFile f(jarvis::Config::configFilePath());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return false;
+    const QString text = QString::fromUtf8(f.readAll());
+    f.close();
+    const QString needle = QStringLiteral("auth_lock_enabled = ") +
+                           (want ? QStringLiteral("true") : QStringLiteral("false"));
+    for (const QString &raw : text.split(QLatin1Char('\n')))
+        if (raw.trimmed() == needle)
+            return true;
+    return false;
+}
+
+static void writeConfig(const QString &body)
+{
+    QDir().mkpath(jarvis::Config::configDir());
+    QFile f(jarvis::Config::configFilePath());
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        f.write(body.toUtf8());
+        f.close();
+    }
+}
+
+int main()
+{
+    // Isolate HOME so Config::configDir() (=$HOME/.config/jarvis) is a throwaway.
+    QTemporaryDir home;
+    if (!home.isValid()) {
+        std::fprintf(stderr, "FAIL: could not create temp HOME\n");
+        return 1;
+    }
+    qputenv("HOME", home.path().toUtf8());
+    // QDir::homePath() prefers HOME on unix; also clear XDG to be safe.
+    qunsetenv("XDG_CONFIG_HOME");
+
+    // --- 1) FRESH CONFIG (no file): auth lock defaults ON (no-brick) -------
+    {
+        // Sanity: there is genuinely no config file yet.
+        check(!QFile::exists(jarvis::Config::configFilePath()),
+              "fresh: no config.toml exists yet");
+        jarvis::SettingsStore s;
+        s.load();
+        check(s.authLockEnabled() == true,
+              "fresh config => auth lock defaults ON");
+    }
+
+    // --- 2) SAVE writes auth_lock_enabled = true, and it round-trips ON ----
+    {
+        jarvis::SettingsStore s;
+        s.load();
+        check(s.saveConfig(), "saveConfig() on default state succeeds");
+        check(configHasAuthLock(true),
+              "saved config.toml contains auth_lock_enabled = true");
+
+        jarvis::SettingsStore s2;
+        s2.load();
+        check(s2.authLockEnabled() == true,
+              "reload of saved default => auth lock still ON");
+    }
+
+    // --- 3) User turns it OFF: persists and round-trips OFF ----------------
+    {
+        jarvis::SettingsStore s;
+        s.load();
+        s.setAuthLockEnabled(false);
+        check(s.authLockEnabled() == false, "setAuthLockEnabled(false) sticks");
+        check(s.saveConfig(), "saveConfig() after turning OFF succeeds");
+        check(configHasAuthLock(false),
+              "saved config.toml contains auth_lock_enabled = false");
+
+        jarvis::SettingsStore s2;
+        s2.load();
+        check(s2.authLockEnabled() == false,
+              "reload => auth lock honors the persisted OFF");
+    }
+
+    // --- 4) Explicit `false`/`0`/whitespace parse OFF; absent key => ON ----
+    {
+        writeConfig(QStringLiteral("auth_lock_enabled = false\n"));
+        jarvis::SettingsStore s;
+        s.load();
+        check(s.authLockEnabled() == false, "explicit `false` parses OFF");
+
+        writeConfig(QStringLiteral("auth_lock_enabled = 0\n"));
+        jarvis::SettingsStore s0;
+        s0.load();
+        check(s0.authLockEnabled() == false, "explicit `0` parses OFF");
+
+        writeConfig(QStringLiteral("auth_lock_enabled = true\n"));
+        jarvis::SettingsStore st;
+        st.load();
+        check(st.authLockEnabled() == true, "explicit `true` parses ON");
+
+        // A config with OTHER keys but no auth_lock_enabled => default ON.
+        writeConfig(QStringLiteral("default_brain = \"codex\"\n"));
+        jarvis::SettingsStore sa;
+        sa.load();
+        check(sa.authLockEnabled() == true,
+              "config missing auth_lock_enabled => default ON");
+    }
+
+    if (g_failures == 0) {
+        std::fprintf(stderr, "\nPASS settings_store_test\n");
+        return 0;
+    }
+    std::fprintf(stderr, "\nFAIL settings_store_test (%d failures)\n", g_failures);
+    return 1;
+}

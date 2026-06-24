@@ -45,7 +45,7 @@ Item {
         case "message":
             page.thinking = false
             txModel.append({ "kind":"message", "role": ev.role !== undefined ? ev.role : "assistant",
-                "text": ev.text !== undefined ? ev.text : "", "callId":"", "toolName":"", "approvalId":"", "risk":"", "ok":true })
+                "text": ev.text !== undefined ? ev.text : "", "callId":"", "toolName":"", "approvalId":"", "risk":"", "ok":true, "streaming":false })
             break
         case "tool_call":
             page.thinking = false
@@ -53,13 +53,13 @@ Item {
                 "text": ev.args !== undefined ? JSON.stringify(ev.args) : "",
                 "callId": ev.call_id !== undefined ? ev.call_id : "",
                 "toolName": ev.name !== undefined ? ev.name : "tool",
-                "approvalId":"", "risk":"", "ok":true })
+                "approvalId":"", "risk":"", "ok":true, "streaming":false })
             break
         case "tool_result":
             txModel.append({ "kind":"tool_result", "role":"tool",
                 "text": ev.output !== undefined ? ("" + ev.output) : "",
                 "callId": ev.call_id !== undefined ? ev.call_id : "",
-                "toolName":"", "approvalId":"", "risk":"", "ok": ev.ok !== false })
+                "toolName":"", "approvalId":"", "risk":"", "ok": ev.ok !== false, "streaming":false })
             break
         case "approval":
             page.thinking = false
@@ -67,19 +67,19 @@ Item {
                 "text": ev.summary !== undefined ? ev.summary : "Approval requested",
                 "callId":"", "toolName":"",
                 "approvalId": ev.approval_id !== undefined ? ev.approval_id : "",
-                "risk": ev.risk !== undefined ? ("" + ev.risk) : "", "ok":true })
+                "risk": ev.risk !== undefined ? ("" + ev.risk) : "", "ok":true, "streaming":false })
             break
         case "diff":
             txModel.append({ "kind":"diff", "role":"tool",
                 "text": ev.patch !== undefined ? ev.patch : "",
                 "callId":"", "toolName": ev.path !== undefined ? ev.path : "diff",
-                "approvalId":"", "risk":"", "ok":true })
+                "approvalId":"", "risk":"", "ok":true, "streaming":false })
             break
         case "error":
             page.thinking = false
             txModel.append({ "kind":"error", "role":"system",
                 "text": ev.message !== undefined ? ev.message : "error",
-                "callId":"", "toolName":"", "approvalId":"", "risk":"", "ok":true })
+                "callId":"", "toolName":"", "approvalId":"", "risk":"", "ok":true, "streaming":false })
             break
         case "final":
             page.thinking = false; break
@@ -340,6 +340,76 @@ Item {
                                 font.family: Theme.fontSans
                                 font.pixelSize: 12
                                 lineHeight: 1.35
+                            }
+                        }
+
+                        // ---- GLOWING AGENT CURSOR over the live frame --------
+                        // Jarvis drives a distinct cursor on its nested desktop;
+                        // show it BIG + blue so the user can watch it act (this is
+                        // where Chrome etc. run in the agent desktop). Positioned
+                        // from the agent-pointer bus (raw nested pixels) mapped onto
+                        // the letterboxed frame via sourceSize/paintedWidth.
+                        Item {
+                            id: agentGlowLayer
+                            anchors.fill: parent
+                            visible: liveFrame.visible
+                            property real gx: -1
+                            property real gy: -1
+                            readonly property real sw: liveFrame.sourceSize.width > 0 ? liveFrame.sourceSize.width : 1
+                            readonly property real sh: liveFrame.sourceSize.height > 0 ? liveFrame.sourceSize.height : 1
+                            readonly property real ox: liveFrame.x + (liveFrame.width - liveFrame.paintedWidth) / 2
+                            readonly property real oy: liveFrame.y + (liveFrame.height - liveFrame.paintedHeight) / 2
+
+                            Connections {
+                                target: bridge
+                                function onAgentPointerGlobal(gx, gy, action, button) {
+                                    agentGlowLayer.gx = gx
+                                    agentGlowLayer.gy = gy
+                                    if (action === "click" || action === "drag" || action === "down")
+                                        agentGlow.flash(action)
+                                }
+                            }
+
+                            GlowCursor {
+                                id: agentGlow
+                                diameter: 84
+                                active: agentGlowLayer.gx >= 0 && page.hasCoworker
+                                // center the hotspot on the mapped pointer position
+                                x: agentGlowLayer.ox + (agentGlowLayer.gx / agentGlowLayer.sw) * liveFrame.paintedWidth - width / 2
+                                y: agentGlowLayer.oy + (agentGlowLayer.gy / agentGlowLayer.sh) * liveFrame.paintedHeight - height / 2
+                            }
+                        }
+
+                        // ---- "JARVIS IS USING THIS DESKTOP" banner -----------
+                        Rectangle {
+                            visible: liveFrame.visible && bridge.mirroring
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.top: parent.top
+                            anchors.topMargin: 12
+                            width: bannerRow.implicitWidth + 32
+                            height: 36
+                            radius: height / 2
+                            color: Qt.rgba(0.039, 0.055, 0.086, 0.92)
+                            border.width: 1
+                            border.color: Theme.accent
+                            Row {
+                                id: bannerRow
+                                anchors.centerIn: parent
+                                spacing: 8
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "⚡"
+                                    color: Theme.accentBright
+                                    font.pixelSize: 14
+                                }
+                                Text {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "Jarvis is using this desktop"
+                                    color: Theme.text
+                                    font.family: Theme.fontSans
+                                    font.pixelSize: 13
+                                    font.weight: Font.Medium
+                                }
                             }
                         }
                     }

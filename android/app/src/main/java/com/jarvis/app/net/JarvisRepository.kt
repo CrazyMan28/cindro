@@ -7,6 +7,7 @@ import com.jarvis.app.data.HostPort
 import com.jarvis.app.data.PairingStore
 import com.jarvis.app.data.SecretStore
 import com.jarvis.app.protocol.BrainEvent
+import com.jarvis.app.protocol.CliMcp
 import com.jarvis.app.protocol.FileOffer
 import com.jarvis.app.protocol.McpServer
 import com.jarvis.app.protocol.MemoryEntry
@@ -17,6 +18,7 @@ import com.jarvis.app.protocol.Plugin
 import com.jarvis.app.protocol.QueuedTask
 import com.jarvis.app.protocol.Session
 import com.jarvis.app.protocol.SessionEvent
+import com.jarvis.app.protocol.SessionOpened
 import com.jarvis.app.protocol.Skill
 import com.jarvis.app.protocol.Tier
 import com.jarvis.app.protocol.TodayItem
@@ -52,6 +54,9 @@ class JarvisRepository(
 
     /** file.offer pushes (device->phone). */
     val fileOffers: SharedFlow<FileOffer> get() = client.fileOffers
+
+    /** session.opened pushes: a new session was created (any surface) — open its chat. */
+    val sessionOpened: SharedFlow<SessionOpened> get() = client.sessionOpened
 
     /** Open (or retarget) the device socket using the stored host:port. */
     fun connect() {
@@ -150,6 +155,27 @@ class JarvisRepository(
         ).orThrow()
     }
 
+    /**
+     * 2FA + fingerprint cross-device unlock: approve a desktop sign-in challenge.
+     * The caller MUST have cleared a fresh BiometricPrompt first (biometric tier,
+     * matching [respondApproval]); the device WS auth (ed25519) is the possession
+     * factor. The daemon flips the challenge to "approved" and the desktop unlocks.
+     */
+    suspend fun approveAuth(challengeId: String) {
+        client.request(
+            "auth.approve",
+            Params.of("challenge_id" to challengeId),
+        ).orThrow()
+    }
+
+    /** Deny a desktop sign-in challenge (e.g. on biometric failure / wrong device). */
+    suspend fun denyAuth(challengeId: String) {
+        client.request(
+            "auth.deny",
+            Params.of("challenge_id" to challengeId),
+        ).orThrow()
+    }
+
     // --- voice (Mistral Voxtral, daemon-proxied) ---------------------------
 
     /** STT: send recorded audio (base64) -> transcript. */
@@ -195,11 +221,29 @@ class JarvisRepository(
         return r.getAsJsonArray("servers")?.toObjects()?.map(McpServer::from) ?: emptyList()
     }
 
-    /** Add an MCP server (biometric tier). */
-    suspend fun addMcp(name: String, url: String?, command: String?) {
+    /**
+     * Add an MCP server (biometric tier). The daemon wants transport/endpoint/token
+     * (NOT url/command); [token] is applied as an `Authorization: Bearer` header for
+     * http transports. Pass null/blank token to omit it.
+     */
+    suspend fun addMcp(
+        name: String,
+        transport: String,
+        endpoint: String,
+        token: String?,
+        enabled: Boolean = true,
+        risk: String = "medium",
+    ) {
         client.request(
             "mcp.add",
-            Params.of("name" to name, "url" to url, "command" to command),
+            Params.of(
+                "name" to name,
+                "transport" to transport,
+                "endpoint" to endpoint,
+                "token" to token?.ifBlank { null },
+                "enabled" to enabled,
+                "risk" to risk,
+            ),
         ).orThrow()
     }
 
@@ -217,6 +261,22 @@ class JarvisRepository(
         return r.get("status")?.takeIf { !it.isJsonNull }?.asString
             ?: r.get("ok")?.let { if (it.asBoolean) "ok" else "failed" }
             ?: r.toString()
+    }
+
+    // --- CLI MCP servers (per brain) ---------------------------------------
+    // The codex/claude CLI's OWN MCP servers. Off = brain runs isolated (default);
+    // toggling on imports the server into the Jarvis registry so it's injected.
+
+    suspend fun cliListMcp(): List<CliMcp> {
+        val r = client.request("mcp.cli_list").orThrow()
+        return r.getAsJsonArray("servers")?.toObjects()?.map(CliMcp::from) ?: emptyList()
+    }
+
+    suspend fun cliSetMcpEnabled(brain: String, name: String, enabled: Boolean) {
+        client.request(
+            "mcp.cli_set_enabled",
+            Params.of("brain" to brain, "name" to name, "enabled" to enabled),
+        ).orThrow()
     }
 
     // --- plugins -----------------------------------------------------------
@@ -246,12 +306,17 @@ class JarvisRepository(
     }
 
     suspend fun searchMemory(query: String): List<MemoryEntry> {
-        val r = client.request("memory.search", Params.of("query" to query)).orThrow()
+        val r = client.request("memory.search", Params.of("q" to query)).orThrow()
         return r.getAsJsonArray("memories")?.toObjects()?.map(MemoryEntry::from) ?: emptyList()
     }
 
     suspend fun addMemory(content: String, target: String = "memory") {
-        client.request("memory.add", Params.of("content" to content, "target" to target)).orThrow()
+        val params = Params.of("text" to content)
+        // The daemon takes free-form tags; surface a non-default target as a single tag.
+        if (target.isNotBlank() && target != "memory") {
+            params.add("tags", JsonArray().apply { add(target) })
+        }
+        client.request("memory.add", params).orThrow()
     }
 
     suspend fun removeMemory(id: String) {
@@ -267,7 +332,9 @@ class JarvisRepository(
 
     suspend fun getSkill(name: String): Skill? {
         val r = client.request("skills.get", Params.of("name" to name)).orThrow()
-        return r.getAsJsonObject("skill")?.let(Skill::from)
+        // Daemon returns {frontmatter:{name,description,tags}, body, path} — no "skill" key.
+        if (!r.has("frontmatter") && !r.has("body")) return null
+        return Skill.fromGet(r)
     }
 
     suspend fun createSkill(name: String, description: String, body: String) {
@@ -290,7 +357,22 @@ class JarvisRepository(
 
     suspend fun today(): List<TodayItem> {
         val r = client.request("skills.today").orThrow()
-        return r.getAsJsonArray("items")?.toObjects()?.map(TodayItem::from) ?: emptyList()
+        // Daemon returns {"digest": "<markdown>"} — flatten headings + bullets to items.
+        val digest = r.get("digest")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+        if (digest.isBlank()) return emptyList()
+        return digest.lineSequence()
+            .mapNotNull { raw ->
+                val line = raw.trim()
+                when {
+                    line.isEmpty() -> null
+                    line.startsWith("## ") -> TodayItem(title = line.removePrefix("## ").trim(), detail = null)
+                    line.startsWith("# ") -> TodayItem(title = line.removePrefix("# ").trim(), detail = null)
+                    line.startsWith("- ") -> TodayItem(title = line.removePrefix("- ").trim(), detail = null)
+                    line.startsWith("* ") -> TodayItem(title = line.removePrefix("* ").trim(), detail = null)
+                    else -> null
+                }
+            }
+            .toList()
     }
 
     // --- computer: mirror + remote drive + take-over -----------------------
@@ -342,7 +424,7 @@ class JarvisRepository(
          */
         fun tierOf(method: String): Tier = when (method) {
             "session.list", "session.history", "task.list",
-            "settings.get", "model.list", "mcp.list",
+            "settings.get", "model.list", "mcp.list", "mcp.cli_list",
             "plugins.catalog", "plugins.list",
             "memory.list", "memory.search",
             "skills.list", "skills.get", "skills.today" -> Tier.READ
@@ -352,7 +434,7 @@ class JarvisRepository(
             "plugins.install", "plugins.set_enabled", "plugins.remove",
             "memory.add", "memory.remove",
             "skills.create", "skills.invoke", "skills.remove",
-            "mcp.remove", "mcp.set_enabled", "mcp.test",
+            "mcp.remove", "mcp.set_enabled", "mcp.test", "mcp.cli_set_enabled",
             "input.event" -> Tier.ACTION
 
             // Biometric: anything that changes config/secrets or seizes the screen.

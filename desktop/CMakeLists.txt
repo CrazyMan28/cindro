@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Qml QuickControls2 WebSockets Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Quick Qml QuickControls2 WebSockets Network Multimedia)
 find_package(LayerShellQt REQUIRED)
 
 qt_standard_project_setup(REQUIRES 6.5)
@@ -47,6 +47,11 @@ qt_add_qml_module(jarvis-sidebar
         qml/SkillsPage.qml
         qml/TodayBriefing.qml
         qml/ComputerPage.qml
+        qml/CanvasPage.qml
+        qml/VoiceMode.qml
+        qml/WidgetRenderer.qml
+        qml/StandaloneWidget.qml
+        qml/FloatingWidgetLayer.qml
         qml/SchedulesPage.qml
         qml/SshPage.qml
         qml/ActivityPage.qml
@@ -54,6 +59,8 @@ qt_add_qml_module(jarvis-sidebar
         qml/SubAgentTree.qml
         qml/DiffReviewPanel.qml
         qml/DrivingOverlay.qml
+        qml/GlowCursor.qml
+        qml/LockGate.qml
         qml/TitleBar.qml
         qml/Theme.qml
         qml/ArcReactor.qml
@@ -77,5 +84,6 @@ target_link_libraries(jarvis-sidebar PRIVATE
     Qt6::QuickControls2
     Qt6::WebSockets
     Qt6::Network
+    Qt6::Multimedia
     LayerShellQt::Interface
 )

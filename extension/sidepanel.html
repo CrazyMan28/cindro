@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JARVIS — Chrome co-worker</title>
+  <style>
+    :root {
+      --bg: #0A0E16;
+      --panel: #0E1420;
+      --panel-2: #121A28;
+      --accent: #29E7FF;
+      --accent-bright: #7FF4FF;
+      --muted: #8aa;
+      --text: #EAF6FF;
+      --hairline: rgba(41, 231, 255, 0.18);
+      --hairline-soft: rgba(120, 160, 180, 0.14);
+      --user-bg: rgba(41, 231, 255, 0.12);
+      --user-border: rgba(41, 231, 255, 0.45);
+      --bad: #ff5d6c;
+      --ok: #36e08a;
+      --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+      --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background: var(--bg); color: var(--text);
+      font-family: var(--sans); font-size: 13px;
+      -webkit-font-smoothing: antialiased;
+    }
+    body {
+      display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+    }
+
+    /* ---------------------------------------------------------- header */
+    header {
+      flex: none;
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px;
+      background: linear-gradient(180deg, rgba(41,231,255,0.06), transparent);
+      border-bottom: 1px solid var(--hairline);
+    }
+    .brand {
+      font-family: var(--mono); font-weight: 700; font-size: 12px;
+      letter-spacing: 1.2px; color: var(--accent-bright);
+      text-shadow: 0 0 10px rgba(41,231,255,0.35);
+      white-space: nowrap;
+    }
+    .brand .sub { color: var(--muted); font-weight: 500; letter-spacing: 0.4px; }
+    .spacer { flex: 1 1 auto; }
+
+    .dot {
+      width: 9px; height: 9px; border-radius: 50%; flex: none;
+      background: var(--bad); box-shadow: 0 0 7px var(--bad);
+      transition: background 200ms, box-shadow 200ms;
+    }
+    .dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+
+    select.brain {
+      font-family: var(--mono); font-size: 11px;
+      background: var(--panel-2); color: var(--accent-bright);
+      border: 1px solid var(--hairline); border-radius: 6px;
+      padding: 3px 6px; cursor: pointer; outline: none;
+    }
+    .hdrbtn {
+      font-family: var(--mono); font-size: 11px; font-weight: 600;
+      background: var(--panel-2); color: var(--accent-bright);
+      border: 1px solid var(--hairline); border-radius: 6px;
+      padding: 3px 8px; cursor: pointer; outline: none; white-space: nowrap;
+      transition: background 150ms, transform 120ms;
+    }
+    .hdrbtn:hover { background: rgba(41,231,255,0.12); }
+    .hdrbtn:active { transform: scale(0.94); }
+
+    /* --------------------------------------------------- session picker */
+    .sessions {
+      flex: none; max-height: 46vh; overflow-y: auto;
+      background: var(--panel); border-bottom: 1px solid var(--hairline);
+      scrollbar-width: thin; scrollbar-color: var(--hairline) transparent;
+    }
+    .sessions::-webkit-scrollbar { width: 8px; }
+    .sessions::-webkit-scrollbar-thumb { background: var(--hairline); border-radius: 4px; }
+    .sessions-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px; position: sticky; top: 0;
+      background: var(--panel); border-bottom: 1px solid var(--hairline-soft);
+      font-family: var(--mono); font-size: 11px; letter-spacing: 0.6px;
+      color: var(--accent-bright);
+    }
+    .sessions-head span { flex: 1 1 auto; }
+    .sess-item {
+      display: flex; align-items: baseline; gap: 8px;
+      padding: 8px 12px; cursor: pointer;
+      border-bottom: 1px solid var(--hairline-soft);
+      transition: background 120ms;
+    }
+    .sess-item:hover { background: rgba(41,231,255,0.08); }
+    .sess-item.current { background: rgba(41,231,255,0.12); }
+    .sess-title {
+      flex: 1 1 auto; min-width: 0; font-size: 12px; font-weight: 600;
+      color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .sess-meta {
+      flex: none; font-family: var(--mono); font-size: 10px; color: var(--muted);
+      white-space: nowrap;
+    }
+    .sess-empty { padding: 12px; color: var(--muted); font-size: 12px; text-align: center; }
+    .chip {
+      font-family: var(--mono); font-size: 10.5px;
+      color: var(--muted); background: var(--panel-2);
+      border: 1px solid var(--hairline-soft); border-radius: 999px;
+      padding: 3px 8px; white-space: nowrap;
+    }
+
+    /* ----------------------------------------------------- tab context */
+    .tabctx {
+      flex: none;
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 12px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--hairline-soft);
+    }
+    .tabctx .meta { min-width: 0; flex: 1 1 auto; }
+    .tabctx .t-title {
+      font-size: 12px; font-weight: 600; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .tabctx .t-url {
+      font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .iconbtn {
+      flex: none; cursor: pointer; user-select: none;
+      width: 26px; height: 26px; border-radius: 6px;
+      display: grid; place-items: center;
+      background: var(--panel-2); color: var(--accent);
+      border: 1px solid var(--hairline); font-size: 13px;
+      transition: background 150ms, transform 150ms;
+    }
+    .iconbtn:hover { background: rgba(41,231,255,0.12); }
+    .iconbtn:active { transform: scale(0.92); }
+
+    /* ------------------------------------------------------- transcript */
+    #transcript {
+      flex: 1 1 auto; overflow-y: auto; overflow-x: hidden;
+      padding: 12px 10px 4px; display: flex; flex-direction: column; gap: 9px;
+      scrollbar-width: thin; scrollbar-color: var(--hairline) transparent;
+    }
+    #transcript::-webkit-scrollbar { width: 8px; }
+    #transcript::-webkit-scrollbar-thumb { background: var(--hairline); border-radius: 4px; }
+
+    .row { display: flex; }
+    .row.user { justify-content: flex-end; }
+    .row.jarvis { justify-content: flex-start; }
+
+    .bubble {
+      max-width: 86%;
+      padding: 8px 11px; border-radius: 12px;
+      line-height: 1.45; white-space: pre-wrap; word-wrap: break-word;
+      overflow-wrap: anywhere;
+    }
+    .bubble.user {
+      background: var(--user-bg); border: 1px solid var(--user-border);
+      border-bottom-right-radius: 4px; color: var(--text);
+    }
+    .bubble.jarvis {
+      background: var(--panel-2); border: 1px solid var(--hairline-soft);
+      border-bottom-left-radius: 4px; color: var(--text);
+    }
+
+    .thinking {
+      max-width: 90%; font-style: italic; color: var(--muted);
+      font-size: 12px; line-height: 1.4; padding: 2px 4px;
+      white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere;
+    }
+    .tool {
+      max-width: 92%; font-family: var(--mono); font-size: 11.5px; font-weight: 600;
+      color: var(--accent-bright); padding: 4px 10px;
+      background: rgba(41,231,255,0.10); border: 1px solid var(--hairline);
+      border-left: 3px solid var(--accent); border-radius: 7px;
+      white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere;
+      box-shadow: 0 0 8px rgba(41,231,255,0.08);
+    }
+    .tool.bad { border-left-color: var(--bad); }
+    .errmsg {
+      max-width: 90%; color: var(--bad); font-size: 12px;
+      padding: 6px 10px; background: rgba(255,93,108,0.08);
+      border: 1px solid rgba(255,93,108,0.35); border-radius: 8px;
+      white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere;
+    }
+    .sys {
+      align-self: center; color: var(--muted); font-size: 11px;
+      font-family: var(--mono); text-align: center; padding: 2px 8px;
+      opacity: 0.85;
+    }
+
+    .caret::after {
+      content: "▍"; color: var(--accent); margin-left: 1px;
+      animation: blink 1s step-start infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* ----------------------------------------- whimsical "working" bar */
+    .working {
+      flex: none; display: flex; align-items: center; gap: 9px;
+      padding: 7px 12px; border-top: 1px solid var(--hairline);
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 11px; letter-spacing: 0.6px; color: var(--accent);
+      background: linear-gradient(0deg, rgba(41,231,255,0.05), transparent);
+    }
+    .working.hidden { display: none; }
+    .working .spin {
+      width: 13px; height: 13px; border-radius: 50%;
+      border: 2px solid rgba(41,231,255,0.25);
+      border-top-color: var(--accent-bright);
+      animation: spin 0.8s linear infinite;
+    }
+    .working .dots { animation: blink 1.2s step-start infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* --------------------------------------------------------- composer */
+    .composer {
+      flex: none; display: flex; gap: 8px; align-items: flex-end;
+      padding: 10px 10px 12px;
+      border-top: 1px solid var(--hairline);
+      background: linear-gradient(0deg, rgba(41,231,255,0.04), transparent);
+    }
+    #input {
+      flex: 1 1 auto; resize: none; max-height: 120px; min-height: 38px;
+      font-family: var(--sans); font-size: 13px; line-height: 1.4;
+      color: var(--text); background: var(--panel-2);
+      border: 1px solid var(--hairline); border-radius: 10px;
+      padding: 9px 11px; outline: none;
+    }
+    #input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(41,231,255,0.12); }
+    #input::placeholder { color: var(--muted); }
+    #input:disabled { opacity: 0.55; }
+
+    .sendbtn, .stopbtn {
+      flex: none; cursor: pointer; user-select: none; font-weight: 700;
+      height: 38px; padding: 0 16px; border-radius: 10px; font-size: 13px;
+      border: 1px solid var(--accent); transition: background 150ms, transform 120ms;
+    }
+    .sendbtn {
+      background: var(--accent); color: #04121a;
+      box-shadow: 0 0 14px rgba(41,231,255,0.35);
+    }
+    .sendbtn:hover { background: var(--accent-bright); }
+    .sendbtn:active { transform: scale(0.96); }
+    .sendbtn:disabled { opacity: 0.5; cursor: default; box-shadow: none; }
+    .stopbtn {
+      background: rgba(255,93,108,0.12); color: var(--bad);
+      border-color: rgba(255,93,108,0.55);
+    }
+    .stopbtn:hover { background: rgba(255,93,108,0.2); }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="dot" id="dot" title="daemon connection"></span>
+    <span class="brand">JARVIS <span class="sub">— Chrome co-worker</span></span>
+    <span class="spacer"></span>
+    <button class="hdrbtn" id="sessionsBtn" title="continue an existing conversation (desktop / phone / here)">☰ Sessions</button>
+    <button class="hdrbtn" id="newBtn" title="start a fresh conversation">+ New</button>
+    <select class="brain" id="brain" title="brain">
+      <option value="codex">codex</option>
+      <option value="claude">claude</option>
+    </select>
+    <select class="brain" id="model" title="model">
+      <option value="">default model</option>
+    </select>
+    <span class="chip" id="tabchip">tabs: —</span>
+  </header>
+
+  <!-- Session picker drawer: filled by session.list; pick one to continue it. -->
+  <div class="sessions hidden" id="sessionsPanel">
+    <div class="sessions-head">
+      <span id="sessionsLabel">Conversations</span>
+      <div class="iconbtn" id="sessionsClose" title="close">✕</div>
+    </div>
+    <div id="sessionsList"></div>
+  </div>
+
+  <div class="tabctx">
+    <div class="meta">
+      <div class="t-title" id="ctxTitle">active tab —</div>
+      <div class="t-url" id="ctxUrl"></div>
+    </div>
+    <div class="iconbtn" id="refreshBtn" title="refresh tab context">⟳</div>
+  </div>
+
+  <div id="transcript"></div>
+
+  <div class="working hidden" id="working">
+    <span class="spin"></span><span id="workTxt">Thinking</span><span class="dots">…</span>
+  </div>
+
+  <div class="composer">
+    <textarea id="input" rows="1" placeholder="Ask Jarvis to do something in this browser…"></textarea>
+    <button class="sendbtn" id="sendBtn">Send</button>
+    <button class="stopbtn hidden" id="stopBtn">Stop</button>
+  </div>
+
+  <script src="sidepanel.js"></script>
+</body>
+</html>

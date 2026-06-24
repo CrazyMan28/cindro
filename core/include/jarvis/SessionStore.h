@@ -47,8 +47,13 @@ struct McpServerRow {
     bool builtin = false;
     QString risk;        // "low" | "medium" | "high"
     qint64 created = 0;
+    // Brain-injectable env-var map (name -> secret-ref token like
+    // "secret:connector:<id>:client_secret" OR a literal value). Used by Google
+    // connectors so OAuth creds reach a stdio MCP server's environment. The
+    // daemon reads this internally; toJson() OMITS it (it may reference secrets).
+    QJsonObject env;
 
-    QJsonObject toJson() const; // omits token; adds enabled/connected placeholders
+    QJsonObject toJson() const; // omits token+env; adds enabled/connected placeholders
 };
 
 // A plugin's installed/enabled state (catalog manifest lives on disk; this row
