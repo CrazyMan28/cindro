@@ -192,6 +192,16 @@ Item {
                 anchors.rightMargin: 14
                 spacing: 9
 
+                // small spinning reactor — the "Jarvis is calling a tool" mark
+                ArcReactor {
+                    Layout.alignment: Qt.AlignVCenter
+                    Layout.preferredWidth: 14
+                    Layout.preferredHeight: 14
+                    size: 14
+                    spinning: true
+                    thinking: true
+                    tint: Theme.accent
+                }
                 Text {
                     text: "▸ MODULE"
                     color: Theme.accent
@@ -223,14 +233,25 @@ Item {
     Component {
         id: toolResultComp
         Rectangle {
+            id: resCard
             anchors.left: parent.left
             anchors.right: parent.right
             radius: Theme.radiusXs
+            // Collapsed by default to keep the transcript tidy; click to expand the
+            // full output. A FAULT (failed) result auto-expands so errors are visible.
+            property bool expanded: !del.ok
+            readonly property bool clamped: del.text.length > 140 || del.text.indexOf('\n') >= 0
             implicitHeight: resCol.implicitHeight + 18
             color: Qt.rgba(0, 0, 0, 0.18)
             border.color: Theme.hairlineSoft
             border.width: 1
             clip: true
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: resCard.clamped ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onClicked: if (resCard.clamped) resCard.expanded = !resCard.expanded
+            }
 
             // status edge
             Rectangle {
@@ -253,21 +274,34 @@ Item {
                 anchors.rightMargin: 12
                 anchors.topMargin: 9
                 spacing: 3
-                Text {
-                    text: del.ok ? "OUTPUT" : "FAULT"
-                    color: del.ok ? Theme.success : Theme.danger
-                    font.pixelSize: 9
-                    font.letterSpacing: Theme.trackMid
-                    font.family: Theme.fontDisplay
-                    font.weight: Font.DemiBold
-                    opacity: 0.9
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Text {
+                        text: del.ok ? "OUTPUT" : "FAULT"
+                        color: del.ok ? Theme.success : Theme.danger
+                        font.pixelSize: 9
+                        font.letterSpacing: Theme.trackMid
+                        font.family: Theme.fontDisplay
+                        font.weight: Font.DemiBold
+                        opacity: 0.9
+                    }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        visible: resCard.clamped
+                        text: resCard.expanded ? "▴ collapse" : "▾ expand"
+                        color: Theme.textFaint
+                        font.pixelSize: 9
+                        font.family: Theme.fontDisplay
+                        font.letterSpacing: Theme.trackMid
+                    }
                 }
                 Text {
                     Layout.fillWidth: true
                     text: del.text
                     color: Theme.textMuted
                     wrapMode: Text.Wrap
-                    maximumLineCount: 12
+                    maximumLineCount: resCard.expanded ? 200 : 2
                     elide: Text.ElideRight
                     font.pixelSize: 12
                     font.family: Theme.fontMono
