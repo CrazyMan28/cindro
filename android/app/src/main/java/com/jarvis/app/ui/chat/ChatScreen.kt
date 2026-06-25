@@ -317,6 +317,7 @@ private fun selectedText(state: ChatUiState): String =
                 is ChatItem.Diff -> item.patch
                 is ChatItem.ToolCall -> listOfNotNull(item.argsJson, item.output).joinToString("\n")
                 is ChatItem.Approval -> item.summary
+                is ChatItem.FileOffer -> item.name
             }
         }
 

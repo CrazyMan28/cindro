@@ -42,6 +42,16 @@ sealed interface ChatItem {
 
     /** A turn-level error. */
     data class Error(override val id: String, val message: String) : ChatItem
+
+    /** A file Jarvis sent to the phone (jarvis_send_file -> file.offer). Images render
+     *  inline; any other type shows a saveable file card. */
+    data class FileOffer(
+        override val id: String,
+        val name: String,
+        val mime: String?,
+        val size: Long?,
+        val b64: String?,
+    ) : ChatItem
 }
 
 /** Locally-attached photo pending send (mime + base64 + a thumbnail uri string). */
