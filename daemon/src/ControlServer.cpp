@@ -1251,10 +1251,26 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "CALL create_skill to save it as a reusable skill (and edit_skill to refine "
             "it); list_skills / invoke_skill to reuse them. Build skills proactively when "
             "it helps — don't wait to be told.\n"
-            "CANVAS / VISUALS: to draw or render anything real (a duck, a chart, a "
-            "diagram, a UI mockup), call render_widget and provide actual SVG markup in a "
-            "{\"type\":\"svg\",\"svg\":\"<svg …>…</svg>\"} node — NOT a one-word label. "
-            "Write real SVG that depicts the thing; the Canvas renders it.");
+            "CANVAS / WIDGETS: render_widget draws a real UI INLINE in the chat (and on "
+            "the Canvas tab) from a JSON spec — YOU control its size and look. The spec is "
+            "a tree of typed nodes; build whatever layout you want:\n"
+            "  • Containers: {\"type\":\"column\"|\"row\"|\"grid\",\"children\":[…]} — style "
+            "them with gap, pad, bg (background color), radius, border (+borderW), and size "
+            "them with w/h or fill:true (take full width). grid also takes cols.\n"
+            "  • Per-child layout: any child may set grow:true (expand to fill), "
+            "align:\"left\"|\"center\"|\"right\", and w/h to size itself.\n"
+            "  • Leaves: text (color,size,bold,weight 100-900,italic,spacing,line,align,"
+            "mono/display,maxLines), badge, rect (w,h,radius,color), divider, spacer "
+            "(size or grow:true), progress (value 0..1 or 0..100), list (rows of "
+            "{text,sub,badge,color}), link (http/https), image (url + w/h), and button "
+            "({\"type\":\"button\",\"text\":\"…\",\"action\":{\"send\":\"…\"} or "
+            "{\"skill\":\"…\",\"args\":\"…\"}} — buttons route back into THIS chat).\n"
+            "  • For real ART or charts (a duck, a graph, a diagram, an icon): use a "
+            "{\"type\":\"svg\",\"svg\":\"<svg …>…</svg>\",\"w\":…,\"h\":…} node with actual "
+            "SVG markup, or {\"type\":\"canvas\",\"w\":…,\"h\":…,\"ops\":[…]} draw ops "
+            "(circle/ellipse/rect/path/line). NEVER a one-word label like \"Duck\".\n"
+            "Give the top node a sensible w/h or fill:true so it isn't cramped. Always "
+            "actually CALL render_widget — don't describe the widget in words.");
         effectiveText = guide + QStringLiteral("\n---\n") + effectiveText;
     }
 

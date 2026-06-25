@@ -19,43 +19,55 @@ from computer_use_mcp import widgets_bus
 def register(mcp: FastMCP) -> None:
     @mcp.tool()
     def render_widget(spec: dict, title: str = "", id: str = "") -> str:
-        r"""Pop up a CUSTOM widget in the Jarvis desktop app's CANVAS page.
+        r"""Render a CUSTOM widget INLINE in the Jarvis chat (and Canvas tab).
 
         Use this whenever the user asks you to SHOW, DRAW, or DISPLAY something
         visual ("show me a duck", "draw a bar chart", "make a card that says…").
-        You design the UI yourself with a small, safe JSON DSL — no code, just a
-        tree of nodes. The widget appears instantly on the desktop CANVAS tab.
+        You design the UI yourself — its SIZE and LOOK are up to you — with a small,
+        safe JSON DSL (no code, just a tree of nodes). The widget drops into the
+        chat right where you render it, like a tool result.
 
         `spec` is a tree of nodes; every node has a "type". Supported types:
 
-          column / row : {type, gap?, children:[...]}      stack children vertically/horizontally
-          text         : {type, text, size?, color?, bold?, italic?}   size is px, color is #hex
-          rect         : {type, w, h, color?, radius?}      a filled rounded rectangle
-          badge        : {type, text, color?}               a small pill label
-          image        : {type, url, w?, h?}                 url is http(s):// or a data: URI
-          canvas       : {type, w, h, ops:[...]}            free-form drawing; ops are primitives:
+        CONTAINERS (build any layout; style + size them yourself):
+          column / row : {type, children:[...]}            stack children vertically / horizontally
+          grid         : {type, cols, children:[...]}       an N-column grid
+            Container options: gap (child spacing), pad (inner padding), bg (#hex
+            background), radius, border (#hex) + borderW, and SIZE via w / h or
+            fill:true (take the full available width). Use these to make real cards
+            and panels of ANY size.
+          PER-CHILD layout: any child may set grow:true (expand to fill the line),
+            align:"left"|"center"|"right", and w / h to size itself.
+
+        LEAVES:
+          text     : {type, text, size?, color?, bold?, weight?(100-900), italic?,
+                      spacing?, line?(lineHeight x), align?, mono?, display?, maxLines?}
+          badge    : {type, text, color?}                   a small pill label
+          rect     : {type, w, h, color?, radius?}          a filled rounded rectangle
+          spacer   : {type, size?}  or {type, grow:true}    fixed gap, or flexible pusher
+          divider  : {type, color?, vertical?}              a hairline rule
+          progress : {type, value, w?, color?, track?}      determinate bar; value 0..1 OR 0..100
+          list     : {type, rows:[{text, sub?, badge?, color?}...], gap?}   labelled rows
+          link     : {type, text, url, color?}              opens url externally (http/https ONLY)
+          image    : {type, url, w?, h?}                     url is http(s):// or a data: URI
+          button   : {type, text, color?, textColor?, radius?, size?, action:{...}}
+                       a tappable button. `action` is ONE of:
+                        {"send":"<chat text>"}              sends that text back into THIS chat
+                        {"skill":"<name>", "args"?:"<...>"} invokes a skill by name
+                       Any other action key does nothing. Great for one-tap follow-ups.
+
+        ART / CHARTS (the "real renderer" — draw actual graphics, not a label):
+          svg      : {type, svg:"<svg …>…</svg>", w?, h?}   raw SVG markup, rendered for real
+          canvas   : {type, w, h, ops:[...]}                free-form draw ops:
               {op:"circle",  x, y, r, fill?}
               {op:"ellipse", x, y, rx, ry, fill?}
               {op:"rect",    x, y, w, h, fill?, radius?}
               {op:"path",    points:[[x,y],...], fill?, stroke?, close?}
               {op:"line",    x1, y1, x2, y2, stroke?, width?}
 
-        Richer interactive / data nodes (all interpreted declaratively, never
-        eval'd — actions are DATA mapped to a fixed allow-set):
-
-          button   : {type, text, color?, action:{...}}    a tappable button. `action` is ONE of:
-                        {"send":"<chat text>"}              sends that text back into the active chat
-                        {"skill":"<name>", "args"?:"<...>"} invokes a skill by name
-                      Any other action key does nothing. Use this to give the user a
-                      one-tap follow-up ("Refresh", "Run it again", …).
-          progress : {type, value, w?, color?, track?}     a determinate bar. `value` is 0..1 OR 0..100.
-          list     : {type, rows:[{text, sub?, badge?, color?}...], gap?}   a list of labelled rows.
-          grid     : {type, cols, gap?, children:[...]}     an N-column grid of child nodes.
-          divider  : {type, color?, vertical?}              a hairline rule (horizontal by default).
-          link     : {type, text, url, color?}              opens `url` externally (http/https ONLY).
-
-        Colors are #hex strings; omitted colors fall back to the app theme.
-        `title` is an optional card heading.
+        Colors are #hex strings; omitted colors fall back to the app theme. Give the
+        top node a sensible w/h or fill:true so it isn't cramped. `title` is an
+        optional card heading.
 
         `id` lets you ADDRESS a widget so you can UPDATE it later: call
         render_widget again with the SAME `id` (and a new `spec`) and the desktop
