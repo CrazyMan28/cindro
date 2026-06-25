@@ -27,7 +27,8 @@ Item {
         { key: "ssh",       label: "SSH" },
         { key: "settings",  label: "SETTINGS" },
         { key: "mcp",       label: "MCP" },
-        { key: "plugins",   label: "PLUGINS" }
+        { key: "plugins",   label: "PLUGINS" },
+        { key: "widgets",   label: "WIDGETS" }
     ]
 
     // ---- rail background ----------------------------------------------------
@@ -122,12 +123,12 @@ Item {
             Rectangle {
                 id: highlight
                 width: parent.width
-                height: 48
+                height: 44
                 radius: Theme.radiusSm
                 color: Theme.navActive
                 border.color: Theme.accentDim
                 border.width: 1
-                y: rail.currentIndex * (48 + 6)
+                y: rail.currentIndex * (44 + 5)
                 Behavior on y { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
 
                 // animated neon active-indicator bar (left edge, glowing)
@@ -152,7 +153,7 @@ Item {
 
             Column {
                 anchors.fill: parent
-                spacing: 6
+                spacing: 5
                 Repeater {
                     model: rail.items
                     delegate: Item {
@@ -160,7 +161,7 @@ Item {
                         required property int index
                         required property var modelData
                         width: parent.width
-                        height: 48
+                        height: 44
 
                         readonly property bool active: rail.currentIndex === index
 
@@ -361,6 +362,13 @@ Item {
                     ctx.lineTo(11, 3.5); ctx.lineTo(11, 5); ctx.lineTo(15, 5)
                     ctx.lineTo(15, 15); ctx.lineTo(3, 15); ctx.closePath(); ctx.stroke()
                     ctx.beginPath(); ctx.moveTo(7, 9.5); ctx.lineTo(11, 9.5); ctx.stroke()
+                    break
+                case "widgets":
+                    // 2x2 grid of rounded blocks — reusable widget tiles
+                    ctx.strokeRect(2.5, 2.5, 5.5, 5.5)
+                    ctx.strokeRect(10, 2.5, 5.5, 5.5)
+                    ctx.strokeRect(2.5, 10, 5.5, 5.5)
+                    ctx.strokeRect(10, 10, 5.5, 5.5)
                     break
                 }
             }

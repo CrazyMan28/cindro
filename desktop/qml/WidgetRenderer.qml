@@ -32,6 +32,43 @@ Item {
     function numOr(v, fallback) {
         return (v !== undefined && v !== null && !isNaN(Number(v))) ? Number(v) : fallback
     }
+    // Coerce a spec array into a REAL JS array. Nested children/ops/rows reach a
+    // child node through a `var` property (Repeater modelData → C++ QVariant) as a
+    // QVariantList — array-LIKE (numeric .length, indexable) but NOT a JS Array, so
+    // Array.isArray() is false and a Repeater fed it directly renders nothing. This
+    // copies any array-like into a true array (and tolerates real arrays), so nested
+    // containers/grids/lists/canvas-ops render at every depth, not just top level.
+    function asArray(x) {
+        if (Array.isArray(x))
+            return x
+        if (x && typeof x === "object" && typeof x.length === "number") {
+            var out = []
+            for (var i = 0; i < x.length; i++)
+                out.push(x[i])
+            return out
+        }
+        return []
+    }
+
+    // Horizontal alignment flag from "left"/"center"/"right" (default left).
+    function hAlign(a) {
+        return a === "center" ? Qt.AlignHCenter
+             : a === "right"  ? Qt.AlignRight
+             : Qt.AlignLeft
+    }
+    // Map a child node's layout hints onto a Loader inside a Grid/Column/Row:
+    //   grow:true -> fillWidth; align:left|center|right -> h-align;
+    //   w/h -> preferred size (so the model can size ANY child, not just rect/svg).
+    // Returns nothing; mutates the loader. Called from the recursing delegates.
+    function applyLayoutHints(ld, m) {
+        // grow:true fills the line; a divider spans full width by default.
+        ld.Layout.fillWidth = (m && (m.grow === true || m.type === "divider"))
+        ld.Layout.alignment = root.hAlign(m && typeof m.align === "string" ? m.align : "") | Qt.AlignTop
+        if (m && m.w !== undefined && !isNaN(Number(m.w)))
+            ld.Layout.preferredWidth = Number(m.w)
+        if (m && m.h !== undefined && !isNaN(Number(m.h)))
+            ld.Layout.preferredHeight = Number(m.h)
+    }
 
     readonly property string nodeType:
         (node && typeof node === "object" && typeof node.type === "string") ? node.type : ""
@@ -39,8 +76,52 @@ Item {
     implicitWidth: loader.implicitWidth
     implicitHeight: loader.implicitHeight
 
+    // ---- animation : the model can make any node move/breathe via node.anim ----
+    // {anim:{type:"pulse"|"fade"|"spin"|"float"|"blink", duration:<ms>, loop:true}}.
+    // Applied to THIS node's render transform (scale/opacity/rotation/translate) —
+    // render-only, so it never disturbs layout. anim on a child animates just that
+    // child; anim on the root animates the whole widget.
+    readonly property var anim: (node && node.anim && typeof node.anim === "object") ? node.anim : null
+    readonly property string animType: anim ? ("" + (anim.type || "")) : ""
+    readonly property int animDur: anim ? numOr(anim.duration, 1200) : 1200
+    transformOrigin: Item.Center
+    transform: Translate { id: floatT }
+
+    SequentialAnimation on scale {
+        running: root.animType === "pulse"; loops: Animation.Infinite; alwaysRunToEnd: true
+        NumberAnimation { from: 1.0; to: 1.12; duration: root.animDur / 2; easing.type: Easing.InOutSine }
+        NumberAnimation { from: 1.12; to: 1.0; duration: root.animDur / 2; easing.type: Easing.InOutSine }
+    }
+    SequentialAnimation on opacity {
+        running: root.animType === "fade" || root.animType === "blink"
+        loops: Animation.Infinite; alwaysRunToEnd: true
+        NumberAnimation { to: root.animType === "blink" ? 0.0 : 0.3; duration: root.animDur / 2
+                          easing.type: root.animType === "blink" ? Easing.Linear : Easing.InOutSine }
+        NumberAnimation { to: 1.0; duration: root.animDur / 2
+                          easing.type: root.animType === "blink" ? Easing.Linear : Easing.InOutSine }
+    }
+    RotationAnimation on rotation {
+        running: root.animType === "spin"; loops: Animation.Infinite
+        from: 0; to: 360; duration: root.animDur
+    }
+    SequentialAnimation {
+        running: root.animType === "float"; loops: Animation.Infinite; alwaysRunToEnd: true
+        NumberAnimation { target: floatT; property: "y"; from: 0; to: -6; duration: root.animDur / 2; easing.type: Easing.InOutSine }
+        NumberAnimation { target: floatT; property: "y"; from: -6; to: 0; duration: root.animDur / 2; easing.type: Easing.InOutSine }
+    }
+
     Loader {
         id: loader
+        // Pass the root's (layout-assigned) WIDTH down to the content so a node
+        // STRETCHED by a parent (grow:true / the chat card's fillWidth) fills it —
+        // without this, nested grid/grow cells collapsed to dots. HEIGHT stays
+        // intrinsic (implicitHeight), NOT anchored to root.height: anchoring height
+        // fed the grid's row-height assignment back into the cell and collapsed
+        // container cells to empty bars. A node with an explicit w sizes to that.
+        anchors.left: parent.left
+        anchors.top: parent.top
+        width: (root.node && root.node.w !== undefined) ? implicitWidth : root.width
+        height: implicitHeight
         sourceComponent: {
             switch (root.nodeType) {
             case "column":
@@ -56,27 +137,51 @@ Item {
             case "list":    return listComp
             case "grid":    return gridComp
             case "divider": return dividerComp
+            case "spacer":  return spacerComp
             case "link":    return linkComp
             default:        return null   // unknown / malformed → render nothing
             }
         }
     }
 
-    // ---- column / row : recurse over children ------------------------------
+    // ---- column / row : a STYLABLE container that recurses over children ----
+    // The model controls size + look: bg (background color), radius, border
+    // (+ borderW), pad (inner padding), w/h (explicit size), fill:true (take the
+    // full available width). Children get per-child layout hints (grow/align/w/h)
+    // via applyLayoutHints. Defaults keep the old plain look (transparent, no pad).
     Component {
         id: containerComp
-        Item {
-            implicitWidth: lay.implicitWidth
-            implicitHeight: lay.implicitHeight
+        Rectangle {
+            id: cont
+            readonly property real pad: root.numOr(root.node ? root.node.pad : undefined, 0)
+            color: root.colorOr(root.node ? root.node.bg : "", "transparent")
+            radius: root.numOr(root.node ? root.node.radius : undefined, 0)
+            border.width: (root.node && typeof root.node.border === "string" && root.node.border.length > 0)
+                          ? root.numOr(root.node.borderW, 1) : 0
+            border.color: root.colorOr(root.node ? root.node.border : "", Theme.hairline)
+
+            // Intrinsic size = content + padding (or explicit w/h). The ACTUAL width
+            // follows root.width: a stretched root (grow / top-level card) makes the
+            // container fill; an unstretched root is content-sized. fill:true is no
+            // longer needed (containers fill their slot by default) but is harmless.
+            implicitWidth: (root.node && root.node.w !== undefined)
+                           ? root.numOr(root.node.w, lay.implicitWidth + pad * 2)
+                           : lay.implicitWidth + pad * 2
+            implicitHeight: (root.node && root.node.h !== undefined)
+                            ? root.numOr(root.node.h, lay.implicitHeight + pad * 2)
+                            : lay.implicitHeight + pad * 2
+
             GridLayout {
                 id: lay
+                x: cont.pad; y: cont.pad
+                width: Math.max(0, cont.width - cont.pad * 2)
                 flow: root.nodeType === "row" ? GridLayout.LeftToRight : GridLayout.TopToBottom
                 rows: root.nodeType === "row" ? 1 : -1
                 columns: root.nodeType === "row" ? -1 : 1
                 rowSpacing: root.numOr(root.node.gap, 6)
                 columnSpacing: root.numOr(root.node.gap, 6)
                 Repeater {
-                    model: Array.isArray(root.node.children) ? root.node.children : []
+                    model: root.asArray(root.node ? root.node.children : null)
                     // Recurse via a URL-sourced Loader rather than naming
                     // WidgetRenderer directly: a component cannot eagerly
                     // instantiate its own type inside a delegate (the QML
@@ -85,8 +190,7 @@ Item {
                     delegate: Loader {
                         required property var modelData
                         source: Qt.resolvedUrl("WidgetRenderer.qml")
-                        Layout.alignment: Qt.AlignTop | Qt.AlignLeft
-                        onLoaded: item.node = modelData
+                        onLoaded: { item.node = modelData; root.applyLayoutHints(this, modelData) }
                         // Bubble child actions up to the card root.
                         Connections {
                             target: loaderItemContainer.item
@@ -101,16 +205,31 @@ Item {
     }
 
     // ---- text --------------------------------------------------------------
+    // Rich: color, size, bold/italic, weight (100..900), spacing (letter), line
+    // (lineHeight x), align (left/center/right), mono/display font, maxLines (clamp
+    // + elide). The model styles type however it wants.
     Component {
         id: textComp
         Text {
             text: (root.node && root.node.text !== undefined) ? ("" + root.node.text) : ""
             color: root.colorOr(root.node ? root.node.color : "", Theme.text)
-            font.family: Theme.fontSans
+            font.family: (root.node && root.node.mono === true) ? Theme.fontMono
+                         : (root.node && root.node.display === true) ? Theme.fontDisplay
+                         : Theme.fontSans
             font.pixelSize: root.numOr(root.node ? root.node.size : undefined, 14)
             font.bold: root.node ? root.node.bold === true : false
             font.italic: root.node ? root.node.italic === true : false
+            font.weight: (root.node && root.node.weight !== undefined && !isNaN(Number(root.node.weight)))
+                         ? Number(root.node.weight)
+                         : (root.node && root.node.bold === true ? Font.DemiBold : Font.Normal)
+            font.letterSpacing: root.numOr(root.node ? root.node.spacing : undefined, 0)
+            lineHeight: root.numOr(root.node ? root.node.line : undefined, 1.0)
+            lineHeightMode: Text.ProportionalHeight
+            horizontalAlignment: root.hAlign(root.node && typeof root.node.align === "string"
+                                             ? root.node.align : "")
             wrapMode: Text.WordWrap
+            maximumLineCount: root.numOr(root.node ? root.node.maxLines : undefined, 100000)
+            elide: (root.node && root.node.maxLines !== undefined) ? Text.ElideRight : Text.ElideNone
         }
     }
 
@@ -120,6 +239,8 @@ Item {
         Rectangle {
             implicitWidth: root.numOr(root.node ? root.node.w : undefined, 40)
             implicitHeight: root.numOr(root.node ? root.node.h : undefined, 40)
+            // Stay intrinsic (don't stretch to a filled root).
+            width: implicitWidth; height: implicitHeight
             radius: root.numOr(root.node ? root.node.radius : undefined, 0)
             color: root.colorOr(root.node ? root.node.color : "", Theme.accent)
         }
@@ -131,6 +252,8 @@ Item {
         Rectangle {
             implicitWidth: badgeText.implicitWidth + 18
             implicitHeight: badgeText.implicitHeight + 8
+            // Stay a pill (don't stretch to a filled root).
+            width: implicitWidth; height: implicitHeight
             radius: height / 2
             color: root.colorOr(root.node ? root.node.color : "", Theme.accentDim)
             border.width: 1
@@ -196,7 +319,7 @@ Item {
             height: implicitHeight
             onPaint: {
                 var ctx = getContext("2d"); ctx.reset()
-                var ops = (root.node && Array.isArray(root.node.ops)) ? root.node.ops : []
+                var ops = root.asArray(root.node ? root.node.ops : null)
                 for (var i = 0; i < ops.length; i++) {
                     var o = ops[i]
                     if (!o || typeof o !== "object") continue
@@ -233,10 +356,10 @@ Item {
                         }
                         break
                     case "path":
-                        var pts = Array.isArray(o.points) ? o.points : []
+                        var pts = root.asArray(o.points)
                         for (var p = 0; p < pts.length; p++) {
-                            var pt = pts[p]
-                            if (!Array.isArray(pt) || pt.length < 2) continue
+                            var pt = root.asArray(pts[p])
+                            if (pt.length < 2) continue
                             if (p === 0) ctx.moveTo(root.numOr(pt[0], 0), root.numOr(pt[1], 0))
                             else ctx.lineTo(root.numOr(pt[0], 0), root.numOr(pt[1], 0))
                         }
@@ -267,13 +390,17 @@ Item {
     }
 
     // ---- button : interpreted action (send / skill), never eval'd ----------
+    // Stylable: color (fill), textColor, radius, size (font px), w/h. The action
+    // map (send/skill) is still allow-listed DATA — nothing is evaluated here.
     Component {
         id: buttonComp
         Rectangle {
             id: btn
-            implicitWidth: btnText.implicitWidth + 28
-            implicitHeight: btnText.implicitHeight + 16
-            radius: Theme.radiusSm
+            implicitWidth: Math.max(btnText.implicitWidth + 28,
+                                    root.numOr(root.node ? root.node.w : undefined, 0))
+            implicitHeight: Math.max(btnText.implicitHeight + 16,
+                                     root.numOr(root.node ? root.node.h : undefined, 0))
+            radius: root.numOr(root.node ? root.node.radius : undefined, Theme.radiusSm)
             color: btnArea.pressed
                    ? Qt.darker(root.colorOr(root.node ? root.node.color : "", Theme.accent), 1.2)
                    : root.colorOr(root.node ? root.node.color : "", Theme.accent)
@@ -284,9 +411,9 @@ Item {
                 id: btnText
                 anchors.centerIn: parent
                 text: (root.node && root.node.text !== undefined) ? ("" + root.node.text) : "Button"
-                color: Theme.inkOnAccent
+                color: root.colorOr(root.node ? root.node.textColor : "", Theme.inkOnAccent)
                 font.family: Theme.fontDisplay
-                font.pixelSize: 12
+                font.pixelSize: root.numOr(root.node ? root.node.size : undefined, 12)
                 font.weight: Font.DemiBold
                 font.letterSpacing: Theme.trackTight
             }
@@ -340,7 +467,7 @@ Item {
         ColumnLayout {
             spacing: root.numOr(root.node ? root.node.gap : undefined, 6)
             Repeater {
-                model: (root.node && Array.isArray(root.node.rows)) ? root.node.rows : []
+                model: root.asArray(root.node ? root.node.rows : null)
                 delegate: RowLayout {
                     id: rowItem
                     required property var modelData
@@ -404,26 +531,39 @@ Item {
     }
 
     // ---- grid : N-column grid of child nodes (recurses WidgetRenderer) ------
+    // Same stylable shell as column/row (bg/radius/border/pad/w/h/fill) plus cols.
     Component {
         id: gridComp
-        Item {
-            implicitWidth: glay.implicitWidth
-            implicitHeight: glay.implicitHeight
+        Rectangle {
+            id: gcont
+            readonly property real pad: root.numOr(root.node ? root.node.pad : undefined, 0)
+            color: root.colorOr(root.node ? root.node.bg : "", "transparent")
+            radius: root.numOr(root.node ? root.node.radius : undefined, 0)
+            border.width: (root.node && typeof root.node.border === "string" && root.node.border.length > 0)
+                          ? root.numOr(root.node.borderW, 1) : 0
+            border.color: root.colorOr(root.node ? root.node.border : "", Theme.hairline)
+            implicitWidth: (root.node && root.node.w !== undefined)
+                           ? root.numOr(root.node.w, glay.implicitWidth + pad * 2)
+                           : glay.implicitWidth + pad * 2
+            implicitHeight: (root.node && root.node.h !== undefined)
+                            ? root.numOr(root.node.h, glay.implicitHeight + pad * 2)
+                            : glay.implicitHeight + pad * 2
             GridLayout {
                 id: glay
+                x: gcont.pad; y: gcont.pad
+                width: Math.max(0, gcont.width - gcont.pad * 2)
                 columns: Math.max(1, root.numOr(root.node ? root.node.cols : undefined, 2))
                 rowSpacing: root.numOr(root.node ? root.node.gap : undefined, 8)
                 columnSpacing: root.numOr(root.node ? root.node.gap : undefined, 8)
                 Repeater {
-                    model: (root.node && Array.isArray(root.node.children)) ? root.node.children : []
+                    model: root.asArray(root.node ? root.node.children : null)
                     // Recurse via a URL-sourced Loader (see container note above):
                     // self-naming the type in a delegate is rejected at compile
                     // time, so defer the recursion to runtime by URL.
                     delegate: Loader {
                         required property var modelData
                         source: Qt.resolvedUrl("WidgetRenderer.qml")
-                        Layout.alignment: Qt.AlignTop | Qt.AlignLeft
-                        onLoaded: item.node = modelData
+                        onLoaded: { item.node = modelData; root.applyLayoutHints(this, modelData) }
                         Connections {
                             target: gridLoaderItem.item
                             ignoreUnknownSignals: true
@@ -446,6 +586,18 @@ Item {
             Layout.fillWidth: !vertical
             Layout.fillHeight: vertical
             color: root.colorOr(root.node ? root.node.color : "", Theme.hairline)
+        }
+    }
+
+    // ---- spacer : empty gap. Fixed via size/w/h, or flexible with grow:true
+    // (the layout hint sets fillWidth) to push siblings apart in a row/column.
+    Component {
+        id: spacerComp
+        Item {
+            implicitWidth: root.numOr(root.node ? root.node.w : undefined,
+                                      root.numOr(root.node ? root.node.size : undefined, 8))
+            implicitHeight: root.numOr(root.node ? root.node.h : undefined,
+                                       root.numOr(root.node ? root.node.size : undefined, 8))
         }
     }
 

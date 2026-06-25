@@ -4,7 +4,38 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-06-24._
+_Last updated: 2026-06-25._
+
+---
+
+## 🆕 Canvas & Widgets overhaul (2026-06-25)
+
+A big pass on the generative-UI system — see [`WIDGETS_CANVAS.md`](WIDGETS_CANVAS.md).
+
+**Done & verified (live):**
+- **Renderer fixed** — nested grids/lists/containers were collapsing (QVariant-list
+  vs `Array.isArray`); `asArray()` coercion + loader sizing now render a full
+  multi-section dashboard correctly.
+- **Expanded DSL** — container styling (bg/pad/radius/border/size), per-child
+  `grow`/`align`/`w`/`h`, rich text, `spacer`, `divider`, button styling, and
+  `anim` (pulse/fade/spin/float/blink).
+- **Canvas vs Widget split** — Canvas tab (ad-hoc, deletable, ★-saveable) +
+  a new **Widgets** tab (reusable library). MCP CRUD: `canvas_*`, `widget_*`.
+- **Chat gating** — canvases only enter chat/voice on `target` (default canvas);
+  scoped to the session and **replayed on reopen** (was lost before).
+- **Live canvases** — `widget_live(id,command,spec,interval)` re-renders from ANY
+  command's output on a cadence; verified live (a CPU/GPU widget updating in a real
+  Jarvis chat).
+- **Settings QR pairing** fixed (ms-vs-seconds → int overflow → instant "Expired").
+
+**Open / not done:**
+- **Phone widget renderer** — the Android app has no DSL renderer yet (desktop only).
+- **KDE computer-use clicks (~95% fail)** — diagnosed: the agent's independent
+  `jarvisSeat` (kwin-jarvis-fork) delivers move but clicks don't register on Qt
+  apps. Ruled out timing (rapid+slow both fail) and scale (all outputs scale 1).
+  Next: add logging to `JarvisSeat::refocusAt` (is `findToplevel` returning the
+  surface? does Qt consume the second seat's pointer?), rebuild KWin, relogin.
+  Chrome-extension computer-use (CDP) is unaffected.
 
 ---
 

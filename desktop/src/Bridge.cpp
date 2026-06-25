@@ -1894,24 +1894,94 @@ void Bridge::readWidgetTail()
         if (perr.error != QJsonParseError::NoError || !d.isObject())
             continue;
         const QJsonObject o = d.object();
-        // {ts, title, id, spec} — spec is a nested object/array; toVariant()
+        // Control records: {op:"remove",id} drops one canvas, {op:"clear"} drops
+        // all. The bus is append-only, so deletes/clears are markers the desktop
+        // replays — keeping the offset-tail poller untouched.
+        const QString op = o.value(QStringLiteral("op")).toString();
+        if (op == QStringLiteral("remove")) {
+            emit widgetRemoved(o.value(QStringLiteral("id")).toString());
+            continue;
+        }
+        if (op == QStringLiteral("clear")) {
+            emit widgetsCleared();
+            continue;
+        }
+        if (!o.contains(QStringLiteral("spec")))
+            continue;
+        // {ts, title, id, spec, target} — spec is a nested object/array; toVariant()
         // converts the whole tree to nested QVariantMap/QVariantList for the QML
         // renderer. `id` lets the CANVAS page replace a card in place on update;
         // older records without an id fall back to "<ts>" (matching the engine's
-        // "w<ts>" fallback shape closely enough for dedupe).
+        // "w<ts>" fallback shape closely enough for dedupe). `target` gates whether
+        // it also surfaces in chat/voice (default "canvas" = Canvas tab only).
         const QVariant ts = o.value(QStringLiteral("ts")).toVariant();
         QString id = o.value(QStringLiteral("id")).toString();
         if (id.isEmpty())
             id = ts.toString();
+        QString target = o.value(QStringLiteral("target")).toString();
+        if (target.isEmpty())
+            target = QStringLiteral("canvas");
         QVariantMap widget;
         widget.insert(QStringLiteral("ts"), ts);
         widget.insert(QStringLiteral("title"),
                       o.value(QStringLiteral("title")).toString());
         widget.insert(QStringLiteral("id"), id);
+        widget.insert(QStringLiteral("target"), target);
+        widget.insert(QStringLiteral("session_id"),
+                      o.value(QStringLiteral("session_id")).toString());
         widget.insert(QStringLiteral("spec"),
                       o.value(QStringLiteral("spec")).toVariant());
         emit widgetRendered(widget);
     }
+}
+
+void Bridge::replaySessionWidgets(const QString &sessionId)
+{
+    // Reopening a stored session: re-emit the widgets that session rendered so its
+    // chat (and the Canvas) come back instead of staying empty. Scan the whole bus
+    // (capped at a few MB), apply remove/clear, keep the LAST spec per id whose
+    // session_id matches, then emit them in render order.
+    if (sessionId.isEmpty())
+        return;
+    QFile f(widgetsPath());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    QStringList order;
+    QHash<QString, QVariantMap> byId;
+    while (!f.atEnd()) {
+        const QByteArray line = f.readLine().trimmed();
+        if (line.isEmpty())
+            continue;
+        const QJsonDocument d = QJsonDocument::fromJson(line);
+        if (!d.isObject())
+            continue;
+        const QJsonObject o = d.object();
+        const QString op = o.value(QStringLiteral("op")).toString();
+        QString id = o.value(QStringLiteral("id")).toString();
+        if (op == QStringLiteral("clear")) { order.clear(); byId.clear(); continue; }
+        if (op == QStringLiteral("remove")) { order.removeAll(id); byId.remove(id); continue; }
+        if (!o.contains(QStringLiteral("spec")))
+            continue;
+        if (o.value(QStringLiteral("session_id")).toString() != sessionId)
+            continue;
+        if (id.isEmpty())
+            id = o.value(QStringLiteral("ts")).toVariant().toString();
+        QString target = o.value(QStringLiteral("target")).toString();
+        if (target.isEmpty())
+            target = QStringLiteral("canvas");
+        QVariantMap widget;
+        widget.insert(QStringLiteral("ts"), o.value(QStringLiteral("ts")).toVariant());
+        widget.insert(QStringLiteral("title"), o.value(QStringLiteral("title")).toString());
+        widget.insert(QStringLiteral("id"), id);
+        widget.insert(QStringLiteral("target"), target);
+        widget.insert(QStringLiteral("session_id"), sessionId);
+        widget.insert(QStringLiteral("spec"), o.value(QStringLiteral("spec")).toVariant());
+        if (!byId.contains(id))
+            order.append(id);
+        byId.insert(id, widget);
+    }
+    for (const QString &id : order)
+        emit widgetRendered(byId.value(id));
 }
 
 void Bridge::popOutWidget(const QString &id, const QString &title, const QVariant &spec)
@@ -1925,6 +1995,158 @@ void Bridge::popOutWidget(const QString &id, const QString &title, const QVarian
     widget.insert(QStringLiteral("title"), title);
     widget.insert(QStringLiteral("spec"), spec);
     emit spawnStandaloneWidget(widget);
+}
+
+// ---- Canvas + saved-widget management (file-backed, shared with the engine) --
+
+static QString jarvisDataDir()
+{
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    return (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share") : base)
+           + QStringLiteral("/jarvis");
+}
+
+static QString savedWidgetsFile() { return jarvisDataDir() + QStringLiteral("/saved_widgets.json"); }
+
+// Lowercase kebab slug (no QRegularExpression dependency).
+static QString slugify(const QString &name)
+{
+    QString s;
+    bool dash = false;
+    for (const QChar c : name.toLower()) {
+        if (c.isLetterOrNumber()) { s.append(c); dash = false; }
+        else if (!dash && !s.isEmpty()) { s.append(QLatin1Char('-')); dash = true; }
+    }
+    while (s.endsWith(QLatin1Char('-'))) s.chop(1);
+    return s.isEmpty() ? (QStringLiteral("w") + QString::number(QDateTime::currentMSecsSinceEpoch())) : s;
+}
+
+static QJsonArray readSavedWidgetsArr()
+{
+    QFile f(savedWidgetsFile());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return {};
+    const QJsonDocument d = QJsonDocument::fromJson(f.readAll());
+    if (d.isObject())
+        return d.object().value(QStringLiteral("widgets")).toArray();
+    if (d.isArray())
+        return d.array();
+    return {};
+}
+
+static void writeSavedWidgetsArr(const QJsonArray &arr)
+{
+    QDir().mkpath(jarvisDataDir());
+    QJsonObject root;
+    root.insert(QStringLiteral("widgets"), arr);
+    QFile f(savedWidgetsFile());
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+        f.close();
+    }
+}
+
+void Bridge::appendWidgetBusRecord(const QJsonObject &record)
+{
+    const QString path = widgetsPath();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile f(path);
+    if (f.open(QIODevice::Append | QIODevice::Text)) {
+        f.write(QJsonDocument(record).toJson(QJsonDocument::Compact));
+        f.write("\n");
+        f.close();
+    }
+}
+
+void Bridge::canvasDelete(const QString &id)
+{
+    QJsonObject o;
+    o.insert(QStringLiteral("ts"), QDateTime::currentMSecsSinceEpoch());
+    o.insert(QStringLiteral("op"), QStringLiteral("remove"));
+    o.insert(QStringLiteral("id"), id);
+    appendWidgetBusRecord(o);
+    emit widgetRemoved(id);   // immediate local effect; poller re-emit is idempotent
+}
+
+void Bridge::canvasClear()
+{
+    QJsonObject o;
+    o.insert(QStringLiteral("ts"), QDateTime::currentMSecsSinceEpoch());
+    o.insert(QStringLiteral("op"), QStringLiteral("clear"));
+    appendWidgetBusRecord(o);
+    emit widgetsCleared();
+}
+
+void Bridge::refreshSavedWidgets()
+{
+    const QJsonArray arr = readSavedWidgetsArr();
+    QVariantList out;
+    for (const QJsonValue &v : arr)
+        out.append(v.toObject().toVariantMap());
+    emit savedWidgetsListed(out);
+}
+
+void Bridge::saveWidget(const QString &name, const QVariant &spec)
+{
+    QJsonArray arr = readSavedWidgetsArr();
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const QJsonValue specV = QJsonValue::fromVariant(spec);
+    // Update an existing entry with the same name, else append a new one.
+    bool updated = false;
+    for (int i = 0; i < arr.size(); ++i) {
+        QJsonObject w = arr[i].toObject();
+        if (w.value(QStringLiteral("name")).toString() == name) {
+            w.insert(QStringLiteral("spec"), specV);
+            w.insert(QStringLiteral("updated"), now);
+            arr[i] = w;
+            updated = true;
+            break;
+        }
+    }
+    if (!updated) {
+        QJsonObject w;
+        w.insert(QStringLiteral("id"), slugify(name));
+        w.insert(QStringLiteral("name"), name);
+        w.insert(QStringLiteral("spec"), specV);
+        w.insert(QStringLiteral("created"), now);
+        w.insert(QStringLiteral("updated"), now);
+        arr.append(w);
+    }
+    writeSavedWidgetsArr(arr);
+    refreshSavedWidgets();
+}
+
+void Bridge::deleteSavedWidget(const QString &id)
+{
+    const QJsonArray arr = readSavedWidgetsArr();
+    QJsonArray kept;
+    for (const QJsonValue &v : arr) {
+        const QJsonObject w = v.toObject();
+        if (w.value(QStringLiteral("id")).toString() != id
+            && w.value(QStringLiteral("name")).toString() != id)
+            kept.append(w);
+    }
+    writeSavedWidgetsArr(kept);
+    refreshSavedWidgets();
+}
+
+void Bridge::renderSavedWidget(const QString &id, const QString &target)
+{
+    const QJsonArray arr = readSavedWidgetsArr();
+    for (const QJsonValue &v : arr) {
+        const QJsonObject w = v.toObject();
+        if (w.value(QStringLiteral("id")).toString() == id
+            || w.value(QStringLiteral("name")).toString() == id) {
+            QJsonObject rec;
+            rec.insert(QStringLiteral("ts"), QDateTime::currentMSecsSinceEpoch());
+            rec.insert(QStringLiteral("title"), w.value(QStringLiteral("name")).toString());
+            rec.insert(QStringLiteral("id"), QString());  // fresh canvas id each render
+            rec.insert(QStringLiteral("target"), target.isEmpty() ? QStringLiteral("canvas") : target);
+            rec.insert(QStringLiteral("spec"), w.value(QStringLiteral("spec")));
+            appendWidgetBusRecord(rec);
+            return;
+        }
+    }
 }
 
 void Bridge::readPointerTail()
