@@ -7,6 +7,7 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
+class QJsonObject;
 class QWebSocket;
 class QNetworkAccessManager;
 class QNetworkReply;
@@ -390,6 +391,20 @@ public:
     Q_INVOKABLE void popOutWidget(const QString &id, const QString &title,
                                   const QVariant &spec);
 
+    // Canvas management (writes the append-only bus the desktop + engine share).
+    // canvasDelete appends {op:"remove",id}; canvasClear appends {op:"clear"}.
+    Q_INVOKABLE void canvasDelete(const QString &id);
+    Q_INVOKABLE void canvasClear();
+
+    // Saved-widget library (saved_widgets.json). refreshSavedWidgets re-reads it
+    // and emits savedWidgetsListed; saveWidget persists a spec under a name (tap
+    // "Save as widget" on a canvas); deleteSavedWidget removes one; renderSavedWidget
+    // drops a saved spec onto the bus (target: canvas|chat|voice|both).
+    Q_INVOKABLE void refreshSavedWidgets();
+    Q_INVOKABLE void saveWidget(const QString &name, const QVariant &spec);
+    Q_INVOKABLE void deleteSavedWidget(const QString &id);
+    Q_INVOKABLE void renderSavedWidget(const QString &id, const QString &target);
+
 signals:
     void connectedChanged();
     void sessionIdChanged();
@@ -559,6 +574,15 @@ signals:
     // a card in place when the model re-renders by id (update-by-id).
     void widgetRendered(const QVariantMap &widget);
 
+    // A canvas was deleted (op:"remove") or all were cleared (op:"clear") on the
+    // bus — the CANVAS page + inline chat drop the matching card(s).
+    void widgetRemoved(const QString &id);
+    void widgetsCleared();
+
+    // The saved-widget library (saved_widgets.json) was (re)loaded — `widgets` is
+    // a list of {id, name, spec, created, updated} for the WIDGETS tab.
+    void savedWidgetsListed(const QVariantList &widgets);
+
     // A widget was "popped out" of the CANVAS page (popOutWidget). `widget` =
     // {id, title, spec}; Main.qml's Instantiator spawns a StandaloneWidget Window
     // for it (frameless, always-on-top), which also live-updates when a later
@@ -576,6 +600,8 @@ private slots:
 
 private:
     int nextId();
+    // Append one record (widget or {op:...}) to the widgets bus file.
+    void appendWidgetBusRecord(const QJsonObject &record);
     void send(const QString &method, const QVariantMap &params, int id);
     int request(const QString &method, const QVariantMap &params,
                 const QString &ctx = QString());

@@ -329,6 +329,12 @@ Item {
         function onWidgetRendered(w) {
             if (!w || w.spec === undefined)
                 return
+            // GATING: a widget only enters the chat transcript when the model asked
+            // for it there (target "chat"/"both"). "canvas" (default) stays on the
+            // Canvas tab; "voice" pops near the orb. Keeps the chat uncluttered.
+            var target = (w.target !== undefined) ? ("" + w.target) : "canvas"
+            if (target !== "chat" && target !== "both")
+                return
             var wid = (w.id !== undefined && ("" + w.id).length > 0) ? ("" + w.id) : ""
             var title = (w.title !== undefined) ? ("" + w.title) : ""
             var specStr = JSON.stringify(w.spec)
@@ -348,6 +354,18 @@ Item {
                 "approvalId": "", "risk": "", "ok": true, "streaming": false
             })
             chatView.positionViewAtEnd()
+        }
+
+        // A canvas was deleted / all cleared — drop any inline copy in the chat too.
+        function onWidgetRemoved(id) {
+            for (var i = chatModel.count - 1; i >= 0; i--) {
+                var row = chatModel.get(i)
+                if (row.kind === "widget" && row.callId === id) { chatModel.remove(i); break }
+            }
+        }
+        function onWidgetsCleared() {
+            for (var i = chatModel.count - 1; i >= 0; i--)
+                if (chatModel.get(i).kind === "widget") chatModel.remove(i)
         }
 
         function onSessionEvent(ev) {

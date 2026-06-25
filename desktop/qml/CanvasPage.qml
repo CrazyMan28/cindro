@@ -50,6 +50,14 @@ Item {
             while (widgetModel.count > page.cap)
                 widgetModel.remove(widgetModel.count - 1)
         }
+        // Canvas deleted / cleared (from a delete button or the canvas_del/clear
+        // MCP tools writing the bus).
+        function onWidgetRemoved(id) {
+            for (var i = 0; i < widgetModel.count; i++) {
+                if (widgetModel.get(i).id === id) { widgetModel.remove(i); return }
+            }
+        }
+        function onWidgetsCleared() { widgetModel.clear() }
     }
 
     // Interpret a button `action` map from the safe DSL — a fixed allow-set
@@ -197,6 +205,31 @@ Item {
                             font.family: Theme.fontMono
                             font.pixelSize: 10
                         }
+                        // "save as widget" -> persist this spec into the reusable
+                        // Widgets library under its title (or "Canvas widget").
+                        Rectangle {
+                            Layout.preferredWidth: 22
+                            Layout.preferredHeight: 22
+                            radius: Theme.radiusXs
+                            color: saveArea.containsMouse ? Theme.surface : "transparent"
+                            border.width: 1
+                            border.color: saveArea.containsMouse ? Theme.hairline : "transparent"
+                            Text {
+                                anchors.centerIn: parent
+                                text: "★"   // save to library
+                                color: saveArea.containsMouse ? Theme.amber : Theme.textMuted
+                                font.pixelSize: 13
+                            }
+                            MouseArea {
+                                id: saveArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: bridge.saveWidget(
+                                    card.title.length > 0 ? card.title : "Canvas widget",
+                                    card.specTree)
+                            }
+                        }
                         // "pop out" -> spawn a standalone frameless always-on-top
                         // desktop window hosting just this widget (live-updates too).
                         Rectangle {
@@ -218,6 +251,28 @@ Item {
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: bridge.popOutWidget(card.id, card.title, card.specTree)
+                            }
+                        }
+                        // "delete" -> remove this canvas (writes a remove marker).
+                        Rectangle {
+                            Layout.preferredWidth: 22
+                            Layout.preferredHeight: 22
+                            radius: Theme.radiusXs
+                            color: delArea.containsMouse ? Qt.rgba(1,0.3,0.37,0.12) : "transparent"
+                            border.width: 1
+                            border.color: delArea.containsMouse ? Theme.danger : "transparent"
+                            Text {
+                                anchors.centerIn: parent
+                                text: "✕"
+                                color: delArea.containsMouse ? Theme.danger : Theme.textMuted
+                                font.pixelSize: 13
+                            }
+                            MouseArea {
+                                id: delArea
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: bridge.canvasDelete(card.id)
                             }
                         }
                     }
