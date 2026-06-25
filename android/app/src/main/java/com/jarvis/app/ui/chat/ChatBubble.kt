@@ -334,9 +334,11 @@ private fun ToolCallBubble(item: ChatItem.ToolCall) {
                     )
                 }
                 Text(
-                    text = "  ${item.name}",
+                    text = "  ${item.name}" +
+                        (item.server?.takeIf { it.isNotBlank() }?.let { "  · $it" } ?: ""),
                     style = MaterialTheme.typography.titleMedium,
                     color = JarvisPalette.TextPrimary,
+                    maxLines = 1,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
