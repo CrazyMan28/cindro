@@ -13,19 +13,29 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from computer_use_mcp import widgets_bus
+from computer_use_mcp import saved_widgets, widgets_bus
 
 
 def register(mcp: FastMCP) -> None:
     @mcp.tool()
-    def render_widget(spec: dict, title: str = "", id: str = "") -> str:
-        r"""Render a CUSTOM widget INLINE in the Jarvis chat (and Canvas tab).
+    def render_widget(spec: dict, title: str = "", id: str = "",
+                      target: str = "canvas") -> str:
+        r"""Render a CUSTOM widget on the Jarvis Canvas (and optionally in chat).
 
         Use this whenever the user asks you to SHOW, DRAW, or DISPLAY something
         visual ("show me a duck", "draw a bar chart", "make a card that says…").
         You design the UI yourself — its SIZE and LOOK are up to you — with a small,
-        safe JSON DSL (no code, just a tree of nodes). The widget drops into the
-        chat right where you render it, like a tool result.
+        safe JSON DSL (no code, just a tree of nodes).
+
+        `target` controls WHERE it surfaces:
+          "canvas" (default) — lives on the Canvas tab only (quiet; doesn't
+                               interrupt the conversation).
+          "chat"             — ALSO drops inline into the live chat, like a tool
+                               result. Use this when the user asks to see it right
+                               here ("show me … in chat", "draw me … now").
+          "voice"            — pops near the voice orb (use in voice mode).
+          "both"             — chat + canvas.
+        Only put a widget in chat/voice when the user actually wants it there.
 
         `spec` is a tree of nodes; every node has a "type". Supported types:
 
@@ -69,6 +79,13 @@ def register(mcp: FastMCP) -> None:
         top node a sensible w/h or fill:true so it isn't cramped. `title` is an
         optional card heading.
 
+        ANIMATION: any node may carry "anim" to make it move/breathe:
+          {"anim":{"type":"pulse"|"fade"|"spin"|"float"|"blink",
+                   "duration":<ms, default 1200>, "loop":true}}
+          pulse = scale in/out, fade = opacity in/out, spin = rotate 360,
+          float = bob up/down, blink = hard on/off. Great for live dashboards,
+          loaders, "breathing" status dots, a spinning reactor, etc.
+
         `id` lets you ADDRESS a widget so you can UPDATE it later: call
         render_widget again with the SAME `id` (and a new `spec`) and the desktop
         replaces that card in place instead of stacking a duplicate — e.g. to
@@ -93,5 +110,85 @@ def register(mcp: FastMCP) -> None:
         if isinstance(spec, dict):
             spec_id = str(spec.get("id") or "")
         wid = str(id or "").strip() or spec_id.strip()
-        rec = widgets_bus.append_widget(spec, title=title, widget_id=wid)
-        return json.dumps({"ok": True, "rendered": True, "id": rec.get("id", "")})
+        rec = widgets_bus.append_widget(spec, title=title, widget_id=wid, target=target)
+        return json.dumps({"ok": True, "rendered": True,
+                           "id": rec.get("id", ""), "target": rec.get("target", "canvas")})
+
+    # ----- Canvas management (the ad-hoc, drawn-once items) -----------------
+    @mcp.tool()
+    def canvas_list() -> str:
+        """List the canvases currently on the Jarvis Canvas tab (id, title, spec,
+        target), newest first. Use before editing or deleting one so you know what
+        is there."""
+        return json.dumps({"ok": True, "canvases": widgets_bus.list_canvases()})
+
+    @mcp.tool()
+    def canvas_edit(id: str, spec: dict, title: str = "", target: str = "canvas") -> str:
+        """Replace a canvas's spec in place (same id). Equivalent to render_widget
+        with that id, kept as an explicit verb for clarity."""
+        rec = widgets_bus.append_widget(spec, title=title, widget_id=str(id), target=target)
+        return json.dumps({"ok": True, "id": rec.get("id", "")})
+
+    @mcp.tool()
+    def canvas_del(id: str) -> str:
+        """Delete a canvas by id (removes its card from the Canvas tab)."""
+        widgets_bus.append_op("remove", str(id))
+        return json.dumps({"ok": True, "removed": str(id)})
+
+    @mcp.tool()
+    def canvas_clear() -> str:
+        """Remove ALL canvases (clears the Canvas tab)."""
+        widgets_bus.append_op("clear")
+        return json.dumps({"ok": True, "cleared": True})
+
+    # ----- Saved widget library (reusable, named specs) --------------------
+    @mcp.tool()
+    def widget_save(name: str, spec: dict, id: str = "") -> str:
+        """Save a REUSABLE widget to the library under `name` so you (or the user)
+        can render it again later without rebuilding the spec. Pass an existing id
+        (or reuse a name) to update it. Returns the saved id."""
+        rec = saved_widgets.save_widget(name, spec, widget_id=str(id))
+        return json.dumps({"ok": True, "id": rec.get("id", ""), "name": rec.get("name", "")})
+
+    @mcp.tool()
+    def widget_list() -> str:
+        """List saved (reusable) widgets in the library: id, name, updated. Use this
+        to find a widget to re-render with widget_render instead of rebuilding it."""
+        items = [{"id": w.get("id"), "name": w.get("name"), "updated": w.get("updated", 0)}
+                 for w in saved_widgets.list_widgets()]
+        return json.dumps({"ok": True, "widgets": items})
+
+    @mcp.tool()
+    def widget_get(id: str) -> str:
+        """Get a saved widget's full record (incl. its spec) by id or name."""
+        w = saved_widgets.get_widget(str(id))
+        if not w:
+            return json.dumps({"ok": False, "error": "not_found"})
+        return json.dumps({"ok": True, "widget": w})
+
+    @mcp.tool()
+    def widget_edit(id: str, spec: dict, name: str = "") -> str:
+        """Update a saved widget's spec (and optionally rename it)."""
+        existing = saved_widgets.get_widget(str(id))
+        if not existing:
+            return json.dumps({"ok": False, "error": "not_found"})
+        rec = saved_widgets.save_widget(name or existing.get("name", ""), spec,
+                                        widget_id=existing.get("id", str(id)))
+        return json.dumps({"ok": True, "id": rec.get("id", "")})
+
+    @mcp.tool()
+    def widget_del(id: str) -> str:
+        """Delete a saved widget from the library by id or name."""
+        ok = saved_widgets.remove_widget(str(id))
+        return json.dumps({"ok": ok, "removed": str(id) if ok else ""})
+
+    @mcp.tool()
+    def widget_render(id: str, target: str = "canvas", title: str = "") -> str:
+        """Render a SAVED widget (by id or name) onto the Canvas (or chat/voice via
+        `target`) without rebuilding its spec. The reuse path for the library."""
+        w = saved_widgets.get_widget(str(id))
+        if not w:
+            return json.dumps({"ok": False, "error": "not_found"})
+        rec = widgets_bus.append_widget(w.get("spec"), title=title or w.get("name", ""),
+                                        widget_id="", target=target)
+        return json.dumps({"ok": True, "id": rec.get("id", ""), "from": w.get("id")})
