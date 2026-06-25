@@ -6,7 +6,9 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import android.graphics.BitmapFactory
 import android.util.Base64
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -49,9 +51,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
-import coil.compose.AsyncImage
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.jarvis.app.ui.theme.GlowCard
@@ -245,16 +247,28 @@ private fun ToolCallBubble(item: ChatItem.ToolCall) {
                 MonoBlock(args)
             }
             if (item.images.isNotEmpty()) {
-                // Render screenshots / image results as actual pictures (Coil) instead
-                // of a wall of base64.
+                // Render screenshots / image results as actual pictures. Decode with
+                // BitmapFactory (downsampled so a 3-monitor screenshot can't OOM) and
+                // draw via Compose Image — Coil 2.x has no ByteArray fetcher, so this
+                // is the reliable path for inline base64.
                 item.images.forEach { b64 ->
-                    val bytes = remember(b64) {
-                        runCatching { Base64.decode(b64, Base64.DEFAULT) }.getOrNull()
+                    val bmp = remember(b64) {
+                        runCatching {
+                            val raw = Base64.decode(b64, Base64.DEFAULT)
+                            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            BitmapFactory.decodeByteArray(raw, 0, raw.size, bounds)
+                            var sample = 1
+                            while (bounds.outWidth / sample > 2048) sample *= 2
+                            BitmapFactory.decodeByteArray(
+                                raw, 0, raw.size,
+                                BitmapFactory.Options().apply { inSampleSize = sample },
+                            )?.asImageBitmap()
+                        }.getOrNull()
                     }
-                    if (bytes != null) {
+                    if (bmp != null) {
                         Spacer(Modifier.height(6.dp))
-                        AsyncImage(
-                            model = bytes,
+                        Image(
+                            bitmap = bmp,
                             contentDescription = "image result",
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
