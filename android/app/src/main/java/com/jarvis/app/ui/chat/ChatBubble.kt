@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import android.util.Base64
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -48,6 +50,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.jarvis.app.ui.theme.GlowCard
@@ -240,9 +244,31 @@ private fun ToolCallBubble(item: ChatItem.ToolCall) {
                 Spacer(Modifier.height(6.dp))
                 MonoBlock(args)
             }
-            item.output?.takeIf { it.isNotBlank() }?.let { out ->
-                Spacer(Modifier.height(6.dp))
-                MonoBlock(out.take(2000))
+            if (item.images.isNotEmpty()) {
+                // Render screenshots / image results as actual pictures (Coil) instead
+                // of a wall of base64.
+                item.images.forEach { b64 ->
+                    val bytes = remember(b64) {
+                        runCatching { Base64.decode(b64, Base64.DEFAULT) }.getOrNull()
+                    }
+                    if (bytes != null) {
+                        Spacer(Modifier.height(6.dp))
+                        AsyncImage(
+                            model = bytes,
+                            contentDescription = "image result",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 360.dp)
+                                .clip(RoundedCornerShape(10.dp)),
+                        )
+                    }
+                }
+            } else {
+                item.output?.takeIf { it.isNotBlank() }?.let { out ->
+                    Spacer(Modifier.height(6.dp))
+                    MonoBlock(out.take(2000))
+                }
             }
         }
     }

@@ -2468,6 +2468,8 @@ Response ControlServer::dispatchMemoryOrSkill(const Request &req)
         return handleMemorySearch(req);
     if (m == QStringLiteral("memory.add"))
         return handleMemoryAdd(req);
+    if (m == QStringLiteral("memory.edit"))
+        return handleMemoryEdit(req);
     if (m == QStringLiteral("memory.remove"))
         return handleMemoryRemove(req);
     if (m == QStringLiteral("skills.list"))
@@ -2534,6 +2536,33 @@ Response ControlServer::handleMemoryAdd(const Request &req)
     QJsonObject result;
     result.insert(QStringLiteral("id"), id);
     return Response::success(req.id, result);
+}
+
+Response ControlServer::handleMemoryEdit(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const QString text = req.params.value(QStringLiteral("text")).toString();
+    if (id.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("id is required"));
+    if (text.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("text is required"));
+    if (text.size() > kMaxMemoryChars)
+        return Response::failure(
+            req.id, QStringLiteral("memory_too_large"),
+            QStringLiteral("memory text too long (%1 chars, max %2) — store a concise "
+                           "fact, not a document").arg(text.size()).arg(kMaxMemoryChars));
+    QStringList tags;
+    for (const QJsonValue &t : req.params.value(QStringLiteral("tags")).toArray())
+        tags << t.toString();
+    if (!m_memory.replace(id, text, tags))
+        return Response::failure(req.id, QStringLiteral("not_found"),
+                                 QStringLiteral("memory not found: ") + id);
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    ok.insert(QStringLiteral("id"), id);
+    return Response::success(req.id, ok);
 }
 
 Response ControlServer::handleMemoryRemove(const Request &req)

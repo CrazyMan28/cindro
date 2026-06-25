@@ -297,6 +297,7 @@ private:
     Response handleMemoryList(const Request &req);
     Response handleMemorySearch(const Request &req);
     Response handleMemoryAdd(const Request &req);
+    Response handleMemoryEdit(const Request &req);
     Response handleMemoryRemove(const Request &req);
     // Contract A v3: self-authored skills (HERMES_FEATURES §2).
     Response handleSkillsList(const Request &req);
