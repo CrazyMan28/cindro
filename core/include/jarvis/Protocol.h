@@ -89,7 +89,8 @@ struct NormalizedBrainEvent {
     static NormalizedBrainEvent turnStarted();
     static NormalizedBrainEvent thinking(const QString &text);
     static NormalizedBrainEvent message(const QString &role, const QString &text);
-    static NormalizedBrainEvent toolCall(const QString &callId, const QString &name, const QJsonObject &args);
+    static NormalizedBrainEvent toolCall(const QString &callId, const QString &name,
+                                         const QJsonObject &args, const QString &server = QString());
     static NormalizedBrainEvent toolResult(const QString &callId, bool ok, const QString &output);
     static NormalizedBrainEvent approval(const QString &approvalId, const QString &summary, const QString &risk);
     static NormalizedBrainEvent diff(const QString &path, const QString &patch);

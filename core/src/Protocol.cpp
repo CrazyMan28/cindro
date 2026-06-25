@@ -178,12 +178,17 @@ NormalizedBrainEvent NormalizedBrainEvent::message(const QString &role, const QS
     return NormalizedBrainEvent(Kind::Message, f);
 }
 
-NormalizedBrainEvent NormalizedBrainEvent::toolCall(const QString &callId, const QString &name, const QJsonObject &args)
+NormalizedBrainEvent NormalizedBrainEvent::toolCall(const QString &callId, const QString &name,
+                                                    const QJsonObject &args, const QString &server)
 {
     QJsonObject f;
     f.insert(QStringLiteral("call_id"), callId);
     f.insert(QStringLiteral("name"), name);
     f.insert(QStringLiteral("args"), args);
+    // Which MCP server served the tool (when the brain reports it) — surfaced in
+    // the chat's tool card.
+    if (!server.isEmpty())
+        f.insert(QStringLiteral("server"), server);
     return NormalizedBrainEvent(Kind::ToolCall, f);
 }
 

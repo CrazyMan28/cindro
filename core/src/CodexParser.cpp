@@ -86,7 +86,10 @@ std::optional<NormalizedBrainEvent> mapItem(const QJsonObject &item)
     if (type == QStringLiteral("mcp_tool_call") ||
         type == QStringLiteral("tool_call") ||
         type == QStringLiteral("function_call")) {
-        const QString name = firstString(item, {"name", "tool", "server"});
+        const QString server = item.value(QStringLiteral("server")).toString();
+        QString name = firstString(item, {"name", "tool"});
+        if (name.isEmpty())
+            name = server;
         const QString status = item.value(QStringLiteral("status")).toString();
         const bool finished = status == QStringLiteral("completed") ||
                               status == QStringLiteral("failed") ||
@@ -103,7 +106,7 @@ std::optional<NormalizedBrainEvent> mapItem(const QJsonObject &item)
         QJsonObject args = item.value(QStringLiteral("arguments")).toObject();
         if (args.isEmpty())
             args = item.value(QStringLiteral("args")).toObject();
-        return NormalizedBrainEvent::toolCall(itemId, name, args);
+        return NormalizedBrainEvent::toolCall(itemId, name, args, server);
     }
 
     if (type == QStringLiteral("file_change") ||

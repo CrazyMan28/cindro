@@ -209,6 +209,7 @@ class ChatViewModel(
                     id = ev.callId ?: nextId(),
                     name = ev.name ?: "tool",
                     argsJson = ev.argsJson,
+                    server = ev.server,
                 ),
             )
             "tool_result" -> mergeToolResult(ev)

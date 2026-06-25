@@ -26,6 +26,7 @@ sealed interface ChatItem {
         val output: String? = null,
         val ok: Boolean? = null,
         val images: List<String> = emptyList(),
+        val server: String? = null,
     ) : ChatItem
 
     /** A code diff the brain produced. */
