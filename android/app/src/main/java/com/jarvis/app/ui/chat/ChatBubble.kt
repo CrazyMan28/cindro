@@ -10,6 +10,7 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -266,16 +267,21 @@ private fun ToolCallBubble(item: ChatItem.ToolCall) {
                         }.getOrNull()
                     }
                     if (bmp != null) {
+                        var showViewer by remember { mutableStateOf(false) }
                         Spacer(Modifier.height(6.dp))
                         Image(
                             bitmap = bmp,
-                            contentDescription = "image result",
+                            contentDescription = "image result — tap to open",
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .heightIn(max = 360.dp)
-                                .clip(RoundedCornerShape(10.dp)),
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { showViewer = true },
                         )
+                        if (showViewer) {
+                            ImageViewerDialog(b64 = b64, onDismiss = { showViewer = false })
+                        }
                     }
                 }
             } else {
