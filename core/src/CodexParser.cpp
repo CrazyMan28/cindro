@@ -65,8 +65,11 @@ std::optional<NormalizedBrainEvent> mapItem(const QJsonObject &item)
         type == QStringLiteral("exec_command")) {
         const QString command = firstString(item, {"command", "cmd"});
         const QString status = item.value(QStringLiteral("status")).toString();
+        QJsonObject args;
+        args.insert(QStringLiteral("command"), command);
         // A completed command carries its output -> tool_result; otherwise it
-        // is the invocation -> tool_call.
+        // is the invocation -> tool_call. Either way carry the command as the input
+        // (name "shell") so the chat card shows what ran, not just the output.
         const bool finished = status == QStringLiteral("completed") ||
                               status == QStringLiteral("failed") ||
                               item.contains(QStringLiteral("exit_code")) ||
@@ -76,10 +79,9 @@ std::optional<NormalizedBrainEvent> mapItem(const QJsonObject &item)
             const int exitCode = item.value(QStringLiteral("exit_code")).toInt(0);
             const bool ok = status != QStringLiteral("failed") && exitCode == 0;
             const QString output = firstString(item, {"aggregated_output", "output", "stdout"});
-            return NormalizedBrainEvent::toolResult(itemId, ok, output);
+            return NormalizedBrainEvent::toolResult(itemId, ok, output,
+                                                    QStringLiteral("shell"), args);
         }
-        QJsonObject args;
-        args.insert(QStringLiteral("command"), command);
         return NormalizedBrainEvent::toolCall(itemId, QStringLiteral("shell"), args);
     }
 
