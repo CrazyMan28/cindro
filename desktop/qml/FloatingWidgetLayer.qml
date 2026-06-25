@@ -110,7 +110,7 @@ Item {
                         spacing: 6
                         Text {
                             Layout.fillWidth: true
-                            text: card.title.length > 0 ? card.title : "WIDGET"
+                            text: card.title.length > 0 ? card.title : "CANVAS"
                             color: Theme.accent
                             font.family: Theme.fontDisplay
                             font.pixelSize: 10
