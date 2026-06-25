@@ -71,6 +71,17 @@ Item {
         return "data:image/svg+xml;utf8," + encodeURIComponent(page.pairSvg)
     }
 
+    // Whole seconds left before the pairing code expires. The daemon sends
+    // `expires_at` as epoch MILLISECONDS; the old code subtracted Date.now()/1000
+    // (seconds) from it, a unit mismatch that produced a garbage countdown and an
+    // instantly-"Expired" code. Normalize (tolerating an epoch-seconds value too)
+    // and diff against Date.now() in the same unit.
+    function pairSecondsLeft() {
+        if (page.pairExpiresAt <= 0) return 0
+        var ms = page.pairExpiresAt > 1e11 ? page.pairExpiresAt : page.pairExpiresAt * 1000
+        return Math.max(0, Math.round((ms - Date.now()) / 1000))
+    }
+
     function load() { bridge.loadSettings(); bridge.listVoices(); bridge.connectorsList() }
     function loadDevices() { page.devicesLoaded = true; bridge.devicesList() }
     Component.onCompleted: if (bridge.connected) { load(); loadDevices() }
@@ -82,8 +93,7 @@ Item {
         repeat: true
         running: page.pairCode.length > 0 && page.pairExpiresAt > 0
         onTriggered: {
-            var rem = Math.round(page.pairExpiresAt - (Date.now() / 1000))
-            page.pairRemaining = rem > 0 ? rem : 0
+            page.pairRemaining = page.pairSecondsLeft()
             if (page.pairRemaining <= 0) {
                 // code expired: clear it so the bay returns to its idle prompt
                 page.pairCode = ""
@@ -105,7 +115,7 @@ Item {
             page.pairCode = code
             page.pairPayload = payload
             page.pairExpiresAt = expiresAt
-            page.pairRemaining = Math.max(0, Math.round(expiresAt - (Date.now() / 1000)))
+            page.pairRemaining = page.pairSecondsLeft()
             // a fresh pairing usually precedes a device showing up
             page.loadDevices()
         }
