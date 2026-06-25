@@ -34,6 +34,15 @@ namespace jarvis {
 
 namespace {
 
+// A long-term memory is a concise FACT/preference, never a document. Writes above
+// this many chars are rejected so a co-work session can't dump a webpage or chat
+// transcript into memory (which would then be injected into every future session).
+constexpr int kMaxMemoryChars = 2000;
+// The auto-saved "remember that …" note is capped much tighter: it must read as a
+// short, deliberate fact, not the tail of a long paste that happened to contain a cue.
+constexpr int kMaxAutoMemoryChars = 280;
+constexpr int kMaxAutoMemorySource = 600;   // skip auto-save for messages longer than this
+
 QString genSessionId()
 {
     // 16 random bytes hex => collision-safe session id.
@@ -879,6 +888,11 @@ void ControlServer::syncTurnMemory(const QString &sessionId, const QString &user
     if (!m_memory.isOpen())
         return;
     const QString t = userText.trimmed();
+    // A pasted document/transcript is NOT a memory. A deliberate "remember that …"
+    // note is short; bail on anything long so a big paste that merely CONTAINS a cue
+    // word can't dump its tail into memory (the original junk-memory bug).
+    if (t.size() > kMaxAutoMemorySource)
+        return;
     static const QStringList cues = {
         QStringLiteral("remember that "), QStringLiteral("remember to "),
         QStringLiteral("note that "),     QStringLiteral("keep in mind that "),
@@ -886,13 +900,20 @@ void ControlServer::syncTurnMemory(const QString &sessionId, const QString &user
     };
     const QString lower = t.toLower();
     for (const QString &cue : cues) {
-        const int idx = lower.indexOf(cue);
-        if (idx >= 0) {
-            QString fact = t.mid(idx + cue.size()).trimmed();
-            if (fact.size() >= 4)
-                m_memory.add(fact, {QStringLiteral("auto"), QStringLiteral("user")});
-            return;
-        }
+        // Require the cue to START the message (a deliberate instruction), not just
+        // appear somewhere inside it.
+        if (!lower.startsWith(cue))
+            continue;
+        QString fact = t.mid(cue.size()).trimmed();
+        // One concise fact: first line only, hard-capped.
+        const int nl = fact.indexOf(QLatin1Char('\n'));
+        if (nl >= 0)
+            fact = fact.left(nl).trimmed();
+        if (fact.size() > kMaxAutoMemoryChars)
+            fact = fact.left(kMaxAutoMemoryChars).trimmed();
+        if (fact.size() >= 4)
+            m_memory.add(fact, {QStringLiteral("auto"), QStringLiteral("user")});
+        return;
     }
 }
 
@@ -2497,6 +2518,16 @@ Response ControlServer::handleMemoryAdd(const Request &req)
     if (text.trimmed().isEmpty())
         return Response::failure(req.id, QStringLiteral("bad_request"),
                                  QStringLiteral("text is required"));
+    // A memory is a concise FACT, not a document. Reject oversized writes so a
+    // co-work session can't dump a whole webpage / chat transcript into long-term
+    // memory — those then pollute EVERY future session via memory injection
+    // (prefetchMemoryBlock). The model should store a short fact and the user can
+    // paste docs into a chat instead.
+    if (text.size() > kMaxMemoryChars)
+        return Response::failure(
+            req.id, QStringLiteral("memory_too_large"),
+            QStringLiteral("memory text too long (%1 chars, max %2) — store a concise "
+                           "fact, not a document").arg(text.size()).arg(kMaxMemoryChars));
     const QString id = m_memory.add(text, tags);
     if (id.isEmpty())
         return Response::failure(req.id, QStringLiteral("store_error"), m_memory.lastError());
