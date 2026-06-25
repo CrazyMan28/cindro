@@ -1,5 +1,6 @@
 package com.jarvis.app.ui.chat
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -53,6 +55,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
@@ -303,26 +306,75 @@ private fun ThinkingBubble(item: ChatItem.Thinking) {
 
 @Composable
 private fun ToolCallBubble(item: ChatItem.ToolCall) {
+    // Collapsed by default: a compact row with a small spinner (running) / check
+    // (done) / error (failed). Tap to expand the params + output. Keeps the
+    // transcript clean while every tool call stays inspectable.
+    val running = item.output == null && item.ok == null && item.images.isEmpty()
+    var expanded by remember { mutableStateOf(false) }
     GlowCard(modifier = Modifier.fillMaxWidth()) {
         Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val tint = when (item.ok) {
-                    true -> JarvisPalette.Success
-                    false -> JarvisPalette.Error
-                    null -> JarvisPalette.Accent
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+            ) {
+                // status: a small spinning reactor while running, else check / error
+                when {
+                    running -> CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = JarvisPalette.Accent,
+                    )
+                    item.ok == false -> Icon(
+                        Icons.Filled.Error, contentDescription = null,
+                        tint = JarvisPalette.Error, modifier = Modifier.size(18.dp),
+                    )
+                    else -> Icon(
+                        Icons.Filled.CheckCircle, contentDescription = null,
+                        tint = JarvisPalette.Success, modifier = Modifier.size(18.dp),
+                    )
                 }
-                Icon(Icons.Filled.Build, contentDescription = null, tint = tint, modifier = Modifier.height(16.dp))
-                Spacer(Modifier.height(0.dp))
                 Text(
                     text = "  ${item.name}",
                     style = MaterialTheme.typography.titleMedium,
                     color = JarvisPalette.TextPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = if (running) "running…" else if (item.ok == false) "failed" else "done",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (item.ok == false) JarvisPalette.Error else JarvisPalette.TextSecondary,
+                )
+                Icon(
+                    Icons.Filled.KeyboardArrowDown,
+                    contentDescription = if (expanded) "collapse" else "expand",
+                    tint = JarvisPalette.TextSecondary,
+                    modifier = Modifier.size(20.dp).rotate(if (expanded) 180f else 0f),
                 )
             }
-            item.argsJson?.takeIf { it.isNotBlank() && it != "{}" }?.let { args ->
-                Spacer(Modifier.height(6.dp))
-                MonoBlock(args)
+            AnimatedVisibility(visible = expanded) {
+                Column {
+                    item.argsJson?.takeIf { it.isNotBlank() && it != "{}" }?.let { args ->
+                        Spacer(Modifier.height(8.dp))
+                        Text("parameters", style = MaterialTheme.typography.labelSmall,
+                            color = JarvisPalette.Accent)
+                        Spacer(Modifier.height(2.dp))
+                        MonoBlock(args)
+                    }
+                    if (item.output?.isNotBlank() == true || item.images.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("output", style = MaterialTheme.typography.labelSmall,
+                            color = JarvisPalette.Accent)
+                    }
+                    ToolCallBody(item)
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun ToolCallBody(item: ChatItem.ToolCall) {
+    Column {
             if (item.images.isNotEmpty()) {
                 // Render screenshots / image results as actual pictures. Decode with
                 // BitmapFactory (downsampled so a 3-monitor screenshot can't OOM) and
@@ -367,7 +419,6 @@ private fun ToolCallBubble(item: ChatItem.ToolCall) {
                 }
             }
         }
-    }
 }
 
 @Composable
