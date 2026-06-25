@@ -103,6 +103,30 @@ int main(int argc, char **argv)
               "NormalizedBrainEvent JSON round-trip");
     }
 
+    // A COMPLETED mcp_tool_call (one item carrying call + result) must keep the
+    // tool name, input args, and server on the result — so the chat card shows
+    // input + output, not just output.
+    {
+        const QByteArray line =
+            "{\"type\":\"item.completed\",\"item\":{\"id\":\"call_9\","
+            "\"type\":\"mcp_tool_call\",\"server\":\"computer-use\",\"name\":\"screenshot\","
+            "\"status\":\"completed\",\"arguments\":{\"which\":\"real\"},"
+            "\"output\":\"<png>\"}}\n";
+        const auto evs2 = jarvis::parseCodexStream({line});
+        const NormalizedBrainEvent *tr = nullptr;
+        for (const auto &e : evs2)
+            if (e.kind == NormalizedBrainEvent::Kind::ToolResult)
+                tr = &e;
+        check(tr != nullptr, "completed mcp_tool_call -> a tool_result");
+        check(tr && tr->fields.value(QStringLiteral("name")).toString() == QStringLiteral("screenshot"),
+              "tool_result carries the tool name");
+        check(tr && tr->fields.value(QStringLiteral("server")).toString() == QStringLiteral("computer-use"),
+              "tool_result carries the server");
+        check(tr && tr->fields.value(QStringLiteral("args")).toObject()
+                        .value(QStringLiteral("which")).toString() == QStringLiteral("real"),
+              "tool_result carries the input args");
+    }
+
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

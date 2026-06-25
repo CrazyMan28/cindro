@@ -95,17 +95,19 @@ std::optional<NormalizedBrainEvent> mapItem(const QJsonObject &item)
                               status == QStringLiteral("failed") ||
                               item.contains(QStringLiteral("result")) ||
                               item.contains(QStringLiteral("output"));
+        QJsonObject args = item.value(QStringLiteral("arguments")).toObject();
+        if (args.isEmpty())
+            args = item.value(QStringLiteral("args")).toObject();
         if (finished) {
             const bool ok = status != QStringLiteral("failed");
             const QString output =
                 flatten(item.contains(QStringLiteral("result"))
                             ? item.value(QStringLiteral("result"))
                             : item.value(QStringLiteral("output")));
-            return NormalizedBrainEvent::toolResult(itemId, ok, output);
+            // Carry name/args/server so the chat card shows the input + tool name,
+            // not just the output (codex reports completed calls as one item).
+            return NormalizedBrainEvent::toolResult(itemId, ok, output, name, args, server);
         }
-        QJsonObject args = item.value(QStringLiteral("arguments")).toObject();
-        if (args.isEmpty())
-            args = item.value(QStringLiteral("args")).toObject();
         return NormalizedBrainEvent::toolCall(itemId, name, args, server);
     }
 
