@@ -225,11 +225,12 @@ class ChatViewModel(
 
     private fun mergeToolResult(ev: BrainEvent) {
         val callId = ev.callId ?: return
+        val images = extractImages(ev.output)
         _uiState.update { st ->
             val existing = st.items.indexOfFirst { it is ChatItem.ToolCall && it.id == callId }
             if (existing >= 0) {
                 val tc = st.items[existing] as ChatItem.ToolCall
-                val updated = tc.copy(output = ev.output, ok = ev.bool("ok") ?: true)
+                val updated = tc.copy(output = ev.output, ok = ev.bool("ok") ?: true, images = images)
                 st.copy(items = st.items.toMutableList().apply { set(existing, updated) })
             } else {
                 // Orphan result (no preceding call seen) — show it standalone.
@@ -240,10 +241,24 @@ class ChatViewModel(
                         argsJson = null,
                         output = ev.output,
                         ok = ev.bool("ok") ?: true,
+                        images = images,
                     ),
                 )
             }
         }
+    }
+
+    /**
+     * Pull base64 image blobs out of a tool result so the chat can render them as
+     * pictures instead of a wall of base64 (e.g. the screenshot / computer-use tools
+     * return MCP image content). Matches any quoted string beginning with a known
+     * image magic — works regardless of how deeply the MCP envelope is nested.
+     */
+    private fun extractImages(output: String?): List<String> {
+        if (output.isNullOrBlank()) return emptyList()
+        // PNG=iVBORw0KGg  JPEG=/9j/  GIF=R0lGOD  WebP=UklGR
+        val re = Regex("\"((?:iVBORw0KGg|/9j/|R0lGOD|UklGR)[A-Za-z0-9+/]{64,}={0,2})\"")
+        return re.findAll(output).map { it.groupValues[1] }.distinct().take(8).toList()
     }
 
     private fun appendItem(item: ChatItem) =

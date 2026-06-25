@@ -16,13 +16,16 @@ sealed interface ChatItem {
     /** Streaming reasoning ("thinking") — shown dimmed, collapsible. */
     data class Thinking(override val id: String, val text: String) : ChatItem
 
-    /** A tool invocation; [output] / [ok] fill in when the matching tool_result arrives. */
+    /** A tool invocation; [output] / [ok] fill in when the matching tool_result arrives.
+     *  [images] holds any base64 image blobs found in the result (e.g. a screenshot
+     *  tool returning PNGs) so the chat can render them instead of a wall of base64. */
     data class ToolCall(
         override val id: String,
         val name: String,
         val argsJson: String?,
         val output: String? = null,
         val ok: Boolean? = null,
+        val images: List<String> = emptyList(),
     ) : ChatItem
 
     /** A code diff the brain produced. */
