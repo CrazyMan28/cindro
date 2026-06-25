@@ -99,6 +99,7 @@ Item {
             anchors.left: parent.left
             anchors.right: parent.right
             radius: Theme.radiusSm
+            property bool saved: false   // ★ -> saved into the Widgets library
             readonly property var specTree: {
                 try { return JSON.parse(del.text) } catch (e) { return ({}) }
             }
@@ -107,6 +108,10 @@ Item {
             border.width: 1
             border.color: Theme.accentDim
             clip: true
+
+            // Reveal the save / pop-out actions on hover (HoverHandler doesn't
+            // swallow clicks meant for the widget itself).
+            HoverHandler { id: wHover }
 
             // left accent seam — reads as a Jarvis-produced module
             Rectangle {
@@ -131,7 +136,9 @@ Item {
                     Layout.fillWidth: true
                     spacing: 7
                     Text {
-                        text: "◆ WIDGET"
+                        // An ad-hoc model render is a CANVAS (the reusable, saved
+                        // kind live on the Widgets tab). Save ★ promotes it to one.
+                        text: "◆ CANVAS"
                         color: Theme.accent
                         opacity: 0.75
                         font.family: Theme.fontDisplay
@@ -150,8 +157,38 @@ Item {
                         elide: Text.ElideRight
                     }
                     Item { Layout.fillWidth: true }
+                    // save ★ -> persist this canvas into the reusable Widgets tab.
+                    // Revealed on hover; turns into a ✓ once saved.
+                    Rectangle {
+                        Layout.preferredWidth: 20; Layout.preferredHeight: 20
+                        radius: Theme.radiusXs
+                        visible: wHover.hovered || wCard.saved
+                        color: saveMa.containsMouse ? Theme.surface : "transparent"
+                        border.width: 1
+                        border.color: saveMa.containsMouse ? Theme.hairline : "transparent"
+                        Text {
+                            anchors.centerIn: parent
+                            text: wCard.saved ? "✓" : "★"
+                            color: wCard.saved ? Theme.success
+                                   : (saveMa.containsMouse ? Theme.amber : Theme.textMuted)
+                            font.pixelSize: 12
+                        }
+                        MouseArea {
+                            id: saveMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                bridge.saveWidget(
+                                    del.toolName.length > 0 ? del.toolName : "Canvas widget",
+                                    wCard.specTree)
+                                wCard.saved = true
+                            }
+                        }
+                    }
                     // pop out -> standalone always-on-top window hosting this widget
                     Rectangle {
+                        visible: wHover.hovered
                         Layout.preferredWidth: 20; Layout.preferredHeight: 20
                         radius: Theme.radiusXs
                         color: popMa.containsMouse ? Theme.surface : "transparent"

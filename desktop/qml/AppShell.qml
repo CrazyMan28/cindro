@@ -79,7 +79,7 @@ Item {
             // Each page is wrapped so we can animate opacity + a small x-slide.
             // Only the active page is interactive; the rest fade out behind it.
             Repeater {
-                model: 14
+                model: 15
                 delegate: Item {
                     id: pageWrap
                     required property int index
@@ -119,6 +119,7 @@ Item {
                             case 11: return settingsComp
                             case 12: return mcpComp
                             case 13: return pluginsComp
+                            case 14: return widgetsComp
                             }
                         }
                     }
@@ -184,4 +185,14 @@ Item {
     Component { id: settingsComp; SettingsPage {} }
     Component { id: mcpComp;      McpPage {} }
     Component { id: pluginsComp;  PluginsPage {} }
+    Component {
+        id: widgetsComp
+        WidgetsPage {
+            // "Render to chat" drops a saved widget into the live conversation and
+            // jumps to Chat so the user sees it land.
+            onRenderedToChat: function() { shell.currentIndex = 0 }
+            // "Render to canvas" jumps to the Canvas page to show the result.
+            onRenderedToCanvas: function() { shell.currentIndex = 3 }
+        }
+    }
 }

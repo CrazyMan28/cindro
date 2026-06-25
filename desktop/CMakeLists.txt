@@ -48,6 +48,7 @@ qt_add_qml_module(jarvis-sidebar
         qml/TodayBriefing.qml
         qml/ComputerPage.qml
         qml/CanvasPage.qml
+        qml/WidgetsPage.qml
         qml/VoiceMode.qml
         qml/WidgetRenderer.qml
         qml/StandaloneWidget.qml
