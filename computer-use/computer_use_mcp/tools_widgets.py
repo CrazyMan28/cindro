@@ -13,7 +13,7 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from computer_use_mcp import saved_widgets, widgets_bus
+from computer_use_mcp import live_widgets, saved_widgets, widgets_bus
 
 
 def register(mcp: FastMCP) -> None:
@@ -192,3 +192,40 @@ def register(mcp: FastMCP) -> None:
         rec = widgets_bus.append_widget(w.get("spec"), title=title or w.get("name", ""),
                                         widget_id="", target=target)
         return json.dumps({"ok": True, "id": rec.get("id", ""), "from": w.get("id")})
+
+    # ----- Live (auto-updating) widgets ------------------------------------
+    @mcp.tool()
+    def widget_live(id: str, command: str, spec: dict, interval_sec: float = 5,
+                    title: str = "", target: str = "canvas") -> str:
+        r"""Make a widget UPDATE LIVE, on its own, in the background — for ANYTHING,
+        not just system stats. A detached loop runs `command` every `interval_sec`
+        seconds, takes its stdout, substitutes it into `spec` wherever the literal
+        token "{{value}}" appears, and re-renders the widget under `id` (so the card
+        updates in place). The model chooses the command, the cadence, and the look.
+
+        Examples:
+          - live CPU%:   command="top -bn1 | awk '/Cpu/{print 100-$8}'"
+            spec={"type":"column","gap":4,"children":[
+                    {"type":"text","text":"CPU {{value}}%","weight":700},
+                    {"type":"progress","value":"{{value}}","grow":true}]}
+          - any value:   command="curl -s https://api.example.com/price"
+            spec={"type":"text","text":"Price: {{value}}","size":18}
+
+        Pick interval_sec for how often it refreshes (min 1s). Call widget_live_stop(id)
+        to stop it, or widget_live_list() to see what's running. For a one-shot
+        (no updating) widget, use render_widget instead.
+        """
+        job = live_widgets.start(str(id), str(command), interval_sec, spec,
+                                 title=title, target=target)
+        return json.dumps({"ok": True, "id": job.get("id", ""), "pid": job.get("pid", 0),
+                           "interval_sec": job.get("interval_sec")})
+
+    @mcp.tool()
+    def widget_live_stop(id: str) -> str:
+        """Stop a live (auto-updating) widget's background refresher."""
+        return json.dumps({"ok": True, "stopped": live_widgets.stop(str(id))})
+
+    @mcp.tool()
+    def widget_live_list() -> str:
+        """List live (auto-updating) widget jobs and whether each is still running."""
+        return json.dumps({"ok": True, "jobs": live_widgets.list_jobs()})
