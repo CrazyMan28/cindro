@@ -1242,7 +1242,19 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "file INTO their chat, where images render inline and any other type gets a "
             "Download button. NEVER upload to Google Drive, never paste a local file path, "
             "and never return a markdown image link like ![x](/home/...): none of those "
-            "work on their phone. Always use send_file.");
+            "work on their phone. Always use send_file.\n"
+            "MEMORY: when the user states a durable fact or preference (their name, how "
+            "they like things done, project details, decisions), CALL remember to save "
+            "it — and edit_memory / forget to keep it current. Use recall / list_memories "
+            "to check what you already know before asking again.\n"
+            "SKILLS: when you work out a repeatable procedure the user may want again, "
+            "CALL create_skill to save it as a reusable skill (and edit_skill to refine "
+            "it); list_skills / invoke_skill to reuse them. Build skills proactively when "
+            "it helps — don't wait to be told.\n"
+            "CANVAS / VISUALS: to draw or render anything real (a duck, a chart, a "
+            "diagram, a UI mockup), call render_widget and provide actual SVG markup in a "
+            "{\"type\":\"svg\",\"svg\":\"<svg …>…</svg>\"} node — NOT a one-word label. "
+            "Write real SVG that depicts the thing; the Canvas renders it.");
         effectiveText = guide + QStringLiteral("\n---\n") + effectiveText;
     }
 
