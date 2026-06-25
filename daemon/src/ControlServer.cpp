@@ -3120,6 +3120,19 @@ QString ControlServer::fireScheduledJob(const ScheduleRow &row)
     if (!sendToSession(sid, row.prompt, {}, &err))
         qWarning("jarvisd: scheduled job '%s' send failed: %s",
                  qPrintable(row.name), qPrintable(err));
+    // Push a notification to paired phones (incl. backgrounded ones) that a
+    // scheduled task started — distinct from a manual session.opened. Tapping it
+    // deep-links to the new session's chat (data.session_id).
+    if (m_fcm) {
+        PushMessage msg;
+        msg.title = QStringLiteral("Scheduled task started");
+        msg.body = row.name.isEmpty() ? QStringLiteral("A scheduled Jarvis task is running")
+                                       : row.name;
+        msg.data.insert(QStringLiteral("kind"), QStringLiteral("schedule_fired"));
+        msg.data.insert(QStringLiteral("session_id"), sid);
+        for (const PushTokenRow &t : m_store.listPushTokens())
+            m_fcm->send(t.fcmToken, msg);
+    }
     return sid;
 }
 
