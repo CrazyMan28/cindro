@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -100,6 +101,24 @@ class ChatViewModel(
     private fun subscribe() {
         viewModelScope.launch {
             repo.eventsFor(_uiState.value.sessionId).collect(::fold)
+        }
+        // Files Jarvis sends (jarvis_send_file -> file.offer) land in THIS chat when
+        // they target this session (or carry no session id). Shown only when the model
+        // actually sends one.
+        viewModelScope.launch {
+            repo.fileOffers
+                .filter { it.sessionId == null || it.sessionId == _uiState.value.sessionId }
+                .collect { fo ->
+                    appendItem(
+                        ChatItem.FileOffer(
+                            id = fo.id.ifBlank { nextId() },
+                            name = fo.name,
+                            mime = fo.mime,
+                            size = fo.size,
+                            b64 = fo.b64,
+                        ),
+                    )
+                }
         }
     }
 

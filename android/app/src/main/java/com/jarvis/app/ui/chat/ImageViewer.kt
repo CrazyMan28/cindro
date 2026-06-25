@@ -88,7 +88,9 @@ fun ImageViewerDialog(b64: String, onDismiss: () -> Unit) {
                 modifier = Modifier.align(Alignment.TopEnd).padding(10.dp),
             ) {
                 HapticIconButton(onClick = {
-                    val ok = saveImageToDownloads(context, b64)
+                    val ok = saveFileToDownloads(
+                        context, b64, "jarvis_${System.currentTimeMillis()}.png", "image/png",
+                    )
                     Toast.makeText(
                         context,
                         if (ok) "Saved to Downloads" else "Couldn't save image",
@@ -106,18 +108,19 @@ fun ImageViewerDialog(b64: String, onDismiss: () -> Unit) {
 }
 
 /**
- * Write a base64 image to the device's public Downloads folder. Uses MediaStore on
+ * Write ANY base64 file to the device's public Downloads folder. Uses MediaStore on
  * API 29+ (no permission needed); falls back to the legacy Downloads path below that.
  * Returns false on any failure.
  */
-fun saveImageToDownloads(context: Context, b64: String): Boolean {
+fun saveFileToDownloads(context: Context, b64: String, name: String, mime: String?): Boolean {
     return runCatching {
         val bytes = Base64.decode(b64, Base64.DEFAULT)
-        val name = "jarvis_${System.currentTimeMillis()}.png"
+        val safeName = name.ifBlank { "jarvis_${System.currentTimeMillis()}" }
+        val mimeType = mime?.ifBlank { null } ?: "application/octet-stream"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, name)
-                put(MediaStore.Downloads.MIME_TYPE, "image/png")
+                put(MediaStore.Downloads.DISPLAY_NAME, safeName)
+                put(MediaStore.Downloads.MIME_TYPE, mimeType)
                 put(MediaStore.Downloads.IS_PENDING, 1)
             }
             val resolver = context.contentResolver
@@ -132,7 +135,7 @@ fun saveImageToDownloads(context: Context, b64: String): Boolean {
             @Suppress("DEPRECATION")
             val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
             dir.mkdirs()
-            java.io.File(dir, name).outputStream().use { it.write(bytes) }
+            java.io.File(dir, safeName).outputStream().use { it.write(bytes) }
             true
         }
     }.getOrDefault(false)

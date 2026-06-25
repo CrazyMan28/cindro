@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
@@ -87,8 +88,83 @@ fun ChatBubble(
             is ChatItem.Diff -> DiffBubble(item)
             is ChatItem.Approval -> ApprovalCard(item, onApprove)
             is ChatItem.Error -> ErrorBubble(item)
+            is ChatItem.FileOffer -> FileOfferBubble(item)
         }
     }
+}
+
+@Composable
+private fun FileOfferBubble(item: ChatItem.FileOffer) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val isImage = item.mime?.startsWith("image/") == true && item.b64 != null
+    GlowCard(modifier = Modifier.fillMaxWidth(), accent = true) {
+        Column {
+            Text(
+                text = item.name.ifBlank { "file" },
+                style = MaterialTheme.typography.titleMedium,
+                color = JarvisPalette.Accent,
+            )
+            item.size?.let { sz ->
+                Text(
+                    text = humanSize(sz) + (item.mime?.let { "  •  $it" } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = JarvisPalette.TextSecondary,
+                )
+            }
+            if (isImage && item.b64 != null) {
+                // Render images inline (tap to open fullscreen + save).
+                val bmp = remember(item.b64) {
+                    runCatching {
+                        val raw = Base64.decode(item.b64, Base64.DEFAULT)
+                        val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeByteArray(raw, 0, raw.size, b)
+                        var s = 1
+                        while (b.outWidth / s > 2048) s *= 2
+                        BitmapFactory.decodeByteArray(
+                            raw, 0, raw.size, BitmapFactory.Options().apply { inSampleSize = s },
+                        )?.asImageBitmap()
+                    }.getOrNull()
+                }
+                if (bmp != null) {
+                    var showViewer by remember { mutableStateOf(false) }
+                    Spacer(Modifier.height(8.dp))
+                    Image(
+                        bitmap = bmp,
+                        contentDescription = item.name,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { showViewer = true },
+                    )
+                    if (showViewer) {
+                        ImageViewerDialog(b64 = item.b64, onDismiss = { showViewer = false })
+                    }
+                }
+            }
+            if (item.b64 != null) {
+                Spacer(Modifier.height(8.dp))
+                HapticOutlinedButton(onClick = {
+                    val ok = saveFileToDownloads(context, item.b64, item.name, item.mime)
+                    android.widget.Toast.makeText(
+                        context,
+                        if (ok) "Saved to Downloads" else "Couldn't save",
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                }) {
+                    Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Text("  Save to Downloads")
+                }
+            }
+        }
+    }
+}
+
+private fun humanSize(bytes: Long): String = when {
+    bytes >= 1_000_000 -> "%.1f MB".format(bytes / 1_000_000.0)
+    bytes >= 1_000 -> "%.0f KB".format(bytes / 1_000.0)
+    else -> "$bytes B"
 }
 
 @Composable
