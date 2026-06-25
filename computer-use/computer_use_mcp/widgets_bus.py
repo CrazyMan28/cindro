@@ -65,6 +65,10 @@ def append_widget(spec, title: str = "", widget_id: str = "",
         "id": wid,
         "spec": spec,
         "target": tgt,
+        # Stamp the originating session so the desktop can scope a widget to its
+        # chat and REPLAY it when that session is reopened (instead of a global
+        # bus that leaks across sessions and vanishes on reload).
+        "session_id": os.environ.get("JARVIS_AGENT_SESSION", ""),
     }
     _append_record(record)
     return record

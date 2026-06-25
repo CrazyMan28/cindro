@@ -400,6 +400,10 @@ public:
     // and emits savedWidgetsListed; saveWidget persists a spec under a name (tap
     // "Save as widget" on a canvas); deleteSavedWidget removes one; renderSavedWidget
     // drops a saved spec onto the bus (target: canvas|chat|voice|both).
+    // Re-emit the widgets a (reopened) session rendered, so its chat/canvas
+    // restore instead of coming back empty.
+    Q_INVOKABLE void replaySessionWidgets(const QString &sessionId);
+
     Q_INVOKABLE void refreshSavedWidgets();
     Q_INVOKABLE void saveWidget(const QString &name, const QVariant &spec);
     Q_INVOKABLE void deleteSavedWidget(const QString &id);
