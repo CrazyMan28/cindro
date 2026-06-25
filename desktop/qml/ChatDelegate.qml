@@ -26,6 +26,8 @@ Item {
     signal allow(string approvalId)
     signal deny(string approvalId)
     signal always(string approvalId)
+    // A button inside an inline widget (render_widget) fired its action map.
+    signal widgetAction(var action)
     // Emitted as the typewriter reveal grows the bubble, so the panel can keep the
     // transcript pinned to the bottom while text streams in.
     signal grew()
@@ -71,6 +73,7 @@ Item {
         sourceComponent: {
             switch (del.kind) {
             case "message":      return messageComp
+            case "widget":       return widgetComp
             case "tool":         return unifiedToolComp
             case "tool_call":    return toolCallComp
             case "tool_result":  return toolResultComp
@@ -79,6 +82,103 @@ Item {
             case "question":     return questionComp
             case "error":        return errorComp
             default:             return messageComp
+            }
+        }
+    }
+
+    // ===== Inline widget (render_widget) ====================================
+    // The model's render_widget output, drawn INLINE in the transcript via the
+    // safe WidgetRenderer JSON-DSL — not floated on top of the chat. del.text is
+    // the spec as a JSON STRING (a ListModel var role mangles nested children/ops
+    // arrays, so we parse it back into a clean tree here); del.toolName is the
+    // title; del.callId is the widget id (used for "pop out").
+    Component {
+        id: widgetComp
+        Rectangle {
+            id: wCard
+            anchors.left: parent.left
+            anchors.right: parent.right
+            radius: Theme.radiusSm
+            readonly property var specTree: {
+                try { return JSON.parse(del.text) } catch (e) { return ({}) }
+            }
+            implicitHeight: wCol.implicitHeight + 20
+            color: Theme.surfaceDeep
+            border.width: 1
+            border.color: Theme.accentDim
+            clip: true
+
+            // left accent seam — reads as a Jarvis-produced module
+            Rectangle {
+                anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
+                anchors.margins: 1
+                width: 3; radius: 1
+                color: Theme.accent
+                opacity: 0.7
+            }
+
+            ColumnLayout {
+                id: wCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.leftMargin: 14
+                anchors.rightMargin: 12
+                anchors.topMargin: 10
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 7
+                    Text {
+                        text: "◆ WIDGET"
+                        color: Theme.accent
+                        opacity: 0.75
+                        font.family: Theme.fontDisplay
+                        font.pixelSize: 8
+                        font.letterSpacing: Theme.trackMid
+                    }
+                    Text {
+                        visible: del.toolName.length > 0
+                        Layout.maximumWidth: del.width * 0.6
+                        text: del.toolName
+                        color: Theme.accentBright
+                        font.family: Theme.fontDisplay
+                        font.pixelSize: 11
+                        font.weight: Font.DemiBold
+                        font.letterSpacing: Theme.trackTight
+                        elide: Text.ElideRight
+                    }
+                    Item { Layout.fillWidth: true }
+                    // pop out -> standalone always-on-top window hosting this widget
+                    Rectangle {
+                        Layout.preferredWidth: 20; Layout.preferredHeight: 20
+                        radius: Theme.radiusXs
+                        color: popMa.containsMouse ? Theme.surface : "transparent"
+                        border.width: 1
+                        border.color: popMa.containsMouse ? Theme.hairline : "transparent"
+                        Text {
+                            anchors.centerIn: parent
+                            text: "⧉"
+                            color: popMa.containsMouse ? Theme.accentBright : Theme.textMuted
+                            font.pixelSize: 12
+                        }
+                        MouseArea {
+                            id: popMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: bridge.popOutWidget(del.callId, del.toolName, wCard.specTree)
+                        }
+                    }
+                }
+
+                // the safe DSL interpreter renders the spec tree inline
+                WidgetRenderer {
+                    Layout.fillWidth: true
+                    node: wCard.specTree
+                    onActionRequested: function(action) { del.widgetAction(action) }
+                }
             }
         }
     }
