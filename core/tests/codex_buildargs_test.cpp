@@ -101,10 +101,18 @@ int main()
         check(hasPair(args, QStringLiteral("--image"), QStringLiteral("/tmp/b.jpg")),
               "image 2 passed as --image <path>");
         check(args.last() == prompt, "prompt still trailing after images");
+        // `-i/--image <FILE>...` is variadic, so without a `--` terminator codex
+        // swallows the prompt as another image path and exits with
+        // "No prompt provided via stdin". The prompt MUST be preceded by `--`.
+        const int pIdx = args.lastIndexOf(prompt);
+        check(pIdx > 0 && args.at(pIdx - 1) == QStringLiteral("--"),
+              "prompt is separated from variadic --image by a `--` terminator");
         // no spurious --image when there are no attachments
         const QStringList none = brain.buildArgs(prompt);
         check(!none.contains(QStringLiteral("--image")),
               "no --image when no attachments");
+        check(!none.contains(QStringLiteral("--")),
+              "no `--` terminator when there are no images");
     }
 
     if (g_failures == 0)

@@ -1234,7 +1234,14 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "VISUALS: whenever the user asks you to SHOW / DRAW / DISPLAY / VISUALIZE "
             "something (a chart, a list, a diagram, a card, \"show me a duck\"), you "
             "MUST CALL the render_widget tool with a JSON spec — it pops the widget on "
-            "their Canvas/chat. Do NOT just describe it in words; actually render it.");
+            "their Canvas/chat. Do NOT just describe it in words; actually render it.\n"
+            "SENDING FILES/PHOTOS: the user is on a PHONE and CANNOT open local desktop "
+            "paths. Whenever they ask you to SEND / SHARE / \"give me\" a file, image, "
+            "photo, slide, screenshot, PDF, log, etc., you MUST CALL the jarvis_send_file "
+            "tool with that file's full path (it also accepts base64) — it delivers the "
+            "file INTO their chat where it renders and can be saved. NEVER answer by "
+            "pasting a local path or a markdown image link like ![x](/home/...): that "
+            "shows nothing on their phone and does NOT send the file.");
         effectiveText = guide + QStringLiteral("\n---\n") + effectiveText;
     }
 
