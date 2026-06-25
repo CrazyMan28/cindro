@@ -71,6 +71,7 @@ Item {
         sourceComponent: {
             switch (del.kind) {
             case "message":      return messageComp
+            case "tool":         return unifiedToolComp
             case "tool_call":    return toolCallComp
             case "tool_result":  return toolResultComp
             case "diff":         return diffComp
@@ -78,6 +79,158 @@ Item {
             case "question":     return questionComp
             case "error":        return errorComp
             default:             return messageComp
+            }
+        }
+    }
+
+    // ===== Unified tool card (call + result merged) =========================
+    // Collapsed by default: a small spinning reactor while running, a check / error
+    // glyph when done, the tool name + status. Click to expand the INPUT (params)
+    // and OUTPUT. `del.text` is a JSON envelope {i:input, o:output, d:done, s:server}.
+    Component {
+        id: unifiedToolComp
+        Rectangle {
+            id: toolCard
+            anchors.left: parent.left
+            anchors.right: parent.right
+            radius: Theme.radiusXs
+            property var td: {
+                try { return JSON.parse(del.text) }
+                catch (e) { return { i: "", o: del.text, d: true, s: "" } }
+            }
+            readonly property bool toolDone: td.d === true
+            readonly property string inputText: td.i || ""
+            readonly property string outputText: td.o || ""
+            readonly property string server: td.s || ""
+            property bool expanded: false
+            implicitHeight: toolCol.implicitHeight + 16
+            color: Theme.surfaceDeep
+            border.width: 1
+            border.color: !toolDone ? Theme.accentDim
+                          : (del.ok ? Theme.hairlineSoft : Theme.danger)
+            clip: true
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: toolCard.expanded = !toolCard.expanded
+            }
+
+            ColumnLayout {
+                id: toolCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                anchors.topMargin: 8
+                spacing: 6
+
+                // ---- header: status + name + server + state + chevron ----
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 9
+                    ArcReactor {
+                        visible: !toolCard.toolDone
+                        Layout.preferredWidth: 16; Layout.preferredHeight: 16
+                        size: 16; spinning: true; thinking: true; tint: Theme.accent
+                    }
+                    Text {
+                        visible: toolCard.toolDone
+                        text: del.ok ? "✓" : "✕"
+                        color: del.ok ? Theme.success : Theme.danger
+                        font.pixelSize: 14; font.weight: Font.Bold
+                    }
+                    Text {
+                        text: del.toolName
+                        color: Theme.accentBright
+                        font.family: Theme.fontMono
+                        font.pixelSize: 12
+                        font.weight: Font.Medium
+                    }
+                    Text {
+                        visible: toolCard.server.length > 0
+                        text: "· " + toolCard.server
+                        color: Theme.textFaint
+                        font.family: Theme.fontMono
+                        font.pixelSize: 10
+                    }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        text: !toolCard.toolDone ? "running…"
+                              : (del.ok ? "done" : "failed")
+                        color: !toolCard.toolDone ? Theme.accent
+                               : (del.ok ? Theme.textFaint : Theme.danger)
+                        font.family: Theme.fontDisplay
+                        font.pixelSize: 9
+                        font.letterSpacing: Theme.trackMid
+                    }
+                    Text {
+                        text: toolCard.expanded ? "▴" : "▾"
+                        color: Theme.textFaint
+                        font.pixelSize: 11
+                    }
+                }
+
+                // ---- collapsed: a single-line preview ----
+                Text {
+                    visible: !toolCard.expanded
+                           && (toolCard.outputText.length > 0 || toolCard.inputText.length > 0)
+                    Layout.fillWidth: true
+                    text: toolCard.outputText.length > 0 ? toolCard.outputText
+                                                         : toolCard.inputText
+                    color: Theme.textFaint
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
+                    font.family: Theme.fontMono
+                    font.pixelSize: 11
+                    textFormat: Text.PlainText
+                }
+
+                // ---- expanded: INPUT params + OUTPUT ----
+                ColumnLayout {
+                    visible: toolCard.expanded
+                    Layout.fillWidth: true
+                    spacing: 3
+                    Text {
+                        visible: toolCard.inputText.length > 0
+                        text: "INPUT"
+                        color: Theme.accent
+                        font.pixelSize: 9; font.family: Theme.fontDisplay
+                        font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold
+                    }
+                    Text {
+                        visible: toolCard.inputText.length > 0
+                        Layout.fillWidth: true
+                        text: toolCard.inputText
+                        color: Theme.textMuted
+                        wrapMode: Text.Wrap
+                        font.family: Theme.fontMono
+                        font.pixelSize: 11
+                        textFormat: Text.PlainText
+                    }
+                    Text {
+                        visible: toolCard.outputText.length > 0
+                        Layout.topMargin: toolCard.inputText.length > 0 ? 5 : 0
+                        text: del.ok ? "OUTPUT" : "FAULT"
+                        color: del.ok ? Theme.success : Theme.danger
+                        font.pixelSize: 9; font.family: Theme.fontDisplay
+                        font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold
+                    }
+                    Text {
+                        visible: toolCard.outputText.length > 0
+                        Layout.fillWidth: true
+                        text: toolCard.outputText
+                        color: Theme.textMuted
+                        wrapMode: Text.Wrap
+                        maximumLineCount: 60
+                        elide: Text.ElideRight
+                        font.family: Theme.fontMono
+                        font.pixelSize: 11
+                        lineHeight: 1.35
+                        textFormat: Text.PlainText
+                    }
+                }
             }
         }
     }
