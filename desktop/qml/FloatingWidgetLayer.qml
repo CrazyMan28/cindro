@@ -33,17 +33,20 @@ Item {
                       ? ("" + w.id) : ("w" + layer.cascade)
             var title = (w.title !== undefined) ? ("" + w.title) : ""
             // Update in place if a card with this id already exists.
+            // Store the spec as a JSON STRING: a ListModel var role mangles the
+            // nested children/ops arrays (Array.isArray fails -> nothing renders).
+            var specStr = JSON.stringify(w.spec)
             for (var i = 0; i < cards.count; i++) {
                 if (cards.get(i).wid === wid) {
                     cards.setProperty(i, "title", title)
-                    cards.setProperty(i, "spec", w.spec)
+                    cards.setProperty(i, "spec", specStr)
                     return
                 }
             }
             var sx = 16 + (layer.cascade % 4) * 24
             var sy = 16 + (layer.cascade % 4) * 24
             layer.cascade++
-            cards.append({ "wid": wid, "title": title, "spec": w.spec, "px": sx, "py": sy })
+            cards.append({ "wid": wid, "title": title, "spec": specStr, "px": sx, "py": sy })
             while (cards.count > layer.maxCards)
                 cards.remove(0)
         }
@@ -56,9 +59,12 @@ Item {
             required property int index
             required property string wid
             required property string title
-            required property var spec
+            required property string spec
             required property real px
             required property real py
+            readonly property var specTree: {
+                try { return JSON.parse(card.spec) } catch (e) { return ({}) }
+            }
 
             z: 50 + index
             width: Math.min(Math.max(cardCol.implicitWidth + 20, 150), layer.width - 16)
@@ -133,7 +139,7 @@ Item {
                 // ---- the rendered widget (safe DSL; clicks pass through to it) ----
                 WidgetRenderer {
                     Layout.fillWidth: true
-                    node: card.spec
+                    node: card.specTree
                 }
             }
         }

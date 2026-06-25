@@ -19,6 +19,24 @@ Item {
     // event and the turn's "final"/"error"). Drives the composer's Stop button.
     property bool busy: false
 
+    // The session id the transcript currently represents. The chat transcript is a
+    // STRICT FUNCTION of this: the reconciler (onSessionIdChanged) wipes the
+    // transcript whenever bridge.sessionId changes to anything else — + New, opening
+    // another session, deleting the current one, a coworker/voice session taking
+    // over, or the daemon assigning a fresh id. This is the single source of truth
+    // that previously kept drifting (old/Chrome content lingering under a different
+    // or empty session, "+ New" not clearing). Handlers that legitimately (re)load a
+    // session set this themselves right after wiping.
+    property string chatSessionId: ""
+
+    // Set true between "user sent the first message of a fresh chat" and the daemon
+    // assigning that new session its id. In that window the transcript already holds
+    // the user's just-typed message FOR the session being born, so the reconciler
+    // must ADOPT the incoming id rather than wipe (else the user's own message
+    // vanishes the instant the session.create reply lands — the "it removes what I
+    // said" bug). Any OTHER session change still wipes.
+    property bool pendingNewSession: false
+
     // Whimsical "working" status — a spinning mark + a rotating funny phrase shown
     // while busy (Claude-Code flavored). Pure cosmetics.
     property var thinkingPhrases: [
@@ -108,23 +126,59 @@ Item {
             break
         case "tool_call":
             panel.thinking = false
+            // ONE unified "tool" row per call. `text` carries a JSON envelope
+            // {i:input, o:output, d:done, s:server} so the delegate can show a
+            // collapsed card (spinner while running) that expands to input+output —
+            // no new model roles needed. The matching tool_result merges in below.
             chatModel.append({
-                "kind": "tool_call", "role": "tool",
-                "text": ev.args !== undefined ? JSON.stringify(ev.args) : "",
+                "kind": "tool", "role": "tool",
+                "text": JSON.stringify({
+                    i: ev.args !== undefined ? JSON.stringify(ev.args, null, 2) : "",
+                    o: "", d: false, s: ev.server !== undefined ? ("" + ev.server) : ""
+                }),
                 "callId": ev.call_id !== undefined ? ev.call_id : "",
                 "toolName": ev.name !== undefined ? ev.name : "tool",
                 "approvalId": "", "risk": "", "ok": true, "streaming": false
             })
             break
-        case "tool_result":
-            chatModel.append({
-                "kind": "tool_result", "role": "tool",
-                "text": ev.output !== undefined ? ("" + ev.output) : "",
-                "callId": ev.call_id !== undefined ? ev.call_id : "",
-                "toolName": "", "approvalId": "", "risk": "",
-                "ok": ev.ok !== false, "streaming": false
-            })
+        case "tool_result": {
+            var cid = ev.call_id !== undefined ? ev.call_id : ""
+            var outp = ev.output !== undefined ? ("" + ev.output) : ""
+            var okv = ev.ok !== false
+            // The result may ALSO carry the call's input/name/server (codex reports a
+            // completed call as one item), so the card can show input + name + output.
+            var inp = ev.args !== undefined ? JSON.stringify(ev.args, null, 2) : ""
+            var nm = (ev.name !== undefined && ("" + ev.name).length > 0) ? ("" + ev.name) : ""
+            var srv = ev.server !== undefined ? ("" + ev.server) : ""
+            var merged = false
+            if (cid.length > 0) {
+                for (var ti = chatModel.count - 1; ti >= 0; ti--) {
+                    var row = chatModel.get(ti)
+                    if (row.kind === "tool" && row.callId === cid) {
+                        var d = { i: "", o: "", d: false, s: "" }
+                        try { d = JSON.parse(row.text) } catch (e) {}
+                        d.o = outp; d.d = true
+                        if ((!d.i || d.i.length === 0) && inp.length > 0) d.i = inp
+                        if ((!d.s || d.s.length === 0) && srv.length > 0) d.s = srv
+                        chatModel.setProperty(ti, "text", JSON.stringify(d))
+                        chatModel.setProperty(ti, "ok", okv)
+                        if (nm.length > 0 && (row.toolName === "" || row.toolName === "tool"))
+                            chatModel.setProperty(ti, "toolName", nm)
+                        merged = true
+                        break
+                    }
+                }
+            }
+            if (!merged) {
+                chatModel.append({
+                    "kind": "tool", "role": "tool",
+                    "text": JSON.stringify({ i: inp, o: outp, d: true, s: srv }),
+                    "callId": cid, "toolName": nm.length > 0 ? nm : "result",
+                    "approvalId": "", "risk": "", "ok": okv, "streaming": false
+                })
+            }
             break
+        }
         case "approval":
             panel.thinking = false
             chatModel.append({
@@ -192,10 +246,37 @@ Item {
                 panel.startNewChat()
         }
 
+        // THE reconciler. The transcript belongs to exactly ONE session
+        // (panel.chatSessionId). The moment the live session changes out from under
+        // it — via ANY path (+ New clears it, opening another session, deleting the
+        // current one, a coworker/voice session, the daemon minting a fresh id) — wipe
+        // the transcript so content from the old session can never linger under a
+        // different (or empty) session. Every m_sessionId transition emits
+        // sessionIdChanged, so this one handler closes all the leaks the per-path
+        // fixes kept missing. onSessionHistory/onSessionEvent re-stamp chatSessionId
+        // when they legitimately (re)populate the transcript.
+        function onSessionIdChanged() {
+            if (bridge.sessionId === panel.chatSessionId)
+                return
+            // Our own fresh chat just got its daemon id: the transcript already holds
+            // the user's first message for THIS session — adopt, don't wipe.
+            if (panel.pendingNewSession && bridge.sessionId.length > 0) {
+                panel.pendingNewSession = false
+                panel.chatSessionId = bridge.sessionId
+                return
+            }
+            // Genuine switch (open another / delete current / + New / coworker /
+            // voice / cleared): the transcript no longer belongs here — wipe it.
+            chatModel.clear()
+            panel.thinking = false
+            panel.busy = false
+            panel.pendingNewSession = false
+            panel.chatSessionId = bridge.sessionId
+        }
+
         // Opening a stored session from the Sessions page: clear + replay.
         function onSessionOpened(sessionId) {
             chatModel.clear()
-            chatWidgets.clear()
             panel.thinking = false
             panel.busy = false
         }
@@ -208,6 +289,7 @@ Item {
                 return
             chatModel.clear()
             panel.busy = false
+            panel.chatSessionId = sessionId   // the transcript now represents this session
             // History replay: full text immediately (live=false => no typewriter).
             for (var i = 0; i < events.length; i++)
                 panel.appendEvent(events[i], false)
@@ -237,12 +319,46 @@ Item {
             chatView.positionViewAtEnd()
         }
 
+        // The model rendered a widget (render_widget). It now lands INLINE in the
+        // transcript — right where the model produced it, reading like a tool
+        // result — instead of floating on top of the chat. The model still owns
+        // WHEN (it calls render_widget); this only fixes WHERE it shows. The spec
+        // is stored as a JSON STRING (a ListModel var role mangles nested
+        // children/ops arrays so the renderer would draw only the title). Re-render
+        // with the same id updates that row in place; a new id appends a new card.
+        function onWidgetRendered(w) {
+            if (!w || w.spec === undefined)
+                return
+            var wid = (w.id !== undefined && ("" + w.id).length > 0) ? ("" + w.id) : ""
+            var title = (w.title !== undefined) ? ("" + w.title) : ""
+            var specStr = JSON.stringify(w.spec)
+            if (wid.length > 0) {
+                for (var i = chatModel.count - 1; i >= 0; i--) {
+                    var row = chatModel.get(i)
+                    if (row.kind === "widget" && row.callId === wid) {
+                        chatModel.setProperty(i, "text", specStr)
+                        chatModel.setProperty(i, "toolName", title)
+                        return
+                    }
+                }
+            }
+            chatModel.append({
+                "kind": "widget", "role": "tool", "text": specStr,
+                "callId": wid, "toolName": title,
+                "approvalId": "", "risk": "", "ok": true, "streaming": false
+            })
+            chatView.positionViewAtEnd()
+        }
+
         function onSessionEvent(ev) {
             // Belt-and-suspenders with the Bridge-side filter: ONLY render events for
             // this chat's current session. A Chrome/phone session (different id) must
             // never leak into the chat the user is looking at.
             if (ev.session_id !== undefined && ev.session_id !== bridge.sessionId)
                 return
+            // This live turn belongs to the current session; the transcript now
+            // represents it (covers the type-on-fresh-chat create-then-stream path).
+            panel.chatSessionId = bridge.sessionId
             // Live event from the ongoing turn -> stream assistant text + track busy.
             panel.appendEvent(ev, true)
             chatView.positionViewAtEnd()
@@ -630,6 +746,8 @@ Item {
                     onAllow: function(approvalId) { bridge.respondApproval(approvalId, "allow") }
                     onDeny:  function(approvalId) { bridge.respondApproval(approvalId, "deny") }
                     onAlways: function(approvalId) { bridge.respondApproval(approvalId, "always") }
+                    // A button inside an inline render_widget fired its action.
+                    onWidgetAction: function(action) { panel.handleWidgetAction(action) }
                     // Keep the transcript pinned to the bottom while a streaming
                     // assistant message types itself in (only if already at/near end).
                     onGrew: {
@@ -672,16 +790,6 @@ Item {
                         }
                     }
                 }
-            }
-
-            // Draggable floating widgets the model pops up (render_widget). They
-            // appear over the chat and can be dragged anywhere; the CANVAS tab keeps
-            // the full persistent list. Empty areas pass clicks through to the chat.
-            FloatingWidgetLayer {
-                id: chatWidgets
-                anchors.fill: parent
-                anchors.margins: 14
-                z: 50
             }
         }
 
@@ -927,8 +1035,10 @@ Item {
         var t = ("" + message).trim()
         if (t.length === 0 || !bridge.connected)
             return
-        if (bridge.sessionId.length === 0)
+        if (bridge.sessionId.length === 0) {
+            panel.pendingNewSession = true
             bridge.createSession("coder", panel.selectedBrain, panel.selectedModel)
+        }
         chatModel.append({
             "kind": "message", "role": "user", "text": t,
             "callId": "", "toolName": "", "approvalId": "", "risk": "", "ok": true,
@@ -939,6 +1049,19 @@ Item {
         chatView.positionViewAtEnd()
     }
 
+    // A button inside an inline widget (render_widget) fired an action. Same fixed
+    // allow-set as CanvasPage.handleAction: send -> inject a user turn; skill ->
+    // invoke a skill. Unknown keys do nothing; nothing is ever eval'd.
+    function handleWidgetAction(action) {
+        if (!action || typeof action !== "object")
+            return
+        if (typeof action.send === "string" && action.send.length > 0)
+            panel.injectUser(action.send)
+        else if (typeof action.skill === "string" && action.skill.length > 0)
+            bridge.skillInvoke(action.skill,
+                               (typeof action.args === "string") ? action.args : "")
+    }
+
     // Inject a rendered skill (from the Skills page /invoke) into the transcript
     // as a user turn and send it. Creates a session first if none is active, just
     // like submit(). The skill text becomes the next model input.
@@ -946,8 +1069,10 @@ Item {
         var t = ("" + message).trim()
         if (t.length === 0 || !bridge.connected)
             return
-        if (bridge.sessionId.length === 0)
+        if (bridge.sessionId.length === 0) {
+            panel.pendingNewSession = true
             bridge.createSession("coder", panel.selectedBrain, panel.selectedModel)
+        }
         chatModel.append({
             "kind": "message", "role": "user",
             "text": "/" + name + (t.length ? "\n\n" + t : ""),
@@ -966,8 +1091,12 @@ Item {
             return
 
         // First message creates a session (coder profile, selected brain + model).
-        if (bridge.sessionId.length === 0)
+        // Flag the create so the reconciler ADOPTS the new id instead of wiping the
+        // user message we're about to echo.
+        if (bridge.sessionId.length === 0) {
+            panel.pendingNewSession = true
             bridge.createSession("coder", panel.selectedBrain, panel.selectedModel)
+        }
 
         chatModel.append({
             "kind": "message", "role": "user", "text": t,
@@ -995,9 +1124,14 @@ Item {
     // bridge.newSession() clears Bridge::m_sessionId without a daemon round-trip,
     // reproducing the "no current session yet" state the composer relies on.
     function startNewChat() {
+        // Drop any half-started create and forget which session the transcript held,
+        // so the reconciler can't later "adopt" into this wipe. newSession() emits
+        // sessionIdChanged only when a session was actually set; clear explicitly too
+        // so a fresh-on-fresh + New still resets everything.
+        panel.pendingNewSession = false
+        panel.chatSessionId = ""
         bridge.newSession()
         chatModel.clear()
-        chatWidgets.clear()
         panel.busy = false
         panel.thinking = false
         inputArea.text = ""

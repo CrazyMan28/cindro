@@ -119,7 +119,10 @@ Item {
                 }
             }
 
-            // digest body
+            // digest body — HARD-BOUNDED so an oversized digest (e.g. a memory
+            // that captured a big pasted blob) can never overflow the empty-state
+            // column and shove the rest of the chat off-screen. Capped to a sane
+            // number of lines and elided; the daemon also previews memory rows.
             Text {
                 Layout.fillWidth: true
                 text: brief.digest.length > 0
@@ -132,6 +135,8 @@ Item {
                 font.pixelSize: 13
                 lineHeight: 1.4
                 wrapMode: Text.WordWrap
+                maximumLineCount: 16
+                elide: Text.ElideRight
             }
         }
     }

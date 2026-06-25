@@ -65,8 +65,11 @@ std::optional<NormalizedBrainEvent> mapItem(const QJsonObject &item)
         type == QStringLiteral("exec_command")) {
         const QString command = firstString(item, {"command", "cmd"});
         const QString status = item.value(QStringLiteral("status")).toString();
+        QJsonObject args;
+        args.insert(QStringLiteral("command"), command);
         // A completed command carries its output -> tool_result; otherwise it
-        // is the invocation -> tool_call.
+        // is the invocation -> tool_call. Either way carry the command as the input
+        // (name "shell") so the chat card shows what ran, not just the output.
         const bool finished = status == QStringLiteral("completed") ||
                               status == QStringLiteral("failed") ||
                               item.contains(QStringLiteral("exit_code")) ||
@@ -76,34 +79,38 @@ std::optional<NormalizedBrainEvent> mapItem(const QJsonObject &item)
             const int exitCode = item.value(QStringLiteral("exit_code")).toInt(0);
             const bool ok = status != QStringLiteral("failed") && exitCode == 0;
             const QString output = firstString(item, {"aggregated_output", "output", "stdout"});
-            return NormalizedBrainEvent::toolResult(itemId, ok, output);
+            return NormalizedBrainEvent::toolResult(itemId, ok, output,
+                                                    QStringLiteral("shell"), args);
         }
-        QJsonObject args;
-        args.insert(QStringLiteral("command"), command);
         return NormalizedBrainEvent::toolCall(itemId, QStringLiteral("shell"), args);
     }
 
     if (type == QStringLiteral("mcp_tool_call") ||
         type == QStringLiteral("tool_call") ||
         type == QStringLiteral("function_call")) {
-        const QString name = firstString(item, {"name", "tool", "server"});
+        const QString server = item.value(QStringLiteral("server")).toString();
+        QString name = firstString(item, {"name", "tool"});
+        if (name.isEmpty())
+            name = server;
         const QString status = item.value(QStringLiteral("status")).toString();
         const bool finished = status == QStringLiteral("completed") ||
                               status == QStringLiteral("failed") ||
                               item.contains(QStringLiteral("result")) ||
                               item.contains(QStringLiteral("output"));
+        QJsonObject args = item.value(QStringLiteral("arguments")).toObject();
+        if (args.isEmpty())
+            args = item.value(QStringLiteral("args")).toObject();
         if (finished) {
             const bool ok = status != QStringLiteral("failed");
             const QString output =
                 flatten(item.contains(QStringLiteral("result"))
                             ? item.value(QStringLiteral("result"))
                             : item.value(QStringLiteral("output")));
-            return NormalizedBrainEvent::toolResult(itemId, ok, output);
+            // Carry name/args/server so the chat card shows the input + tool name,
+            // not just the output (codex reports completed calls as one item).
+            return NormalizedBrainEvent::toolResult(itemId, ok, output, name, args, server);
         }
-        QJsonObject args = item.value(QStringLiteral("arguments")).toObject();
-        if (args.isEmpty())
-            args = item.value(QStringLiteral("args")).toObject();
-        return NormalizedBrainEvent::toolCall(itemId, name, args);
+        return NormalizedBrainEvent::toolCall(itemId, name, args, server);
     }
 
     if (type == QStringLiteral("file_change") ||
