@@ -251,14 +251,36 @@ class ChatViewModel(
     /**
      * Pull base64 image blobs out of a tool result so the chat can render them as
      * pictures instead of a wall of base64 (e.g. the screenshot / computer-use tools
-     * return MCP image content). Matches any quoted string beginning with a known
-     * image magic — works regardless of how deeply the MCP envelope is nested.
+     * return MCP image content). Finds a known image magic (PNG/JPEG/GIF/WebP) and
+     * walks the base64 run with a plain loop — NO regex, because a greedy
+     * `{64,}` over a 600KB+ screenshot can StackOverflow Android's java.util.regex.
+     * Works regardless of how the MCP envelope is quoted/nested.
      */
     private fun extractImages(output: String?): List<String> {
         if (output.isNullOrBlank()) return emptyList()
-        // PNG=iVBORw0KGg  JPEG=/9j/  GIF=R0lGOD  WebP=UklGR
-        val re = Regex("\"((?:iVBORw0KGg|/9j/|R0lGOD|UklGR)[A-Za-z0-9+/]{64,}={0,2})\"")
-        return re.findAll(output).map { it.groupValues[1] }.distinct().take(8).toList()
+        return runCatching {
+            val magics = listOf("iVBORw0KGg", "/9j/", "R0lGOD", "UklGR")
+            val out = ArrayList<String>()
+            var i = 0
+            while (i < output.length && out.size < 6) {
+                var start = -1
+                for (m in magics) {
+                    val idx = output.indexOf(m, i)
+                    if (idx >= 0 && (start < 0 || idx < start)) start = idx
+                }
+                if (start < 0) break
+                var j = start
+                while (j < output.length) {
+                    val c = output[j]
+                    if (c in 'A'..'Z' || c in 'a'..'z' || c in '0'..'9' ||
+                        c == '+' || c == '/' || c == '='
+                    ) j++ else break
+                }
+                if (j - start >= 128) out.add(output.substring(start, j))
+                i = j + 1
+            }
+            out.distinct()
+        }.getOrDefault(emptyList())
     }
 
     private fun appendItem(item: ChatItem) =
