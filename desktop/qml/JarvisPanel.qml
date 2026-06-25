@@ -293,6 +293,9 @@ Item {
             // History replay: full text immediately (live=false => no typewriter).
             for (var i = 0; i < events.length; i++)
                 panel.appendEvent(events[i], false)
+            // Restore the widgets THIS session rendered (they live on a separate bus,
+            // not in the event history) so reopening a session brings them back.
+            bridge.replaySessionWidgets(sessionId)
             chatView.positionViewAtEnd()
         }
 
@@ -334,6 +337,11 @@ Item {
             // Canvas tab; "voice" pops near the orb. Keeps the chat uncluttered.
             var target = (w.target !== undefined) ? ("" + w.target) : "canvas"
             if (target !== "chat" && target !== "both")
+                return
+            // Scope to THIS session: a widget another session rendered must not leak
+            // into the chat being viewed (empty session_id = legacy/global -> allow).
+            var sid = (w.session_id !== undefined) ? ("" + w.session_id) : ""
+            if (sid.length > 0 && sid !== bridge.sessionId)
                 return
             var wid = (w.id !== undefined && ("" + w.id).length > 0) ? ("" + w.id) : ""
             var title = (w.title !== undefined) ? ("" + w.title) : ""

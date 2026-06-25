@@ -1927,10 +1927,61 @@ void Bridge::readWidgetTail()
                       o.value(QStringLiteral("title")).toString());
         widget.insert(QStringLiteral("id"), id);
         widget.insert(QStringLiteral("target"), target);
+        widget.insert(QStringLiteral("session_id"),
+                      o.value(QStringLiteral("session_id")).toString());
         widget.insert(QStringLiteral("spec"),
                       o.value(QStringLiteral("spec")).toVariant());
         emit widgetRendered(widget);
     }
+}
+
+void Bridge::replaySessionWidgets(const QString &sessionId)
+{
+    // Reopening a stored session: re-emit the widgets that session rendered so its
+    // chat (and the Canvas) come back instead of staying empty. Scan the whole bus
+    // (capped at a few MB), apply remove/clear, keep the LAST spec per id whose
+    // session_id matches, then emit them in render order.
+    if (sessionId.isEmpty())
+        return;
+    QFile f(widgetsPath());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    QStringList order;
+    QHash<QString, QVariantMap> byId;
+    while (!f.atEnd()) {
+        const QByteArray line = f.readLine().trimmed();
+        if (line.isEmpty())
+            continue;
+        const QJsonDocument d = QJsonDocument::fromJson(line);
+        if (!d.isObject())
+            continue;
+        const QJsonObject o = d.object();
+        const QString op = o.value(QStringLiteral("op")).toString();
+        QString id = o.value(QStringLiteral("id")).toString();
+        if (op == QStringLiteral("clear")) { order.clear(); byId.clear(); continue; }
+        if (op == QStringLiteral("remove")) { order.removeAll(id); byId.remove(id); continue; }
+        if (!o.contains(QStringLiteral("spec")))
+            continue;
+        if (o.value(QStringLiteral("session_id")).toString() != sessionId)
+            continue;
+        if (id.isEmpty())
+            id = o.value(QStringLiteral("ts")).toVariant().toString();
+        QString target = o.value(QStringLiteral("target")).toString();
+        if (target.isEmpty())
+            target = QStringLiteral("canvas");
+        QVariantMap widget;
+        widget.insert(QStringLiteral("ts"), o.value(QStringLiteral("ts")).toVariant());
+        widget.insert(QStringLiteral("title"), o.value(QStringLiteral("title")).toString());
+        widget.insert(QStringLiteral("id"), id);
+        widget.insert(QStringLiteral("target"), target);
+        widget.insert(QStringLiteral("session_id"), sessionId);
+        widget.insert(QStringLiteral("spec"), o.value(QStringLiteral("spec")).toVariant());
+        if (!byId.contains(id))
+            order.append(id);
+        byId.insert(id, widget);
+    }
+    for (const QString &id : order)
+        emit widgetRendered(byId.value(id));
 }
 
 void Bridge::popOutWidget(const QString &id, const QString &title, const QVariant &spec)
