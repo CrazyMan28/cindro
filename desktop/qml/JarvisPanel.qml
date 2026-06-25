@@ -126,23 +126,50 @@ Item {
             break
         case "tool_call":
             panel.thinking = false
+            // ONE unified "tool" row per call. `text` carries a JSON envelope
+            // {i:input, o:output, d:done, s:server} so the delegate can show a
+            // collapsed card (spinner while running) that expands to input+output —
+            // no new model roles needed. The matching tool_result merges in below.
             chatModel.append({
-                "kind": "tool_call", "role": "tool",
-                "text": ev.args !== undefined ? JSON.stringify(ev.args) : "",
+                "kind": "tool", "role": "tool",
+                "text": JSON.stringify({
+                    i: ev.args !== undefined ? JSON.stringify(ev.args, null, 2) : "",
+                    o: "", d: false, s: ev.server !== undefined ? ("" + ev.server) : ""
+                }),
                 "callId": ev.call_id !== undefined ? ev.call_id : "",
                 "toolName": ev.name !== undefined ? ev.name : "tool",
                 "approvalId": "", "risk": "", "ok": true, "streaming": false
             })
             break
-        case "tool_result":
-            chatModel.append({
-                "kind": "tool_result", "role": "tool",
-                "text": ev.output !== undefined ? ("" + ev.output) : "",
-                "callId": ev.call_id !== undefined ? ev.call_id : "",
-                "toolName": "", "approvalId": "", "risk": "",
-                "ok": ev.ok !== false, "streaming": false
-            })
+        case "tool_result": {
+            var cid = ev.call_id !== undefined ? ev.call_id : ""
+            var outp = ev.output !== undefined ? ("" + ev.output) : ""
+            var okv = ev.ok !== false
+            var merged = false
+            if (cid.length > 0) {
+                for (var ti = chatModel.count - 1; ti >= 0; ti--) {
+                    var row = chatModel.get(ti)
+                    if (row.kind === "tool" && row.callId === cid) {
+                        var d = { i: "", o: "", d: false, s: "" }
+                        try { d = JSON.parse(row.text) } catch (e) {}
+                        d.o = outp; d.d = true
+                        chatModel.setProperty(ti, "text", JSON.stringify(d))
+                        chatModel.setProperty(ti, "ok", okv)
+                        merged = true
+                        break
+                    }
+                }
+            }
+            if (!merged) {
+                chatModel.append({
+                    "kind": "tool", "role": "tool",
+                    "text": JSON.stringify({ i: "", o: outp, d: true, s: "" }),
+                    "callId": cid, "toolName": "result",
+                    "approvalId": "", "risk": "", "ok": okv, "streaming": false
+                })
+            }
             break
+        }
         case "approval":
             panel.thinking = false
             chatModel.append({
