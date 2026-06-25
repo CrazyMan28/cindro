@@ -253,15 +253,18 @@ class ChatViewModel(
                 val updated = tc.copy(output = ev.output, ok = ev.bool("ok") ?: true, images = images)
                 st.copy(items = st.items.toMutableList().apply { set(existing, updated) })
             } else {
-                // Orphan result (no preceding call seen) — show it standalone.
+                // Orphan result (no preceding call) — codex reports a completed call
+                // as one item, so the result carries the name/args/server too: show
+                // them as a full card (input + output), not just output.
                 st.copy(
                     items = st.items + ChatItem.ToolCall(
-                        id = nextId(),
-                        name = "result",
-                        argsJson = null,
+                        id = ev.callId ?: nextId(),
+                        name = ev.name ?: "result",
+                        argsJson = ev.argsJson,
                         output = ev.output,
                         ok = ev.bool("ok") ?: true,
                         images = images,
+                        server = ev.server,
                     ),
                 )
             }

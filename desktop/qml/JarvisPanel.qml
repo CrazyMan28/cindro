@@ -145,6 +145,11 @@ Item {
             var cid = ev.call_id !== undefined ? ev.call_id : ""
             var outp = ev.output !== undefined ? ("" + ev.output) : ""
             var okv = ev.ok !== false
+            // The result may ALSO carry the call's input/name/server (codex reports a
+            // completed call as one item), so the card can show input + name + output.
+            var inp = ev.args !== undefined ? JSON.stringify(ev.args, null, 2) : ""
+            var nm = (ev.name !== undefined && ("" + ev.name).length > 0) ? ("" + ev.name) : ""
+            var srv = ev.server !== undefined ? ("" + ev.server) : ""
             var merged = false
             if (cid.length > 0) {
                 for (var ti = chatModel.count - 1; ti >= 0; ti--) {
@@ -153,8 +158,12 @@ Item {
                         var d = { i: "", o: "", d: false, s: "" }
                         try { d = JSON.parse(row.text) } catch (e) {}
                         d.o = outp; d.d = true
+                        if ((!d.i || d.i.length === 0) && inp.length > 0) d.i = inp
+                        if ((!d.s || d.s.length === 0) && srv.length > 0) d.s = srv
                         chatModel.setProperty(ti, "text", JSON.stringify(d))
                         chatModel.setProperty(ti, "ok", okv)
+                        if (nm.length > 0 && (row.toolName === "" || row.toolName === "tool"))
+                            chatModel.setProperty(ti, "toolName", nm)
                         merged = true
                         break
                     }
@@ -163,8 +172,8 @@ Item {
             if (!merged) {
                 chatModel.append({
                     "kind": "tool", "role": "tool",
-                    "text": JSON.stringify({ i: "", o: outp, d: true, s: "" }),
-                    "callId": cid, "toolName": "result",
+                    "text": JSON.stringify({ i: inp, o: outp, d: true, s: srv }),
+                    "callId": cid, "toolName": nm.length > 0 ? nm : "result",
                     "approvalId": "", "risk": "", "ok": okv, "streaming": false
                 })
             }
