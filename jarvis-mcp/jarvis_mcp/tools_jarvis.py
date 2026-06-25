@@ -146,16 +146,63 @@ def register(mcp: FastMCP) -> list[str]:
     @mcp.tool()
     async def jarvis_memory_add(text: str,
                                 tags: Optional[list[str]] = None) -> dict[str, Any]:
-        """Add a fact to Jarvis long-term memory. tags: optional labels."""
+        """Add ONE concise fact/preference to long-term memory (returns its id).
+        Store short facts, NOT documents — writes over ~2000 chars are rejected
+        (memory_too_large); paste long content into a chat instead. tags optional."""
         params: dict[str, Any] = {"text": text}
         if tags:
             params["tags"] = tags
         return await _call("memory.add", params)
 
     @mcp.tool()
+    async def jarvis_memory_list(limit: int = 50) -> dict[str, Any]:
+        """List all long-term memories (newest first): id, text, tags, created."""
+        return await _call("memory.list", {"limit": limit}, timeout=20)
+
+    @mcp.tool()
+    async def jarvis_memory_edit(id: str, text: str,
+                                 tags: Optional[list[str]] = None) -> dict[str, Any]:
+        """Replace the text (and tags) of an existing memory by id. Same concise-fact
+        size limit as add. tags omitted = clears tags."""
+        params: dict[str, Any] = {"id": id, "text": text}
+        if tags is not None:
+            params["tags"] = tags
+        return await _call("memory.edit", params)
+
+    @mcp.tool()
+    async def jarvis_memory_remove(id: str) -> dict[str, Any]:
+        """Delete a long-term memory by id."""
+        return await _call("memory.remove", {"id": id})
+
+    @mcp.tool()
     async def jarvis_skill_list() -> dict[str, Any]:
         """List Jarvis self-authored skills (name + description)."""
         return await _call("skills.list", timeout=20)
+
+    @mcp.tool()
+    async def jarvis_skill_get(name: str) -> dict[str, Any]:
+        """Read one skill: its frontmatter, body (SKILL.md), and path."""
+        return await _call("skills.get", {"name": name})
+
+    @mcp.tool()
+    async def jarvis_skill_create(name: str, description: str, body: str,
+                                  group: str = "",
+                                  scripts: Optional[list[dict[str, str]]] = None,
+                                  ) -> dict[str, Any]:
+        """Create OR edit a self-authored skill (writes SKILL.md; re-creating an
+        existing name overwrites it = edit). body is the skill's markdown.
+        scripts: optional [{name, content}] helper files written alongside it."""
+        params: dict[str, Any] = {"name": name, "description": description, "body": body}
+        if group:
+            params["group"] = group
+        if scripts:
+            params["scripts"] = scripts
+        return await _call("skills.create", params)
+
+    @mcp.tool()
+    async def jarvis_skill_remove(name: str) -> dict[str, Any]:
+        """Delete a self-authored skill by name."""
+        return await _call("skills.remove", {"name": name})
 
     @mcp.tool()
     async def jarvis_skill_invoke(name: str,
@@ -168,6 +215,25 @@ def register(mcp: FastMCP) -> list[str]:
         return await _call("skills.invoke", params)
 
     @mcp.tool()
+    async def jarvis_send_file(name: str, path: str = "", b64: str = "",
+                               session_id: str = "") -> dict[str, Any]:
+        """Send ANY file to the user's phone (photo, PDF, log, zip, …). Provide
+        either an on-disk `path` OR base64 `b64` plus a display `name` (with the
+        right extension so the phone shows/opens it correctly). The phone receives
+        it as a file.offer it can preview (images) or download (any type).
+        session_id optional (associates it with a conversation)."""
+        params: dict[str, Any] = {"name": name}
+        if path:
+            params["path"] = path
+        if b64:
+            params["b64"] = b64
+        if session_id:
+            params["session_id"] = session_id
+        if not path and not b64:
+            return {"error": "bad_request", "message": "provide path or b64"}
+        return await _call("file.push", params, timeout=60)
+
+    @mcp.tool()
     async def jarvis_today() -> dict[str, Any]:
         """Jarvis's daily digest: recent sessions, memory, and available skills."""
         return await _call("skills.today", timeout=20)
@@ -176,6 +242,10 @@ def register(mcp: FastMCP) -> list[str]:
         "jarvis_ping", "jarvis_start_session", "jarvis_send",
         "jarvis_cancel_session", "jarvis_list_sessions", "jarvis_session_history",
         "jarvis_session_events", "jarvis_approval_respond", "jarvis_queue_task",
-        "jarvis_list_tasks", "jarvis_memory_search", "jarvis_memory_add",
-        "jarvis_skill_list", "jarvis_skill_invoke", "jarvis_today",
+        "jarvis_list_tasks",
+        "jarvis_memory_search", "jarvis_memory_add", "jarvis_memory_list",
+        "jarvis_memory_edit", "jarvis_memory_remove",
+        "jarvis_skill_list", "jarvis_skill_get", "jarvis_skill_create",
+        "jarvis_skill_remove", "jarvis_skill_invoke",
+        "jarvis_send_file", "jarvis_today",
     ]

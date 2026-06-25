@@ -74,6 +74,7 @@ data class BrainEvent(val kind: String, val fields: JsonObject) {
     val role: String? get() = str("role")
     val callId: String? get() = str("call_id")
     val name: String? get() = str("name")
+    val server: String? get() = str("server")
     val output: String? get() = str("output")
     val approvalId: String? get() = str("approval_id")
     val summary: String? get() = str("summary")

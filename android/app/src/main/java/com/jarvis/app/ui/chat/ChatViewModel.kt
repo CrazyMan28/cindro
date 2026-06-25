@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -100,6 +101,24 @@ class ChatViewModel(
     private fun subscribe() {
         viewModelScope.launch {
             repo.eventsFor(_uiState.value.sessionId).collect(::fold)
+        }
+        // Files Jarvis sends (jarvis_send_file -> file.offer) land in THIS chat when
+        // they target this session (or carry no session id). Shown only when the model
+        // actually sends one.
+        viewModelScope.launch {
+            repo.fileOffers
+                .filter { it.sessionId == null || it.sessionId == _uiState.value.sessionId }
+                .collect { fo ->
+                    appendItem(
+                        ChatItem.FileOffer(
+                            id = fo.id.ifBlank { nextId() },
+                            name = fo.name,
+                            mime = fo.mime,
+                            size = fo.size,
+                            b64 = fo.b64,
+                        ),
+                    )
+                }
         }
     }
 
@@ -190,6 +209,7 @@ class ChatViewModel(
                     id = ev.callId ?: nextId(),
                     name = ev.name ?: "tool",
                     argsJson = ev.argsJson,
+                    server = ev.server,
                 ),
             )
             "tool_result" -> mergeToolResult(ev)
@@ -225,25 +245,65 @@ class ChatViewModel(
 
     private fun mergeToolResult(ev: BrainEvent) {
         val callId = ev.callId ?: return
+        val images = extractImages(ev.output)
         _uiState.update { st ->
             val existing = st.items.indexOfFirst { it is ChatItem.ToolCall && it.id == callId }
             if (existing >= 0) {
                 val tc = st.items[existing] as ChatItem.ToolCall
-                val updated = tc.copy(output = ev.output, ok = ev.bool("ok") ?: true)
+                val updated = tc.copy(output = ev.output, ok = ev.bool("ok") ?: true, images = images)
                 st.copy(items = st.items.toMutableList().apply { set(existing, updated) })
             } else {
-                // Orphan result (no preceding call seen) — show it standalone.
+                // Orphan result (no preceding call) — codex reports a completed call
+                // as one item, so the result carries the name/args/server too: show
+                // them as a full card (input + output), not just output.
                 st.copy(
                     items = st.items + ChatItem.ToolCall(
-                        id = nextId(),
-                        name = "result",
-                        argsJson = null,
+                        id = ev.callId ?: nextId(),
+                        name = ev.name ?: "result",
+                        argsJson = ev.argsJson,
                         output = ev.output,
                         ok = ev.bool("ok") ?: true,
+                        images = images,
+                        server = ev.server,
                     ),
                 )
             }
         }
+    }
+
+    /**
+     * Pull base64 image blobs out of a tool result so the chat can render them as
+     * pictures instead of a wall of base64 (e.g. the screenshot / computer-use tools
+     * return MCP image content). Finds a known image magic (PNG/JPEG/GIF/WebP) and
+     * walks the base64 run with a plain loop — NO regex, because a greedy
+     * `{64,}` over a 600KB+ screenshot can StackOverflow Android's java.util.regex.
+     * Works regardless of how the MCP envelope is quoted/nested.
+     */
+    private fun extractImages(output: String?): List<String> {
+        if (output.isNullOrBlank()) return emptyList()
+        return runCatching {
+            val magics = listOf("iVBORw0KGg", "/9j/", "R0lGOD", "UklGR")
+            val out = ArrayList<String>()
+            var i = 0
+            while (i < output.length && out.size < 6) {
+                var start = -1
+                for (m in magics) {
+                    val idx = output.indexOf(m, i)
+                    if (idx >= 0 && (start < 0 || idx < start)) start = idx
+                }
+                if (start < 0) break
+                var j = start
+                while (j < output.length) {
+                    val c = output[j]
+                    if (c in 'A'..'Z' || c in 'a'..'z' || c in '0'..'9' ||
+                        c == '+' || c == '/' || c == '='
+                    ) j++ else break
+                }
+                if (j - start >= 128) out.add(output.substring(start, j))
+                i = j + 1
+            }
+            out.distinct()
+        }.getOrDefault(emptyList())
     }
 
     private fun appendItem(item: ChatItem) =

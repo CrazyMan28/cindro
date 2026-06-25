@@ -178,21 +178,37 @@ NormalizedBrainEvent NormalizedBrainEvent::message(const QString &role, const QS
     return NormalizedBrainEvent(Kind::Message, f);
 }
 
-NormalizedBrainEvent NormalizedBrainEvent::toolCall(const QString &callId, const QString &name, const QJsonObject &args)
+NormalizedBrainEvent NormalizedBrainEvent::toolCall(const QString &callId, const QString &name,
+                                                    const QJsonObject &args, const QString &server)
 {
     QJsonObject f;
     f.insert(QStringLiteral("call_id"), callId);
     f.insert(QStringLiteral("name"), name);
     f.insert(QStringLiteral("args"), args);
+    // Which MCP server served the tool (when the brain reports it) — surfaced in
+    // the chat's tool card.
+    if (!server.isEmpty())
+        f.insert(QStringLiteral("server"), server);
     return NormalizedBrainEvent(Kind::ToolCall, f);
 }
 
-NormalizedBrainEvent NormalizedBrainEvent::toolResult(const QString &callId, bool ok, const QString &output)
+NormalizedBrainEvent NormalizedBrainEvent::toolResult(const QString &callId, bool ok, const QString &output,
+                                                      const QString &name, const QJsonObject &args,
+                                                      const QString &server)
 {
     QJsonObject f;
     f.insert(QStringLiteral("call_id"), callId);
     f.insert(QStringLiteral("ok"), ok);
     f.insert(QStringLiteral("output"), output);
+    // Carry the call's name/args/server too: codex reports a COMPLETED tool call as
+    // a single item (no prior in-progress call), so without this the chat card would
+    // show output with no tool name / input parameters.
+    if (!name.isEmpty())
+        f.insert(QStringLiteral("name"), name);
+    if (!args.isEmpty())
+        f.insert(QStringLiteral("args"), args);
+    if (!server.isEmpty())
+        f.insert(QStringLiteral("server"), server);
     return NormalizedBrainEvent(Kind::ToolResult, f);
 }
 

@@ -34,6 +34,15 @@ namespace jarvis {
 
 namespace {
 
+// A long-term memory is a concise FACT/preference, never a document. Writes above
+// this many chars are rejected so a co-work session can't dump a webpage or chat
+// transcript into memory (which would then be injected into every future session).
+constexpr int kMaxMemoryChars = 2000;
+// The auto-saved "remember that …" note is capped much tighter: it must read as a
+// short, deliberate fact, not the tail of a long paste that happened to contain a cue.
+constexpr int kMaxAutoMemoryChars = 280;
+constexpr int kMaxAutoMemorySource = 600;   // skip auto-save for messages longer than this
+
 QString genSessionId()
 {
     // 16 random bytes hex => collision-safe session id.
@@ -197,6 +206,8 @@ void ControlServer::onSocketDisconnected()
     if (!client)
         return;
     m_clients.remove(client);
+    m_scopedClients.remove(client);
+    m_subscriptions.remove(client);
     client->deleteLater();
 }
 
@@ -256,6 +267,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionList(req);
     else if (m == QStringLiteral("session.history"))
         resp = handleSessionHistory(req);
+    else if (m == QStringLiteral("session.subscribe"))
+        resp = handleSessionSubscribe(client, req);
     else if (m == QStringLiteral("approval.respond"))
         resp = handleApprovalRespond(req);
     else if (m == QStringLiteral("mcp.list"))
@@ -875,6 +888,11 @@ void ControlServer::syncTurnMemory(const QString &sessionId, const QString &user
     if (!m_memory.isOpen())
         return;
     const QString t = userText.trimmed();
+    // A pasted document/transcript is NOT a memory. A deliberate "remember that …"
+    // note is short; bail on anything long so a big paste that merely CONTAINS a cue
+    // word can't dump its tail into memory (the original junk-memory bug).
+    if (t.size() > kMaxAutoMemorySource)
+        return;
     static const QStringList cues = {
         QStringLiteral("remember that "), QStringLiteral("remember to "),
         QStringLiteral("note that "),     QStringLiteral("keep in mind that "),
@@ -882,13 +900,20 @@ void ControlServer::syncTurnMemory(const QString &sessionId, const QString &user
     };
     const QString lower = t.toLower();
     for (const QString &cue : cues) {
-        const int idx = lower.indexOf(cue);
-        if (idx >= 0) {
-            QString fact = t.mid(idx + cue.size()).trimmed();
-            if (fact.size() >= 4)
-                m_memory.add(fact, {QStringLiteral("auto"), QStringLiteral("user")});
-            return;
-        }
+        // Require the cue to START the message (a deliberate instruction), not just
+        // appear somewhere inside it.
+        if (!lower.startsWith(cue))
+            continue;
+        QString fact = t.mid(cue.size()).trimmed();
+        // One concise fact: first line only, hard-capped.
+        const int nl = fact.indexOf(QLatin1Char('\n'));
+        if (nl >= 0)
+            fact = fact.left(nl).trimmed();
+        if (fact.size() > kMaxAutoMemoryChars)
+            fact = fact.left(kMaxAutoMemoryChars).trimmed();
+        if (fact.size() >= 4)
+            m_memory.add(fact, {QStringLiteral("auto"), QStringLiteral("user")});
+        return;
     }
 }
 
@@ -1209,7 +1234,27 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "VISUALS: whenever the user asks you to SHOW / DRAW / DISPLAY / VISUALIZE "
             "something (a chart, a list, a diagram, a card, \"show me a duck\"), you "
             "MUST CALL the render_widget tool with a JSON spec — it pops the widget on "
-            "their Canvas/chat. Do NOT just describe it in words; actually render it.");
+            "their Canvas/chat. Do NOT just describe it in words; actually render it.\n"
+            "SENDING FILES/PHOTOS: the user is on a PHONE and CANNOT open local desktop "
+            "paths. Whenever they ask you to SEND / SHARE / \"give me\" / download a file, "
+            "image, photo, slide, screenshot, PDF, log, etc., you MUST CALL the send_file "
+            "tool with that file's full path (it also accepts base64) — it delivers the "
+            "file INTO their chat, where images render inline and any other type gets a "
+            "Download button. NEVER upload to Google Drive, never paste a local file path, "
+            "and never return a markdown image link like ![x](/home/...): none of those "
+            "work on their phone. Always use send_file.\n"
+            "MEMORY: when the user states a durable fact or preference (their name, how "
+            "they like things done, project details, decisions), CALL remember to save "
+            "it — and edit_memory / forget to keep it current. Use recall / list_memories "
+            "to check what you already know before asking again.\n"
+            "SKILLS: when you work out a repeatable procedure the user may want again, "
+            "CALL create_skill to save it as a reusable skill (and edit_skill to refine "
+            "it); list_skills / invoke_skill to reuse them. Build skills proactively when "
+            "it helps — don't wait to be told.\n"
+            "CANVAS / VISUALS: to draw or render anything real (a duck, a chart, a "
+            "diagram, a UI mockup), call render_widget and provide actual SVG markup in a "
+            "{\"type\":\"svg\",\"svg\":\"<svg …>…</svg>\"} node — NOT a one-word label. "
+            "Write real SVG that depicts the thing; the Canvas renders it.");
         effectiveText = guide + QStringLiteral("\n---\n") + effectiveText;
     }
 
@@ -1478,6 +1523,29 @@ Response ControlServer::handleSessionHistory(const Request &req)
     QJsonObject result;
     result.insert(QStringLiteral("session"), sess->toJson());
     result.insert(QStringLiteral("events"), events);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleSessionSubscribe(QWebSocket *client, const Request &req)
+{
+    // Replace this client's subscription set with the requested session ids and mark
+    // it scoped. From now on broadcastSessionEvent() only sends it events for these
+    // ids — so events for every OTHER session (e.g. a Chrome co-work chat) are never
+    // delivered here. An empty list is valid and means "send me nothing" (a desktop
+    // sitting on a fresh, sessionless chat). The list is authoritative each call, so
+    // the client just re-sends its full current view whenever it changes.
+    QSet<QString> ids;
+    const QJsonArray arr = req.params.value(QStringLiteral("session_ids")).toArray();
+    for (const QJsonValue &v : arr) {
+        const QString s = v.toString();
+        if (!s.isEmpty())
+            ids.insert(s);
+    }
+    m_scopedClients.insert(client);
+    m_subscriptions.insert(client, ids);
+    QJsonObject result;
+    result.insert(QStringLiteral("subscribed"),
+                  QJsonArray::fromStringList(QStringList(ids.cbegin(), ids.cend())));
     return Response::success(req.id, result);
 }
 
@@ -2420,6 +2488,8 @@ Response ControlServer::dispatchMemoryOrSkill(const Request &req)
         return handleMemorySearch(req);
     if (m == QStringLiteral("memory.add"))
         return handleMemoryAdd(req);
+    if (m == QStringLiteral("memory.edit"))
+        return handleMemoryEdit(req);
     if (m == QStringLiteral("memory.remove"))
         return handleMemoryRemove(req);
     if (m == QStringLiteral("skills.list"))
@@ -2470,12 +2540,49 @@ Response ControlServer::handleMemoryAdd(const Request &req)
     if (text.trimmed().isEmpty())
         return Response::failure(req.id, QStringLiteral("bad_request"),
                                  QStringLiteral("text is required"));
+    // A memory is a concise FACT, not a document. Reject oversized writes so a
+    // co-work session can't dump a whole webpage / chat transcript into long-term
+    // memory — those then pollute EVERY future session via memory injection
+    // (prefetchMemoryBlock). The model should store a short fact and the user can
+    // paste docs into a chat instead.
+    if (text.size() > kMaxMemoryChars)
+        return Response::failure(
+            req.id, QStringLiteral("memory_too_large"),
+            QStringLiteral("memory text too long (%1 chars, max %2) — store a concise "
+                           "fact, not a document").arg(text.size()).arg(kMaxMemoryChars));
     const QString id = m_memory.add(text, tags);
     if (id.isEmpty())
         return Response::failure(req.id, QStringLiteral("store_error"), m_memory.lastError());
     QJsonObject result;
     result.insert(QStringLiteral("id"), id);
     return Response::success(req.id, result);
+}
+
+Response ControlServer::handleMemoryEdit(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const QString text = req.params.value(QStringLiteral("text")).toString();
+    if (id.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("id is required"));
+    if (text.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("text is required"));
+    if (text.size() > kMaxMemoryChars)
+        return Response::failure(
+            req.id, QStringLiteral("memory_too_large"),
+            QStringLiteral("memory text too long (%1 chars, max %2) — store a concise "
+                           "fact, not a document").arg(text.size()).arg(kMaxMemoryChars));
+    QStringList tags;
+    for (const QJsonValue &t : req.params.value(QStringLiteral("tags")).toArray())
+        tags << t.toString();
+    if (!m_memory.replace(id, text, tags))
+        return Response::failure(req.id, QStringLiteral("not_found"),
+                                 QStringLiteral("memory not found: ") + id);
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    ok.insert(QStringLiteral("id"), id);
+    return Response::success(req.id, ok);
 }
 
 Response ControlServer::handleMemoryRemove(const Request &req)
@@ -2599,8 +2706,17 @@ QString ControlServer::buildTodayDigest()
         const QVector<MemoryRow> recent = m_memory.list(5);
         if (!recent.isEmpty()) {
             out += QStringLiteral("\n## Recent memory\n");
-            for (const MemoryRow &m : recent)
-                out += QStringLiteral("- %1\n").arg(m.text);
+            for (const MemoryRow &m : recent) {
+                // A digest is a SUMMARY: show only a one-line preview of each
+                // memory. A memory can hold a large pasted blob (e.g. a whole
+                // article a co-work session ingested); dumping it verbatim here
+                // blew the digest up to thousands of lines and overflowed the
+                // desktop's TODAY//BRIEFING panel (it looked like a stuck chat).
+                QString preview = m.text.simplified();   // collapse newlines/runs
+                if (preview.size() > 120)
+                    preview = preview.left(120) + QStringLiteral("…");
+                out += QStringLiteral("- %1\n").arg(preview);
+            }
         }
     }
 
@@ -3004,6 +3120,19 @@ QString ControlServer::fireScheduledJob(const ScheduleRow &row)
     if (!sendToSession(sid, row.prompt, {}, &err))
         qWarning("jarvisd: scheduled job '%s' send failed: %s",
                  qPrintable(row.name), qPrintable(err));
+    // Push a notification to paired phones (incl. backgrounded ones) that a
+    // scheduled task started — distinct from a manual session.opened. Tapping it
+    // deep-links to the new session's chat (data.session_id).
+    if (m_fcm) {
+        PushMessage msg;
+        msg.title = QStringLiteral("Scheduled task started");
+        msg.body = row.name.isEmpty() ? QStringLiteral("A scheduled Jarvis task is running")
+                                       : row.name;
+        msg.data.insert(QStringLiteral("kind"), QStringLiteral("schedule_fired"));
+        msg.data.insert(QStringLiteral("session_id"), sid);
+        for (const PushTokenRow &t : m_store.listPushTokens())
+            m_fcm->send(t.fcmToken, msg);
+    }
     return sid;
 }
 
@@ -3231,8 +3360,16 @@ void ControlServer::broadcastSessionEvent(const QString &sessionId, const Normal
     const QJsonObject frame = makeSessionEventFrame(sessionId, ev);
     const QString payload =
         QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
-    for (QWebSocket *client : std::as_const(m_clients))
+    for (QWebSocket *client : std::as_const(m_clients)) {
+        // Scoped clients (those that sent session.subscribe) only receive events for
+        // the session ids they are viewing; everything else is filtered out HERE, at
+        // the source, so a foreign session can never reach them. Clients that never
+        // subscribed keep the legacy broadcast.
+        if (m_scopedClients.contains(client)
+            && !m_subscriptions.value(client).contains(sessionId))
+            continue;
         client->sendTextMessage(payload);
+    }
 }
 
 } // namespace jarvis

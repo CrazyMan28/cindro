@@ -10,6 +10,7 @@ control WebSocket (daemon_client). Failures return a JSON {"error": ...}.
 from __future__ import annotations
 
 import json
+import os
 
 from mcp.server.fastmcp import FastMCP
 
@@ -21,6 +22,39 @@ def _err(exc: Exception) -> str:
 
 
 def register(mcp: FastMCP) -> None:
+    # ---- SEND A FILE TO THE USER -------------------------------------------
+    @mcp.tool()
+    def send_file(path: str = "", b64: str = "", name: str = "") -> str:
+        """Send a file from THIS computer straight into the user's Jarvis chat
+        (phone + desktop) so they can view it and download it with one tap.
+
+        Use this WHENEVER the user asks you to send / share / "give me" / download a
+        file, image, photo, slide, screenshot, PDF, log, zip — ANYTHING. Provide an
+        on-disk `path` (a full path is fine; the daemon reads it) OR base64 `b64`,
+        plus a `name` with the correct extension. Images render inline; any other
+        type shows a Download button in the app.
+
+        DO NOT upload to Google Drive, paste a local file path, or return a markdown
+        image link — none of those work on the user's phone. Always use this tool.
+        Returns the delivered file descriptor."""
+        try:
+            if not path and not b64:
+                return _err(ValueError("provide `path` or `b64`"))
+            params: dict = {}
+            if path:
+                params["path"] = path
+            if b64:
+                params["b64"] = b64
+            if name:
+                params["name"] = name
+            # Scope the delivery to this session's chat when the engine knows it.
+            sid = os.environ.get("JARVIS_AGENT_SESSION")
+            if sid:
+                params["session_id"] = sid
+            return json.dumps(daemon_client.call("file.push", params, timeout=60))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
     # ---- SCHEDULE -----------------------------------------------------------
     @mcp.tool()
     def schedule_task(prompt: str, when: str = "", cron: str = "",
@@ -75,9 +109,27 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def forget(id: str) -> str:
-        """Delete a memory by id (from recall)."""
+        """Delete a memory by id (from recall / list_memories)."""
         try:
             return json.dumps(daemon_client.call("memory.remove", {"id": id}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def list_memories(limit: int = 50) -> str:
+        """List ALL of Jarvis's long-term memories (newest first: id, text, tags)."""
+        try:
+            return json.dumps(daemon_client.call("memory.list", {"limit": limit}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def edit_memory(id: str, text: str, tags: list[str] | None = None) -> str:
+        """Replace the text (and tags) of an existing memory by id. Keep it a concise
+        fact — oversized writes are rejected."""
+        try:
+            return json.dumps(daemon_client.call(
+                "memory.edit", {"id": id, "text": text, "tags": tags or []}))
         except Exception as exc:  # noqa: BLE001
             return _err(exc)
 
@@ -110,5 +162,34 @@ def register(mcp: FastMCP) -> None:
         try:
             return json.dumps(daemon_client.call("skills.invoke",
                                                  {"name": name, "args": args}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def get_skill(name: str) -> str:
+        """Read one skill's full Markdown body + metadata by name (to edit/inspect it)."""
+        try:
+            return json.dumps(daemon_client.call("skills.get", {"name": name}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def edit_skill(name: str, description: str, body: str,
+                   group: str = "", tags: list[str] | None = None) -> str:
+        """Edit an existing skill — re-create it with the same name to overwrite its
+        body/description (create_skill on an existing name = edit)."""
+        try:
+            return json.dumps(daemon_client.call("skills.create", {
+                "name": name, "description": description, "body": body,
+                "group": group, "tags": tags or [],
+            }))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def remove_skill(name: str) -> str:
+        """Delete a self-authored skill by name."""
+        try:
+            return json.dumps(daemon_client.call("skills.remove", {"name": name}))
         except Exception as exc:  # noqa: BLE001
             return _err(exc)

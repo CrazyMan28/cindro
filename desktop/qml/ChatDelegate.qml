@@ -26,6 +26,8 @@ Item {
     signal allow(string approvalId)
     signal deny(string approvalId)
     signal always(string approvalId)
+    // A button inside an inline widget (render_widget) fired its action map.
+    signal widgetAction(var action)
     // Emitted as the typewriter reveal grows the bubble, so the panel can keep the
     // transcript pinned to the bottom while text streams in.
     signal grew()
@@ -71,6 +73,8 @@ Item {
         sourceComponent: {
             switch (del.kind) {
             case "message":      return messageComp
+            case "widget":       return widgetComp
+            case "tool":         return unifiedToolComp
             case "tool_call":    return toolCallComp
             case "tool_result":  return toolResultComp
             case "diff":         return diffComp
@@ -78,6 +82,255 @@ Item {
             case "question":     return questionComp
             case "error":        return errorComp
             default:             return messageComp
+            }
+        }
+    }
+
+    // ===== Inline widget (render_widget) ====================================
+    // The model's render_widget output, drawn INLINE in the transcript via the
+    // safe WidgetRenderer JSON-DSL — not floated on top of the chat. del.text is
+    // the spec as a JSON STRING (a ListModel var role mangles nested children/ops
+    // arrays, so we parse it back into a clean tree here); del.toolName is the
+    // title; del.callId is the widget id (used for "pop out").
+    Component {
+        id: widgetComp
+        Rectangle {
+            id: wCard
+            anchors.left: parent.left
+            anchors.right: parent.right
+            radius: Theme.radiusSm
+            readonly property var specTree: {
+                try { return JSON.parse(del.text) } catch (e) { return ({}) }
+            }
+            implicitHeight: wCol.implicitHeight + 20
+            color: Theme.surfaceDeep
+            border.width: 1
+            border.color: Theme.accentDim
+            clip: true
+
+            // left accent seam — reads as a Jarvis-produced module
+            Rectangle {
+                anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
+                anchors.margins: 1
+                width: 3; radius: 1
+                color: Theme.accent
+                opacity: 0.7
+            }
+
+            ColumnLayout {
+                id: wCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.leftMargin: 14
+                anchors.rightMargin: 12
+                anchors.topMargin: 10
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 7
+                    Text {
+                        text: "◆ WIDGET"
+                        color: Theme.accent
+                        opacity: 0.75
+                        font.family: Theme.fontDisplay
+                        font.pixelSize: 8
+                        font.letterSpacing: Theme.trackMid
+                    }
+                    Text {
+                        visible: del.toolName.length > 0
+                        Layout.maximumWidth: del.width * 0.6
+                        text: del.toolName
+                        color: Theme.accentBright
+                        font.family: Theme.fontDisplay
+                        font.pixelSize: 11
+                        font.weight: Font.DemiBold
+                        font.letterSpacing: Theme.trackTight
+                        elide: Text.ElideRight
+                    }
+                    Item { Layout.fillWidth: true }
+                    // pop out -> standalone always-on-top window hosting this widget
+                    Rectangle {
+                        Layout.preferredWidth: 20; Layout.preferredHeight: 20
+                        radius: Theme.radiusXs
+                        color: popMa.containsMouse ? Theme.surface : "transparent"
+                        border.width: 1
+                        border.color: popMa.containsMouse ? Theme.hairline : "transparent"
+                        Text {
+                            anchors.centerIn: parent
+                            text: "⧉"
+                            color: popMa.containsMouse ? Theme.accentBright : Theme.textMuted
+                            font.pixelSize: 12
+                        }
+                        MouseArea {
+                            id: popMa
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: bridge.popOutWidget(del.callId, del.toolName, wCard.specTree)
+                        }
+                    }
+                }
+
+                // the safe DSL interpreter renders the spec tree inline
+                WidgetRenderer {
+                    Layout.fillWidth: true
+                    node: wCard.specTree
+                    onActionRequested: function(action) { del.widgetAction(action) }
+                }
+            }
+        }
+    }
+
+    // ===== Unified tool card (call + result merged) =========================
+    // Collapsed by default: a small spinning reactor while running, a check / error
+    // glyph when done, the tool name + status. Click to expand the INPUT (params)
+    // and OUTPUT. `del.text` is a JSON envelope {i:input, o:output, d:done, s:server}.
+    Component {
+        id: unifiedToolComp
+        Rectangle {
+            id: toolCard
+            anchors.left: parent.left
+            anchors.right: parent.right
+            radius: Theme.radiusXs
+            property var td: {
+                try { return JSON.parse(del.text) }
+                catch (e) { return { i: "", o: del.text, d: true, s: "" } }
+            }
+            readonly property bool toolDone: td.d === true
+            readonly property string inputText: td.i || ""
+            readonly property string outputText: td.o || ""
+            readonly property string server: td.s || ""
+            property bool expanded: false
+            implicitHeight: toolCol.implicitHeight + 16
+            color: Theme.surfaceDeep
+            border.width: 1
+            border.color: !toolDone ? Theme.accentDim
+                          : (del.ok ? Theme.hairlineSoft : Theme.danger)
+            clip: true
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: toolCard.expanded = !toolCard.expanded
+            }
+
+            ColumnLayout {
+                id: toolCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                anchors.topMargin: 8
+                spacing: 6
+
+                // ---- header: status + name + server + state + chevron ----
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 9
+                    ArcReactor {
+                        visible: !toolCard.toolDone
+                        Layout.preferredWidth: 16; Layout.preferredHeight: 16
+                        size: 16; spinning: true; thinking: true; tint: Theme.accent
+                    }
+                    Text {
+                        visible: toolCard.toolDone
+                        text: del.ok ? "✓" : "✕"
+                        color: del.ok ? Theme.success : Theme.danger
+                        font.pixelSize: 14; font.weight: Font.Bold
+                    }
+                    Text {
+                        text: del.toolName
+                        color: Theme.accentBright
+                        font.family: Theme.fontMono
+                        font.pixelSize: 12
+                        font.weight: Font.Medium
+                    }
+                    Text {
+                        visible: toolCard.server.length > 0
+                        text: "· " + toolCard.server
+                        color: Theme.textFaint
+                        font.family: Theme.fontMono
+                        font.pixelSize: 10
+                    }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        text: !toolCard.toolDone ? "running…"
+                              : (del.ok ? "done" : "failed")
+                        color: !toolCard.toolDone ? Theme.accent
+                               : (del.ok ? Theme.textFaint : Theme.danger)
+                        font.family: Theme.fontDisplay
+                        font.pixelSize: 9
+                        font.letterSpacing: Theme.trackMid
+                    }
+                    Text {
+                        text: toolCard.expanded ? "▴" : "▾"
+                        color: Theme.textFaint
+                        font.pixelSize: 11
+                    }
+                }
+
+                // ---- collapsed: a single-line preview ----
+                Text {
+                    visible: !toolCard.expanded
+                           && (toolCard.outputText.length > 0 || toolCard.inputText.length > 0)
+                    Layout.fillWidth: true
+                    text: toolCard.outputText.length > 0 ? toolCard.outputText
+                                                         : toolCard.inputText
+                    color: Theme.textFaint
+                    elide: Text.ElideRight
+                    maximumLineCount: 1
+                    font.family: Theme.fontMono
+                    font.pixelSize: 11
+                    textFormat: Text.PlainText
+                }
+
+                // ---- expanded: INPUT params + OUTPUT ----
+                ColumnLayout {
+                    visible: toolCard.expanded
+                    Layout.fillWidth: true
+                    spacing: 3
+                    Text {
+                        visible: toolCard.inputText.length > 0
+                        text: "INPUT"
+                        color: Theme.accent
+                        font.pixelSize: 9; font.family: Theme.fontDisplay
+                        font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold
+                    }
+                    Text {
+                        visible: toolCard.inputText.length > 0
+                        Layout.fillWidth: true
+                        text: toolCard.inputText
+                        color: Theme.textMuted
+                        wrapMode: Text.Wrap
+                        font.family: Theme.fontMono
+                        font.pixelSize: 11
+                        textFormat: Text.PlainText
+                    }
+                    Text {
+                        visible: toolCard.outputText.length > 0
+                        Layout.topMargin: toolCard.inputText.length > 0 ? 5 : 0
+                        text: del.ok ? "OUTPUT" : "FAULT"
+                        color: del.ok ? Theme.success : Theme.danger
+                        font.pixelSize: 9; font.family: Theme.fontDisplay
+                        font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold
+                    }
+                    Text {
+                        visible: toolCard.outputText.length > 0
+                        Layout.fillWidth: true
+                        text: toolCard.outputText
+                        color: Theme.textMuted
+                        wrapMode: Text.Wrap
+                        maximumLineCount: 60
+                        elide: Text.ElideRight
+                        font.family: Theme.fontMono
+                        font.pixelSize: 11
+                        lineHeight: 1.35
+                        textFormat: Text.PlainText
+                    }
+                }
             }
         }
     }
@@ -192,6 +445,16 @@ Item {
                 anchors.rightMargin: 14
                 spacing: 9
 
+                // small spinning reactor — the "Jarvis is calling a tool" mark
+                ArcReactor {
+                    Layout.alignment: Qt.AlignVCenter
+                    Layout.preferredWidth: 14
+                    Layout.preferredHeight: 14
+                    size: 14
+                    spinning: true
+                    thinking: true
+                    tint: Theme.accent
+                }
                 Text {
                     text: "▸ MODULE"
                     color: Theme.accent
@@ -223,14 +486,25 @@ Item {
     Component {
         id: toolResultComp
         Rectangle {
+            id: resCard
             anchors.left: parent.left
             anchors.right: parent.right
             radius: Theme.radiusXs
+            // Collapsed by default to keep the transcript tidy; click to expand the
+            // full output. A FAULT (failed) result auto-expands so errors are visible.
+            property bool expanded: !del.ok
+            readonly property bool clamped: del.text.length > 140 || del.text.indexOf('\n') >= 0
             implicitHeight: resCol.implicitHeight + 18
             color: Qt.rgba(0, 0, 0, 0.18)
             border.color: Theme.hairlineSoft
             border.width: 1
             clip: true
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: resCard.clamped ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onClicked: if (resCard.clamped) resCard.expanded = !resCard.expanded
+            }
 
             // status edge
             Rectangle {
@@ -253,21 +527,34 @@ Item {
                 anchors.rightMargin: 12
                 anchors.topMargin: 9
                 spacing: 3
-                Text {
-                    text: del.ok ? "OUTPUT" : "FAULT"
-                    color: del.ok ? Theme.success : Theme.danger
-                    font.pixelSize: 9
-                    font.letterSpacing: Theme.trackMid
-                    font.family: Theme.fontDisplay
-                    font.weight: Font.DemiBold
-                    opacity: 0.9
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Text {
+                        text: del.ok ? "OUTPUT" : "FAULT"
+                        color: del.ok ? Theme.success : Theme.danger
+                        font.pixelSize: 9
+                        font.letterSpacing: Theme.trackMid
+                        font.family: Theme.fontDisplay
+                        font.weight: Font.DemiBold
+                        opacity: 0.9
+                    }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        visible: resCard.clamped
+                        text: resCard.expanded ? "▴ collapse" : "▾ expand"
+                        color: Theme.textFaint
+                        font.pixelSize: 9
+                        font.family: Theme.fontDisplay
+                        font.letterSpacing: Theme.trackMid
+                    }
                 }
                 Text {
                     Layout.fillWidth: true
                     text: del.text
                     color: Theme.textMuted
                     wrapMode: Text.Wrap
-                    maximumLineCount: 12
+                    maximumLineCount: resCard.expanded ? 200 : 2
                     elide: Text.ElideRight
                     font.pixelSize: 12
                     font.family: Theme.fontMono

@@ -952,7 +952,20 @@ void DeviceServer::onFilePushed(const QJsonObject &descriptor)
     // Emit a Contract C 'file.offer' event so phones know a file is downloadable
     // via file.get{file_id, session_id?}. The local path is NOT sent.
     QJsonObject data = descriptor;
+    const QString srcPath = data.value(QStringLiteral("path")).toString();
     data.remove(QStringLiteral("path"));
+    // Inline the bytes (b64) for reasonably-sized files so the phone renders + saves
+    // them directly from the chat (the download button) without a follow-up file.get
+    // round-trip. Files over the cap are left as a file_id-only offer.
+    constexpr qint64 kMaxInlineFileBytes = 12LL * 1024 * 1024;
+    if (!data.contains(QStringLiteral("b64")) && !srcPath.isEmpty()
+        && data.value(QStringLiteral("size")).toVariant().toLongLong() <= kMaxInlineFileBytes) {
+        QFile f(srcPath);
+        if (f.open(QIODevice::ReadOnly)) {
+            data.insert(QStringLiteral("b64"),
+                        QString::fromLatin1(f.readAll().toBase64()));
+        }
+    }
 
     QJsonObject frame;
     frame.insert(QStringLiteral("v"), kProtocolVersion);

@@ -49,6 +49,7 @@ Item {
             case "rect":    return rectComp
             case "badge":   return badgeComp
             case "image":   return imageComp
+            case "svg":     return svgComp
             case "canvas":  return canvasComp
             case "button":  return buttonComp
             case "progress": return progressComp
@@ -160,6 +161,27 @@ Item {
             asynchronous: true
             // Network images only; never run local programs / file probing here.
             cache: true
+        }
+    }
+
+    // ---- svg : the model draws REAL vector art (a duck, chart, diagram…) ----
+    // Renders raw <svg> markup via Qt's SVG image plugin. Data URI (base64) so any
+    // markup survives intact. This is the "real renderer" — the model writes actual
+    // SVG instead of a toy label.
+    Component {
+        id: svgComp
+        Image {
+            readonly property string svg: (root.node && typeof root.node.svg === "string")
+                                          ? root.node.svg : ""
+            width: root.numOr(root.node ? root.node.w : undefined, 260)
+            height: root.numOr(root.node ? root.node.h : undefined, 260)
+            sourceSize.width: width
+            sourceSize.height: height
+            fillMode: Image.PreserveAspectFit
+            smooth: true
+            source: svg.length > 0
+                    ? ("data:image/svg+xml;base64," + Qt.btoa(svg))
+                    : ""
         }
     }
 

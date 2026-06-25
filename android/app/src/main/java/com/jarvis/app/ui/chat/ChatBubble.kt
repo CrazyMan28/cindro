@@ -1,12 +1,17 @@
 package com.jarvis.app.ui.chat
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import android.graphics.BitmapFactory
+import android.util.Base64
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +21,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,7 +32,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -47,7 +55,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.jarvis.app.ui.theme.GlowCard
@@ -80,8 +91,83 @@ fun ChatBubble(
             is ChatItem.Diff -> DiffBubble(item)
             is ChatItem.Approval -> ApprovalCard(item, onApprove)
             is ChatItem.Error -> ErrorBubble(item)
+            is ChatItem.FileOffer -> FileOfferBubble(item)
         }
     }
+}
+
+@Composable
+private fun FileOfferBubble(item: ChatItem.FileOffer) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val isImage = item.mime?.startsWith("image/") == true && item.b64 != null
+    GlowCard(modifier = Modifier.fillMaxWidth(), accent = true) {
+        Column {
+            Text(
+                text = item.name.ifBlank { "file" },
+                style = MaterialTheme.typography.titleMedium,
+                color = JarvisPalette.Accent,
+            )
+            item.size?.let { sz ->
+                Text(
+                    text = humanSize(sz) + (item.mime?.let { "  •  $it" } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = JarvisPalette.TextSecondary,
+                )
+            }
+            if (isImage && item.b64 != null) {
+                // Render images inline (tap to open fullscreen + save).
+                val bmp = remember(item.b64) {
+                    runCatching {
+                        val raw = Base64.decode(item.b64, Base64.DEFAULT)
+                        val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeByteArray(raw, 0, raw.size, b)
+                        var s = 1
+                        while (b.outWidth / s > 2048) s *= 2
+                        BitmapFactory.decodeByteArray(
+                            raw, 0, raw.size, BitmapFactory.Options().apply { inSampleSize = s },
+                        )?.asImageBitmap()
+                    }.getOrNull()
+                }
+                if (bmp != null) {
+                    var showViewer by remember { mutableStateOf(false) }
+                    Spacer(Modifier.height(8.dp))
+                    Image(
+                        bitmap = bmp,
+                        contentDescription = item.name,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { showViewer = true },
+                    )
+                    if (showViewer) {
+                        ImageViewerDialog(b64 = item.b64, onDismiss = { showViewer = false })
+                    }
+                }
+            }
+            if (item.b64 != null) {
+                Spacer(Modifier.height(8.dp))
+                HapticOutlinedButton(onClick = {
+                    val ok = saveFileToDownloads(context, item.b64, item.name, item.mime)
+                    android.widget.Toast.makeText(
+                        context,
+                        if (ok) "Saved to Downloads" else "Couldn't save",
+                        android.widget.Toast.LENGTH_SHORT,
+                    ).show()
+                }) {
+                    Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Text("  Save to Downloads")
+                }
+            }
+        }
+    }
+}
+
+private fun humanSize(bytes: Long): String = when {
+    bytes >= 1_000_000 -> "%.1f MB".format(bytes / 1_000_000.0)
+    bytes >= 1_000 -> "%.0f KB".format(bytes / 1_000.0)
+    else -> "$bytes B"
 }
 
 @Composable
@@ -220,32 +306,121 @@ private fun ThinkingBubble(item: ChatItem.Thinking) {
 
 @Composable
 private fun ToolCallBubble(item: ChatItem.ToolCall) {
+    // Collapsed by default: a compact row with a small spinner (running) / check
+    // (done) / error (failed). Tap to expand the params + output. Keeps the
+    // transcript clean while every tool call stays inspectable.
+    val running = item.output == null && item.ok == null && item.images.isEmpty()
+    var expanded by remember { mutableStateOf(false) }
     GlowCard(modifier = Modifier.fillMaxWidth()) {
         Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val tint = when (item.ok) {
-                    true -> JarvisPalette.Success
-                    false -> JarvisPalette.Error
-                    null -> JarvisPalette.Accent
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+            ) {
+                // status: a small spinning reactor while running, else check / error
+                when {
+                    running -> CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = JarvisPalette.Accent,
+                    )
+                    item.ok == false -> Icon(
+                        Icons.Filled.Error, contentDescription = null,
+                        tint = JarvisPalette.Error, modifier = Modifier.size(18.dp),
+                    )
+                    else -> Icon(
+                        Icons.Filled.CheckCircle, contentDescription = null,
+                        tint = JarvisPalette.Success, modifier = Modifier.size(18.dp),
+                    )
                 }
-                Icon(Icons.Filled.Build, contentDescription = null, tint = tint, modifier = Modifier.height(16.dp))
-                Spacer(Modifier.height(0.dp))
                 Text(
-                    text = "  ${item.name}",
+                    text = "  ${item.name}" +
+                        (item.server?.takeIf { it.isNotBlank() }?.let { "  · $it" } ?: ""),
                     style = MaterialTheme.typography.titleMedium,
                     color = JarvisPalette.TextPrimary,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = if (running) "running…" else if (item.ok == false) "failed" else "done",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (item.ok == false) JarvisPalette.Error else JarvisPalette.TextSecondary,
+                )
+                Icon(
+                    Icons.Filled.KeyboardArrowDown,
+                    contentDescription = if (expanded) "collapse" else "expand",
+                    tint = JarvisPalette.TextSecondary,
+                    modifier = Modifier.size(20.dp).rotate(if (expanded) 180f else 0f),
                 )
             }
-            item.argsJson?.takeIf { it.isNotBlank() && it != "{}" }?.let { args ->
-                Spacer(Modifier.height(6.dp))
-                MonoBlock(args)
-            }
-            item.output?.takeIf { it.isNotBlank() }?.let { out ->
-                Spacer(Modifier.height(6.dp))
-                MonoBlock(out.take(2000))
+            AnimatedVisibility(visible = expanded) {
+                Column {
+                    item.argsJson?.takeIf { it.isNotBlank() && it != "{}" }?.let { args ->
+                        Spacer(Modifier.height(8.dp))
+                        Text("parameters", style = MaterialTheme.typography.labelSmall,
+                            color = JarvisPalette.Accent)
+                        Spacer(Modifier.height(2.dp))
+                        MonoBlock(args)
+                    }
+                    if (item.output?.isNotBlank() == true || item.images.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("output", style = MaterialTheme.typography.labelSmall,
+                            color = JarvisPalette.Accent)
+                    }
+                    ToolCallBody(item)
+                }
             }
         }
     }
+}
+
+@Composable
+private fun ToolCallBody(item: ChatItem.ToolCall) {
+    Column {
+            if (item.images.isNotEmpty()) {
+                // Render screenshots / image results as actual pictures. Decode with
+                // BitmapFactory (downsampled so a 3-monitor screenshot can't OOM) and
+                // draw via Compose Image — Coil 2.x has no ByteArray fetcher, so this
+                // is the reliable path for inline base64.
+                item.images.forEach { b64 ->
+                    val bmp = remember(b64) {
+                        runCatching {
+                            val raw = Base64.decode(b64, Base64.DEFAULT)
+                            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            BitmapFactory.decodeByteArray(raw, 0, raw.size, bounds)
+                            var sample = 1
+                            while (bounds.outWidth / sample > 2048) sample *= 2
+                            BitmapFactory.decodeByteArray(
+                                raw, 0, raw.size,
+                                BitmapFactory.Options().apply { inSampleSize = sample },
+                            )?.asImageBitmap()
+                        }.getOrNull()
+                    }
+                    if (bmp != null) {
+                        var showViewer by remember { mutableStateOf(false) }
+                        Spacer(Modifier.height(6.dp))
+                        Image(
+                            bitmap = bmp,
+                            contentDescription = "image result — tap to open",
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 360.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { showViewer = true },
+                        )
+                        if (showViewer) {
+                            ImageViewerDialog(b64 = b64, onDismiss = { showViewer = false })
+                        }
+                    }
+                }
+            } else {
+                item.output?.takeIf { it.isNotBlank() }?.let { out ->
+                    Spacer(Modifier.height(6.dp))
+                    MonoBlock(out.take(2000))
+                }
+            }
+        }
 }
 
 @Composable

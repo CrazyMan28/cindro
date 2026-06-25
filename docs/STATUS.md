@@ -36,21 +36,61 @@ Verified = unit tests pass, live WS check, and/or exercised on the running daemo
 - **Desktop chat:** streaming/typewriter, brain+model picker, stop button, auto-titled
   sessions, in-conversation thinking orb + funny phrases.
 - **Session management (isolation) — verified with logs:** desktop / phone / Chrome / voice
-  sessions are **separate**. The daemon broadcasts every session's events to all clients, so the
-  desktop FILTERS: it renders only its own session's events. Proven live — a simulated Chrome
-  session logs `session.opened -> focus-only` then `DROP foreign session.event …`, never
-  reaching the chat. A foreign session opening only raises the window (never hijacks the chat);
-  opening an old session **resumes** it (re-spawns the brain) instead of "inactive session";
-  `+ New` clears + drops the session; sessions are a flat, openable, deletable list. Belt-and-
-  suspenders QML guard + `Bridge[session]` logging added.
-  - **Stale-history race fixed (the real "+ New shows old chat" bug):** opening a session fires an
-    **async** `session.history` fetch. If `+ New` (or opening another session) changed the current
-    session while that fetch was in flight, the late reply replayed the *old* session's events into
-    a chat that no longer owned it — leaving content on screen with no live session (the exact
-    "chat full of content + 'Type to start a session…'" screenshot). Now guarded at **both** layers:
-    `Bridge::handleResponse` drops a `session.history` reply whose id `!= m_sessionId`
-    (`DROP stale session.history` log), and `JarvisPanel.onSessionHistory` returns early unless
-    `sessionId === bridge.sessionId`. Builds clean, 16/16 ctest incl. `gui_selftest`.
+  sessions are **separate**. A foreign session opening only raises the window (never hijacks the
+  chat); opening an old session **resumes** it (re-spawns the brain) instead of "inactive session";
+  `+ New` clears + drops the session; sessions are a flat, openable, deletable list.
+  - **Session manager — per-client `session.subscribe` scoping (the real fix for "a Chrome chat
+    shows in the desktop"):** the daemon used to **broadcast every session's `session.event` to
+    every connected control client**, leaving each client to filter client-side — so a Chrome
+    co-work transcript reached the desktop and could linger (the desktop is a singleton; "opening"
+    Jarvis just toggles the same process, so stale page content survived). Now a client declares the
+    session ids it is viewing via **`session.subscribe {session_ids}`** and the daemon fans
+    `session.event` **only** for those ids to it (`m_scopedClients` + `m_subscriptions` in
+    `ControlServer`). The desktop subscribes to its current chat + coworker + voice sessions on
+    connect and on every change (`Bridge::syncSubscriptions`); a fresh, sessionless chat subscribes
+    to **nothing**, so a foreign session can never arrive. Back-compat: clients that never subscribe
+    keep the legacy broadcast, and the **phone uses a separate `DeviceServer` channel** (unaffected);
+    an older daemon answers `unknown_method`, which the desktop swallows and falls back to the
+    existing client-side filter. Proven end-to-end by **`scripts/session_subscribe_ws.py`**: a
+    bystander scoped to `[]` receives **zero** `session.event` frames while another session emits
+    five to its subscriber. The COMPUTER page now also clears its transcript when its coworker
+    session ends, mirroring the chat reconciler.
+  - **Transcript↔session reconciler (the real root cause of "+ New won't clear" / "mirrors Chrome"
+    / "shows the old chat"):** the chat transcript (`chatModel`) and the current session
+    (`m_sessionId`) had no single binding — every transition (+ New, open, delete, create, coworker,
+    voice) was responsible for clearing the transcript itself, and several didn't (`deleteSession`,
+    the coworker create, and an async `session.history` race all left old content under a different/
+    empty session — the "chat full of content + 'Type to start a session…'" screenshot). Fixed by
+    making the transcript a **strict function of the session**: `JarvisPanel` tracks
+    `chatSessionId`, and a single `onSessionIdChanged` reconciler wipes the transcript whenever
+    `bridge.sessionId` changes to anything else. A `pendingNewSession` flag lets the reconciler
+    *adopt* (not wipe) when the user's own first message is mid-create, so "it removes what I said"
+    can't recur. Belt-and-suspenders guards remain: `Bridge::handleResponse` drops a stale
+    `session.history` reply (`!= m_sessionId`), and the live/history handlers re-check
+    `=== bridge.sessionId`. Covered by a new **`session_reconcile` QtQuick.Test** (8 cases: + New,
+    open-other, delete-current, stale-history, foreign-Chrome-event, first-message-survives-create).
+    **17/17 ctest** (incl. `gui_selftest` + `session_reconcile`).
+- **Memory quality + CRUD (the "new chat remembered my Chrome chat" fix):** a co-work session had
+  dumped whole webpages into long-term memory, which the daemon injects into EVERY turn
+  (`prefetchMemoryBlock`) — so a fresh chat "remembered" them. Now a memory is a concise **fact**:
+  `handleMemoryAdd`/`handleMemoryEdit` reject writes > 2000 chars (`memory_too_large`), and
+  `syncTurnMemory` only auto-saves a "remember …" cue at the **start** of a short message, capped to
+  one ≤280-char line (was an `indexOf`-anywhere grab of the whole tail). The 4 junk dumps were
+  deleted; the real facts kept. Full CRUD exists end-to-end: `memory.add` / `memory.edit` (new) /
+  `memory.remove` / `memory.list` / `memory.search`, all exposed to the model as `jarvis_memory_*`
+  MCP tools (so the model can see, add, edit, delete its own memory). Verified live: add→edit→list→remove.
+- **Skills CRUD for the model:** `jarvis_skill_list` / `jarvis_skill_get` / `jarvis_skill_create`
+  (create-or-overwrite = edit) / `jarvis_skill_remove` / `jarvis_skill_invoke` MCP tools over the
+  existing `skills.*` Contract-A surface — the model can author, edit, and delete its own skills.
+- **Phone: images render + robust photo attach (v0.5.5):** the chat now renders base64 image
+  results (screenshots/photos the model sends) as actual pictures via Coil — `ChatViewModel`
+  extracts image blobs from tool results and `ToolCallBubble` shows them (no more walls of base64).
+  Photo **attach** is hardened with `ImageDecoder` (software allocator) + a `BitmapFactory` fallback,
+  fixing "Couldn't attach that photo" on HEIC camera shots. Backend already forwards `images` to the
+  brain (`Brain::send(text, images)` via `decodeSendImages`), so the model can see sent photos.
+- **Send-any-file to the user:** `jarvis_send_file` MCP tool wraps `file.push` (b64 OR on-disk path
+  + display name) so the model can send the user ANY file type (photo, PDF, log, zip) to the phone
+  as a `file.offer`.
 - **Voice orb animation:** smooth "breathing" while thinking/speaking + a soft mic-level swell
   while listening (replaced the abrupt size-jump).
 - **Voice mode:** hands-free (no hold-to-talk) capture via **pw-record** (the path that

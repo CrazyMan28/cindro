@@ -151,6 +151,13 @@ QStringList CodexBrain::buildArgs(const QString &prompt, const QStringList &imag
         if (!img.isEmpty())
             args << QStringLiteral("--image") << img;
     }
+    // `-i/--image <FILE>...` is VARIADIC, so a prompt placed after it is swallowed
+    // as another image path — codex then finds no PROMPT positional and reads stdin
+    // ("Reading prompt from stdin… / No prompt provided via stdin.", exit 1) the
+    // moment you send a photo with text. Terminate option parsing with `--` so the
+    // prompt is unambiguously the positional whenever images are attached.
+    if (!images.isEmpty())
+        args << QStringLiteral("--");
     // Prompt is the positional argument.
     args << prompt;
     return args;

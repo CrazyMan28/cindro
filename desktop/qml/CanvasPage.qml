@@ -28,8 +28,12 @@ Item {
                 "ts": widget.ts !== undefined ? widget.ts : 0,
                 "title": widget.title !== undefined ? ("" + widget.title) : "",
                 "id": id,
-                // store the spec tree as an opaque var for WidgetRenderer
-                "spec": widget.spec !== undefined ? widget.spec : ({})
+                // Store the spec tree as a JSON STRING, not a var: a QML ListModel
+                // var role MANGLES nested arrays (the spec's `children` / canvas `ops`
+                // stop being real JS arrays, so Array.isArray() fails and nothing
+                // renders — the "only the title shows" bug). The delegate JSON.parse's
+                // it back into a clean tree the WidgetRenderer can walk.
+                "spec": JSON.stringify(widget.spec !== undefined ? widget.spec : ({}))
             }
             // UPDATE-by-id: a non-empty id that already exists replaces in place
             // (the append-only bus keeps history; the desktop collapses by id).
@@ -135,9 +139,14 @@ Item {
             delegate: Rectangle {
                 id: card
                 required property string title
-                required property var spec
+                required property string spec
                 required property double ts
                 required property string id
+                // Parse the JSON-string spec back into a clean tree (real JS arrays)
+                // so WidgetRenderer can walk children / canvas ops correctly.
+                readonly property var specTree: {
+                    try { return JSON.parse(card.spec) } catch (e) { return ({}) }
+                }
 
                 width: ListView.view ? ListView.view.width : 0
                 implicitHeight: cardCol.implicitHeight + 28
@@ -208,7 +217,7 @@ Item {
                                 anchors.fill: parent
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: bridge.popOutWidget(card.id, card.title, card.spec)
+                                onClicked: bridge.popOutWidget(card.id, card.title, card.specTree)
                             }
                         }
                     }
@@ -216,7 +225,7 @@ Item {
                     // the safe DSL interpreter renders the spec tree
                     WidgetRenderer {
                         Layout.fillWidth: true
-                        node: card.spec
+                        node: card.specTree
                         onActionRequested: function(action) { page.handleAction(action) }
                     }
                 }
