@@ -268,7 +268,6 @@ Item {
             // Genuine switch (open another / delete current / + New / coworker /
             // voice / cleared): the transcript no longer belongs here — wipe it.
             chatModel.clear()
-            chatWidgets.clear()
             panel.thinking = false
             panel.busy = false
             panel.pendingNewSession = false
@@ -278,7 +277,6 @@ Item {
         // Opening a stored session from the Sessions page: clear + replay.
         function onSessionOpened(sessionId) {
             chatModel.clear()
-            chatWidgets.clear()
             panel.thinking = false
             panel.busy = false
         }
@@ -317,6 +315,37 @@ Item {
                 "text": JSON.stringify({ "q": question, "options": options || [] }),
                 "callId": "", "toolName": "", "approvalId": id, "risk": "", "ok": true,
                 "streaming": false
+            })
+            chatView.positionViewAtEnd()
+        }
+
+        // The model rendered a widget (render_widget). It now lands INLINE in the
+        // transcript — right where the model produced it, reading like a tool
+        // result — instead of floating on top of the chat. The model still owns
+        // WHEN (it calls render_widget); this only fixes WHERE it shows. The spec
+        // is stored as a JSON STRING (a ListModel var role mangles nested
+        // children/ops arrays so the renderer would draw only the title). Re-render
+        // with the same id updates that row in place; a new id appends a new card.
+        function onWidgetRendered(w) {
+            if (!w || w.spec === undefined)
+                return
+            var wid = (w.id !== undefined && ("" + w.id).length > 0) ? ("" + w.id) : ""
+            var title = (w.title !== undefined) ? ("" + w.title) : ""
+            var specStr = JSON.stringify(w.spec)
+            if (wid.length > 0) {
+                for (var i = chatModel.count - 1; i >= 0; i--) {
+                    var row = chatModel.get(i)
+                    if (row.kind === "widget" && row.callId === wid) {
+                        chatModel.setProperty(i, "text", specStr)
+                        chatModel.setProperty(i, "toolName", title)
+                        return
+                    }
+                }
+            }
+            chatModel.append({
+                "kind": "widget", "role": "tool", "text": specStr,
+                "callId": wid, "toolName": title,
+                "approvalId": "", "risk": "", "ok": true, "streaming": false
             })
             chatView.positionViewAtEnd()
         }
@@ -717,6 +746,8 @@ Item {
                     onAllow: function(approvalId) { bridge.respondApproval(approvalId, "allow") }
                     onDeny:  function(approvalId) { bridge.respondApproval(approvalId, "deny") }
                     onAlways: function(approvalId) { bridge.respondApproval(approvalId, "always") }
+                    // A button inside an inline render_widget fired its action.
+                    onWidgetAction: function(action) { panel.handleWidgetAction(action) }
                     // Keep the transcript pinned to the bottom while a streaming
                     // assistant message types itself in (only if already at/near end).
                     onGrew: {
@@ -759,16 +790,6 @@ Item {
                         }
                     }
                 }
-            }
-
-            // Draggable floating widgets the model pops up (render_widget). They
-            // appear over the chat and can be dragged anywhere; the CANVAS tab keeps
-            // the full persistent list. Empty areas pass clicks through to the chat.
-            FloatingWidgetLayer {
-                id: chatWidgets
-                anchors.fill: parent
-                anchors.margins: 14
-                z: 50
             }
         }
 
@@ -1028,6 +1049,19 @@ Item {
         chatView.positionViewAtEnd()
     }
 
+    // A button inside an inline widget (render_widget) fired an action. Same fixed
+    // allow-set as CanvasPage.handleAction: send -> inject a user turn; skill ->
+    // invoke a skill. Unknown keys do nothing; nothing is ever eval'd.
+    function handleWidgetAction(action) {
+        if (!action || typeof action !== "object")
+            return
+        if (typeof action.send === "string" && action.send.length > 0)
+            panel.injectUser(action.send)
+        else if (typeof action.skill === "string" && action.skill.length > 0)
+            bridge.skillInvoke(action.skill,
+                               (typeof action.args === "string") ? action.args : "")
+    }
+
     // Inject a rendered skill (from the Skills page /invoke) into the transcript
     // as a user turn and send it. Creates a session first if none is active, just
     // like submit(). The skill text becomes the next model input.
@@ -1098,7 +1132,6 @@ Item {
         panel.chatSessionId = ""
         bridge.newSession()
         chatModel.clear()
-        chatWidgets.clear()
         panel.busy = false
         panel.thinking = false
         inputArea.text = ""
