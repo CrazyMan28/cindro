@@ -76,6 +76,40 @@ Item {
     implicitWidth: loader.implicitWidth
     implicitHeight: loader.implicitHeight
 
+    // ---- animation : the model can make any node move/breathe via node.anim ----
+    // {anim:{type:"pulse"|"fade"|"spin"|"float"|"blink", duration:<ms>, loop:true}}.
+    // Applied to THIS node's render transform (scale/opacity/rotation/translate) —
+    // render-only, so it never disturbs layout. anim on a child animates just that
+    // child; anim on the root animates the whole widget.
+    readonly property var anim: (node && node.anim && typeof node.anim === "object") ? node.anim : null
+    readonly property string animType: anim ? ("" + (anim.type || "")) : ""
+    readonly property int animDur: anim ? numOr(anim.duration, 1200) : 1200
+    transformOrigin: Item.Center
+    transform: Translate { id: floatT }
+
+    SequentialAnimation on scale {
+        running: root.animType === "pulse"; loops: Animation.Infinite; alwaysRunToEnd: true
+        NumberAnimation { from: 1.0; to: 1.12; duration: root.animDur / 2; easing.type: Easing.InOutSine }
+        NumberAnimation { from: 1.12; to: 1.0; duration: root.animDur / 2; easing.type: Easing.InOutSine }
+    }
+    SequentialAnimation on opacity {
+        running: root.animType === "fade" || root.animType === "blink"
+        loops: Animation.Infinite; alwaysRunToEnd: true
+        NumberAnimation { to: root.animType === "blink" ? 0.0 : 0.3; duration: root.animDur / 2
+                          easing.type: root.animType === "blink" ? Easing.Linear : Easing.InOutSine }
+        NumberAnimation { to: 1.0; duration: root.animDur / 2
+                          easing.type: root.animType === "blink" ? Easing.Linear : Easing.InOutSine }
+    }
+    RotationAnimation on rotation {
+        running: root.animType === "spin"; loops: Animation.Infinite
+        from: 0; to: 360; duration: root.animDur
+    }
+    SequentialAnimation {
+        running: root.animType === "float"; loops: Animation.Infinite; alwaysRunToEnd: true
+        NumberAnimation { target: floatT; property: "y"; from: 0; to: -6; duration: root.animDur / 2; easing.type: Easing.InOutSine }
+        NumberAnimation { target: floatT; property: "y"; from: -6; to: 0; duration: root.animDur / 2; easing.type: Easing.InOutSine }
+    }
+
     Loader {
         id: loader
         // Pass the root's (layout-assigned) WIDTH down to the content so a node
