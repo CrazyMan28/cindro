@@ -70,6 +70,13 @@ def button(name: str, pressed: bool) -> None:
     _call("pointerButton", _QT_BUTTON.get(name, 1), "true" if pressed else "false")
 
 
+def click(name: str, gx: float, gy: float) -> None:
+    """ATOMIC click at global (gx,gy): one DBus call re-focuses the surface there
+    and does motion+press+release together. Reliable where separate move+press+
+    release raced and dropped the click (the ~95%-fail desktop bug)."""
+    _call("pointerClick", float(gx), float(gy), _QT_BUTTON.get(name, 1))
+
+
 def key(evdev_code: int, pressed: bool) -> None:
     """evdev_code = Linux keycode (e.g. KEY_A = 30)."""
     _call("key", int(evdev_code), "true" if pressed else "false")
