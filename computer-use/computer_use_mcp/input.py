@@ -203,12 +203,18 @@ def click(x: float | None = None, y: float | None = None, button: str = "left",
         if pos is not None:
             agent_bus.publish(pos[0], pos[1], button=button, kind="click")
     elif jarvis_seat.available():
-        # Forked KWin: click on the agent's own seat (it's already focused on the
-        # window under the agent pointer from the preceding move()).
+        # Forked KWin: ATOMIC click on the agent's own seat — one DBus call does
+        # refocus + motion + press + release together. The old separate
+        # move()+press+release path raced (a no-op re-enter / inter-call gap left
+        # the press on a stale focus) and dropped ~95% of clicks; atomic lands
+        # reliably. In-place clicks (no x/y) fall back to press/release.
         for i in range(2 if double else 1):
-            jarvis_seat.button(button, True)
-            time.sleep(0.04)
-            jarvis_seat.button(button, False)
+            if pos is not None:
+                jarvis_seat.click(button, pos[0], pos[1])
+            else:
+                jarvis_seat.button(button, True)
+                time.sleep(0.04)
+                jarvis_seat.button(button, False)
             if double and i == 0:
                 time.sleep(0.12)
         if pos is not None:
