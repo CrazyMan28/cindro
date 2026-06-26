@@ -11,6 +11,7 @@ import android.graphics.BitmapFactory
 import android.util.Base64
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -55,12 +56,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.jarvis.app.ui.theme.GlowCard
 import com.jarvis.app.ui.theme.JarvisPalette
 import com.jarvis.app.ui.util.HapticButton
@@ -76,6 +81,7 @@ fun ChatBubble(
     onClick: () -> Unit = {},
     onLongClick: () -> Unit = {},
     onStreamReveal: () -> Unit = {},
+    onWidgetAction: (com.google.gson.JsonObject) -> Unit = {},
 ) {
     // Long-press anywhere on a bubble enters / toggles selection; in selecting
     // mode a plain tap toggles too. The selected bubble dims slightly.
@@ -92,7 +98,37 @@ fun ChatBubble(
             is ChatItem.Approval -> ApprovalCard(item, onApprove)
             is ChatItem.Error -> ErrorBubble(item)
             is ChatItem.FileOffer -> FileOfferBubble(item)
+            is ChatItem.Widget -> WidgetBubble(item, onWidgetAction)
         }
+    }
+}
+
+@Composable
+private fun WidgetBubble(item: ChatItem.Widget, onWidgetAction: (com.google.gson.JsonObject) -> Unit) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFF0B1A26))
+            .border(1.dp, Color(0xFF1F3A4D), RoundedCornerShape(12.dp))
+            .padding(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("◆ CANVAS", color = Color(0xFF5FE0FF), fontSize = 8.sp, letterSpacing = 1.2.sp)
+            if (item.title.isNotEmpty()) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    item.title,
+                    color = Color(0xFF8FD8EE),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        WidgetRenderer(item.specJson, onWidgetAction)
     }
 }
 
