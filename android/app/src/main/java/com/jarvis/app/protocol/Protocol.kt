@@ -139,6 +139,41 @@ data class SessionOpenedEvent(val opened: SessionOpened) {
     }
 }
 
+/**
+ * A `widget.render` Contract C event: the model rendered a canvas/widget (the
+ * render_widget file bus the daemon tails + forwards). `spec` is the nested DSL the
+ * phone draws via WidgetRenderer. `widget.remove`/`widget.clear` drop one/all.
+ * Frame: {"v":1,"event":"widget.render","data":{id,title,spec,target,session_id}}.
+ */
+data class WidgetEvent(
+    val op: String, // "render" | "remove" | "clear"
+    val id: String,
+    val title: String,
+    val target: String,
+    val sessionId: String?,
+    val spec: JsonObject?, // present for "render"
+) {
+    companion object {
+        fun from(obj: JsonObject): WidgetEvent? {
+            val op = when (obj.get("event")?.asString) {
+                "widget.render" -> "render"
+                "widget.remove" -> "remove"
+                "widget.clear" -> "clear"
+                else -> return null
+            }
+            val data = obj.getAsJsonObject("data") ?: JsonObject()
+            return WidgetEvent(
+                op = op,
+                id = data.get("id")?.asString ?: "",
+                title = data.get("title")?.asString ?: "",
+                target = data.get("target")?.asString ?: "canvas",
+                sessionId = data.get("session_id")?.asString?.ifBlank { null },
+                spec = data.getAsJsonObject("spec"),
+            )
+        }
+    }
+}
+
 /** Helpers for building params payloads. */
 object Params {
     fun of(vararg pairs: Pair<String, Any?>): JsonObject {
