@@ -40,6 +40,8 @@ class QWebSocketServer;
 class QWebSocket;
 class QNetworkAccessManager;
 class QNetworkReply;
+class QTimer;
+class QJsonObject;
 QT_END_NAMESPACE
 
 namespace jarvis {
@@ -163,6 +165,17 @@ private:
     QHash<QString, MirrorPump> m_pumps;
     // reverse map: streaming reply -> session id (to route ready-read signals).
     QHash<QNetworkReply *, QString> m_pumpReply;
+
+    // ---- Widget bus -> phone forwarding -----------------------------------
+    // The model renders widgets to a local file bus (~/.local/share/jarvis/
+    // widgets.jsonl) the desktop tails. So a paired PHONE can see them too, the
+    // daemon tails the same file and forwards each record to phones subscribed to
+    // that widget's session as a Contract C `widget.render` (or remove/clear) event.
+    QString widgetsPath() const;
+    void startWidgetWatch();
+    void readWidgetTail();
+    QTimer *m_widgetTimer = nullptr;
+    qint64 m_widgetOffset = 0;
 };
 
 } // namespace jarvis

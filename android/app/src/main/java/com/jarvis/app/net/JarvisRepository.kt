@@ -55,6 +55,10 @@ class JarvisRepository(
     /** file.offer pushes (device->phone). */
     val fileOffers: SharedFlow<FileOffer> get() = client.fileOffers
 
+    /** widget.render/remove/clear pushes: model-rendered canvases the daemon
+     *  forwarded from the widget bus, for the phone to draw inline. */
+    val widgetEvents: SharedFlow<com.jarvis.app.protocol.WidgetEvent> get() = client.widgetEvents
+
     /** session.opened pushes: a new session was created (any surface) — open its chat. */
     val sessionOpened: SharedFlow<SessionOpened> get() = client.sessionOpened
 
