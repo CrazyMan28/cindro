@@ -13,8 +13,9 @@ import JarvisSidebar
 // flash()) to fire the click ripple.
 Item {
     id: root
-    // Bigger than the OS cursor on purpose — the user must SEE Jarvis acting.
-    property real diameter: 84
+    // Bigger than the OS cursor on purpose — the user must SEE Jarvis acting —
+    // but kept modest so it doesn't block the model's own view of what it clicks.
+    property real diameter: 56
     property bool active: true
     property string lastAction: "move"
     // Codex-style soft AZURE-BLUE glow (not the HUD cyan) — this is the "Jarvis is
