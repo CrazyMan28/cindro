@@ -12,6 +12,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -21,6 +22,8 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRandomGenerator>
+#include <QStandardPaths>
+#include <QTimer>
 #include <QUrl>
 #include <QWebSocket>
 #include <QWebSocketServer>
@@ -111,7 +114,95 @@ bool DeviceServer::start()
         m_control->setAuthedDeviceProbe([this]() { return hasAuthedDevice(); });
     }
 
+    // Tail the widget bus so paired phones can see model-rendered widgets too.
+    startWidgetWatch();
+
     return localOk || m_tailnet != nullptr;
+}
+
+QString DeviceServer::widgetsPath() const
+{
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    return (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share") : base)
+           + QStringLiteral("/jarvis/widgets.jsonl");
+}
+
+void DeviceServer::startWidgetWatch()
+{
+    if (m_widgetTimer)
+        return;
+    // Start from the END so old widgets from a previous run don't replay to phones;
+    // only widgets rendered while the daemon is up are forwarded.
+    QFileInfo fi(widgetsPath());
+    m_widgetOffset = fi.exists() ? fi.size() : 0;
+    m_widgetTimer = new QTimer(this);
+    m_widgetTimer->setInterval(500);
+    connect(m_widgetTimer, &QTimer::timeout, this, &DeviceServer::readWidgetTail);
+    m_widgetTimer->start();
+}
+
+void DeviceServer::readWidgetTail()
+{
+    QFile f(widgetsPath());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    if (f.size() < m_widgetOffset)   // truncated/rotated -> restart
+        m_widgetOffset = 0;
+    if (!f.seek(m_widgetOffset))
+        return;
+    const QByteArray chunk = f.readAll();
+    m_widgetOffset = f.pos();
+
+    for (const QByteArray &lineRaw : chunk.split('\n')) {
+        const QByteArray line = lineRaw.trimmed();
+        if (line.isEmpty())
+            continue;
+        QJsonParseError perr;
+        const QJsonDocument d = QJsonDocument::fromJson(line, &perr);
+        if (perr.error != QJsonParseError::NoError || !d.isObject())
+            continue;
+        const QJsonObject o = d.object();
+
+        // Build the Contract C frame: remove/clear ops, else a render.
+        const QString op = o.value(QStringLiteral("op")).toString();
+        QJsonObject data;
+        QString eventName;
+        QString sessionId;
+        if (op == QStringLiteral("remove")) {
+            eventName = QStringLiteral("widget.remove");
+            data.insert(QStringLiteral("id"), o.value(QStringLiteral("id")).toString());
+        } else if (op == QStringLiteral("clear")) {
+            eventName = QStringLiteral("widget.clear");
+        } else {
+            if (!o.contains(QStringLiteral("spec")))
+                continue;
+            eventName = QStringLiteral("widget.render");
+            sessionId = o.value(QStringLiteral("session_id")).toString();
+            data.insert(QStringLiteral("id"), o.value(QStringLiteral("id")).toString());
+            data.insert(QStringLiteral("title"), o.value(QStringLiteral("title")).toString());
+            data.insert(QStringLiteral("spec"), o.value(QStringLiteral("spec")));
+            data.insert(QStringLiteral("target"), o.value(QStringLiteral("target")).toString());
+            data.insert(QStringLiteral("session_id"), sessionId);
+        }
+
+        QJsonObject frame;
+        frame.insert(QStringLiteral("v"), 1);
+        frame.insert(QStringLiteral("event"), eventName);
+        frame.insert(QStringLiteral("data"), data);
+        const QString payload =
+            QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+
+        // Render events go only to phones subscribed to that session; remove/clear
+        // (no/empty session) go to every authed phone so stale cards clear anywhere.
+        for (auto it = m_conns.begin(); it != m_conns.end(); ++it) {
+            const Conn &c = it.value();
+            if (!c.authed)
+                continue;
+            if (!sessionId.isEmpty() && !c.subscribedSessions.contains(sessionId))
+                continue;
+            it.key()->sendTextMessage(payload);
+        }
+    }
 }
 
 void DeviceServer::onNewConnection()

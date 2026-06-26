@@ -7,6 +7,7 @@ import com.jarvis.app.protocol.AuthChallenge
 import com.jarvis.app.protocol.Protocol
 import com.jarvis.app.protocol.FileOfferEvent
 import com.jarvis.app.protocol.FileOffer
+import com.jarvis.app.protocol.WidgetEvent
 import com.jarvis.app.protocol.MirrorFrame
 import com.jarvis.app.protocol.SessionEvent
 import com.jarvis.app.protocol.SessionOpened
@@ -78,6 +79,11 @@ class DeviceClient(
     /** `file.offer` events: the daemon pushed a file (device->phone). */
     private val _fileOffers = MutableSharedFlow<FileOffer>(extraBufferCapacity = 16)
     val fileOffers: SharedFlow<FileOffer> = _fileOffers.asSharedFlow()
+
+    /** `widget.render` / `widget.remove` / `widget.clear`: the model rendered a
+     *  canvas/widget the daemon forwarded from the bus. */
+    private val _widgetEvents = MutableSharedFlow<WidgetEvent>(extraBufferCapacity = 32)
+    val widgetEvents: SharedFlow<WidgetEvent> = _widgetEvents.asSharedFlow()
 
     /** `session.opened` events: a new session was created (any surface) — open its chat. */
     private val _sessionOpened = MutableSharedFlow<SessionOpened>(extraBufferCapacity = 16)
@@ -225,6 +231,10 @@ class DeviceClient(
             }
             FileOfferEvent.from(obj)?.let { fo ->
                 _fileOffers.tryEmit(fo.offer)
+                return
+            }
+            WidgetEvent.from(obj)?.let { w ->
+                _widgetEvents.tryEmit(w)
                 return
             }
             SessionOpenedEvent.from(obj)?.let {

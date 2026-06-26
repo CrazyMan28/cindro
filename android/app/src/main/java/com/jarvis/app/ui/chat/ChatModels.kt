@@ -53,6 +53,15 @@ sealed interface ChatItem {
         val size: Long?,
         val b64: String?,
     ) : ChatItem
+
+    /** A canvas/widget the model rendered (render_widget -> widget.render). [specJson]
+     *  is the raw DSL tree the phone draws via WidgetRenderer; a later event with the
+     *  same [id] replaces it in place (live updates). */
+    data class Widget(
+        override val id: String,
+        val title: String,
+        val specJson: String,
+    ) : ChatItem
 }
 
 /** Locally-attached photo pending send (mime + base64 + a thumbnail uri string). */

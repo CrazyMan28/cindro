@@ -120,6 +120,38 @@ class ChatViewModel(
                     )
                 }
         }
+        // Canvases/widgets the model renders (widget.render). Same id replaces in
+        // place (live updates); remove/clear drop one/all. Scoped to this session.
+        viewModelScope.launch {
+            repo.widgetEvents.collect { w ->
+                when (w.op) {
+                    "render" -> {
+                        if (w.sessionId != null && w.sessionId != _uiState.value.sessionId) return@collect
+                        if (w.spec == null) return@collect
+                        upsertWidget(
+                            ChatItem.Widget(
+                                id = w.id.ifBlank { nextId() },
+                                title = w.title,
+                                specJson = w.spec.toString(),
+                            ),
+                        )
+                    }
+                    "remove" -> _uiState.update { st ->
+                        st.copy(items = st.items.filterNot { it is ChatItem.Widget && it.id == w.id })
+                    }
+                    "clear" -> _uiState.update { st ->
+                        st.copy(items = st.items.filterNot { it is ChatItem.Widget })
+                    }
+                }
+            }
+        }
+    }
+
+    /** Append a widget, or replace an existing one with the same id in place. */
+    private fun upsertWidget(item: ChatItem.Widget) = _uiState.update { st ->
+        val idx = st.items.indexOfFirst { it is ChatItem.Widget && it.id == item.id }
+        if (idx >= 0) st.copy(items = st.items.toMutableList().also { it[idx] = item })
+        else st.copy(items = st.items + item)
     }
 
     fun attach(image: PendingImage) =
@@ -182,6 +214,17 @@ class ChatViewModel(
     }
 
     fun clearError() = _uiState.update { it.copy(error = null) }
+
+    /** A button/link inside a rendered widget fired its action. Fixed allow-set:
+     *  send -> send that text as a message; skill -> invoke it. (open is handled by
+     *  the screen, which has a Context.) Nothing is ever evaluated. */
+    fun onWidgetAction(action: com.google.gson.JsonObject) {
+        action.get("send")?.asString?.takeIf { it.isNotBlank() }?.let { send(it); return }
+        action.get("skill")?.asString?.takeIf { it.isNotBlank() }?.let { name ->
+            val args = action.get("args")?.asString.orEmpty()
+            send("/" + name + if (args.isNotBlank()) " $args" else "")
+        }
+    }
 
     // --- event folding -----------------------------------------------------
 

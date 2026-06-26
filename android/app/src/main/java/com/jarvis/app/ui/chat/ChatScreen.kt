@@ -196,6 +196,23 @@ fun ChatScreen(
                             else viewModel.startSelection(item.id)
                         },
                         onStreamReveal = viewModel::onStreamReveal,
+                        onWidgetAction = { action ->
+                            val open = action.get("open")?.asString
+                            if (!open.isNullOrBlank() &&
+                                (open.startsWith("http://") || open.startsWith("https://"))
+                            ) {
+                                runCatching {
+                                    context.startActivity(
+                                        android.content.Intent(
+                                            android.content.Intent.ACTION_VIEW,
+                                            android.net.Uri.parse(open),
+                                        ),
+                                    )
+                                }
+                            } else {
+                                viewModel.onWidgetAction(action)
+                            }
+                        },
                     )
                 }
                 // Pulsing "typing" indicator while the brain works (no streamed text yet).
@@ -318,6 +335,7 @@ private fun selectedText(state: ChatUiState): String =
                 is ChatItem.ToolCall -> listOfNotNull(item.argsJson, item.output).joinToString("\n")
                 is ChatItem.Approval -> item.summary
                 is ChatItem.FileOffer -> item.name
+                is ChatItem.Widget -> item.title
             }
         }
 

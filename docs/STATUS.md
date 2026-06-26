@@ -27,9 +27,14 @@ A big pass on the generative-UI system — see [`WIDGETS_CANVAS.md`](WIDGETS_CAN
   command's output on a cadence; verified live (a CPU/GPU widget updating in a real
   Jarvis chat).
 - **Settings QR pairing** fixed (ms-vs-seconds → int overflow → instant "Expired").
+- **Phone widget renderer (v0.6.0)** — the Android app now draws canvases/widgets:
+  the daemon (DeviceServer) tails the bus and forwards `widget.render/remove/clear`
+  to subscribed phones; a Compose `WidgetRenderer` interprets the full DSL (incl.
+  SVG via WebView, canvas ops, animation). Daemon→device forward verified
+  end-to-end (paired device received the frame); on-device visual confirmed once the
+  phone pulls v0.6.0. APK pushed to the phone store.
 
 **Open / not done:**
-- **Phone widget renderer** — the Android app has no DSL renderer yet (desktop only).
 - **KDE computer-use clicks (~95% fail)** — diagnosed: the agent's independent
   `jarvisSeat` (kwin-jarvis-fork) delivers move but clicks don't register on Qt
   apps. Ruled out timing (rapid+slow both fail) and scale (all outputs scale 1).
