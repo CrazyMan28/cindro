@@ -34,13 +34,19 @@ A big pass on the generative-UI system — see [`WIDGETS_CANVAS.md`](WIDGETS_CAN
   end-to-end (paired device received the frame); on-device visual confirmed once the
   phone pulls v0.6.0. APK pushed to the phone store.
 
+- **KDE computer-use clicks (~95% fail) — FIXED.** Root cause (found via
+  WAYLAND_DEBUG): `JarvisSeat::refocusAt` passed the surface-LOCAL offset as
+  `notifyPointerEnter`'s 3rd arg, but that arg is the surface's GLOBAL ORIGIN
+  (it builds `translate(-surfacePosition)`), so clients got `pos-local` =
+  out-of-bounds → every click dropped. Fixed to pass `pos-local` + an atomic
+  `pointerClick`; `input.py` now routes real-screen clicks through it. Verified
+  live (System Settings navigates reliably via the jarvis seat, not the user's
+  mouse). Driving `GlowCursor` shrunk (84→56) so it doesn't block the model's view.
+  (KWin-fork change lives in `kwin-jarvis-fork`; deploy via atomic-rename install
+  + relogin — see the kwin-fork memory.)
+
 **Open / not done:**
-- **KDE computer-use clicks (~95% fail)** — diagnosed: the agent's independent
-  `jarvisSeat` (kwin-jarvis-fork) delivers move but clicks don't register on Qt
-  apps. Ruled out timing (rapid+slow both fail) and scale (all outputs scale 1).
-  Next: add logging to `JarvisSeat::refocusAt` (is `findToplevel` returning the
-  surface? does Qt consume the second seat's pointer?), rebuild KWin, relogin.
-  Chrome-extension computer-use (CDP) is unaffected.
+- _(none from this overhaul — all shipped.)_
 
 ---
 
