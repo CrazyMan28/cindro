@@ -254,6 +254,29 @@ def register(mcp: FastMCP) -> None:
             return _err(exc)
 
     @mcp.tool()
+    def desktop_reset() -> str:
+        """Reset YOUR OWN agent desktop to a clean slate — close every open window
+        on it (apps, browsers) so you can start fresh, WITHOUT killing the desktop
+        itself or the session. Use this when the desktop is cluttered or an app is
+        stuck and you want a clean start. Returns how many windows were closed.
+        (This targets the agent desktop only, never the user's real screen.)"""
+        try:
+            wins = windows.list_windows("sway")  # the nested agent desktop is sway
+            closed = 0
+            for w in wins:
+                wid = w.get("id") or w.get("window_id") or ""
+                if not wid:
+                    continue
+                try:
+                    windows.close(wid)
+                    closed += 1
+                except Exception:
+                    pass
+            return json.dumps({"ok": True, "closed": closed})
+        except Exception as exc:
+            return _err(exc)
+
+    @mcp.tool()
     def window_set(
         window_id: str,
         action: str,
