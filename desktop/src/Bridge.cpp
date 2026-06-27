@@ -2385,11 +2385,18 @@ void Bridge::renderSavedWidget(const QString &id, const QString &target)
         const QJsonObject w = v.toObject();
         if (w.value(QStringLiteral("id")).toString() == id
             || w.value(QStringLiteral("name")).toString() == id) {
+            const QString tgt = target.isEmpty() ? QStringLiteral("canvas") : target;
             QJsonObject rec;
             rec.insert(QStringLiteral("ts"), QDateTime::currentMSecsSinceEpoch());
             rec.insert(QStringLiteral("title"), w.value(QStringLiteral("name")).toString());
-            rec.insert(QStringLiteral("id"), QString());  // fresh canvas id each render
-            rec.insert(QStringLiteral("target"), target.isEmpty() ? QStringLiteral("canvas") : target);
+            // "home" pins use a STABLE id ("home:<saved id>") so re-pinning replaces
+            // in place and home_unpin / the ✕ button can remove exactly this card.
+            // Other targets get a fresh canvas id each render.
+            rec.insert(QStringLiteral("id"),
+                       tgt == QStringLiteral("home")
+                           ? (QStringLiteral("home:") + w.value(QStringLiteral("id")).toString())
+                           : QString());
+            rec.insert(QStringLiteral("target"), tgt);
             rec.insert(QStringLiteral("spec"), w.value(QStringLiteral("spec")));
             appendWidgetBusRecord(rec);
             return;
