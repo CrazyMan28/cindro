@@ -408,6 +408,33 @@ class JarvisRepository(
         client.request("take_over.request", Params.of("session_id" to sessionId)).orThrow()
     }
 
+    // --- live widgets: viewer leases + home-screen pins --------------------
+    // Best-effort (a dropped heartbeat must not crash the UI). The daemon records
+    // a lease so the engine's live-widget supervisor only runs a widget someone is
+    // watching; a pin keeps a home-screen widget alive at a 60s floor.
+
+    /** Tell the daemon this phone is (or stopped) viewing a live-widget scope —
+     *  a chat session id ("chat"), so that session's live widgets keep updating. */
+    suspend fun widgetViewing(scope: String, active: Boolean, kind: String = "chat") {
+        runCatching {
+            client.request("widget.viewing",
+                Params.of("scope" to scope, "kind" to kind, "active" to active)).orThrow()
+        }
+    }
+
+    /** Keep a home-screen-pinned widget alive (active=true heartbeat while the phone
+     *  is unlocked); active=false lets it idle. */
+    suspend fun widgetPin(id: String, active: Boolean = true) {
+        runCatching {
+            client.request("widget.pin", Params.of("id" to id, "active" to active)).orThrow()
+        }
+    }
+
+    /** Drop a home-screen pin entirely (the widget was removed from the home screen). */
+    suspend fun widgetUnpin(id: String) {
+        runCatching { client.request("widget.unpin", Params.of("id" to id)).orThrow() }
+    }
+
     /** Push a file device->phone (the daemon delivers it as a file.offer). Unused on-phone. */
     suspend fun pushFile(name: String, b64: String, sessionId: String?) {
         client.request(

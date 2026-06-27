@@ -192,14 +192,33 @@ void DeviceServer::readWidgetTail()
         const QString payload =
             QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
 
-        // Render events go only to phones subscribed to that session; remove/clear
-        // (no/empty session) go to every authed phone so stale cards clear anywhere.
+        // Render events go to phones subscribed to that session (full cadence) AND
+        // to phones that have the widget PINNED to their home screen even without a
+        // session subscription (throttled to a 60s floor). remove/clear (session-
+        // less) go to every authed phone so stale cards clear anywhere.
+        const bool isRender = (eventName == QStringLiteral("widget.render"));
+        const QString widgetId = isRender ? data.value(QStringLiteral("id")).toString() : QString();
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         for (auto it = m_conns.begin(); it != m_conns.end(); ++it) {
-            const Conn &c = it.value();
+            Conn &c = it.value();
             if (!c.authed)
                 continue;
-            if (!sessionId.isEmpty() && !c.subscribedSessions.contains(sessionId))
+            bool pinnedOnly = false;
+            if (!isRender) {
+                // remove/clear -> every authed phone (clears stale cards anywhere)
+            } else if (sessionId.isEmpty() || c.subscribedSessions.contains(sessionId)) {
+                // full cadence (a chat for this session is open, or it's global)
+            } else if (!widgetId.isEmpty() && c.pinnedWidgets.contains(widgetId)) {
+                pinnedOnly = true; // delivered only because it's pinned to home
+            } else {
                 continue;
+            }
+            if (pinnedOnly) {
+                const QString key = c.deviceId + QStringLiteral("|") + widgetId;
+                if (nowMs - m_pinPushMs.value(key, 0) < 60000)
+                    continue; // 60s floor for a backgrounded pinned home widget
+                m_pinPushMs.insert(key, nowMs);
+            }
             it.key()->sendTextMessage(payload);
         }
     }
@@ -241,6 +260,16 @@ void DeviceServer::onSocketDisconnected()
         if (!deviceId.isEmpty() && m_control) {
             m_control->widgetLeases().clearSource(QStringLiteral("phone:") + deviceId);
             m_control->widgetLeases().clearSource(QStringLiteral("pin:") + deviceId);
+        }
+        // Drop this device's pin-throttle entries.
+        if (!deviceId.isEmpty()) {
+            const QString prefix = deviceId + QStringLiteral("|");
+            for (auto k = m_pinPushMs.begin(); k != m_pinPushMs.end();) {
+                if (k.key().startsWith(prefix))
+                    k = m_pinPushMs.erase(k);
+                else
+                    ++k;
+            }
         }
     }
     m_conns.remove(client);
