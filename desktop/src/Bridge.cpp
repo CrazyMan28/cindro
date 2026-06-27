@@ -2015,7 +2015,11 @@ void Bridge::answerQuestion(const QString &id, const QString &answer)
         f.write(QJsonDocument(o).toJson(QJsonDocument::Compact));
         f.close();
     }
-    m_seenQuestions.remove(id);
+    // Do NOT forget the id here. The question's <id>.json is still on disk until
+    // the engine polls, reads the .answer, and unlinks it — and writing .answer
+    // fires the directory watcher. If we dropped the id now, that scan would see
+    // the still-present .json and re-emit the SAME question as a duplicate card.
+    // The scanQuestions() cleanup forgets the id once the engine removes the file.
 }
 
 // render_widget file bus (widgets.jsonl) ------------------------------------

@@ -21,7 +21,9 @@ Item {
         { key: "home",      label: "HOME",      section: "WORKSPACE" },
         { key: "chat",      label: "CHAT",      section: "WORKSPACE" },
         { key: "voice",     label: "VOICE",     section: "WORKSPACE" },
-        { key: "computer",  label: "COMPUTER",  section: "WORKSPACE" },
+        // Computer page stays reachable via the chat peek's "⛶ Full" button, but
+        // it's hidden from the rail — the live agent desktop is in-chat now.
+        { key: "computer",  label: "COMPUTER",  section: "WORKSPACE", hidden: true },
         { key: "canvas",    label: "CANVAS",    section: "WORKSPACE" },
         { key: "widgets",   label: "WIDGETS",   section: "WORKSPACE" },
         { key: "sessions",  label: "SESSIONS",  section: "WORKSPACE" },
@@ -181,8 +183,11 @@ Item {
                 id: navItem
                 required property int index
                 required property var modelData
+                readonly property bool hidden: modelData.hidden === true
                 width: navList.width
-                height: 40
+                height: hidden ? 0 : 40
+                visible: !hidden
+                enabled: !hidden
                 readonly property bool active: rail.currentIndex === index
 
                 // entrance: stagger each row in from the left on first paint
