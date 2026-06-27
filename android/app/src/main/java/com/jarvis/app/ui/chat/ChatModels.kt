@@ -1,10 +1,19 @@
 package com.jarvis.app.ui.chat
 
-/** A renderable chat item folded from the NormalizedBrainEvent stream (Contract B). */
+import androidx.compose.runtime.Immutable
+
+/** A renderable chat item folded from the NormalizedBrainEvent stream (Contract B).
+ *
+ *  Every variant is @Immutable: once folded, an item's fields never mutate (an
+ *  update produces a NEW instance with the same id). That lets Compose skip
+ *  recomposing unchanged rows in the LazyColumn — important once a chat has 95+
+ *  items, where ToolCall's `List<String>` would otherwise mark the type unstable
+ *  and re-run every bubble on each new event. */
 sealed interface ChatItem {
     val id: String
 
     /** A user or assistant text bubble. */
+    @Immutable
     data class Message(
         override val id: String,
         val role: String, // "user" | "assistant"
@@ -14,11 +23,13 @@ sealed interface ChatItem {
     ) : ChatItem
 
     /** Streaming reasoning ("thinking") — shown dimmed, collapsible. */
+    @Immutable
     data class Thinking(override val id: String, val text: String) : ChatItem
 
     /** A tool invocation; [output] / [ok] fill in when the matching tool_result arrives.
      *  [images] holds any base64 image blobs found in the result (e.g. a screenshot
      *  tool returning PNGs) so the chat can render them instead of a wall of base64. */
+    @Immutable
     data class ToolCall(
         override val id: String,
         val name: String,
@@ -30,9 +41,11 @@ sealed interface ChatItem {
     ) : ChatItem
 
     /** A code diff the brain produced. */
+    @Immutable
     data class Diff(override val id: String, val path: String, val patch: String) : ChatItem
 
     /** An approval the daemon is waiting on — gated behind biometrics to respond. */
+    @Immutable
     data class Approval(
         override val id: String,
         val approvalId: String,
@@ -42,10 +55,12 @@ sealed interface ChatItem {
     ) : ChatItem
 
     /** A turn-level error. */
+    @Immutable
     data class Error(override val id: String, val message: String) : ChatItem
 
     /** A file Jarvis sent to the phone (jarvis_send_file -> file.offer). Images render
      *  inline; any other type shows a saveable file card. */
+    @Immutable
     data class FileOffer(
         override val id: String,
         val name: String,
@@ -57,6 +72,7 @@ sealed interface ChatItem {
     /** A canvas/widget the model rendered (render_widget -> widget.render). [specJson]
      *  is the raw DSL tree the phone draws via WidgetRenderer; a later event with the
      *  same [id] replaces it in place (live updates). */
+    @Immutable
     data class Widget(
         override val id: String,
         val title: String,
