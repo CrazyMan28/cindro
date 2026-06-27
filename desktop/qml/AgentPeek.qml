@@ -19,8 +19,11 @@ Rectangle {
 
     Behavior on border.color { ColorAnimation { duration: Theme.durMid } }
 
-    // Is there an agent desktop to watch (a co-worker session or a live take-over)?
+    // Is there an agent desktop to watch? A live take-over, an explicit co-worker
+    // session, OR a plain chat whose auto computer-use spun up a nested desktop
+    // (bridge.hasAgentDesktop) — so you can watch ANY session work, live.
     readonly property bool active: bridge.driving || bridge.coworkerSessionId.length > 0
+                                   || bridge.hasAgentDesktop
     property bool poll: visible && active
 
     onPollChanged: poll ? bridge.mirrorStart() : bridge.mirrorStop()

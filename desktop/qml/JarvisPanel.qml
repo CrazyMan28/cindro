@@ -26,6 +26,7 @@ Item {
     // transcript search (top). The peek auto-opens when Jarvis starts driving its
     // desktop / a co-worker spins up — replaces the old Browser tab.
     readonly property bool agentActive: bridge.driving || bridge.coworkerSessionId.length > 0
+                                        || bridge.hasAgentDesktop
     property bool peekOpen: false
     property bool chatSearchOpen: false
     onAgentActiveChanged: if (agentActive) peekOpen = true

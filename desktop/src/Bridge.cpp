@@ -67,6 +67,14 @@ Bridge::Bridge(QObject *parent)
     pollStats();          // prime once so the UI isn't blank on first paint
     probeGpu();           // one-shot nvidia-smi probe
     m_statsTimer->start();
+
+    // Whenever the active session changes, ask the daemon whether it has a nested
+    // agent desktop so the in-chat peek can mirror it live (works for plain chats,
+    // not just explicit co-work). A small delay lets the daemon finish provisioning.
+    connect(this, &Bridge::sessionIdChanged, this, [this]() {
+        setHasAgentDesktop(false);          // unknown until the query answers
+        QTimer::singleShot(400, this, &Bridge::refreshAgentDesktop);
+    });
 }
 
 Bridge::~Bridge()
@@ -1650,6 +1658,26 @@ void Bridge::setMirroring(bool m)
     emit mirroringChanged();
 }
 
+void Bridge::setHasAgentDesktop(bool v)
+{
+    if (m_hasAgentDesktop == v)
+        return;
+    m_hasAgentDesktop = v;
+    emit hasAgentDesktopChanged();
+}
+
+void Bridge::refreshAgentDesktop()
+{
+    // No session, or not connected → nothing to mirror.
+    if (m_sessionId.isEmpty() || m_socket->state() != QAbstractSocket::ConnectedState) {
+        setHasAgentDesktop(false);
+        return;
+    }
+    QVariantMap params;
+    params.insert(QStringLiteral("session_id"), m_sessionId);
+    request(QStringLiteral("agent_desktop.info"), params, QStringLiteral("__agentdesk__"));
+}
+
 void Bridge::setCoworkerSessionId(const QString &id)
 {
     if (m_coworkerSessionId == id)
@@ -2638,6 +2666,12 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         // delivery is just unscoped (the pre-fix behavior) rather than an error toast.
         if (method == QStringLiteral("session.subscribe"))
             return;
+        // agent_desktop.info "no_agent_desktop" just means this session isn't
+        // driving a nested desktop — clear the flag quietly (no error toast).
+        if (method == QStringLiteral("agent_desktop.info")) {
+            setHasAgentDesktop(false);
+            return;
+        }
         // mcp.test failures surface through mcpTested, not a generic error toast.
         if (method == QStringLiteral("mcp.test")) {
             emit mcpTested(ctx, false, 0, msg.isEmpty() ? code : msg);
@@ -2757,6 +2791,18 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         }
         emit errorOccurred(QStringLiteral("%1 failed: [%2] %3")
                                .arg(method.isEmpty() ? QStringLiteral("request") : method, code, msg));
+        return;
+    }
+
+    // agent_desktop.info: the current session HAS a nested agent desktop — point
+    // the live preview at its per-session engine and flag it so the in-chat peek
+    // (and Home/Computer) can mirror it even for a plain chat (not just explicit
+    // co-work). This is what makes "watch it live" work for ordinary sessions.
+    if (method == QStringLiteral("agent_desktop.info")) {
+        const int port = result.value(QStringLiteral("port")).toInt();
+        if (port > 0)
+            setVideoEndpoint(QStringLiteral("http://127.0.0.1:") + QString::number(port));
+        setHasAgentDesktop(true);
         return;
     }
 
