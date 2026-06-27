@@ -11,6 +11,10 @@ Rectangle {
     implicitHeight: 38
     color: Theme.surfaceDeep
     radius: Theme.radiusSm
+
+    // Raised when the user clicks the "Search or jump…" field (or hits Ctrl+K);
+    // AppShell opens the command palette.
+    signal openSearch()
     border.width: 1
     border.color: Theme.hairlineSoft
     clip: true
@@ -81,7 +85,44 @@ Rectangle {
             }
         }
 
-        Item { Layout.fillWidth: true }
+        // ---- "Search or jump…" command bar (⌘K) ----------------------------
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.maximumWidth: 280
+            Layout.minimumWidth: 110
+            Layout.leftMargin: 8
+            Layout.rightMargin: 8
+            Layout.alignment: Qt.AlignVCenter
+            implicitHeight: 26
+            radius: 8
+            color: kbarMa.containsMouse ? Theme.surfaceStrong : Theme.surfaceInput
+            border.width: 1
+            border.color: kbarMa.containsMouse ? Theme.accentDim : Theme.hairlineSoft
+            Behavior on color { ColorAnimation { duration: 130 } }
+            Behavior on border.color { ColorAnimation { duration: 130 } }
+            Row {
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.left: parent.left; anchors.right: parent.right
+                anchors.leftMargin: 10; anchors.rightMargin: 10
+                spacing: 8
+                Text { anchors.verticalCenter: parent.verticalCenter; text: "⌕"; color: Theme.textFaint; font.pixelSize: 13 }
+                Text { anchors.verticalCenter: parent.verticalCenter; text: "Search or jump…"
+                    color: Theme.textFaint; font.family: Theme.fontSans; font.pixelSize: 12 }
+                Item { width: 1; height: 1 }
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: parent.width > 180
+                    radius: 4; width: kbT.implicitWidth + 10; height: 16
+                    color: Theme.surfaceDeep; border.color: Theme.hairlineSoft; border.width: 1
+                    Text { id: kbT; anchors.centerIn: parent; text: "⌘K"; color: Theme.textFaint
+                        font.family: Theme.fontDisplay; font.pixelSize: 8; font.letterSpacing: 0.5 }
+                }
+            }
+            MouseArea {
+                id: kbarMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                onClicked: strip.openSearch()
+            }
+        }
 
         // MCP count
         Stat { label: "MCP"; value: strip.mcpCount + ""; tint: Theme.accent }
