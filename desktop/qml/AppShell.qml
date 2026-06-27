@@ -26,7 +26,10 @@ Item {
     property int currentIndex: 0
     // The NavRail/switch index of the Voice page (used by the --voice CLI flag in
     // Main.qml to boot straight onto it). Keep in sync with the order below.
-    readonly property int voiceIndex: 1
+    // Page order (matches NavRail.items): 0 Home · 1 Chat · 2 Voice · 3 Computer ·
+    // 4 Canvas · 5 Widgets · 6 Sessions · 7 Memory · 8 Skills · 9 Schedules ·
+    // 10 Activity · 11 MCP · 12 Plugins · 13 SSH · 14 Settings.
+    readonly property int voiceIndex: 2
 
     // Drive hands-free voice capture by PAGE: start continuous listening the moment
     // the Voice page becomes active, stop it when leaving. This is the reliable
@@ -48,9 +51,9 @@ Item {
     function updateWidgetViewing() {
         if (!bridge)
             return
-        if (currentIndex === 0) {
+        if (currentIndex === 1) {                                    // Chat
             bridge.setPageViewing(bridge.sessionId, "chat")
-        } else if (currentIndex === 5 || currentIndex === 6) {  // Canvas / Widgets
+        } else if (currentIndex === 0 || currentIndex === 4 || currentIndex === 5) { // Home / Canvas / Widgets
             bridge.setPageViewing("all", "canvas")
             bridge.replayAllWidgets()
         } else {
@@ -64,7 +67,7 @@ Item {
     Connections {
         target: bridge
         function onSessionIdChanged() {
-            if (shell.currentIndex === 0)
+            if (shell.currentIndex === 1)
                 bridge.setPageViewing(bridge.sessionId, "chat")
         }
     }
@@ -121,10 +124,10 @@ Item {
                     enabled: active
                     z: active ? 1 : 0
 
-                    // Chat (0) preloads so its transcript + chatPanel exist at
-                    // startup; every other page loads on first visit, then stays
-                    // warm. Cuts startup cost + memory (was: all 15 built eagerly).
-                    property bool loadedOnce: index === 0
+                    // Home (0, landing) + Chat (1, holds chatPanel that other pages
+                    // inject into) preload; every other page loads on first visit,
+                    // then stays warm. Cuts startup cost (was: all 15 built eagerly).
+                    property bool loadedOnce: index === 0 || index === 1
                     onActiveChanged: if (active) loadedOnce = true
 
                     transform: Translate {
@@ -143,13 +146,13 @@ Item {
                         sourceComponent: {
                             // Index order MUST match NavRail.items (grouped sections).
                             switch (pageWrap.index) {
-                            case 0: return chatComp
-                            case 1: return voiceComp
-                            case 2: return sessionsComp
+                            case 0: return homeComp
+                            case 1: return chatComp
+                            case 2: return voiceComp
                             case 3: return computerComp
-                            case 4: return browserComp
-                            case 5: return canvasComp
-                            case 6: return widgetsComp
+                            case 4: return canvasComp
+                            case 5: return widgetsComp
+                            case 6: return sessionsComp
                             case 7: return memoryComp
                             case 8: return skillsComp
                             case 9: return schedulesComp
@@ -289,6 +292,25 @@ Item {
     }
 
     // ---- page components ---------------------------------------------------
+    // Index 0: the Home dashboard (landing). Its quick actions + cards route into
+    // the right pages without hiding any of them.
+    Component {
+        id: homeComp
+        HomePage {
+            onOpenSession: function(sid) {
+                if (sid.length === 0) { shell.currentIndex = 6; return }  // "All sessions"
+                bridge.openSession(sid)
+                shell.currentIndex = 1
+            }
+            onNewChat: function() {
+                if (shell.chatPanel) shell.chatPanel.startNewChat()
+                shell.currentIndex = 1
+            }
+            onGoCanvas: function() { shell.currentIndex = 4 }
+            onGoComputer: function() { shell.currentIndex = 3 }
+            onGoVoice: function() { shell.currentIndex = 2 }
+        }
+    }
     Component {
         id: chatComp
         JarvisPanel { Component.onCompleted: shell.chatPanel = this }
@@ -304,14 +326,13 @@ Item {
             onSendChat: function(text) {
                 if (shell.chatPanel) {
                     shell.chatPanel.injectUser(text)
-                    shell.currentIndex = 0
+                    shell.currentIndex = 1
                 } else {
                     bridge.sendMessage(text)
                 }
             }
         }
     }
-    Component { id: browserComp;  BrowserPage {} }
     Component { id: schedulesComp; SchedulesPage {} }
     Component { id: activityComp; ActivityPage {} }
     Component { id: sshComp;      SshPage {} }
@@ -324,20 +345,20 @@ Item {
             onRunSkill: function(name, message) {
                 if (shell.chatPanel)
                     shell.chatPanel.injectSkill(name, message)
-                shell.currentIndex = 0
+                shell.currentIndex = 1
             }
         }
     }
     Component {
         id: sessionsComp
         SessionsPage {
-            onOpenInChat: function(sid) { shell.currentIndex = 0 }
+            onOpenInChat: function(sid) { shell.currentIndex = 1 }
             // "+ New chat": jump to Chat and start a fresh conversation (drops the
             // current session so the next send creates a new one).
             onNewChat: function() {
                 if (shell.chatPanel)
                     shell.chatPanel.startNewChat()
-                shell.currentIndex = 0
+                shell.currentIndex = 1
             }
         }
     }
@@ -349,9 +370,9 @@ Item {
         WidgetsPage {
             // "Render to chat" drops a saved widget into the live conversation and
             // jumps to Chat so the user sees it land.
-            onRenderedToChat: function() { shell.currentIndex = 0 }
+            onRenderedToChat: function() { shell.currentIndex = 1 }
             // "Render to canvas" jumps to the Canvas page to show the result.
-            onRenderedToCanvas: function() { shell.currentIndex = 5 }
+            onRenderedToCanvas: function() { shell.currentIndex = 4 }
         }
     }
 }

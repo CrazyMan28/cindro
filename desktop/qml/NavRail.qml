@@ -18,13 +18,13 @@ Item {
     // them); the rest are clustered. Keep this order in lock-step with the page
     // switch in AppShell.qml.
     readonly property var items: [
-        { key: "chat",      label: "CHAT",      section: "TALK" },
-        { key: "voice",     label: "VOICE",     section: "TALK" },
-        { key: "sessions",  label: "SESSIONS",  section: "WORK" },
-        { key: "computer",  label: "COMPUTER",  section: "WORK" },
-        { key: "browser",   label: "BROWSER",   section: "WORK" },
-        { key: "canvas",    label: "CANVAS",    section: "WORK" },
-        { key: "widgets",   label: "WIDGETS",   section: "WORK" },
+        { key: "home",      label: "HOME",      section: "WORKSPACE" },
+        { key: "chat",      label: "CHAT",      section: "WORKSPACE" },
+        { key: "voice",     label: "VOICE",     section: "WORKSPACE" },
+        { key: "computer",  label: "COMPUTER",  section: "WORKSPACE" },
+        { key: "canvas",    label: "CANVAS",    section: "WORKSPACE" },
+        { key: "widgets",   label: "WIDGETS",   section: "WORKSPACE" },
+        { key: "sessions",  label: "SESSIONS",  section: "WORKSPACE" },
         { key: "memory",    label: "MEMORY",    section: "MIND" },
         { key: "skills",    label: "SKILLS",    section: "MIND" },
         { key: "schedules", label: "SCHEDULES", section: "MIND" },
@@ -249,6 +249,15 @@ Item {
                 ctx.lineCap = "round"; ctx.lineJoin = "round"
                 var w = width, h = height
                 switch (ic.glyph) {
+                case "home":
+                    // a house
+                    ctx.beginPath()
+                    ctx.moveTo(3, 9); ctx.lineTo(9, 3.5); ctx.lineTo(15, 9); ctx.stroke()
+                    ctx.beginPath()
+                    ctx.moveTo(4.5, 8); ctx.lineTo(4.5, 15); ctx.lineTo(13.5, 15); ctx.lineTo(13.5, 8); ctx.stroke()
+                    ctx.beginPath()
+                    ctx.moveTo(7.5, 15); ctx.lineTo(7.5, 11); ctx.lineTo(10.5, 11); ctx.lineTo(10.5, 15); ctx.stroke()
+                    break
                 case "chat":
                     ctx.beginPath()
                     ctx.moveTo(2, 4); ctx.lineTo(16, 4); ctx.lineTo(16, 12); ctx.lineTo(7, 12)
