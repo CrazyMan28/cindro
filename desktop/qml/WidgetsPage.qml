@@ -148,6 +148,11 @@ Item {
                             label: "→ Chat"
                             onClicked: { bridge.renderSavedWidget(card.wid, "chat"); page.renderedToChat() }
                         }
+                        Widgets.PillButton {
+                            label: "📌 Home"
+                            primary: true
+                            onClicked: bridge.renderSavedWidget(card.wid, "home")
+                        }
                         Rectangle {
                             Layout.preferredWidth: 26; Layout.preferredHeight: 26
                             radius: Theme.radiusXs
