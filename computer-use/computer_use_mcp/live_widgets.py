@@ -377,6 +377,77 @@ def ensure_supervisor() -> int:
         return 0
 
 
+def _bus_eof() -> int:
+    try:
+        return widgets_bus.bus_path().stat().st_size
+    except OSError:
+        return 0
+
+
+def _scan_bus_deletes(offset: int):
+    """Read NEW bus records since `offset`; return (new_offset, removes, clear_ts).
+    removes = [(id, ts)], clear_ts = ts of the latest clear (0 if none). This is how
+    the supervisor learns about deletes that arrive via the bus — e.g. the desktop "✕"
+    button (Bridge::canvasDelete) writes a remove marker but can't reach the engine."""
+    path = widgets_bus.bus_path()
+    removes = []
+    clear_ts = 0
+    try:
+        if path.stat().st_size < offset:  # rotated/truncated
+            offset = 0
+    except OSError:
+        return offset, removes, clear_ts
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            f.seek(offset)
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                op = rec.get("op")
+                if op == "remove":
+                    removes.append((str(rec.get("id") or ""), int(rec.get("ts", 0) or 0)))
+                elif op == "clear":
+                    clear_ts = max(clear_ts, int(rec.get("ts", 0) or 0))
+            offset = f.tell()
+    except OSError:
+        pass
+    return offset, removes, clear_ts
+
+
+def _started_of(jf: Path) -> int:
+    try:
+        return int(json.loads(jf.read_text(encoding="utf-8")).get("started", 0) or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _apply_bus_deletes(removes, clear_ts) -> None:
+    """Stop live jobs whose card was removed/cleared on the bus by unlinking their
+    job files. Gated on ts >= job.started so a stale remove (e.g. re-read after bus
+    rotation) can't kill a job recreated with the same id."""
+    for jid, ts in removes:
+        if not jid:
+            continue
+        jf = _job_file(jid)
+        if jf.exists() and (ts == 0 or ts >= _started_of(jf)):
+            try:
+                jf.unlink()
+            except OSError:
+                pass
+    if clear_ts:
+        for jf in _jobs_dir().glob("*.json"):
+            if clear_ts >= _started_of(jf):
+                try:
+                    jf.unlink()
+                except OSError:
+                    pass
+
+
 def _supervise_loop() -> None:
     pf = _supervisor_pidfile()
     mypid = os.getpid()
@@ -387,6 +458,7 @@ def _supervise_loop() -> None:
         pass
     sup = Supervisor()
     idle_since = None
+    bus_offset = _bus_eof()  # only honor deletes that happen while we're running
     try:
         while True:
             owner = _read_pid(pf)
@@ -397,6 +469,11 @@ def _supervise_loop() -> None:
                     pf.write_text(str(mypid), encoding="utf-8")
                 except OSError:
                     pass
+            # Honor deletes from the bus (desktop "✕"/canvas_clear) BEFORE emitting,
+            # so a removed widget can't be re-rendered back onto the canvas.
+            bus_offset, removes, clear_ts = _scan_bus_deletes(bus_offset)
+            if removes or clear_ts:
+                _apply_bus_deletes(removes, clear_ts)
             now = time.time()
             jobs = _load_jobs()
             if jobs:
