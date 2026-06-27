@@ -33,8 +33,21 @@ Item {
     property string selectedModel: modelOptions.length > 0 ? modelOptions[0] : ""
 
     readonly property bool hasCoworker: bridge.coworkerSessionId.length > 0
+    // ANY session with a nested agent desktop is watchable here (auto computer-use
+    // chats too, not just explicit co-work) — this is what the "Full" button needs.
+    readonly property bool hasLiveDesktop: bridge.coworkerSessionId.length > 0 || bridge.hasAgentDesktop
 
-    Component.onCompleted: if (bridge.connected) bridge.listModels(page.selectedBrain)
+    // AppShell binds this true while the Computer page is the current page. We only
+    // poll the mirror while it's actually on screen (battery), and START it on
+    // arrival (the chat peek stops it when the chat page hides).
+    property bool pageVisible: false
+    readonly property bool wantMirror: pageVisible && hasLiveDesktop
+    onWantMirrorChanged: wantMirror ? bridge.mirrorStart() : bridge.mirrorStop()
+
+    Component.onCompleted: {
+        if (bridge.connected) bridge.listModels(page.selectedBrain)
+        if (wantMirror) bridge.mirrorStart()
+    }
 
     // ---- transcript helpers (mirror JarvisPanel.appendEvent, agent session) ----
     function appendEvent(ev) {
@@ -250,8 +263,8 @@ Item {
                 Layout.preferredWidth: parent.width * 0.62
                 Layout.minimumWidth: 260
                 fill: Theme.bgDeep
-                active: page.hasCoworker
-                sweep: bridge.mirroring && page.hasCoworker
+                active: page.hasLiveDesktop
+                sweep: bridge.mirroring && page.hasLiveDesktop
 
                 // frame + caption header
                 ColumnLayout {
@@ -302,16 +315,18 @@ Item {
                         border.color: Theme.hairlineSoft
                         clip: true
 
-                        // live frame
+                        // live frame. Synchronous decode (the frame is already a
+                        // decoded QImage in the C++ provider) so the image never
+                        // blanks between frames → no flicker.
                         Image {
                             id: liveFrame
                             anchors.fill: parent
                             anchors.margins: 1
                             fillMode: Image.PreserveAspectFit
                             cache: false
-                            asynchronous: true
+                            asynchronous: false
                             smooth: true
-                            visible: page.hasCoworker && bridge.frameSeq > 0
+                            visible: page.hasLiveDesktop && bridge.frameSeq > 0
                             // bumping the query on frameReady defeats the QML cache
                             source: ""
                         }
@@ -326,12 +341,12 @@ Item {
                                 Layout.alignment: Qt.AlignHCenter
                                 size: 96
                                 tint: Theme.accent
-                                thinking: page.hasCoworker && !(bridge.frameSeq > 0)
+                                thinking: page.hasLiveDesktop && !(bridge.frameSeq > 0)
                             }
                             Text {
                                 Layout.fillWidth: true
                                 horizontalAlignment: Text.AlignHCenter
-                                text: page.hasCoworker ? "SPAWNING NESTED DESKTOP…" : "NO ACTIVE SESSION"
+                                text: page.hasLiveDesktop ? "CONNECTING TO AGENT DESKTOP…" : "NO ACTIVE SESSION"
                                 color: Theme.accentBright
                                 font.family: Theme.fontDisplay
                                 font.pixelSize: 13
@@ -342,9 +357,9 @@ Item {
                                 Layout.fillWidth: true
                                 horizontalAlignment: Text.AlignHCenter
                                 wrapMode: Text.WordWrap
-                                text: page.hasCoworker
+                                text: page.hasLiveDesktop
                                       ? "Streaming the nested desktop. Jarvis is driving a distinct cursor here, not your screen."
-                                      : "Start a co-worker session to watch Jarvis work on a private nested desktop."
+                                      : "Open a chat and have Jarvis use its computer, or start a co-worker session, to watch it work here."
                                 color: Theme.textFaint
                                 font.family: Theme.fontSans
                                 font.pixelSize: 12
@@ -382,7 +397,7 @@ Item {
                             GlowCursor {
                                 id: agentGlow
                                 diameter: 84
-                                active: agentGlowLayer.gx >= 0 && page.hasCoworker
+                                active: agentGlowLayer.gx >= 0 && page.hasLiveDesktop
                                 // center the hotspot on the mapped pointer position
                                 x: agentGlowLayer.ox + (agentGlowLayer.gx / agentGlowLayer.sw) * liveFrame.paintedWidth - width / 2
                                 y: agentGlowLayer.oy + (agentGlowLayer.gy / agentGlowLayer.sh) * liveFrame.paintedHeight - height / 2

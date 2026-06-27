@@ -28,6 +28,8 @@ Item {
     readonly property bool agentActive: bridge.driving || bridge.coworkerSessionId.length > 0
                                         || bridge.hasAgentDesktop
     property bool peekOpen: false
+    property real peekWidth: 320      // user-resizable (drag the left edge)
+    property bool peekResizing: false
     property bool chatSearchOpen: false
     onAgentActiveChanged: if (agentActive) peekOpen = true
     signal requestComputerPage()   // peek "Full" -> Computer page (AppShell wires it)
@@ -464,7 +466,7 @@ Item {
         anchors.leftMargin: 16
         // Shrink to make room for the agent peek panel (a root-level sibling overlay
         // anchored to the right). Reliable here at the root, unlike inside HudFrame.
-        anchors.rightMargin: 16 + (panel.peekOpen ? 322 : 0)
+        anchors.rightMargin: 16 + (panel.peekOpen ? panel.peekWidth + 22 : 0)
         Behavior on anchors.rightMargin { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
         anchors.topMargin: 6
         anchors.bottomMargin: 16
@@ -1291,11 +1293,53 @@ Item {
         anchors.topMargin: 6
         anchors.bottomMargin: 16
         anchors.rightMargin: 16
-        width: panel.peekOpen ? 300 : 0
+        width: panel.peekOpen ? panel.peekWidth : 0
         visible: width > 4
-        clip: true
+        clip: false
         color: "transparent"
-        Behavior on width { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        // Don't animate width while the user is dragging the edge (instant follow).
+        Behavior on width { enabled: !panel.peekResizing; NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+
+        // ---- drag-to-resize handle (left edge) ----------------------------
+        Rectangle {
+            anchors.left: parent.left
+            anchors.leftMargin: -10
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: 8
+            radius: 4
+            visible: panel.peekOpen
+            color: (rsMa.containsMouse || rsMa.pressed) ? Theme.accentDim : "transparent"
+            Behavior on color { ColorAnimation { duration: 120 } }
+            // grip dots
+            Column {
+                anchors.centerIn: parent
+                spacing: 3
+                visible: rsMa.containsMouse || rsMa.pressed
+                Repeater { model: 3; delegate: Rectangle { width: 2; height: 2; radius: 1; color: Theme.accent } }
+            }
+            MouseArea {
+                id: rsMa
+                anchors.fill: parent
+                anchors.margins: -4
+                hoverEnabled: true
+                cursorShape: Qt.SizeHorCursor
+                property real lastX: 0
+                // Track the cursor in SCENE coords (mapToItem(null,…)) so the handle
+                // moving as the panel resizes doesn't feed back into the delta.
+                onPressed: function(m) { panel.peekResizing = true; lastX = mapToItem(null, m.x, m.y).x }
+                onReleased: panel.peekResizing = false
+                onCanceled: panel.peekResizing = false
+                onPositionChanged: function(m) {
+                    if (!pressed) return
+                    var px = mapToItem(null, m.x, m.y).x
+                    var dx = lastX - px          // drag LEFT → wider
+                    panel.peekWidth = Math.max(240, Math.min(panel.width - 360, panel.peekWidth + dx))
+                    lastX = px
+                }
+            }
+        }
+
         ColumnLayout {
             anchors.fill: parent
             spacing: 9
