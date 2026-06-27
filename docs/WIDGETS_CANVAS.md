@@ -77,6 +77,40 @@ spec    = {"type":"column","gap":4,"children":[
 Jobs are tracked in `~/.local/share/jarvis/widget_jobs/<id>.json` and survive the
 (per-session) engine process.
 
+### Lifecycle / battery — viewer-gated live jobs
+
+Live jobs used to run **forever** (deleting a canvas only removed the render, never
+the loop), draining battery on the laptop *and* every paired phone. Now:
+
+- **One supervisor, not N loops.** A single detached supervisor process
+  (`live_widgets.py`, pid-file `~/.local/share/jarvis/widget_supervisor.pid`, started
+  by the host engine `lifespan` + `start()`) runs **all** jobs in-process. `pause`
+  = skip a tick (no shell exec, no append); a deleted job file = drop it.
+- **A job only does work while a VIEWER is watching it.** The daemon owns a lease
+  registry at `~/.local/share/jarvis/widget_viewers/*.json` (`{scope, kind, ts}`,
+  45 s TTL, wiped on daemon startup). Desktop + phone send `widget.viewing`
+  /`widget.pin`; the supervisor reads the leases. Scopes: a chat `session_id`
+  (kind `chat`), `"all"` (the Canvas/Widgets tab, kind `canvas`), `"widget:<id>"`
+  (a popped-out window `popout`, or a phone home-screen `pin`).
+- Unwatched → the job idles (battery). A viewer returning **force-renders** once so
+  it's current. `canvas_del`/`widget_del`/`canvas_clear`/`widget_live_stop` all stop
+  the job (the supervisor also honors the desktop "✕" bus marker).
+- **Pinned home-screen widgets** keep a job alive but at a **≥60 s** cadence floor,
+  value-deduped, and the phone only heartbeats the pin **while unlocked** (aggressive
+  battery). The daemon relays a pinned widget's renders to that phone even with no
+  chat open, throttled per-(device,widget) to 60 s.
+
+### Real Android home-screen widget
+
+Tap **📌 Pin** on a canvas (in chat or the phone Canvas tab) → it becomes a real
+Android AppWidget (`JarvisWidgetProvider`). The DSL is drawn to a bitmap by a
+headless `WidgetBitmapRenderer` (RemoteViews can't host Compose / a WebView can't be
+snapshotted), so text/progress/list/badge/rect and `canvas` draw-op charts render on
+the home screen; `svg`/`image` degrade to "open app". Updates are **push-driven**
+over the device WS (the foreground service redraws on each live render —
+`updatePeriodMillis=0`, no polling). Add it via the 1-click pin (`requestPinAppWidget`)
+or the OS widget picker (`WidgetConfigActivity`).
+
 ## MCP tools (computer-use engine)
 
 | Tool | Purpose |
