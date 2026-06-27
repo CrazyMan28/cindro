@@ -72,7 +72,14 @@ class ComputerViewModel(private val repo: JarvisRepository) : ViewModel() {
     fun refresh() {
         viewModelScope.launch {
             runCatching { withContext(Dispatchers.IO) { repo.listSessions() } }
-                .onSuccess { list -> _uiState.update { it.copy(sessions = list, error = null) } }
+                .onSuccess { list ->
+                    _uiState.update {
+                        // Auto-select the most-recent session so "Start" is one tap
+                        // away — most chats now have a nested agent desktop to mirror.
+                        val sel = it.selected ?: list.firstOrNull()?.id
+                        it.copy(sessions = list, selected = sel, error = null)
+                    }
+                }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
