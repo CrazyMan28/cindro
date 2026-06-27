@@ -38,22 +38,34 @@ object WidgetBitmapRenderer {
 
     private const val MAX_DEPTH = 7
 
-    /** Render [spec] into a [widthPx] x (measured, capped to [maxHeightPx]) bitmap. */
-    fun render(spec: JsonObject, widthPx: Int, maxHeightPx: Int, density: Float): Bitmap {
+    /**
+     * Render [spec] into a [widthPx] × [heightPx] bitmap sized to the widget's actual
+     * home-screen cell, SCALING the content down to fit so nothing is ever cut off
+     * (the old version capped height and clipped the bottom rows).
+     */
+    fun render(spec: JsonObject, widthPx: Int, heightPx: Int, density: Float): Bitmap {
         val w = max(60, widthPx)
-        val pad = (10 * density)
+        val targetH = max(60, heightPx)
+        val pad = 11 * density
         val ctx = Ctx(density)
         val innerW = w - pad * 2
         val contentH = measure(ctx, spec, innerW, 0)
-        val h = min(maxHeightPx.toFloat(), max(60f, contentH + pad * 2)).toInt()
+        val availH = targetH - pad * 2
+        // Shrink the whole thing to fit the cell height (and never grow it).
+        val scale = if (contentH > availH && contentH > 0f) availH / contentH else 1f
 
-        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val bmp = Bitmap.createBitmap(w, targetH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
-        // Rounded card background.
         val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = SURFACE }
-        val r = 18 * density
-        canvas.drawRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), r, r, bg)
-        draw(ctx, canvas, spec, pad, pad, innerW, h - pad, 0)
+        val r = 20 * density
+        canvas.drawRoundRect(RectF(0f, 0f, w.toFloat(), targetH.toFloat()), r, r, bg)
+        canvas.save()
+        // Centre horizontally when scaled (so it isn't left-hugging), top-align vertically.
+        val dx = pad + if (scale < 1f) innerW * (1f - scale) / 2f else 0f
+        canvas.translate(dx, pad)
+        if (scale < 1f) canvas.scale(scale, scale)
+        draw(ctx, canvas, spec, 0f, 0f, innerW, contentH + 1f, 0)
+        canvas.restore()
         return bmp
     }
 
@@ -181,7 +193,9 @@ object WidgetBitmapRenderer {
                 rows * (24 * d) + max(0, rows - 1) * gap
             }
             "canvas" -> node.f("h", 120f) * d
-            "image", "svg" -> node.f("h", 64f) * d
+            // svg/image can't render in a RemoteViews bitmap (no WebView/network) —
+            // take no space rather than leaving a gap or a fallback label.
+            "image", "svg" -> 0f
             "link", "button" -> (28 * d)
             else -> 0f
         }
@@ -264,11 +278,7 @@ object WidgetBitmapRenderer {
             "progress" -> drawProgress(ctx, c, node, left, top, width)
             "list" -> drawList(ctx, c, node, left, top, width, bottom)
             "canvas" -> drawCanvas(ctx, c, node, left, top, width)
-            "svg", "image" -> drawText(ctx, c,
-                JsonObject().apply { addProperty("type", "text")
-                    addProperty("text", node.s("title") ?: "↗ open app to view")
-                    addProperty("color", "#8FB6C9"); addProperty("size", 11) },
-                left, top, width)
+            "svg", "image" -> { /* can't render headlessly — skip silently */ }
             "link", "button" -> drawText(ctx, c,
                 JsonObject().apply { addProperty("type", "text")
                     addProperty("text", node.s("text") ?: ""); addProperty("color", "#5FE0FF") },
