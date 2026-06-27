@@ -3,23 +3,29 @@ package com.jarvis.app.ui.theme
 import androidx.compose.ui.graphics.Color
 
 /**
- * Jarvis palette. The app ships dark-only: a deep slate canvas with a cyan accent that
- * matches the desktop sidebar's reticle styling.
+ * Jarvis palette — the "premium UI concept" system. Deep near-black canvas, soft
+ * elevated surfaces, a cyan→blue accent gradient, and a small set of status hues.
+ * Dark-only.
  */
 internal object JarvisPalette {
-    val Background = Color(0xFF0A0E14)
-    val Surface = Color(0xFF121822)
-    val SurfaceVariant = Color(0xFF1B2430)
-    val Outline = Color(0xFF2C3A4B)
+    val Background = Color(0xFF070A10)
+    val BackgroundElevated = Color(0xFF0B1018)
+    val Surface = Color(0xFF121A24)
+    val SurfaceVariant = Color(0xFF172230)
+    val Outline = Color(0xFF22303F)
 
-    val Accent = Color(0xFF34D8FF)
-    val AccentDim = Color(0xFF1E8FB0)
-    val OnAccent = Color(0xFF00222C)
+    val Accent = Color(0xFF3DD6FF)
+    val Accent2 = Color(0xFF5B8CFF)   // gradient end (cyan → blue)
+    val AccentDim = Color(0xFF1E6E86)
+    val OnAccent = Color(0xFF052230)
 
-    val TextPrimary = Color(0xFFE6F1F7)
-    val TextSecondary = Color(0xFF9FB3C2)
+    val TextPrimary = Color(0xFFEAF2F8)
+    val TextSecondary = Color(0xFF93A7B8)
+    val TextFaint = Color(0xFF5E7286)
 
     val Error = Color(0xFFFF6B6B)
-    val Success = Color(0xFF4ADE80)
-    val Warning = Color(0xFFFFB454) // amber — non-fatal warnings (e.g. Max quota)
+    val Success = Color(0xFF39E6A0)
+    val Warning = Color(0xFFFFB454)
+    val Violet = Color(0xFFB28BFF)
+    val Pink = Color(0xFFFF7AC6)
 }

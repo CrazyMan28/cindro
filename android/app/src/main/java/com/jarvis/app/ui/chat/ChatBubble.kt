@@ -238,7 +238,6 @@ private fun MessageBubble(
 ) {
     val isUser = item.role == "user"
     val align = if (isUser) Alignment.End else Alignment.Start
-    val bg = if (isUser) JarvisPalette.AccentDim else JarvisPalette.Surface
 
     // Typewriter reveal: while streaming, animate the number of visible characters
     // up to the accumulated text length (~ a few hundred chars/sec). When the
@@ -272,27 +271,35 @@ private fun MessageBubble(
     }
     val shown = if (revealed >= item.text.length) item.text else item.text.take(revealed)
 
+    val shape = RoundedCornerShape(
+        topStart = 18.dp, topEnd = 18.dp,
+        bottomStart = if (isUser) 18.dp else 5.dp,
+        bottomEnd = if (isUser) 5.dp else 18.dp,
+    )
     Column(Modifier.fillMaxWidth(), horizontalAlignment = align) {
-        Surface(
-            color = bg,
-            shape = RoundedCornerShape(
-                topStart = 14.dp, topEnd = 14.dp,
-                bottomStart = if (isUser) 14.dp else 2.dp,
-                bottomEnd = if (isUser) 2.dp else 14.dp,
-            ),
+        Box(
             modifier = Modifier
                 .widthIn(max = 320.dp)
+                .clip(shape)
+                .then(
+                    // User = the cyan→blue accent gradient (dark text); assistant = a
+                    // soft surface card with a hairline border (matches the concept).
+                    if (isUser) Modifier.background(com.jarvis.app.ui.theme.AccentGradient)
+                    else Modifier.background(JarvisPalette.SurfaceVariant)
+                        .border(1.dp, JarvisPalette.Outline, shape)
+                )
                 .alpha(if (selected) 0.8f else 1f),
         ) {
-            // Soft fade on the revealing text while streaming.
             val streamingNow = item.streaming && revealed < item.text.length
             Text(
                 text = shown,
-                color = JarvisPalette.TextPrimary,
+                color = if (isUser) JarvisPalette.OnAccent else JarvisPalette.TextPrimary,
                 modifier = Modifier
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                    .padding(horizontal = 15.dp, vertical = 11.dp)
                     .alpha(if (streamingNow) 0.92f else 1f),
                 style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (isUser) androidx.compose.ui.text.font.FontWeight.Medium
+                             else androidx.compose.ui.text.font.FontWeight.Normal,
             )
         }
     }

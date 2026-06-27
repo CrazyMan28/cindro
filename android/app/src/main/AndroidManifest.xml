@@ -48,6 +48,13 @@
             </intent-filter>
         </activity>
 
+        <!-- Debug design-preview activity (renders Home with sample data, no pairing).
+             Launched only via adb for screenshots; not in the launcher. -->
+        <activity
+            android:name=".ui.PreviewActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Jarvis" />
+
         <!-- FCM receiver: data-only pushes from jarvisd (project "baratone"). -->
         <service
             android:name=".fcm.FcmService"

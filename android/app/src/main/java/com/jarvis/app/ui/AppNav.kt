@@ -12,9 +12,10 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -50,6 +51,8 @@ import com.jarvis.app.ui.chat.ChatScreen
 import com.jarvis.app.ui.chat.ChatViewModel
 import com.jarvis.app.ui.computer.ComputerScreen
 import com.jarvis.app.ui.computer.ComputerViewModel
+import com.jarvis.app.ui.home.HomeScreen
+import com.jarvis.app.ui.home.HomeViewModel
 import com.jarvis.app.ui.files.FilesScreen
 import com.jarvis.app.ui.mcp.McpScreen
 import com.jarvis.app.ui.mcp.McpViewModel
@@ -76,6 +79,7 @@ import com.jarvis.app.voice.WakeService
 private object Routes {
     const val PAIR = "pair"
     const val SHELL = "shell"
+    const val HOME = "home"
     const val SESSIONS = "sessions"
     const val CANVAS = "canvas"
     const val COMPUTER = "computer"
@@ -97,7 +101,8 @@ private object Routes {
 private data class Tab(val route: String, val label: String, val icon: ImageVector)
 
 private val tabs = listOf(
-    Tab(Routes.SESSIONS, "Sessions", Icons.AutoMirrored.Filled.List),
+    Tab(Routes.HOME, "Home", Icons.Filled.Home),
+    Tab(Routes.SESSIONS, "Chat", Icons.AutoMirrored.Filled.Chat),
     Tab(Routes.CANVAS, "Canvas", Icons.Filled.Dashboard),
     Tab(Routes.COMPUTER, "Computer", Icons.Filled.Computer),
     Tab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
@@ -272,6 +277,14 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
     val current = backStack?.destination
     val haptics = com.jarvis.app.ui.util.LocalHaptics.current
 
+    fun switchTab(route: String) {
+        tabNav.navigate(route) {
+            popUpTo(tabNav.graph.findStartDestination().id) { saveState = true }
+            launchSingleTop = true
+            restoreState = true
+        }
+    }
+
     Scaffold(
         containerColor = JarvisPalette.Background,
         bottomBar = {
@@ -280,14 +293,7 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
                     val selected = current?.hierarchy?.any { it.route == tab.route } == true
                     NavigationBarItem(
                         selected = selected,
-                        onClick = {
-                            haptics?.tap()
-                            tabNav.navigate(tab.route) {
-                                popUpTo(tabNav.graph.findStartDestination().id) { saveState = true }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        },
+                        onClick = { haptics?.tap(); switchTab(tab.route) },
                         icon = { Icon(tab.icon, contentDescription = tab.label) },
                         label = { Text(tab.label) },
                         colors = NavigationBarItemDefaults.colors(
@@ -304,7 +310,7 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
     ) { padding ->
         NavHost(
             navController = tabNav,
-            startDestination = Routes.SESSIONS,
+            startDestination = Routes.HOME,
             modifier = Modifier.padding(padding),
             // Fade-through between tabs (Material 3 Expressive motion) instead of a hard cut.
             enterTransition = { fadeIn(tween(190)) + scaleIn(initialScale = 0.985f, animationSpec = tween(190)) },
@@ -312,6 +318,17 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
             popEnterTransition = { fadeIn(tween(190)) },
             popExitTransition = { fadeOut(tween(110)) },
         ) {
+            composable(Routes.HOME) {
+                val vm: HomeViewModel = viewModel(factory = HomeViewModel.factory(app))
+                HomeScreen(
+                    viewModel = vm,
+                    onOpenSession = { parentNav.navigate(Routes.chat(it)) },
+                    onOpenVoice = { parentNav.navigate(Routes.chat(it, wake = true)) },
+                    onAllSessions = { switchTab(Routes.SESSIONS) },
+                    onTakeOver = { switchTab(Routes.COMPUTER) },
+                    onCanvas = { switchTab(Routes.CANVAS) },
+                )
+            }
             composable(Routes.SESSIONS) {
                 val vm: SessionsViewModel = viewModel(factory = SessionsViewModel.factory(app))
                 SessionsScreen(
