@@ -67,8 +67,20 @@ Design pillars:
   claude runs `--strict-mcp-config --mcp-config`. The brain only sees Jarvis's built-in computer-use
   plus servers the user explicitly re-enables (CLI MCP toggles). Don't "helpfully" re-add user MCPs.
 - Installing over a running binary → `ETXTBSY`. Copy to a temp name then `mv -f` over it.
-- `render_widget` writes `~/.local/share/jarvis/widgets.jsonl`; the desktop **tails** it (polls by
-  byte offset from EOF). Same path on both sides or widgets never appear.
+- **KWin fork deploy:** NEVER `ninja install` the fork (`~/projects/kwin-jarvis-fork`)
+  while it's the LIVE compositor — it overwrites the mmap'd `libkwin.so` and SIGSEGVs
+  the whole desktop. Build is safe; install via **atomic rename** (`cp build/bin/
+  libkwin.so.6.7.0 ~/projects/kwin-build/lib64/x.new && mv -f x.new …libkwin.so.6.7.0`)
+  then **relogin** to load it (KWin can't hot-reload its core lib). Stock "Plasma" at
+  SDDM is the always-safe fallback. The agent drives the real screen via the
+  independent `jarvis` wl_seat (DBus `org.kde.KWin.JarvisSeat`), never `seat0` — and
+  `notifyPointerEnter`'s 3rd arg is the surface GLOBAL ORIGIN (`pos - local`), not the
+  local offset (passing the offset drops every click).
+- `render_widget` writes `~/.local/share/jarvis/widgets.jsonl`; **both** the desktop
+  and the daemon (for the phone) **tail** it by byte offset from EOF. Records carry
+  `target` (canvas/chat/voice/both) + `session_id`; ad-hoc draws = CANVAS, saved
+  reusable ones (`saved_widgets.json`) = WIDGETS. `op:remove`/`op:clear` are delete
+  markers. See `docs/WIDGETS_CANVAS.md`.
 - Notifications do **not** use Firebase in this setup (no service account). The Android foreground
   `JarvisConnectionService` holds the device WS open and posts local notifications off it —
   `session.opened`, `file.offer`, and **`auth.challenge`** (the desktop/Chrome unlock prompt).

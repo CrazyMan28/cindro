@@ -5,6 +5,29 @@
 > you don't forget." This file is the durable spec. A pointer lives in the
 > auto-memory ([[jarvis-monorepo]]).
 
+## STATUS (2026-06-26) — SHIPPED: agent drives the real KDE screen, clicks work
+
+- ✅ Fork is the **real session compositor** ("Plasma (Jarvis KWin fork)" session via
+  `~/.local/bin/jarvis-kwin-launch.sh`; stock "Plasma" = always-safe SDDM fallback).
+- ✅ Engine `input.py` real-screen path drives `org.kde.KWin.JarvisSeat` (move/click/
+  type) on the independent `jarvis` seat — **never** the user's `seat0`.
+- ✅ **Click bug FIXED.** Symptom: agent move worked but ~95% of clicks didn't
+  register on Qt apps. Root cause (found via `WAYLAND_DEBUG=1` on a test client):
+  `JarvisSeat::refocusAt` passed the surface-LOCAL offset as `notifyPointerEnter`'s
+  3rd arg, but that arg is the surface's **GLOBAL ORIGIN** (KWin builds
+  `translate(-surfacePosition)` from it) → clients received `pos - local` =
+  out-of-bounds → every click dropped. Fix: pass `pos - local`. Added an **atomic
+  `pointerClick`** (refocus+motion+press+release in one DBus call); `input.py`
+  routes clicks through it (the separate move+press+release path raced). Verified
+  live: System Settings navigates reliably via the jarvis seat.
+- ✅ Driving glow follows the jarvis pointer (`GlowCursor`, shrunk 84→56 so it
+  doesn't block the model's screenshot view).
+- ⚠️ **Deploy gotcha:** never `ninja install` while the fork is the LIVE compositor
+  — it overwrites the mmap'd `libkwin.so` and SIGSEGVs the running session. Build is
+  safe; install via **atomic rename** (`cp …/libkwin.so.6.7.0 dst.new && mv -f
+  dst.new dst`) then **relogin** to load it. See the auto-memory
+  `kwin-fork-install-crashes-live-compositor`.
+
 ## STATUS (2026-06-23) — multi-seat PROVEN in the fork
 - ✅ KWin v6.7.0 cloned (`~/projects/kwin-jarvis-fork`), configured, **fully built**
   (`build/bin/kwin_wayland`), runs **nested** (`--wayland-display wayland-0 --socket <name>`).
@@ -14,11 +37,10 @@
   hit-test via `input()->findToplevel` + `mapToInputSurface`, drive the jarvis seat directly).
   Compiles + links clean. `wayland-info` on the nested instance shows **TWO wl_seats: `seat0`
   AND `jarvis`** → the agent has its own independent pointer+keyboard at the compositor level.
-- ⏳ REMAINING: (1) wire engine `input.py` real path → `org.kde.KWin.JarvisSeat` DBus (instead of
-  uinput); (2) deploy the fork as the REAL session compositor (risky — keep stock-kwin fallback)
-  so the DBus iface owns `org.kde.KWin` + the agent drives real windows; (3) make the glow follow
-  the jarvis pointer; (4) end-to-end test: agent clicks+types with its own cursor, user's cursor
-  untouched.
+- ✅ (was "REMAINING", all DONE 2026-06-26 — see the SHIPPED status above): (1)
+  `input.py` wired to the JarvisSeat DBus; (2) fork deployed as the real compositor
+  with stock fallback; (3) glow follows the jarvis pointer; (4) end-to-end verified —
+  agent clicks+types with its own cursor, user's seat untouched.
 
 ## THE BUG (what's broken today)
 
