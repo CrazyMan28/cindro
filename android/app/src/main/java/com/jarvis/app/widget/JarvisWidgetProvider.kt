@@ -81,12 +81,17 @@ class JarvisWidgetProvider : AppWidgetProvider() {
             val density = context.resources.displayMetrics.density
 
             val opts = mgr.getAppWidgetOptions(appWidgetId)
+            val portrait = context.resources.configuration.orientation ==
+                android.content.res.Configuration.ORIENTATION_PORTRAIT
+            // Render to the cell's ACTUAL size so content scales to fit (no cut-off).
             val minWidthDp = opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 180)
                 .takeIf { it > 0 } ?: 180
-            val maxHeightDp = opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 180)
-                .takeIf { it > 0 } ?: 180
+            // In portrait the visible height is MAX_HEIGHT; in landscape it's MIN_HEIGHT.
+            val heightDp = (if (portrait) opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 0)
+                            else opts.getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 0))
+                .takeIf { it > 0 } ?: 120
             val wpx = (minWidthDp * density).toInt().coerceAtLeast(120)
-            val hpx = (maxHeightDp * density).toInt().coerceIn(120, 1400)
+            val hpx = (heightDp * density).toInt().coerceIn(90, 1400)
 
             val bitmap = specJson?.let {
                 runCatching {

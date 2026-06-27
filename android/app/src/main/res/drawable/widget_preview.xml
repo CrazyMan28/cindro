@@ -1,14 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Widget picker preview tile. -->
+<!-- Widget picker preview tile. A vector must be referenced as a layer-list item
+     (NOT wrapped in <bitmap>, which requires a raster — that was the "Couldn't add
+     widget" cause). -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item>
         <shape android:shape="rectangle">
-            <solid android:color="#0E2233" />
+            <solid android:color="#121A24" />
             <corners android:radius="14dp" />
-            <stroke android:width="1dp" android:color="#1F3A4D" />
+            <stroke android:width="1dp" android:color="#22303F" />
         </shape>
     </item>
-    <item android:gravity="center" android:width="48dp" android:height="48dp">
-        <bitmap android:src="@drawable/ic_launcher_foreground" android:tint="#5FE0FF" />
-    </item>
+    <item
+        android:width="48dp"
+        android:height="48dp"
+        android:gravity="center"
+        android:drawable="@drawable/ic_launcher_foreground"
+        android:tint="#3DD6FF" />
 </layer-list>
