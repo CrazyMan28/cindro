@@ -33,6 +33,13 @@ features the user asked for:
   The preamble tells the model to use it for any 3+-step task. 6 new engine tests.
 - Also fixed a **stale `test_jarvis_seat_routing` test** (it predated the atomic-click
   change and asserted the old press/release contract). Engine suite back to green (62).
+- **Palette refresh to match the mockup** — the desktop render had drifted darker/muddier
+  than the approved HTML (`jarvis-desktop-redesign.html`): heavily-translucent surfaces
+  over a dark gradient + cyan-tinted borders everywhere. `Theme.qml` now uses **solid,
+  lighter blue-grey cards** (`#111A25` / `#15212F`), **neutral hairlines** (`#1E2C3B` /
+  `#26384A`), and the mockup's **softer cyan** (`#3DD6FF`, + `accent2 #5B8CFF`); energy
+  accents softened (success `#39E6A0`, danger `#FF6B6B`, violet `#B28BFF`). Reads crisp +
+  premium across every page (Home/Chat/Settings/Voice/Canvas verified). ArcReactor kept.
 
 ---
 
