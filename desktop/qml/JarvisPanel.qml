@@ -837,6 +837,16 @@ Item {
                 reuseItems: true
                 boundsBehavior: Flickable.StopAtBounds
 
+                // Fast mouse-wheel scrolling (the default Flickable step is a sliver).
+                WheelHandler {
+                    acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                    onWheel: function(ev) {
+                        var maxY = Math.max(0, chatView.contentHeight - chatView.height)
+                        chatView.contentY = Math.max(0, Math.min(maxY, chatView.contentY - ev.angleDelta.y * 2.0))
+                        ev.accepted = true
+                    }
+                }
+
                 ScrollBar.vertical: ScrollBar {
                     policy: ScrollBar.AsNeeded
                     width: 5

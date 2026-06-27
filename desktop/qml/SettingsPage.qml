@@ -16,6 +16,7 @@ Item {
         { id: "claude",    label: "Claude CLI", hint: "Anthropic key used by the Claude brain" },
         { id: "openai",    label: "OpenAI API", hint: "Direct OpenAI API (api brain)" },
         { id: "anthropic", label: "Anthropic API", hint: "Direct Anthropic API (api brain)" },
+        { id: "mistral",   label: "Mistral API", hint: "Direct Mistral API (api brain) — mistral-large/small-latest" },
         { id: "ollama",    label: "Ollama",     hint: "Local Ollama endpoint / token (optional)" }
     ]
 
