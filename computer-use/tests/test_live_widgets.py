@@ -241,3 +241,35 @@ def test_clear_lease_removes_it(env):
     live_widgets.write_lease("s1", "chat", "deviceX", ts_ms=10_000)
     live_widgets.clear_lease("s1", "deviceX")
     assert live_widgets.read_leases(now_ms=11_000) == []
+
+
+# --- bus remove/clear stops the job (the desktop "✕" path) ----------------
+
+def test_bus_remove_marker_stops_the_job(env):
+    live_widgets.start("w1", "echo hi", 5, {"type": "text", "text": "{{value}}"})
+    assert (env["jobs"] / "w1.json").exists()
+    widgets_bus.append_op("remove", "w1")  # what the desktop ✕ writes
+    _off, removes, clear_ts = live_widgets._scan_bus_deletes(0)
+    assert any(r[0] == "w1" for r in removes)
+    live_widgets._apply_bus_deletes(removes, clear_ts)
+    assert not (env["jobs"] / "w1.json").exists(), "a bus remove must stop the live job"
+
+
+def test_bus_clear_stops_all_jobs(env):
+    live_widgets.start("a", "echo a", 5, {"type": "text", "text": "{{value}}"})
+    live_widgets.start("b", "echo b", 5, {"type": "text", "text": "{{value}}"})
+    widgets_bus.append_op("clear")
+    _off, removes, clear_ts = live_widgets._scan_bus_deletes(0)
+    assert clear_ts > 0
+    live_widgets._apply_bus_deletes(removes, clear_ts)
+    assert not (env["jobs"] / "a.json").exists()
+    assert not (env["jobs"] / "b.json").exists()
+
+
+def test_stale_remove_does_not_kill_a_recreated_job(env):
+    jf = env["jobs"] / "w1.json"
+    live_widgets.start("w1", "echo hi", 5, {"type": "text", "text": "{{value}}"})
+    started = json.loads(jf.read_text())["started"]
+    # A remove that predates the current job (e.g. re-read after bus rotation) is ignored.
+    live_widgets._apply_bus_deletes([("w1", started - 5000)], 0)
+    assert jf.exists()
