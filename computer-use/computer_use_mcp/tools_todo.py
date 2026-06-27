@@ -55,43 +55,83 @@ def _todos_file(session_id: str | None) -> Path:
     return todos_dir() / f"{_session_or_env(session_id)}.json"
 
 
-def normalize_items(items) -> list[dict]:
-    """Coerce arbitrary input into [{text, status}] with valid statuses.
+def _norm_status(status) -> str:
+    status = str(status or "pending").strip().lower().replace("-", "_")
+    if status in ("doing", "active", "wip", "in_progress"):
+        return "in_progress"
+    if status in ("done", "complete", "completed", "finished"):
+        return "done"
+    return "pending"
 
-    Accepts a list of dicts ({text, status}) or bare strings; drops blank text;
-    normalizes an unknown/missing status to "pending". Never raises.
+
+def normalize_items(items) -> list[dict]:
+    """Coerce arbitrary input into [{id, text, status}] with valid statuses.
+
+    Accepts a list of dicts ({id?, text, status}) or bare strings; drops blank
+    text; normalizes an unknown/missing status to "pending"; preserves an item's
+    id when present. Never raises.
     """
     out: list[dict] = []
     if not isinstance(items, (list, tuple)):
         return out
     for it in items:
+        item_id = ""
         if isinstance(it, str):
             text, status = it, "pending"
         elif isinstance(it, dict):
             text = it.get("text", it.get("title", ""))
             status = it.get("status", it.get("state", "pending"))
+            item_id = str(it.get("id") or "").strip()
         else:
             continue
         text = str(text or "").strip()
         if not text:
             continue
-        status = str(status or "pending").strip().lower().replace("-", "_")
-        if status in ("doing", "active", "wip", "in_progress"):
-            status = "in_progress"
-        elif status in ("done", "complete", "completed", "finished"):
-            status = "done"
-        else:
-            status = "pending"
-        out.append({"text": text, "status": status})
+        out.append({"id": item_id, "text": text, "status": _norm_status(status)})
     return out
 
 
-def write_todos(items, session_id: str | None = None) -> list[dict]:
-    """Normalize + persist the list AND render the checklist card. Returns the
-    normalized items. Best-effort; never raises into the tool path."""
-    norm = normalize_items(items)
+def _ensure_ids(items: list[dict]) -> list[dict]:
+    """Give every item a stable id ("t1", "t2", …); keep existing ids."""
+    used = {it["id"] for it in items if it.get("id")}
+    n = 1
+    for it in items:
+        if not it.get("id"):
+            while f"t{n}" in used:
+                n += 1
+            it["id"] = f"t{n}"
+            used.add(it["id"])
+            n += 1
+    return items
+
+
+def _find(items: list[dict], ref: str) -> int:
+    """Locate an item by id, by 1-based position (if ref is a number), or by an
+    exact/substring text match. Returns the index or -1."""
+    ref = str(ref or "").strip()
+    if not ref:
+        return -1
+    for i, it in enumerate(items):
+        if it.get("id") == ref:
+            return i
+    if ref.isdigit():
+        pos = int(ref) - 1
+        if 0 <= pos < len(items):
+            return pos
+    low = ref.lower()
+    for i, it in enumerate(items):
+        if it["text"].lower() == low:
+            return i
+    for i, it in enumerate(items):
+        if low in it["text"].lower():
+            return i
+    return -1
+
+
+def _persist(items: list[dict], session_id: str | None) -> list[dict]:
+    items = _ensure_ids(normalize_items(items))
     path = _todos_file(session_id)
-    payload = {"ts": int(time.time() * 1000), "items": norm}
+    payload = {"ts": int(time.time() * 1000), "items": items}
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with _file_lock:
@@ -99,8 +139,43 @@ def write_todos(items, session_id: str | None = None) -> list[dict]:
                 json.dump(payload, f, ensure_ascii=False)
     except (OSError, TypeError, ValueError):
         pass
-    render_todo_widget(norm, session_id=session_id)
-    return norm
+    render_todo_widget(items, session_id=session_id)
+    return items
+
+
+def write_todos(items, session_id: str | None = None) -> list[dict]:
+    """Replace the whole list, persist, and render the card. Returns the items."""
+    return _persist(normalize_items(items), session_id)
+
+
+def add_todo(text: str, status: str = "pending", session_id: str | None = None) -> list[dict]:
+    items = read_todos(session_id)
+    items.append({"id": "", "text": str(text or "").strip(), "status": _norm_status(status)})
+    return _persist(items, session_id)
+
+
+def edit_todo(ref: str, text: str | None = None, status: str | None = None,
+              session_id: str | None = None) -> list[dict]:
+    items = read_todos(session_id)
+    i = _find(items, ref)
+    if i >= 0:
+        if text is not None and str(text).strip():
+            items[i]["text"] = str(text).strip()
+        if status is not None:
+            items[i]["status"] = _norm_status(status)
+    return _persist(items, session_id)
+
+
+def del_todo(ref: str, session_id: str | None = None) -> list[dict]:
+    items = read_todos(session_id)
+    i = _find(items, ref)
+    if i >= 0:
+        items.pop(i)
+    return _persist(items, session_id)
+
+
+def done_todo(ref: str, session_id: str | None = None) -> list[dict]:
+    return edit_todo(ref, status="done", session_id=session_id)
 
 
 def read_todos(session_id: str | None = None) -> list[dict]:
@@ -214,13 +289,42 @@ def register(mcp: FastMCP) -> None:
         done = sum(1 for i in norm if i["status"] == "done")
         return json.dumps({"ok": True, "items": norm, "done": done, "total": len(norm)})
 
+    def _reply(items):
+        done = sum(1 for i in items if i["status"] == "done")
+        return json.dumps({"ok": True, "items": items, "done": done, "total": len(items)})
+
     @mcp.tool()
     def todo_read() -> str:
         """Read back your current plan / task list for this session (the items
-        you last published with todo_write). Use it to remember where you were."""
-        items = read_todos()
-        done = sum(1 for i in items if i["status"] == "done")
-        return json.dumps({"ok": True, "items": items, "done": done, "total": len(items)})
+        you last published). Each item has a stable id you can pass to
+        todo_edit/todo_del/todo_done. Use it to remember where you were."""
+        return _reply(read_todos())
+
+    @mcp.tool()
+    def todo_add(text: str, status: str = "pending") -> str:
+        """Add ONE new step to your plan without resending the whole list.
+        `status` is pending/in_progress/done (default pending). Returns the full
+        list (with ids)."""
+        return _reply(add_todo(text, status))
+
+    @mcp.tool()
+    def todo_edit(id: str, text: str = "", status: str = "") -> str:
+        """Edit ONE step: change its `text` and/or `status`. `id` is the step's id
+        (from todo_read), or its 1-based position, or a matching text. Leave a
+        field blank to keep it."""
+        return _reply(edit_todo(id, text=text or None, status=status or None))
+
+    @mcp.tool()
+    def todo_done(id: str) -> str:
+        """Mark ONE step done (✓). `id` is the step's id, 1-based position, or
+        matching text."""
+        return _reply(done_todo(id))
+
+    @mcp.tool()
+    def todo_del(id: str) -> str:
+        """Remove ONE step from your plan. `id` is the step's id, 1-based position,
+        or matching text."""
+        return _reply(del_todo(id))
 
     @mcp.tool()
     def todo_clear() -> str:
