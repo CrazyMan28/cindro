@@ -57,7 +57,7 @@ def append_widget(spec, title: str = "", widget_id: str = "",
     ts = int(time.time() * 1000)
     wid = str(widget_id or "").strip() or f"w{ts}"
     tgt = str(target or "canvas").strip().lower()
-    if tgt not in ("canvas", "chat", "voice", "both"):
+    if tgt not in ("canvas", "chat", "voice", "both", "home"):
         tgt = "canvas"
     record = {
         "ts": ts,

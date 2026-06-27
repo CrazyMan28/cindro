@@ -60,6 +60,9 @@ Item {
         function onWidgetRendered(widget) {
             var id = widget.id !== undefined ? "" + widget.id : ""
             if (id.length === 0) return
+            // The Home dashboard only shows widgets PINNED to Home (target "home").
+            // Everything else lives on the Canvas/Chat — Home stays curated.
+            if (("" + (widget.target !== undefined ? widget.target : "")) !== "home") return
             for (var i = 0; i < widgetModel.count; i++) {
                 if (widgetModel.get(i).wid === id) {
                     widgetModel.setProperty(i, "title", widget.title !== undefined ? "" + widget.title : "")
@@ -67,7 +70,7 @@ Item {
                     return
                 }
             }
-            if (widgetModel.count < 4)
+            if (widgetModel.count < 6)
                 widgetModel.append({ "wid": id, "title": widget.title !== undefined ? "" + widget.title : "",
                                      "spec": JSON.stringify(widget.spec) })
         }
@@ -494,7 +497,23 @@ Item {
                             }
                         }
 
-                        // any model-rendered live widgets, in their own wells
+                        // ---- Pinned-to-Home widgets ----------------------
+                        Rectangle { Layout.fillWidth: true; Layout.topMargin: 2; height: 1; color: Theme.hairlineSoft }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: "PINNED TO HOME"; color: Theme.textFaint
+                                font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: 1.6; font.weight: Font.DemiBold }
+                            Item { Layout.fillWidth: true }
+                            Text { visible: widgetModel.count > 0; text: widgetModel.count + ""
+                                color: Theme.textFaint; font.family: Theme.fontDisplay; font.pixelSize: 9 }
+                        }
+                        // empty hint — tells the user (and implies Jarvis) how to pin
+                        Text {
+                            visible: widgetModel.count === 0
+                            Layout.fillWidth: true
+                            text: "Nothing pinned yet. Pin any widget here from the Widgets tab, or just ask Jarvis: “add that widget to my home screen.”"
+                            color: Theme.textFaint; font.pixelSize: 11; wrapMode: Text.Wrap; lineHeight: 1.25
+                        }
                         Repeater {
                             model: widgetModel
                             delegate: Rectangle {
@@ -503,13 +522,28 @@ Item {
                                 Layout.fillWidth: true
                                 radius: Theme.radiusSm
                                 color: Theme.surfaceDeep
-                                border.width: 1; border.color: Theme.hairlineSoft
+                                border.width: 1; border.color: pinHov.hovered ? Theme.accentDim : Theme.hairlineSoft
+                                Behavior on border.color { ColorAnimation { duration: 130 } }
                                 implicitHeight: wr.implicitHeight + 20
+                                HoverHandler { id: pinHov }
                                 WidgetRenderer {
                                     id: wr
                                     anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                                     anchors.margins: 10
+                                    anchors.rightMargin: 26
                                     node: { try { return JSON.parse(wrow.model.spec) } catch (e) { return ({}) } }
+                                }
+                                // unpin ✕
+                                Rectangle {
+                                    anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 6
+                                    width: 18; height: 18; radius: 9
+                                    visible: pinHov.hovered
+                                    color: unMa.containsMouse ? Theme.dangerDim : "transparent"
+                                    Text { anchors.centerIn: parent; text: "✕"; color: unMa.containsMouse ? Theme.danger : Theme.textFaint; font.pixelSize: 11 }
+                                    MouseArea {
+                                        id: unMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: bridge.canvasDelete(wrow.model.wid)   // remove marker for "home:<id>"
+                                    }
                                 }
                             }
                         }
