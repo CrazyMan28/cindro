@@ -231,11 +231,17 @@ void DeviceServer::onSocketDisconnected()
     auto *client = qobject_cast<QWebSocket *>(sender());
     if (!client)
         return;
-    // Drop this device's mirror subscriptions (decrement / close each pump).
+    // Drop this device's mirror subscriptions (decrement / close each pump) and
+    // release its live-widget viewer + pin leases so unwatched widgets idle.
     if (auto it = m_conns.find(client); it != m_conns.end()) {
         const QSet<QString> mirrored = it.value().mirroring;
         for (const QString &sid : mirrored)
             stopPump(sid);
+        const QString deviceId = it.value().deviceId;
+        if (!deviceId.isEmpty() && m_control) {
+            m_control->widgetLeases().clearSource(QStringLiteral("phone:") + deviceId);
+            m_control->widgetLeases().clearSource(QStringLiteral("pin:") + deviceId);
+        }
     }
     m_conns.remove(client);
     client->deleteLater();
@@ -427,6 +433,10 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("devices.pair_start") ||
         method == QStringLiteral("voice.stt") ||
         method == QStringLiteral("voice.tts") ||
+        // Live-widget viewer leases / home-screen pins — not security-sensitive.
+        method == QStringLiteral("widget.viewing") ||
+        method == QStringLiteral("widget.pin") ||
+        method == QStringLiteral("widget.unpin") ||
         method == QStringLiteral("file.push"))
         return QStringLiteral("action");
     if (method == QStringLiteral("approval.respond") ||
@@ -490,6 +500,9 @@ QJsonObject DeviceServer::capabilityMap()
         // Voice (Mistral Voxtral, laptop-proxied) + device->phone file push.
         QStringLiteral("voice.stt"),       QStringLiteral("voice.tts"),
         QStringLiteral("file.push"),       QStringLiteral("file.get"),
+        // Live-widget viewer leases + home-screen widget pin/unpin.
+        QStringLiteral("widget.viewing"),  QStringLiteral("widget.pin"),
+        QStringLiteral("widget.unpin"),
     };
     QJsonObject map;
     for (const QString &m : methods)
@@ -538,6 +551,12 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         resp = devMirrorStart(c, client, req);
     } else if (m == QStringLiteral("mirror.stop")) {
         resp = devMirrorStop(c, client, req);
+    } else if (m == QStringLiteral("widget.viewing")) {
+        resp = devWidgetViewing(c, req);
+    } else if (m == QStringLiteral("widget.pin")) {
+        resp = devWidgetPin(c, req);
+    } else if (m == QStringLiteral("widget.unpin")) {
+        resp = devWidgetUnpin(c, req);
     } else if (ControlServer::isMemoryOrSkillMethod(m)) {
         // Contract A v3 mirror: memory + skills share the SAME store as the
         // desktop, so the phone curates one coherent memory/skill world.
@@ -850,6 +869,68 @@ Response DeviceServer::devMirrorStop(Conn &c, QWebSocket *client, const Request 
     const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
     if (c.mirroring.remove(sessionId))
         stopPump(sessionId); // ref-counted; closes when the last subscriber drops
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response DeviceServer::devWidgetViewing(Conn &c, const Request &req)
+{
+    // The phone holds a viewer lease for the chat scope it is showing so that
+    // session's live widgets keep updating; dropped (active=false) when it leaves
+    // the chat, and on disconnect. Also subscribe the socket to that session so its
+    // widget.render frames reach the phone while the chat is open.
+    const QString scope = req.params.value(QStringLiteral("scope")).toString();
+    if (scope.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("widget.viewing needs a scope"));
+    const QString kind = req.params.value(QStringLiteral("kind")).toString(QStringLiteral("chat"));
+    const bool active = req.params.value(QStringLiteral("active")).toBool(true);
+    const QString source = QStringLiteral("phone:") + c.deviceId;
+    if (active) {
+        m_control->widgetLeases().touch(scope, kind, source);
+        if (scope != QStringLiteral("all") && !scope.startsWith(QStringLiteral("widget:")))
+            c.subscribedSessions.insert(scope); // a session scope == a session id
+    } else {
+        m_control->widgetLeases().clear(scope, source);
+    }
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response DeviceServer::devWidgetPin(Conn &c, const Request &req)
+{
+    // A widget pinned to the phone home screen keeps a "pin" lease alive (60s
+    // cadence floor) so the engine keeps refreshing it, and is marked on the conn
+    // so its renders relay even with no chat open. The phone only heartbeats
+    // active=true while it is unlocked/recently used (aggressive battery policy).
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    if (id.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("widget.pin needs an id"));
+    const bool active = req.params.value(QStringLiteral("active")).toBool(true);
+    const QString scope = QStringLiteral("widget:") + id;
+    const QString source = QStringLiteral("pin:") + c.deviceId;
+    if (active) {
+        m_control->widgetLeases().touch(scope, QStringLiteral("pin"), source);
+        c.pinnedWidgets.insert(id);
+    } else {
+        m_control->widgetLeases().clear(scope, source);
+    }
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response DeviceServer::devWidgetUnpin(Conn &c, const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    if (!id.isEmpty()) {
+        m_control->widgetLeases().clear(QStringLiteral("widget:") + id,
+                                        QStringLiteral("pin:") + c.deviceId);
+        c.pinnedWidgets.remove(id);
+    }
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);

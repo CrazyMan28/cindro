@@ -403,6 +403,25 @@ public:
     // Re-emit the widgets a (reopened) session rendered, so its chat/canvas
     // restore instead of coming back empty.
     Q_INVOKABLE void replaySessionWidgets(const QString &sessionId);
+    // Re-emit ALL current canvases (the Canvas/Widgets tab tails from EOF, so a
+    // widget rendered before the page opened wouldn't show otherwise). Called when
+    // the Canvas/Widgets page becomes visible.
+    Q_INVOKABLE void replayAllWidgets();
+
+    // ---- Live-widget viewer leases (battery) ------------------------------
+    // Tell the daemon which live-widget scope is currently on screen so an
+    // unwatched live widget can idle. The daemon records a lease (refreshed by a
+    // ~15s heartbeat) and the engine's supervisor only runs widgets a viewer holds.
+    //   setPageViewing("<session_id>"|"all"|"", kind) — the single visible page's
+    //     lease (a chat session, the Canvas tab = "all", or "" for none); replaces
+    //     the previous page lease.
+    //   addWidgetViewer/removeWidgetViewer — a popped-out widget window (concurrent
+    //     with the page lease), scope "widget:<id>", kind "popout".
+    Q_INVOKABLE void setPageViewing(const QString &scope,
+                                    const QString &kind = QStringLiteral("chat"));
+    Q_INVOKABLE void addWidgetViewer(const QString &scope,
+                                     const QString &kind = QStringLiteral("popout"));
+    Q_INVOKABLE void removeWidgetViewer(const QString &scope);
 
     Q_INVOKABLE void refreshSavedWidgets();
     Q_INVOKABLE void saveWidget(const QString &name, const QVariant &spec);
@@ -729,6 +748,15 @@ private:
     // render_widget file-bus poller (widgets.jsonl) + last byte offset.
     QTimer *m_widgetTimer = nullptr;
     qint64 m_widgetOffset = 0;
+
+    // Live-widget viewer leases: the scopes this desktop is currently watching
+    // (scope -> kind) and a heartbeat that re-asserts them so they don't TTL out.
+    // m_pageScope is the single visible page's lease (swapped on navigation);
+    // popped-out widget windows add their own "widget:<id>" entries.
+    QHash<QString, QString> m_widgetViewers;
+    QString m_pageScope;
+    QTimer *m_viewerHeartbeat = nullptr;
+    void sendWidgetViewing(const QString &scope, bool active, const QString &kind);
 
     // Driving-demo fake-pointer animation.
     QTimer *m_demoTimer = nullptr;

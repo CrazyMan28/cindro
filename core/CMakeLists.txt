@@ -53,6 +53,9 @@ add_library(jarvis-core STATIC
     src/AuditLog.cpp
     src/InjectionGuard.cpp
     src/NotifyService.cpp
+    # Live-widget viewer-lease registry (battery gating: a live widget only runs
+    # while a desktop/phone viewer or a home-screen pin is watching it).
+    src/WidgetLeaseRegistry.cpp
     # Headers listed so AUTOMOC processes the Q_OBJECT types (Brain, CodexBrain),
     # generating their staticMetaObject + vtable into this static lib.
     include/jarvis/Protocol.h
@@ -84,6 +87,7 @@ add_library(jarvis-core STATIC
     include/jarvis/AuditLog.h
     include/jarvis/InjectionGuard.h
     include/jarvis/NotifyService.h
+    include/jarvis/WidgetLeaseRegistry.h
 )
 
 target_include_directories(jarvis-core
@@ -214,6 +218,12 @@ add_test(NAME ssh_allowlist_test COMMAND ssh_allowlist_test)
 add_executable(injection_guard_test tests/injection_guard_test.cpp)
 target_link_libraries(injection_guard_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME injection_guard_test COMMAND injection_guard_test)
+
+# WidgetLeaseRegistry: viewer-lease lifecycle (touch/TTL/clear/clearSource/wipe)
+# that gates live-widget work for battery. Pure file-store proof (tmp dir).
+add_executable(widget_lease_test tests/widget_lease_test.cpp)
+target_link_libraries(widget_lease_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME widget_lease_test COMMAND widget_lease_test)
 
 # Wave 7 plugin marketplace backend test.
 # PluginSigner: sign a manifest+payload -> verify ok against a trusted key;
