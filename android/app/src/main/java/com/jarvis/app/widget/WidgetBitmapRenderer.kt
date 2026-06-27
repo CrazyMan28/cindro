@@ -101,6 +101,17 @@ object WidgetBitmapRenderer {
         return a.mapNotNull { if (it.isJsonObject) it.asJsonObject else null }
     }
 
+    // A pager is interactive in-app; on a static home-screen bitmap we render the
+    // current page (default page 0 — the first question of a quiz) so the tile
+    // shows real content instead of a blank box.
+    private fun pagerPage(node: JsonObject): JsonObject? {
+        val pages = node.get("pages") as? JsonArray ?: return null
+        if (pages.size() == 0) return null
+        val idx = node.f("page", 0f).toInt().coerceIn(0, pages.size() - 1)
+        val el = pages.get(idx)
+        return if (el.isJsonObject) el.asJsonObject else null
+    }
+
     private fun color(s: String?, def: Int): Int {
         if (s.isNullOrBlank()) return def
         return runCatching { Color.parseColor(if (s.startsWith("#")) s else "#$s") }.getOrDefault(def)
@@ -204,6 +215,7 @@ object WidgetBitmapRenderer {
                 rows * (24 * d) + max(0, rows - 1) * gap
             }
             "canvas" -> node.f("h", 120f) * d
+            "pager" -> pagerPage(node)?.let { measure(ctx, it, width, depth + 1) } ?: 0f
             // svg/image can't render in a RemoteViews bitmap (no WebView/network) —
             // take no space rather than leaving a gap or a fallback label.
             "image", "svg" -> 0f
@@ -272,6 +284,7 @@ object WidgetBitmapRenderer {
                     else x += cellW + gap
                 }
             }
+            "pager" -> pagerPage(node)?.let { draw(ctx, c, it, left, top, width, bottom, depth + 1) }
             "text" -> drawText(ctx, c, node, left, top, width)
             "badge" -> drawBadge(ctx, c, node, left, top)
             "rect" -> {

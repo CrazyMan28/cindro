@@ -8,6 +8,15 @@ _Last updated: 2026-06-27._
 
 ---
 
+## 🆕 Home-screen widget: pager render + size-to-content (2026-06-27)
+
+- **Pager widgets render on the Android home screen.** The home-widget bitmap
+  renderer (`WidgetBitmapRenderer`, separate from the in-app Compose renderer) didn't
+  know the `pager` node, so a pinned quiz showed only its intro in a big empty tile.
+  It now draws the pager's current page (the first question) — the tile shows real
+  content. Plus `naturalHeightPx()` measures the content so the widget **requests a
+  cell height that fits** (best-effort launcher resize) instead of a fixed 3×2. (0.8.8)
+
 ## 🆕 Image-send fix + home editing + phone empty-state (2026-06-27)
 
 - **Phone/desktop images now reach the model.** The `ApiBrain` (Mistral / direct
