@@ -66,6 +66,21 @@ class Bridge : public QObject
     // Desktop notifications (notify-send) toggle; persisted via settings.
     Q_PROPERTY(bool notify READ notificationsEnabled NOTIFY notificationsChanged)
 
+    // ---- System stats (REAL, polled from /proc + nvidia-smi) ---------------
+    // Drive the HUD strip + the Home live-widgets dashboard with actual numbers
+    // (not a simulated random-walk). Polled ~every 1.5 s on a single timer.
+    Q_PROPERTY(qreal cpuPercent READ cpuPercent NOTIFY statsChanged)
+    Q_PROPERTY(qreal ramPercent READ ramPercent NOTIFY statsChanged)
+    Q_PROPERTY(qreal ramUsedGb READ ramUsedGb NOTIFY statsChanged)
+    Q_PROPERTY(qreal ramTotalGb READ ramTotalGb NOTIFY statsChanged)
+    Q_PROPERTY(qreal netUpMbps READ netUpMbps NOTIFY statsChanged)
+    Q_PROPERTY(qreal netDownMbps READ netDownMbps NOTIFY statsChanged)
+    Q_PROPERTY(bool gpuPresent READ gpuPresent NOTIFY statsChanged)
+    Q_PROPERTY(qreal gpuPercent READ gpuPercent NOTIFY statsChanged)
+    Q_PROPERTY(QString gpuName READ gpuName NOTIFY statsChanged)
+    Q_PROPERTY(qreal gpuMemUsedMb READ gpuMemUsedMb NOTIFY statsChanged)
+    Q_PROPERTY(qreal gpuMemTotalMb READ gpuMemTotalMb NOTIFY statsChanged)
+
 public:
     explicit Bridge(QObject *parent = nullptr);
     ~Bridge() override;
@@ -85,6 +100,18 @@ public:
     QString voiceState() const { return m_voiceState; }
     bool handsFree() const { return m_handsFree; }
     qreal voiceLevel() const { return m_voiceLevel; }
+
+    qreal cpuPercent() const { return m_cpuPercent; }
+    qreal ramPercent() const { return m_ramPercent; }
+    qreal ramUsedGb() const { return m_ramUsedGb; }
+    qreal ramTotalGb() const { return m_ramTotalGb; }
+    qreal netUpMbps() const { return m_netUpMbps; }
+    qreal netDownMbps() const { return m_netDownMbps; }
+    bool gpuPresent() const { return m_gpuPresent; }
+    qreal gpuPercent() const { return m_gpuPercent; }
+    QString gpuName() const { return m_gpuName; }
+    qreal gpuMemUsedMb() const { return m_gpuMemUsedMb; }
+    qreal gpuMemTotalMb() const { return m_gpuMemTotalMb; }
 
     // Establish (or re-establish) the control WebSocket connection.
     Q_INVOKABLE void connectToDaemon();
@@ -561,6 +588,9 @@ signals:
     // ---- Notifications ------------------------------------------------------
     void notificationsChanged();
 
+    // ---- System stats -------------------------------------------------------
+    void statsChanged();
+
     // ---- COMPUTER page signals ---------------------------------------------
     void coworkerSessionIdChanged();
     void drivingChanged();
@@ -732,6 +762,29 @@ private:
     QTimer *m_frameTimer = nullptr;
     QString m_videoBase;     // engine base url, e.g. http://127.0.0.1:8810
     QString m_videoBearer;   // cached computer-use bearer (from config.yaml)
+
+    // ---- System stats (real, polled) ---------------------------------------
+    void pollStats();           // read /proc, kick the async GPU probe
+    void probeGpu();            // nvidia-smi (async, best-effort, one-shot probe)
+    QTimer *m_statsTimer = nullptr;
+    qreal m_cpuPercent = 0.0;
+    qreal m_ramPercent = 0.0;
+    qreal m_ramUsedGb = 0.0;
+    qreal m_ramTotalGb = 0.0;
+    qreal m_netUpMbps = 0.0;
+    qreal m_netDownMbps = 0.0;
+    bool m_gpuPresent = false;
+    bool m_gpuProbed = false;   // stop probing after the first nvidia-smi miss
+    qreal m_gpuPercent = 0.0;
+    QString m_gpuName;
+    qreal m_gpuMemUsedMb = 0.0;
+    qreal m_gpuMemTotalMb = 0.0;
+    // Previous /proc samples for delta math (cpu jiffies, net bytes, timestamp).
+    quint64 m_cpuPrevTotal = 0;
+    quint64 m_cpuPrevIdle = 0;
+    quint64 m_netPrevRx = 0;
+    quint64 m_netPrevTx = 0;
+    qint64 m_statsPrevMs = 0;
 
     // agent_pointer.jsonl fallback tail.
     QFileSystemWatcher *m_pointerWatcher = nullptr;

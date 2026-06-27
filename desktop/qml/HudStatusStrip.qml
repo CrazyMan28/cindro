@@ -15,23 +15,14 @@ Rectangle {
     border.color: Theme.hairlineSoft
     clip: true
 
-    // animated faux-telemetry (plausible, smoothed)
-    property real cpu: 27
-    property real ram: 41
-    property real netUp: 0.4
-    property real netDown: 1.8
+    // REAL telemetry from the Bridge (polled /proc + nvidia-smi); the Gauge's own
+    // Behavior smooths the value changes so it still reads as a live, animated HUD.
+    property real cpu: bridge.cpuPercent
+    property real ram: bridge.ramPercent
+    property real netUp: bridge.netUpMbps
+    property real netDown: bridge.netDownMbps
     property int mcpCount: 1
     property int agents: bridge.sessionId.length > 0 ? 1 : 0
-
-    Timer {
-        interval: 1400; running: strip.visible; repeat: true
-        onTriggered: {
-            strip.cpu = Math.max(6, Math.min(94, strip.cpu + (Math.random() - 0.5) * 22))
-            strip.ram = Math.max(20, Math.min(88, strip.ram + (Math.random() - 0.5) * 8))
-            strip.netUp = Math.max(0.0, strip.netUp + (Math.random() - 0.5) * 0.9)
-            strip.netDown = Math.max(0.0, strip.netDown + (Math.random() - 0.5) * 2.4)
-        }
-    }
 
     // top hairline glow
     Rectangle {
