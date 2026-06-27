@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 from mcp.server.fastmcp import FastMCP
 
@@ -198,6 +199,66 @@ def register(mcp: FastMCP) -> None:
         rec = widgets_bus.append_widget(w.get("spec"), title=title or w.get("name", ""),
                                         widget_id="", target=target)
         return json.dumps({"ok": True, "id": rec.get("id", ""), "from": w.get("id")})
+
+    # ----- Pin to the DESKTOP app's Home dashboard -------------------------
+    @mcp.tool()
+    def home_pin(id: str = "", spec: dict | None = None, title: str = "") -> str:
+        r"""Pin a widget to the DESKTOP app's HOME screen (the landing dashboard).
+
+        Call this when the user says things like "add that to my home screen",
+        "pin this widget to home", "I want this on my home page". The widget then
+        lives on the Home dashboard until unpinned, surviving restarts.
+
+        Two ways to call it:
+          • home_pin(id="<existing id>") — pin a widget you already rendered (a
+            canvas id from canvas_list, or a saved-widget id/name). Its current
+            spec is copied to Home.
+          • home_pin(spec={...}, title="...") — pin a brand-new widget spec
+            directly (same JSON DSL as render_widget), no prior render needed.
+
+        Returns the home id. Use home_unpin(id) to remove it from Home.
+        """
+        wid = str(id or "").strip()
+        use_spec = spec
+        used_title = title
+        if use_spec is None and wid:
+            # resolve an existing canvas or saved widget by id/name
+            w = saved_widgets.get_widget(wid)
+            if w:
+                use_spec = w.get("spec")
+                used_title = used_title or w.get("name", "")
+            else:
+                for c in widgets_bus.list_canvases():
+                    if str(c.get("id")) == wid:
+                        use_spec = c.get("spec")
+                        used_title = used_title or c.get("title", "")
+                        break
+        if use_spec is None:
+            return json.dumps({"ok": False, "error": "not_found",
+                               "hint": "pass an existing id, or a spec to pin directly"})
+        # Home pins get their own id namespace so unpinning from Home never
+        # disturbs the same widget on the Canvas tab.
+        home_id = "home:" + (wid or f"w{int(time.time() * 1000)}")
+        rec = widgets_bus.append_widget(use_spec, title=used_title,
+                                        widget_id=home_id, target="home")
+        return json.dumps({"ok": True, "id": rec.get("id", ""), "pinned": "home"})
+
+    @mcp.tool()
+    def home_unpin(id: str) -> str:
+        """Remove a widget from the DESKTOP Home screen. Pass the home id (the one
+        home_pin returned, e.g. "home:abc") or the original widget id."""
+        wid = str(id or "").strip()
+        home_id = wid if wid.startswith("home:") else ("home:" + wid)
+        live_widgets.delete(home_id)            # stop any live job + emit remove
+        widgets_bus.append_op("remove", widget_id=home_id)
+        return json.dumps({"ok": True, "unpinned": home_id})
+
+    @mcp.tool()
+    def home_list() -> str:
+        """List the widgets currently pinned to the DESKTOP Home screen."""
+        items = [{"id": c.get("id"), "title": c.get("title", "")}
+                 for c in widgets_bus.list_canvases() if c.get("target") == "home"]
+        return json.dumps({"ok": True, "home": items})
 
     # ----- Live (auto-updating) widgets ------------------------------------
     @mcp.tool()
