@@ -2376,10 +2376,15 @@ Response ControlServer::handleAgentDesktopInfo(const Request &req)
                                      sessionId);
     QJsonObject result = desk.toJson();
     // Convenience: the local single-JPEG + MJPEG endpoints for the desktop
-    // "Computer" preview (the bearer rides the same per-session token).
+    // "Computer" preview. The per-session engine authenticates with its OWN
+    // bearer (NOT the global :8794 one), so include it — without it the live
+    // preview poll gets 401 and the peek hangs on "waiting for the agent". The
+    // engine binds 127.0.0.1 only and this rides the already-authenticated
+    // control/device channel, so the token is useless off-box.
     const QString base = m_agentDesktops.engineBase(sessionId);
     result.insert(QStringLiteral("video_frame"), base + QStringLiteral("/video/frame"));
     result.insert(QStringLiteral("video_mjpeg"), base + QStringLiteral("/video/mjpeg"));
+    result.insert(QStringLiteral("bearer"), desk.bearer);
     return Response::success(req.id, result);
 }
 

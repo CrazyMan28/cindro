@@ -2667,8 +2667,10 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         if (method == QStringLiteral("session.subscribe"))
             return;
         // agent_desktop.info "no_agent_desktop" just means this session isn't
-        // driving a nested desktop — clear the flag quietly (no error toast).
+        // driving a nested desktop — clear the flag quietly (no error toast) and
+        // revert the video bearer to the global engine's.
         if (method == QStringLiteral("agent_desktop.info")) {
+            m_videoBearer = computeUseBearer();
             setHasAgentDesktop(false);
             return;
         }
@@ -2802,6 +2804,12 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         const int port = result.value(QStringLiteral("port")).toInt();
         if (port > 0)
             setVideoEndpoint(QStringLiteral("http://127.0.0.1:") + QString::number(port));
+        // The per-session engine uses its OWN bearer; the global one gets 401 on
+        // /video/frame. Use the session bearer for the preview poll while this
+        // session is active.
+        const QString bearer = result.value(QStringLiteral("bearer")).toString();
+        if (!bearer.isEmpty())
+            m_videoBearer = bearer;
         setHasAgentDesktop(true);
         return;
     }
