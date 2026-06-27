@@ -14,6 +14,9 @@ Item {
     // chat transcript model fed from bridge.sessionEvent
     ListModel { id: chatModel }
 
+    // recent sessions for the in-chat "Switch" picker (bridge.sessionsListed)
+    ListModel { id: sessionModel }
+
     property bool thinking: false
     // True while the model's turn is in flight (between a sent message / first live
     // event and the turn's "final"/"error"). Drives the composer's Stop button.
@@ -298,6 +301,19 @@ Item {
             bridge.replaySessionWidgets(sessionId)
             chatView.positionViewAtEnd()
         }
+        // Fill the in-chat session switcher's list (bridge.listSessions()).
+        function onSessionsListed(list) {
+            sessionModel.clear()
+            for (var i = 0; i < list.length && i < 40; i++) {
+                var s = list[i]
+                sessionModel.append({
+                    "sid":   s.id !== undefined ? "" + s.id : "",
+                    "title": (s.title !== undefined && ("" + s.title).length > 0)
+                             ? "" + s.title : "Untitled session",
+                    "brain": s.brain !== undefined ? "" + s.brain : ""
+                })
+            }
+        }
 
         function onErrorOccurred(message) {
             panel.busy = false
@@ -459,6 +475,114 @@ Item {
             // now lives in the chat transcript footer, beside where the reply appears.)
 
             Item { Layout.fillWidth: true }
+
+            // Switch session — pick a recent conversation WITHOUT leaving the chat
+            // (the old flow forced a trip to the Sessions page and back).
+            Item {
+                id: switchAnchor
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: switchBtn.implicitWidth
+                implicitHeight: switchBtn.implicitHeight
+
+                Widgets.PillButton {
+                    id: switchBtn
+                    label: "⌄ Switch"
+                    onClicked: {
+                        if (sessionPicker.opened) { sessionPicker.close(); return }
+                        bridge.listSessions()
+                        sessionPicker.open()
+                    }
+                }
+
+                Popup {
+                    id: sessionPicker
+                    y: switchBtn.height + 8
+                    x: 0
+                    width: 300
+                    padding: 6
+                    modal: false
+                    background: Rectangle {
+                        color: Theme.panel
+                        radius: Theme.radiusSm
+                        border.width: 1
+                        border.color: Theme.accentDim
+                    }
+                    contentItem: ColumnLayout {
+                        spacing: 4
+                        Text {
+                            Layout.leftMargin: 6
+                            Layout.topMargin: 2
+                            text: "SWITCH SESSION"
+                            color: Theme.textFaint
+                            font.family: Theme.fontDisplay
+                            font.pixelSize: 8
+                            font.letterSpacing: 1.8
+                            font.weight: Font.DemiBold
+                        }
+                        ListView {
+                            id: sessList
+                            Layout.preferredWidth: 288
+                            Layout.preferredHeight: Math.min(340, Math.max(40, contentHeight))
+                            clip: true
+                            model: sessionModel
+                            delegate: Rectangle {
+                                required property int index
+                                required property var model
+                                width: ListView.view.width
+                                height: 42
+                                radius: Theme.radiusXs
+                                readonly property bool current: model.sid === bridge.sessionId
+                                color: current ? Theme.accentFaint
+                                       : (rowMa.containsMouse ? Theme.surfaceInput : "transparent")
+                                Column {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.leftMargin: 10
+                                    anchors.rightMargin: 10
+                                    spacing: 1
+                                    Text {
+                                        width: parent.width
+                                        text: model.title
+                                        color: current ? Theme.accentBright : Theme.text
+                                        font.family: Theme.fontDisplay
+                                        font.pixelSize: 12
+                                        font.weight: current ? Font.DemiBold : Font.Medium
+                                        elide: Text.ElideRight
+                                    }
+                                    Text {
+                                        text: (model.brain || "").toUpperCase()
+                                        color: Theme.textFaint
+                                        font.family: Theme.fontDisplay
+                                        font.pixelSize: 8
+                                        font.letterSpacing: 1.2
+                                    }
+                                }
+                                MouseArea {
+                                    id: rowMa
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (model.sid.length > 0 && model.sid !== bridge.sessionId)
+                                            bridge.openSession(model.sid)
+                                        sessionPicker.close()
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            visible: sessionModel.count === 0
+                            Layout.leftMargin: 6
+                            Layout.bottomMargin: 4
+                            text: "No other sessions yet."
+                            color: Theme.textFaint
+                            font.family: Theme.fontDisplay
+                            font.pixelSize: 10
+                        }
+                    }
+                }
+            }
 
             // + New chat — wipe the transcript and drop the current session so the
             // next message spins up a fresh one (same path AppShell uses for the
