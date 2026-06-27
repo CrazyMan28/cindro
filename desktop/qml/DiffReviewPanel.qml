@@ -144,7 +144,9 @@ Rectangle {
                 spacing: 0
 
                 Repeater {
-                    model: panel.lines.slice(0, 60)
+                    // NOT virtualized — every row is built at once, and several diffs
+                    // can sit in the chat's cache buffer, so keep the cap tight.
+                    model: panel.lines.slice(0, 30)
                     delegate: Row {
                         required property string modelData
                         width: body.width
@@ -192,8 +194,8 @@ Rectangle {
                     }
                 }
                 Text {
-                    visible: panel.lines.length > 60
-                    text: "… " + (panel.lines.length - 60) + " more lines"
+                    visible: panel.lines.length > 30
+                    text: "… " + (panel.lines.length - 30) + " more lines"
                     color: Theme.textFaint
                     font.pixelSize: 10
                     font.family: Theme.fontMono

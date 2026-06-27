@@ -238,6 +238,13 @@ Item {
             readonly property bool toolDone: td.d === true
             readonly property string inputText: td.i || ""
             readonly property string outputText: td.o || ""
+            // Cap the text actually handed to the Text element: Text measures the
+            // WHOLE string for layout even when maximumLineCount elides it, so a
+            // 50KB tool output otherwise stalls the whole chat. Bound to a few KB;
+            // the full output is one tap away (the model can re-print it).
+            readonly property string outputClamped: outputText.length > 4000
+                ? outputText.substring(0, 4000) + "\n… (" + outputText.length + " chars, truncated)"
+                : outputText
             readonly property string server: td.s || ""
             property bool expanded: false
             implicitHeight: toolCol.implicitHeight + 16
@@ -357,10 +364,10 @@ Item {
                     Text {
                         visible: toolCard.outputText.length > 0
                         Layout.fillWidth: true
-                        text: toolCard.outputText
+                        text: toolCard.outputClamped
                         color: Theme.textMuted
                         wrapMode: Text.Wrap
-                        maximumLineCount: 60
+                        maximumLineCount: 24
                         elide: Text.ElideRight
                         font.family: Theme.fontMono
                         font.pixelSize: 11
@@ -588,10 +595,14 @@ Item {
                 }
                 Text {
                     Layout.fillWidth: true
-                    text: del.text
+                    // Cap the string fed to the layout engine (it measures the whole
+                    // thing even when elided) so a giant result can't stall the chat.
+                    text: del.text.length > 6000
+                          ? del.text.substring(0, 6000) + "\n… (" + del.text.length + " chars, truncated)"
+                          : del.text
                     color: Theme.textMuted
                     wrapMode: Text.Wrap
-                    maximumLineCount: resCard.expanded ? 200 : 2
+                    maximumLineCount: resCard.expanded ? 60 : 2
                     elide: Text.ElideRight
                     font.pixelSize: 12
                     font.family: Theme.fontMono
@@ -634,9 +645,12 @@ Item {
                 anchors.topMargin: 1
                 height: 2; radius: 1
                 color: Theme.amber
-                layer.enabled: true
+                // Only run the GPU blur layer + pulse while the app is focused — no
+                // sense burning frames on a glow no one is looking at.
+                layer.enabled: Qt.application.active
                 layer.effect: MultiEffect { blurEnabled: true; blur: 0.6; blurMax: 12; brightness: 0.2 }
                 SequentialAnimation on opacity {
+                    running: Qt.application.active
                     loops: Animation.Infinite
                     NumberAnimation { from: 1.0; to: 0.45; duration: 900; easing.type: Easing.InOutSine }
                     NumberAnimation { from: 0.45; to: 1.0; duration: 900; easing.type: Easing.InOutSine }
@@ -750,9 +764,10 @@ Item {
                 anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right
                 anchors.leftMargin: 14; anchors.rightMargin: 14; anchors.topMargin: 1
                 height: 2; radius: 1; color: Theme.accent
-                layer.enabled: true
+                layer.enabled: Qt.application.active
                 layer.effect: MultiEffect { blurEnabled: true; blur: 0.6; blurMax: 12; brightness: 0.2 }
                 SequentialAnimation on opacity {
+                    running: Qt.application.active
                     loops: Animation.Infinite
                     NumberAnimation { from: 1.0; to: 0.45; duration: 900; easing.type: Easing.InOutSine }
                     NumberAnimation { from: 0.45; to: 1.0; duration: 900; easing.type: Easing.InOutSine }
