@@ -100,6 +100,13 @@ public:
                                 : QStringLiteral("medium");
     }
 
+    // Desktop unlock PIN (fallback when the phone can't approve). Stored as a
+    // SALTED SHA-256 ("<saltHex>:<hashHex>") in config.toml — never the PIN
+    // itself. Empty = no PIN set. setDesktopPin("") clears it.
+    bool hasDesktopPin() const { return !m_desktopPin.isEmpty(); }
+    void setDesktopPin(const QString &pin); // hashes; empty clears
+    bool verifyDesktopPin(const QString &pin) const;
+
     // Which claude OAuth account the claude brain spawns against.
     //   "pro" -> ~/.claude          (you@example.com, the default)
     //   "max" -> ~/.claude-secondary (you-max@example.com, uses Max quota)
@@ -137,6 +144,7 @@ private:
     bool m_letJarvisUseComputer = true; // default ON (auto computer-use in chat)
     bool m_authLockEnabled = true;      // default ON (require phone+fingerprint)
     QString m_permissionLevel = QStringLiteral("medium"); // ask-before-risky policy
+    QString m_desktopPin;               // "<saltHex>:<hashHex>" or empty (no PIN)
     QString m_ttsVoice;                 // preferred TTS voice slug (empty = default)
     QString m_sttProvider = QStringLiteral("voxtral"); // STT provider id
     QString m_ttsProvider = QStringLiteral("voxtral"); // TTS provider id

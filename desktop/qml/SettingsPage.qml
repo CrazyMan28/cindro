@@ -38,6 +38,8 @@ Item {
     property bool compact: false
     property bool authLockEnabled: false        // require phone+fingerprint to open
     property string permissionLevel: "medium"   // ask-before-risky: high|medium|low
+    property bool hasDesktopPin: false           // a desktop unlock PIN is set
+    property string pendingPin: ""               // new PIN to save (write-only)
     property bool dirty: false
     property bool saving: false
 
@@ -151,6 +153,8 @@ Item {
             page.authLockEnabled = s.auth_lock_enabled === true
             page.permissionLevel = (s.permission_level === "high" || s.permission_level === "low")
                                    ? s.permission_level : "medium"
+            page.hasDesktopPin = (s.has_desktop_pin === true)
+            page.pendingPin = ""
             if (s.theme !== undefined) {
                 page.glow = s.theme.glow !== undefined ? s.theme.glow : true
                 page.compact = s.theme.compact !== undefined ? s.theme.compact : false
@@ -273,6 +277,9 @@ Item {
             "permission_level": page.permissionLevel,
             "theme": { "glow": page.glow, "compact": page.compact }
         }
+        // PIN is write-only: only send when the user typed/cleared one.
+        if (page.pendingPin.length > 0)
+            patch["desktop_pin"] = (page.pendingPin === "__CLEAR__") ? "" : page.pendingPin
         // only send keys the user actually typed (write-only)
         var hasKeys = false
         var keys = {}
@@ -697,6 +704,41 @@ Item {
                     Widgets.StyledSwitch {
                         checked: page.authLockEnabled
                         onToggled: function(v) { page.authLockEnabled = v; page.dirty = true }
+                    }
+                }
+            }
+
+            // Desktop unlock PIN — the reliable fallback when the phone can't approve.
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Text {
+                        text: "Unlock PIN" + (page.hasDesktopPin ? "  — set ✓" : "")
+                        color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 13
+                        Layout.fillWidth: true
+                    }
+                    Text {
+                        text: "A local PIN to unlock the desktop when your phone can't approve (or isn't paired). Leave blank to keep the current one."
+                        color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11
+                        Layout.fillWidth: true; wrapMode: Text.WordWrap
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Widgets.StyledField {
+                            id: pinSetField
+                            Layout.fillWidth: true
+                            masked: true
+                            placeholder: page.hasDesktopPin ? "New PIN (4–8 digits)" : "Set a PIN (4–8 digits)"
+                            onTextChanged: { page.pendingPin = text; if (text.length > 0) page.dirty = true }
+                        }
+                        Widgets.PillButton {
+                            visible: page.hasDesktopPin
+                            label: "Clear"; danger: true
+                            onClicked: { page.pendingPin = "__CLEAR__"; page.dirty = true; pinSetField.text = "" }
+                        }
                     }
                 }
             }

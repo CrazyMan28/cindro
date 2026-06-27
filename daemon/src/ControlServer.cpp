@@ -325,6 +325,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleAuthStatus(req);
     else if (m == QStringLiteral("auth.deny"))
         resp = handleAuthDeny(req);
+    else if (m == QStringLiteral("auth.verify_pin"))
+        resp = handleAuthVerifyPin(req);
     else if (m == QStringLiteral("voice.stt"))
         resp = handleVoiceStt(req);
     else if (m == QStringLiteral("voice.tts"))
@@ -443,6 +445,9 @@ Response ControlServer::handleSettingsGet(const Request &req)
     // capability sandbox is unchanged.
     s.insert(QStringLiteral("permission_level"), m_settings.permissionLevel());
 
+    // Whether a desktop unlock PIN is set (boolean only — never the PIN/hash).
+    s.insert(QStringLiteral("has_desktop_pin"), m_settings.hasDesktopPin());
+
     // Theme prefs (persisted in config.toml as theme_json). Fall back to a
     // sane default HUD theme when none has been set yet.
     QJsonObject theme = m_settings.theme();
@@ -503,6 +508,11 @@ Response ControlServer::handleSettingsSet(const Request &req)
     if (patch.contains(QStringLiteral("permission_level"))) {
         m_settings.setPermissionLevel(
             patch.value(QStringLiteral("permission_level")).toString());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("desktop_pin"))) {
+        // Write-only: set or clear the desktop unlock PIN (hashed in SettingsStore).
+        m_settings.setDesktopPin(patch.value(QStringLiteral("desktop_pin")).toString());
         prefsTouched = true;
     }
     if (patch.contains(QStringLiteral("tts_voice"))) {
@@ -2578,6 +2588,35 @@ Response ControlServer::handleAuthDeny(const Request &req)
     // Always succeed: a deny on an unknown/expired challenge is harmless.
     QJsonObject r;
     r.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleAuthVerifyPin(const Request &req)
+{
+    // Local PIN unlock: the reliable fallback when the phone can't approve. The
+    // PIN is verified against the salted hash in SettingsStore; on success we
+    // approve the pending challenge (if any) and broadcast the unlock so the
+    // LockGate clears exactly like a phone approval.
+    const QString pin = req.params.value(QStringLiteral("pin")).toString();
+    if (!m_settings.hasDesktopPin())
+        return Response::failure(req.id, QStringLiteral("no_pin"),
+                                 QStringLiteral("no desktop PIN is set"));
+    if (!m_settings.verifyDesktopPin(pin)) {
+        m_audit.record(QStringLiteral("auth.verify_pin"), false, QStringLiteral("high"),
+                       QStringLiteral("wrong desktop PIN"), QString(), false);
+        return Response::failure(req.id, QStringLiteral("bad_pin"),
+                                 QStringLiteral("incorrect PIN"));
+    }
+    const QString challengeId = req.params.value(QStringLiteral("challenge_id")).toString();
+    if (!challengeId.isEmpty())
+        m_authChallenges.approve(challengeId, QStringLiteral("pin"));
+    m_audit.record(QStringLiteral("auth.verify_pin"), true, QStringLiteral("high"),
+                   QStringLiteral("desktop unlocked with PIN"), QString(), false);
+    emit authEvent(challengeId, QStringLiteral("approved"));
+    broadcastAuthEvent(challengeId, QStringLiteral("approved"));
+    QJsonObject r;
+    r.insert(QStringLiteral("ok"), true);
+    r.insert(QStringLiteral("state"), QStringLiteral("approved"));
     return Response::success(req.id, r);
 }
 

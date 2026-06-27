@@ -8,6 +8,30 @@ _Last updated: 2026-06-27._
 
 ---
 
+## 🆕 Live agent view + quizzes + plan panel + unlock PIN (2026-06-27)
+
+- **Live agent-desktop view, end-to-end.** The in-chat peek now mirrors ANY chat's
+  nested desktop (not just explicit co-work): the Bridge queries `agent_desktop.info`
+  on session change and uses the **per-session engine bearer** for the video poll
+  (the global bearer was 401ing — that was the "stuck on WAITING" bug). "⛶ Full"
+  → Computer page works (same gating fix + it starts the mirror on arrival).
+  Synchronous frame decode kills the flicker. The peek is **drag-resizable**.
+  The **phone** mirrors any session too (Computer tab auto-selects the chat).
+- **Multi-page animated widgets** — new `pager` DSL node + quiz buttons
+  (`{correct:true,next:true}` → ✓/✗ flash → next page), in BOTH renderers. No model
+  round-trip per tap.
+- **PLAN side panel** — the model's todo (`todo_write` + granular `todo_add/edit/
+  done/del`) pops out as an animated card top-right of the chat instead of cluttering
+  the transcript; collapses to a 📋 pill.
+- **Desktop unlock PIN** — a reliable local fallback (Settings → Security → Unlock
+  PIN) for when the phone can't approve. Salted SHA-256 in config (never plaintext);
+  `auth.verify_pin` approves the gate. The LockGate shows a PIN field with a shake on
+  a wrong PIN. 6 new core test assertions.
+- **`desktop_reset`** tool (model clears its own agent desktop); **Computer tab**
+  removed from the rail; **ask_user duplicate-question** bug fixed.
+
+---
+
 ## 🆕 Desktop redesign + permission system + model TODO (2026-06-27)
 
 The desktop app got the same kind of pass the phone did, plus two new cross-platform

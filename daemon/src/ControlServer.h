@@ -296,6 +296,8 @@ private:
     Response handleAuthRequest(const Request &req);
     Response handleAuthStatus(const Request &req);
     Response handleAuthDeny(const Request &req);
+    //   auth.verify_pin -> local PIN unlock fallback (salted-hash check).
+    Response handleAuthVerifyPin(const Request &req);
     // Fan an auth.event {challenge_id,state} out to every control client (clone of
     // broadcastSessionEvent) so the desktop lock-gate unlocks instantly.
     void broadcastAuthEvent(const QString &challengeId, const QString &state);

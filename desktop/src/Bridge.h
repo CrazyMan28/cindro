@@ -217,6 +217,9 @@ public:
     Q_INVOKABLE void authStatus(const QString &challengeId);
     // auth.deny { challenge_id } — cancel a pending unlock from the desktop side.
     Q_INVOKABLE void authDeny(const QString &challengeId);
+    // auth.verify_pin { challenge_id, pin } -> authStateChanged(...,"approved") on
+    // success, pinRejected() on a wrong PIN. The reliable local unlock fallback.
+    Q_INVOKABLE void verifyPin(const QString &challengeId, const QString &pin);
 
     // ---- Memory (Contract A v3) --------------------------------------------
     // memory.list { limit? } -> memoriesListed(QVariantList).
@@ -526,6 +529,8 @@ signals:
     // The challenge changed state — from an auth.status poll OR the unsolicited
     // auth.event push. "approved" unlocks the gate; "denied"/"expired" -> retry.
     void authStateChanged(const QString &challengeId, const QString &state);
+    // A PIN unlock attempt was rejected (wrong PIN) — the LockGate shakes/clears.
+    void pinRejected();
 
     // ---- Memory results (Contract A v3) ------------------------------------
     // memory.list / memory.search both resolve here. `isSearch` lets the UI tell

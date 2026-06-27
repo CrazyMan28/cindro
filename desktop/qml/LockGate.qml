@@ -30,6 +30,8 @@ Item {
     // "starting" | "waiting" | "denied" | "expired" | "timeout"
     property string phase: "starting"
     property bool paired: true
+    property bool hasPin: false      // a desktop PIN is set (from settings.get)
+    property bool pinError: false    // last PIN attempt was wrong
 
     function startRequest() {
         gate.phase = "starting"
@@ -38,7 +40,18 @@ Item {
         timeoutTimer.restart()
     }
 
-    Component.onCompleted: gate.startRequest()
+    Component.onCompleted: { gate.startRequest(); bridge.loadSettings() }
+
+    Connections {
+        target: bridge
+        function onSettingsLoaded(s) {
+            gate.hasPin = (s.has_desktop_pin === true)
+        }
+        function onPinRejected() {
+            gate.pinError = true
+            pinShake.restart()
+        }
+    }
 
     // Poll auth.status as a fallback to the unsolicited auth.event push.
     Timer {
@@ -174,6 +187,68 @@ Item {
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
                 onClicked: gate.startRequest()
+            }
+        }
+
+        // ---- PIN fallback (reliable local unlock) --------------------------
+        Column {
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: gate.hasPin && gate.phase !== "starting"
+            spacing: 9
+            topPadding: 6
+
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: gate.pinError ? "WRONG PIN — TRY AGAIN" : "OR UNLOCK WITH YOUR PIN"
+                color: gate.pinError ? Theme.danger : Theme.textFaint
+                font.family: Theme.fontDisplay; font.pixelSize: 10; font.letterSpacing: 1.6
+                font.weight: Font.DemiBold
+            }
+            Rectangle {
+                id: pinBox
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 220; height: 44; radius: Theme.radiusSm
+                color: Theme.surfaceInput
+                border.width: 1
+                border.color: gate.pinError ? Theme.danger
+                              : (pinField.activeFocus ? Theme.accent : Theme.hairlineSoft)
+                Behavior on border.color { ColorAnimation { duration: 140 } }
+                // shake on wrong PIN
+                transform: Translate { id: pinShakeT; x: 0 }
+                SequentialAnimation {
+                    id: pinShake
+                    NumberAnimation { target: pinShakeT; property: "x"; to: -8; duration: 50 }
+                    NumberAnimation { target: pinShakeT; property: "x"; to: 8; duration: 50 }
+                    NumberAnimation { target: pinShakeT; property: "x"; to: -5; duration: 50 }
+                    NumberAnimation { target: pinShakeT; property: "x"; to: 0; duration: 50 }
+                }
+                TextField {
+                    id: pinField
+                    anchors.fill: parent
+                    anchors.leftMargin: 14; anchors.rightMargin: 64
+                    verticalAlignment: TextInput.AlignVCenter
+                    echoMode: TextInput.Password
+                    inputMethodHints: Qt.ImhDigitsOnly | Qt.ImhSensitiveData
+                    placeholderText: "PIN"
+                    color: Theme.text
+                    font.family: Theme.fontMono; font.pixelSize: 18; font.letterSpacing: 4
+                    background: null
+                    onTextChanged: gate.pinError = false
+                    onAccepted: if (text.length > 0) bridge.verifyPin(gate.challengeId, text)
+                    Component.onCompleted: forceActiveFocus()
+                }
+                // submit
+                Rectangle {
+                    anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                    anchors.rightMargin: 6
+                    width: 48; height: 32; radius: Theme.radiusXs
+                    color: pinGo.containsMouse ? Theme.accent : Theme.accentDim
+                    Text { anchors.centerIn: parent; text: "→"; color: Theme.inkOnAccent; font.pixelSize: 16; font.weight: Font.Bold }
+                    MouseArea {
+                        id: pinGo; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: if (pinField.text.length > 0) bridge.verifyPin(gate.challengeId, pinField.text)
+                    }
+                }
             }
         }
     }

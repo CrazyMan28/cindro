@@ -129,6 +129,46 @@ int main()
               "config missing auth_lock_enabled => default ON");
     }
 
+    // --- Desktop unlock PIN: set, verify, persist, clear -------------------
+    {
+        writeConfig(QStringLiteral("default_brain = \"codex\"\n"));
+        jarvis::SettingsStore s;
+        s.load();
+        check(!s.hasDesktopPin(), "fresh config => no desktop PIN");
+        s.setDesktopPin(QStringLiteral("1379"));
+        check(s.hasDesktopPin(), "setDesktopPin => hasDesktopPin");
+        check(s.verifyDesktopPin(QStringLiteral("1379")), "verify correct PIN");
+        check(!s.verifyDesktopPin(QStringLiteral("0000")), "reject wrong PIN");
+        check(!s.verifyDesktopPin(QString()), "reject empty PIN");
+        check(s.saveConfig(), "saveConfig() with PIN succeeds");
+
+        jarvis::SettingsStore s2;
+        s2.load();
+        check(s2.hasDesktopPin(), "PIN round-trips through config.toml");
+        check(s2.verifyDesktopPin(QStringLiteral("1379")), "reloaded PIN verifies");
+        check(!s2.verifyDesktopPin(QStringLiteral("1378")), "reloaded PIN rejects wrong");
+
+        s2.setDesktopPin(QString());
+        check(!s2.hasDesktopPin(), "setDesktopPin(\"\") clears the PIN");
+    }
+
+    // The stored PIN must NEVER be the plaintext (salted hash only).
+    {
+        writeConfig(QStringLiteral("default_brain = \"codex\"\n"));
+        jarvis::SettingsStore s;
+        s.load();
+        s.setDesktopPin(QStringLiteral("4242"));
+        s.saveConfig();
+        QFile f(jarvis::Config::configFilePath());
+        f.open(QIODevice::ReadOnly | QIODevice::Text);
+        const QString text = QString::fromUtf8(f.readAll());
+        f.close();
+        check(!text.contains(QStringLiteral("4242")),
+              "config.toml does NOT contain the plaintext PIN");
+        check(text.contains(QStringLiteral("desktop_pin")),
+              "config.toml has a desktop_pin (hashed) line");
+    }
+
     if (g_failures == 0) {
         std::fprintf(stderr, "\nPASS settings_store_test\n");
         return 0;
