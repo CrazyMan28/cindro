@@ -2,15 +2,47 @@
 
 #include "jarvis/Config.h"
 
+#include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QRandomGenerator>
 #include <QSaveFile>
 #include <QStringList>
 #include <QTextStream>
 
 namespace jarvis {
+
+void SettingsStore::setDesktopPin(const QString &pin)
+{
+    if (pin.isEmpty()) {
+        m_desktopPin.clear();
+        return;
+    }
+    // Random 8-byte salt; store "<saltHex>:<sha256(salt+pin)Hex>".
+    QByteArray salt(8, '\0');
+    for (char &b : salt)
+        b = static_cast<char>(QRandomGenerator::system()->bounded(256));
+    const QByteArray hash =
+        QCryptographicHash::hash(salt + pin.toUtf8(), QCryptographicHash::Sha256);
+    m_desktopPin = QString::fromLatin1(salt.toHex()) + QLatin1Char(':')
+                 + QString::fromLatin1(hash.toHex());
+}
+
+bool SettingsStore::verifyDesktopPin(const QString &pin) const
+{
+    if (m_desktopPin.isEmpty() || pin.isEmpty())
+        return false;
+    const int sep = m_desktopPin.indexOf(QLatin1Char(':'));
+    if (sep <= 0)
+        return false;
+    const QByteArray salt = QByteArray::fromHex(m_desktopPin.left(sep).toLatin1());
+    const QByteArray want = m_desktopPin.mid(sep + 1).toLatin1();
+    const QByteArray got =
+        QCryptographicHash::hash(salt + pin.toUtf8(), QCryptographicHash::Sha256).toHex();
+    return got == want;
+}
 
 QString SettingsStore::secretsFilePath()
 {
@@ -51,6 +83,7 @@ void SettingsStore::load()
     m_letJarvisUseComputer = true;
     m_authLockEnabled = true;
     m_permissionLevel = QStringLiteral("medium");
+    m_desktopPin.clear();
     m_ttsVoice.clear();
     m_sttProvider = QStringLiteral("voxtral");
     m_ttsProvider = QStringLiteral("voxtral");
@@ -91,6 +124,18 @@ void SettingsStore::load()
                              (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
                             v = v.mid(1, v.size() - 2);
                         setPermissionLevel(v.toLower()); // normalizes unknown -> medium
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("desktop_pin"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        QString v = line.mid(eq + 1).trimmed();
+                        if (v.size() >= 2 &&
+                            ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
+                             (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
+                            v = v.mid(1, v.size() - 2);
+                        m_desktopPin = v;   // already a stored "<salt>:<hash>"
                     }
                     continue;
                 }
@@ -212,6 +257,7 @@ bool SettingsStore::saveConfig()
                     t.startsWith(QStringLiteral("let_jarvis_use_computer")) ||
                     t.startsWith(QStringLiteral("auth_lock_enabled")) ||
                     t.startsWith(QStringLiteral("permission_level")) ||
+                    t.startsWith(QStringLiteral("desktop_pin")) ||
                     t.startsWith(QStringLiteral("tts_voice")) ||
                     t.startsWith(QStringLiteral("stt_provider")) ||
                     t.startsWith(QStringLiteral("tts_provider")) ||
@@ -230,6 +276,8 @@ bool SettingsStore::saveConfig()
     ts << "let_jarvis_use_computer = " << (m_letJarvisUseComputer ? "true" : "false") << "\n";
     ts << "auth_lock_enabled = " << (m_authLockEnabled ? "true" : "false") << "\n";
     ts << "permission_level = \"" << m_permissionLevel << "\"\n";
+    if (!m_desktopPin.isEmpty())
+        ts << "desktop_pin = \"" << m_desktopPin << "\"\n";
     if (!m_ttsVoice.isEmpty())
         ts << "tts_voice = \"" << m_ttsVoice << "\"\n";
     ts << "stt_provider = \"" << m_sttProvider << "\"\n";

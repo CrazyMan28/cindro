@@ -657,6 +657,14 @@ void Bridge::authDeny(const QString &challengeId)
     request(QStringLiteral("auth.deny"), params);
 }
 
+void Bridge::verifyPin(const QString &challengeId, const QString &pin)
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("challenge_id"), challengeId);
+    params.insert(QStringLiteral("pin"), pin);
+    request(QStringLiteral("auth.verify_pin"), params, QStringLiteral("__pin__"));
+}
+
 // ---- Memory (Contract A v3) ------------------------------------------------
 
 void Bridge::memoryList(int limit)
@@ -2678,6 +2686,11 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             setHasAgentDesktop(false);
             return;
         }
+        // Wrong PIN → tell the LockGate to shake/clear the field (no error toast).
+        if (method == QStringLiteral("auth.verify_pin")) {
+            emit pinRejected();
+            return;
+        }
         // mcp.test failures surface through mcpTested, not a generic error toast.
         if (method == QStringLiteral("mcp.test")) {
             emit mcpTested(ctx, false, 0, msg.isEmpty() ? code : msg);
@@ -2909,6 +2922,11 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
     } else if (method == QStringLiteral("auth.status")) {
         emit authStateChanged(result.value(QStringLiteral("challenge_id")).toString(),
                               result.value(QStringLiteral("state")).toString());
+    } else if (method == QStringLiteral("auth.verify_pin")) {
+        // Correct PIN: the daemon already broadcast the unlock, but emit locally
+        // too so the LockGate clears instantly.
+        emit authStateChanged(result.value(QStringLiteral("challenge_id")).toString(),
+                              QStringLiteral("approved"));
     } else if (method == QStringLiteral("mcp.list")) {
         emit mcpListed(result.value(QStringLiteral("servers")).toList());
     } else if (method == QStringLiteral("mcp.add")
