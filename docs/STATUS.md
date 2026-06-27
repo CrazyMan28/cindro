@@ -8,6 +8,24 @@ _Last updated: 2026-06-27._
 
 ---
 
+## 🆕 Image-send fix + home editing + phone empty-state (2026-06-27)
+
+- **Phone/desktop images now reach the model.** The `ApiBrain` (Mistral / direct
+  OpenAI·Anthropic) had `Q_UNUSED(images)` — it silently DROPPED every attachment.
+  Now it builds a vision content array (text + base64 image parts) in the provider's
+  format (OpenAI `image_url` / Anthropic `image` source). Codex (`--image`) and Claude
+  (Read-tool) already worked; this was the gap.
+- **Home dashboard editing.** Hover a pinned widget → **▲ / ▼ move + ✕ unpin**; the
+  order persists (`home_order.json`) and the model can reorder via the new
+  `home_move(id, position)` tool. Add/remove via `home_pin`/`home_unpin` as before.
+- **Phone fresh-chat empty state** — the blank "bland" new-chat screen now shows an
+  **animated arc-reactor orb** (counter-rotating rings + breathing core) + "How can I
+  help?". Android 0.8.7.
+- Battery teardown of unused nested desktops (#20) is **not** auto-done: the active
+  drains (live widgets, video mirror) are already viewer-gated, and tearing the desktop
+  down breaks the agent's computer link (the brain's MCP engine address is static) —
+  it needs a lazy-provision-at-stable-port redesign, tracked separately.
+
 ## 🆕 Live agent view + quizzes + plan panel + unlock PIN (2026-06-27)
 
 - **Live agent-desktop view, end-to-end.** The in-chat peek now mirrors ANY chat's

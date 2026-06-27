@@ -2356,6 +2356,41 @@ void Bridge::canvasDelete(const QString &id)
     emit widgetRemoved(id);   // immediate local effect; poller re-emit is idempotent
 }
 
+// ---- Home dashboard widget order (user drag/move + model home_move) ---------
+QString Bridge::homeOrderPath() const
+{
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    return (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share") : base)
+           + QStringLiteral("/jarvis/home_order.json");
+}
+
+void Bridge::saveHomeOrder(const QStringList &ids)
+{
+    const QString path = homeOrderPath();
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QJsonArray arr;
+    for (const QString &id : ids)
+        arr.append(id);
+    QFile f(path);
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+        f.close();
+    }
+}
+
+QStringList Bridge::homeOrder() const
+{
+    QStringList out;
+    QFile f(homeOrderPath());
+    if (f.open(QIODevice::ReadOnly)) {
+        const QJsonDocument doc = QJsonDocument::fromJson(f.readAll());
+        f.close();
+        for (const QJsonValue &v : doc.array())
+            out << v.toString();
+    }
+    return out;
+}
+
 void Bridge::canvasClear()
 {
     QJsonObject o;

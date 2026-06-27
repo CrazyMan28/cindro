@@ -1,8 +1,11 @@
 #include "jarvis/ApiBrain.h"
 
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -80,9 +83,59 @@ QString ApiBrain::defaultBaseUrl(const QString &provider)
     return QStringLiteral("https://api.openai.com/v1");
 }
 
+QJsonValue ApiBrain::userContent(const QString &text, const QStringList &images) const
+{
+    // Keep readable image files only; the daemon already decoded the phone's
+    // {mime,b64} attachments to on-disk paths.
+    QStringList valid;
+    for (const QString &p : images)
+        if (!p.isEmpty() && QFile::exists(p))
+            valid << p;
+    if (valid.isEmpty())
+        return QJsonValue(text);   // plain string (unchanged behavior)
+
+    const bool anthropic = (m_provider == QStringLiteral("anthropic"));
+    QJsonArray content;
+    QJsonObject t;
+    t.insert(QStringLiteral("type"), QStringLiteral("text"));
+    t.insert(QStringLiteral("text"), text);
+    content.append(t);
+    for (const QString &path : std::as_const(valid)) {
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly))
+            continue;
+        const QString b64 = QString::fromLatin1(f.readAll().toBase64());
+        f.close();
+        const QString ext = QFileInfo(path).suffix().toLower();
+        const QString mime = (ext == QStringLiteral("jpg") || ext == QStringLiteral("jpeg"))
+                                 ? QStringLiteral("image/jpeg")
+                             : (ext == QStringLiteral("webp")) ? QStringLiteral("image/webp")
+                             : (ext == QStringLiteral("gif"))  ? QStringLiteral("image/gif")
+                                                               : QStringLiteral("image/png");
+        if (anthropic) {
+            QJsonObject src;
+            src.insert(QStringLiteral("type"), QStringLiteral("base64"));
+            src.insert(QStringLiteral("media_type"), mime);
+            src.insert(QStringLiteral("data"), b64);
+            QJsonObject img;
+            img.insert(QStringLiteral("type"), QStringLiteral("image"));
+            img.insert(QStringLiteral("source"), src);
+            content.append(img);
+        } else {
+            QJsonObject url;
+            url.insert(QStringLiteral("url"),
+                       QStringLiteral("data:") + mime + QStringLiteral(";base64,") + b64);
+            QJsonObject img;
+            img.insert(QStringLiteral("type"), QStringLiteral("image_url"));
+            img.insert(QStringLiteral("image_url"), url);
+            content.append(img);
+        }
+    }
+    return content;
+}
+
 void ApiBrain::send(const QString &text, const QStringList &images)
 {
-    Q_UNUSED(images);
     if (m_busy) {
         emitEvent(NormalizedBrainEvent::error(
             QStringLiteral("brain is busy; cancel the current turn first")));
@@ -99,10 +152,12 @@ void ApiBrain::send(const QString &text, const QStringList &images)
         emitEvent(NormalizedBrainEvent::threadStarted(genThreadId()));
     emitEvent(NormalizedBrainEvent::turnStarted());
 
-    // Append the user turn to the running history.
+    // Append the user turn to the running history. With images, `content` becomes
+    // a vision array (text + base64 image parts) in the provider's format so the
+    // model actually SEES the photo the phone/desktop attached.
     QJsonObject userMsg;
     userMsg.insert(QStringLiteral("role"), QStringLiteral("user"));
-    userMsg.insert(QStringLiteral("content"), text);
+    userMsg.insert(QStringLiteral("content"), userContent(text, images));
     m_history.append(userMsg);
 
     if (m_provider == QStringLiteral("anthropic"))

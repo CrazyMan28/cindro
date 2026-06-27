@@ -429,6 +429,9 @@ public:
     // Canvas management (writes the append-only bus the desktop + engine share).
     // canvasDelete appends {op:"remove",id}; canvasClear appends {op:"clear"}.
     Q_INVOKABLE void canvasDelete(const QString &id);
+    // Home dashboard widget ordering (user drag/move + the model's home_move).
+    Q_INVOKABLE void saveHomeOrder(const QStringList &ids);
+    Q_INVOKABLE QStringList homeOrder() const;
     Q_INVOKABLE void canvasClear();
 
     // Saved-widget library (saved_widgets.json). refreshSavedWidgets re-reads it
@@ -713,6 +716,7 @@ private:
     void startWidgetWatch();
     void readWidgetTail();
     QString widgetsPath() const;
+    QString homeOrderPath() const;
 
     // Driving-demo fake pointer: advance the looping path one step and emit it.
     void tickDrivingDemo();

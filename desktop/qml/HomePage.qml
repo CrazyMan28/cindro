@@ -70,9 +70,11 @@ Item {
                     return
                 }
             }
-            if (widgetModel.count < 6)
+            if (widgetModel.count < 6) {
                 widgetModel.append({ "wid": id, "title": widget.title !== undefined ? "" + widget.title : "",
                                      "spec": JSON.stringify(widget.spec) })
+                orderSettle.restart()   // settle the new widget into the saved order
+            }
         }
         function onWidgetRemoved(id) {
             for (var i = 0; i < widgetModel.count; i++)
@@ -80,6 +82,37 @@ Item {
         }
         function onWidgetsCleared() { widgetModel.clear() }
     }
+
+    // ---- Home widget ordering (drag/move + persist) -----------------------
+    // Reorder the pinned widgets to match the saved order; persist the current
+    // order after a user move. Coordinated with the model's home_move via the
+    // shared home_order.json (read/written by the Bridge).
+    function applyHomeOrder() {
+        var order = bridge.homeOrder()
+        if (!order || order.length === 0) return
+        var target = 0
+        for (var k = 0; k < order.length; k++) {
+            for (var i = target; i < widgetModel.count; i++) {
+                if (widgetModel.get(i).wid === order[k]) {
+                    if (i !== target) widgetModel.move(i, target, 1)
+                    target++
+                    break
+                }
+            }
+        }
+    }
+    function persistHomeOrder() {
+        var ids = []
+        for (var i = 0; i < widgetModel.count; i++) ids.push(widgetModel.get(i).wid)
+        bridge.saveHomeOrder(ids)
+    }
+    function moveHomeWidget(i, delta) {
+        var j = i + delta
+        if (j < 0 || j >= widgetModel.count) return
+        widgetModel.move(i, j, 1)
+        persistHomeOrder()
+    }
+    Timer { id: orderSettle; interval: 120; onTriggered: home.applyHomeOrder() }
 
     function brainColor(b) {
         var bl = ("" + b).toLowerCase()
@@ -518,6 +551,7 @@ Item {
                             model: widgetModel
                             delegate: Rectangle {
                                 id: wrow
+                                required property int index
                                 required property var model
                                 Layout.fillWidth: true
                                 radius: Theme.radiusSm
@@ -525,24 +559,46 @@ Item {
                                 border.width: 1; border.color: pinHov.hovered ? Theme.accentDim : Theme.hairlineSoft
                                 Behavior on border.color { ColorAnimation { duration: 130 } }
                                 implicitHeight: wr.implicitHeight + 20
+                                scale: pinHov.hovered ? 1.012 : 1.0
+                                Behavior on scale { NumberAnimation { duration: 130; easing.type: Easing.OutCubic } }
                                 HoverHandler { id: pinHov }
                                 WidgetRenderer {
                                     id: wr
                                     anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                                     anchors.margins: 10
-                                    anchors.rightMargin: 26
+                                    anchors.rightMargin: 30
                                     node: { try { return JSON.parse(wrow.model.spec) } catch (e) { return ({}) } }
                                 }
-                                // unpin ✕
-                                Rectangle {
-                                    anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 6
-                                    width: 18; height: 18; radius: 9
+                                // edit controls (hover): move up / move down / unpin
+                                Column {
+                                    anchors.top: parent.top; anchors.right: parent.right; anchors.margins: 5
+                                    spacing: 3
                                     visible: pinHov.hovered
-                                    color: unMa.containsMouse ? Theme.dangerDim : "transparent"
-                                    Text { anchors.centerIn: parent; text: "✕"; color: unMa.containsMouse ? Theme.danger : Theme.textFaint; font.pixelSize: 11 }
-                                    MouseArea {
-                                        id: unMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                        onClicked: bridge.canvasDelete(wrow.model.wid)   // remove marker for "home:<id>"
+                                    // ▲ up
+                                    Rectangle {
+                                        width: 18; height: 16; radius: 4
+                                        visible: wrow.index > 0
+                                        color: upMa.containsMouse ? Theme.accentDim : "transparent"
+                                        Text { anchors.centerIn: parent; text: "▲"; color: upMa.containsMouse ? Theme.accent : Theme.textFaint; font.pixelSize: 8 }
+                                        MouseArea { id: upMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                            onClicked: home.moveHomeWidget(wrow.index, -1) }
+                                    }
+                                    // ▼ down
+                                    Rectangle {
+                                        width: 18; height: 16; radius: 4
+                                        visible: wrow.index < widgetModel.count - 1
+                                        color: dnMa.containsMouse ? Theme.accentDim : "transparent"
+                                        Text { anchors.centerIn: parent; text: "▼"; color: dnMa.containsMouse ? Theme.accent : Theme.textFaint; font.pixelSize: 8 }
+                                        MouseArea { id: dnMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                            onClicked: home.moveHomeWidget(wrow.index, 1) }
+                                    }
+                                    // ✕ unpin
+                                    Rectangle {
+                                        width: 18; height: 16; radius: 4
+                                        color: unMa.containsMouse ? Theme.dangerDim : "transparent"
+                                        Text { anchors.centerIn: parent; text: "✕"; color: unMa.containsMouse ? Theme.danger : Theme.textFaint; font.pixelSize: 10 }
+                                        MouseArea { id: unMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                            onClicked: bridge.canvasDelete(wrow.model.wid) }
                                     }
                                 }
                             }

@@ -13,9 +13,41 @@ import json
 import os
 import time
 
+from pathlib import Path
+
 from mcp.server.fastmcp import FastMCP
 
 from computer_use_mcp import live_widgets, saved_widgets, widgets_bus
+
+
+def _home_order_path() -> Path:
+    base = os.environ.get("XDG_DATA_HOME") or os.path.join(
+        os.path.expanduser("~"), ".local", "share")
+    return Path(base) / "jarvis" / "home_order.json"
+
+
+def _read_home_order() -> list:
+    try:
+        return list(json.loads(_home_order_path().read_text()))
+    except (OSError, ValueError):
+        return []
+
+
+def _write_home_order(ids: list) -> None:
+    p = _home_order_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(ids, separators=(",", ":")))
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def _home_in_order() -> list:
+    """Home-pinned canvases sorted by the saved home order (extras appended)."""
+    homes = [c for c in widgets_bus.list_canvases() if c.get("target") == "home"]
+    order = _read_home_order()
+    rank = {hid: i for i, hid in enumerate(order)}
+    return sorted(homes, key=lambda c: rank.get(c.get("id"), 10_000))
 
 
 def register(mcp: FastMCP) -> None:
@@ -266,10 +298,25 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def home_list() -> str:
-        """List the widgets currently pinned to the DESKTOP Home screen."""
-        items = [{"id": c.get("id"), "title": c.get("title", "")}
-                 for c in widgets_bus.list_canvases() if c.get("target") == "home"]
+        """List the widgets currently pinned to the DESKTOP Home screen, in order."""
+        items = [{"id": c.get("id"), "title": c.get("title", "")} for c in _home_in_order()]
         return json.dumps({"ok": True, "home": items})
+
+    @mcp.tool()
+    def home_move(id: str, position: int) -> str:
+        """Reorder a Home-pinned widget on the DESKTOP. `position` is its new
+        0-based slot (0 = top). `id` is the home id (e.g. "home:abc") or the
+        original id. The desktop Home re-orders to match."""
+        order = [c.get("id") for c in _home_in_order()]
+        hid = str(id or "")
+        cand = hid if hid.startswith("home:") else ("home:" + hid)
+        target = hid if hid in order else (cand if cand in order else "")
+        if not target:
+            return json.dumps({"ok": False, "error": "not_found"})
+        order.remove(target)
+        order.insert(max(0, min(len(order), int(position))), target)
+        _write_home_order(order)
+        return json.dumps({"ok": True, "order": order})
 
     # ----- Live (auto-updating) widgets ------------------------------------
     @mcp.tool()
