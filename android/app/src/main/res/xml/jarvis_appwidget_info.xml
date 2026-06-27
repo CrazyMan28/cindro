@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Jarvis home-screen widget. updatePeriodMillis=0: updates are PUSH-driven over
+     the device WS (the background service redraws on a live render), so the system
+     never wakes us on a timer — that's the battery win. Resizable, with a config
+     activity for the "add from picker" flow (the in-app 1-click pin path skips it). -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="180dp"
+    android:minHeight="110dp"
+    android:targetCellWidth="3"
+    android:targetCellHeight="2"
+    android:updatePeriodMillis="0"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen"
+    android:previewImage="@drawable/widget_preview"
+    android:initialLayout="@layout/widget_jarvis"
+    android:configure="com.jarvis.app.widget.WidgetConfigActivity"
+    android:description="@string/widget_description" />

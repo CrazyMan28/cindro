@@ -456,7 +456,8 @@ Item {
                         clip: true
                         spacing: 10
                         model: txModel
-                        cacheBuffer: 600
+                        cacheBuffer: 300
+                        reuseItems: true
                         boundsBehavior: Flickable.StopAtBounds
 
                         ScrollBar.vertical: ScrollBar {

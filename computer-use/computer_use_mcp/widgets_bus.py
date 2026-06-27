@@ -38,7 +38,7 @@ def bus_path() -> Path:
 
 
 def append_widget(spec, title: str = "", widget_id: str = "",
-                  target: str = "canvas") -> dict:
+                  target: str = "canvas", session_id: str | None = None) -> dict:
     """Append one widget record to the bus. Best-effort; never raises.
 
     Each record is {ts, title, id, spec, target}. `widget_id` lets the model
@@ -67,8 +67,11 @@ def append_widget(spec, title: str = "", widget_id: str = "",
         "target": tgt,
         # Stamp the originating session so the desktop can scope a widget to its
         # chat and REPLAY it when that session is reopened (instead of a global
-        # bus that leaks across sessions and vanishes on reload).
-        "session_id": os.environ.get("JARVIS_AGENT_SESSION", ""),
+        # bus that leaks across sessions and vanishes on reload). The live-widget
+        # supervisor runs in a shared process, so it passes session_id explicitly
+        # rather than relying on the per-session JARVIS_AGENT_SESSION env.
+        "session_id": (session_id if session_id is not None
+                       else os.environ.get("JARVIS_AGENT_SESSION", "")),
     }
     _append_record(record)
     return record

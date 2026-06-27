@@ -10,6 +10,7 @@ evaluated as code.
 from __future__ import annotations
 
 import json
+import os
 
 from mcp.server.fastmcp import FastMCP
 
@@ -131,13 +132,17 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def canvas_del(id: str) -> str:
-        """Delete a canvas by id (removes its card from the Canvas tab)."""
-        widgets_bus.append_op("remove", str(id))
+        """Delete a canvas by id (removes its card from the Canvas tab). Also stops
+        the live-update job if this canvas had one (so it can't keep running in the
+        background after the card is gone)."""
+        live_widgets.delete(str(id))  # stops the job AND appends the remove marker
         return json.dumps({"ok": True, "removed": str(id)})
 
     @mcp.tool()
     def canvas_clear() -> str:
-        """Remove ALL canvases (clears the Canvas tab)."""
+        """Remove ALL canvases (clears the Canvas tab) and stop this session's live
+        jobs so none keep running in the background."""
+        live_widgets.delete_all(session_id=os.environ.get("JARVIS_AGENT_SESSION", ""))
         widgets_bus.append_op("clear")
         return json.dumps({"ok": True, "cleared": True})
 
@@ -180,6 +185,7 @@ def register(mcp: FastMCP) -> None:
     def widget_del(id: str) -> str:
         """Delete a saved widget from the library by id or name."""
         ok = saved_widgets.remove_widget(str(id))
+        live_widgets.delete(str(id))  # stop any live job bound to this id (defensive)
         return json.dumps({"ok": ok, "removed": str(id) if ok else ""})
 
     @mcp.tool()

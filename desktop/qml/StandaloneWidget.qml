@@ -29,6 +29,18 @@ Window {
     title: widgetTitle.length > 0 ? widgetTitle : "Jarvis widget"
     visible: true
 
+    // A popped-out live widget is a VIEWER: hold a lease while this window is open
+    // so its live job keeps updating even when the Canvas tab isn't visible, and
+    // release it on close so the job can idle (battery).
+    Component.onCompleted: {
+        if (bridge && widgetId.length > 0)
+            bridge.addWidgetViewer("widget:" + widgetId, "popout")
+    }
+    Component.onDestruction: {
+        if (bridge && widgetId.length > 0)
+            bridge.removeWidgetViewer("widget:" + widgetId)
+    }
+
     // Size to the rendered content's implicit size plus the chrome (drag strip +
     // padding). Clamp so a huge/empty spec still yields a sane window.
     readonly property int chromeH: 34

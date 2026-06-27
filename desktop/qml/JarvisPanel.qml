@@ -706,7 +706,11 @@ Item {
                 clip: true
                 spacing: 12
                 model: chatModel
-                cacheBuffer: 800
+                // Keep a smaller off-screen buffer so a long transcript doesn't keep
+                // dozens of heavy chat delegates (tool output, diffs) alive at once —
+                // the main cause of lag past ~95 messages. ~2 screens is plenty.
+                cacheBuffer: 300
+                reuseItems: true
                 boundsBehavior: Flickable.StopAtBounds
 
                 ScrollBar.vertical: ScrollBar {

@@ -4,7 +4,29 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-06-25._
+_Last updated: 2026-06-26._
+
+---
+
+## 🆕 Widgets battery + real phone widget + lag + flow (2026-06-26)
+
+A four-part pass (branch `feat/widgets-lifecycle-phone-widget`):
+
+- **Live-widget battery fix** — live jobs were detached loops that ran forever
+  (delete removed only the render). Now ONE viewer-gated supervisor: a job runs only
+  while a desktop/phone viewer or a home-screen pin is watching it (daemon-owned
+  lease registry, 45 s TTL), idles otherwise, resumes on reopen. Deleting a
+  canvas/widget stops its job. 21 engine tests + new `WidgetLeaseRegistry` ctest.
+- **Real Android home-screen widget** — 1-click "📌 Pin" turns any canvas into a
+  live AppWidget (DSL → bitmap, push-driven, aggressive battery: refreshes only
+  while unlocked, 60 s floor). `android/.../widget/*`, versionName 0.8.0.
+- **Chat lag fixed** — capped the text fed to QML `Text` layout (it measures the
+  whole string even when elided), lowered `maximumLineCount`, gated the infinite
+  approval/question blur on window focus, `cacheBuffer` 800/600→300, diff Repeater
+  60→30; Android `ChatItem` `@Immutable`.
+- **Flow** — desktop NavRail regrouped into 4 sections + Ctrl+K quick-switcher +
+  lazy pages; phone gets a dedicated **Canvas** tab/screen (pin-to-home), nav
+  restructure, and fade-through/slide motion.
 
 ---
 
