@@ -88,6 +88,17 @@ class JarvisConnectionService : Service() {
         // Make sure the socket is up (no-op if already connected).
         if (app.pairingStore.isPaired) app.repository.connect()
 
+        // One-time on this app version: clear stale home-widget tiles so a widget that
+        // was deleted before remove-handling existed stops showing old data. Live pins
+        // re-render fresh within ~60s (the pin heartbeat keeps their job alive).
+        run {
+            val hp = applicationContext.getSharedPreferences("jarvis_home_widgets", Context.MODE_PRIVATE)
+            if (hp.getInt("svc_clear_ver", 0) != 2) {
+                JarvisWidgetProvider.clearAll(applicationContext)
+                hp.edit().putInt("svc_clear_ver", 2).apply()
+            }
+        }
+
         // A new session opened anywhere (phone/desktop/scheduler) -> local notification.
         scope.launch {
             app.repository.sessionOpened.collect { s ->
@@ -135,11 +146,23 @@ class JarvisConnectionService : Service() {
         // while the app UI is closed (this service holds the socket).
         scope.launch {
             app.repository.widgetEvents.collect { w ->
-                if (w.op == "render" && w.spec != null) {
-                    val specJson = w.spec.toString()
-                    WidgetCatalog.remember(applicationContext, w.id, w.title, specJson,
-                        System.currentTimeMillis())
-                    JarvisWidgetProvider.refreshForWidgetId(applicationContext, w.id, specJson, w.title)
+                when (w.op) {
+                    "render" -> if (w.spec != null) {
+                        val specJson = w.spec.toString()
+                        WidgetCatalog.remember(applicationContext, w.id, w.title, specJson,
+                            System.currentTimeMillis())
+                        JarvisWidgetProvider.refreshForWidgetId(applicationContext, w.id, specJson, w.title)
+                    }
+                    // A deleted/cleared canvas must stop showing on BOTH the home-screen
+                    // widget and the in-app gallery (catalog), not linger with stale data.
+                    "remove" -> {
+                        WidgetCatalog.remove(applicationContext, w.id)
+                        JarvisWidgetProvider.clearForWidgetId(applicationContext, w.id)
+                    }
+                    "clear" -> {
+                        WidgetCatalog.clear(applicationContext)
+                        JarvisWidgetProvider.clearAll(applicationContext)
+                    }
                 }
             }
         }

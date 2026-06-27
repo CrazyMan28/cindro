@@ -4,7 +4,27 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-06-26._
+_Last updated: 2026-06-27._
+
+---
+
+## 🆕 Premium phone UI + widget/lifecycle fixes + Mistral + scroll (2026-06-27)
+
+- **Premium phone redesign** (v0.8.x): new **Home dashboard** (greeting, quick-action
+  tiles, recent-session cards with avatars/status, a live-widget preview), nav is now
+  **Home · Chat · Canvas · Computer · Settings**, gradient chat bubbles, clean sans type
+  system + palette (built from an approved HTML mockup).
+- **"Deleted widget keeps coming back" — FIXED.** The desktop "✕" wrote a bus remove
+  marker but never reached the engine, so the supervisor re-rendered it. The supervisor
+  now honors bus `remove`/`clear` markers (offset-tracked, ts-gated) and stops the job.
+  The phone now also handles remove/clear: the home-screen tile clears to its placeholder
+  and the Canvas gallery + catalog drop it (one-time stale-cache wipe on update).
+- **Real home-screen widget** now scales-to-fit (no cut-off), drops the svg "open app"
+  fallback, and the "Couldn't add widget" preview error is fixed (invalid preview drawable).
+- **Mistral API** key field added to desktop Settings (backend already supported
+  mistral-large/small-latest via the api brain).
+- **Fast mouse-wheel scrolling** on the desktop Canvas + Chat lists (the default Flickable
+  step was a sliver).
 
 ---
 

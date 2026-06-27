@@ -139,6 +139,17 @@ Item {
             model: widgetModel
             boundsBehavior: Flickable.StopAtBounds
 
+            // Fast mouse-wheel scrolling — the default Flickable step is a tiny sliver
+            // (spin fast, barely move). One notch now jumps a good chunk.
+            WheelHandler {
+                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                onWheel: function(ev) {
+                    var maxY = Math.max(0, list.contentHeight - list.height)
+                    list.contentY = Math.max(0, Math.min(maxY, list.contentY - ev.angleDelta.y * 2.0))
+                    ev.accepted = true
+                }
+            }
+
             ScrollBar.vertical: ScrollBar {
                 policy: ScrollBar.AsNeeded
                 contentItem: Rectangle { implicitWidth: 4; radius: 2; color: Theme.hairline; opacity: 0.5 }

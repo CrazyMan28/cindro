@@ -25,6 +25,13 @@ object WidgetBindings {
         e.apply()
     }
 
+    /** Drop the rendered spec (keep the binding) so the tile shows its placeholder —
+     *  used when the underlying canvas is deleted. A later render for the same id
+     *  re-populates it. */
+    fun clearSpec(ctx: Context, appWidgetId: Int) {
+        prefs(ctx).edit().remove("spec_$appWidgetId").apply()
+    }
+
     fun widgetIdFor(ctx: Context, appWidgetId: Int): String? =
         prefs(ctx).getString("bind_$appWidgetId", null)
 

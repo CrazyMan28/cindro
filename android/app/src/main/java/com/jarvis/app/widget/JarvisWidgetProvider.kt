@@ -74,6 +74,26 @@ class JarvisWidgetProvider : AppWidgetProvider() {
             }
         }
 
+        /** The canvas behind [widgetId] was deleted: clear its home-screen tiles so
+         *  they show the placeholder instead of stale "LIVE" data. (We can't remove a
+         *  placed widget programmatically — the user long-presses to do that.) */
+        fun clearForWidgetId(context: Context, widgetId: String) {
+            val mgr = AppWidgetManager.getInstance(context)
+            for (id in WidgetBindings.appWidgetIdsFor(context, widgetId)) {
+                WidgetBindings.clearSpec(context, id)
+                renderInto(context, mgr, id)
+            }
+        }
+
+        /** canvas_clear: clear every pinned tile. */
+        fun clearAll(context: Context) {
+            val mgr = AppWidgetManager.getInstance(context)
+            for (id in mgr.getAppWidgetIds(android.content.ComponentName(context, JarvisWidgetProvider::class.java))) {
+                WidgetBindings.clearSpec(context, id)
+                renderInto(context, mgr, id)
+            }
+        }
+
         fun renderInto(context: Context, mgr: AppWidgetManager, appWidgetId: Int) {
             val views = RemoteViews(context.packageName, R.layout.widget_jarvis)
             val specJson = WidgetBindings.specFor(context, appWidgetId)
