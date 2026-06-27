@@ -102,10 +102,12 @@ Item {
             spacing: 8
 
             HudStatusStrip {
+                id: hudStrip
                 Layout.fillWidth: true
                 Layout.topMargin: 8
                 Layout.leftMargin: 8
                 Layout.rightMargin: 10
+                onOpenSearch: cmdPalette.show()
             }
 
         // ---- Content area --------------------------------------------------
@@ -175,125 +177,25 @@ Item {
         }
     }
 
-    // ---- Ctrl+K quick-switcher --------------------------------------------
-    // Jump to any page by typing — the fast path when the rail has 15 entries.
-    property bool quickOpen: false
-
-    Shortcut {
-        sequence: "Ctrl+K"
-        onActivated: shell.quickOpen = true
-    }
-
-    function quickMatches(q) {
-        var ql = (q || "").toLowerCase().trim()
+    // ---- ⌘K command palette (quick-switcher) ------------------------------
+    function palettePages() {
         var out = []
-        for (var i = 0; i < rail.items.length; i++) {
-            var it = rail.items[i]
-            if (ql === "" || it.label.toLowerCase().indexOf(ql) >= 0
-                          || it.section.toLowerCase().indexOf(ql) >= 0)
-                out.push({ "label": it.label, "section": it.section, "idx": i })
-        }
+        for (var i = 0; i < rail.items.length; i++)
+            out.push({ key: rail.items[i].key, label: rail.items[i].label,
+                       section: rail.items[i].section, index: i })
         return out
     }
 
-    Rectangle {
-        id: quick
-        anchors.fill: parent
-        visible: shell.quickOpen
-        z: 200
-        color: Qt.rgba(0, 0, 0, 0.55)
+    Shortcut {
+        sequence: "Ctrl+K"
+        onActivated: cmdPalette.show()
+    }
 
-        MouseArea { anchors.fill: parent; onClicked: shell.quickOpen = false }
-
-        function go(idx) {
-            shell.currentIndex = idx
-            shell.quickOpen = false
-            quickInput.text = ""
-        }
-
-        onVisibleChanged: if (visible) { quickInput.text = ""; quickInput.forceActiveFocus() }
-
-        Rectangle {
-            width: Math.min(460, parent.width - 80)
-            anchors.horizontalCenter: parent.horizontalCenter
-            y: Math.round(parent.height * 0.16)
-            implicitHeight: quickCol.implicitHeight + 20
-            radius: Theme.radius
-            color: Theme.panel
-            border.width: 1
-            border.color: Theme.accentDim
-            MouseArea { anchors.fill: parent } // swallow backdrop clicks
-
-            ColumnLayout {
-                id: quickCol
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                anchors.margins: 10
-                spacing: 8
-
-                TextField {
-                    id: quickInput
-                    Layout.fillWidth: true
-                    placeholderText: "Jump to a page…  (Esc to close)"
-                    color: Theme.text
-                    font.family: Theme.fontDisplay
-                    font.pixelSize: 13
-                    background: Rectangle {
-                        radius: Theme.radiusSm
-                        color: Theme.surfaceDeep
-                        border.width: 1
-                        border.color: Theme.hairline
-                    }
-                    Keys.onEscapePressed: shell.quickOpen = false
-                    Keys.onReturnPressed: {
-                        var m = shell.quickMatches(text)
-                        if (m.length > 0) quick.go(m[0].idx)
-                    }
-                }
-
-                ListView {
-                    id: quickList
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: Math.min(320, contentHeight)
-                    clip: true
-                    model: shell.quickMatches(quickInput.text)
-                    delegate: Rectangle {
-                        required property var modelData
-                        required property int index
-                        width: ListView.view.width
-                        height: 36
-                        radius: Theme.radiusSm
-                        color: hov.hovered ? Theme.navActive : "transparent"
-                        HoverHandler { id: hov }
-                        Row {
-                            anchors.verticalCenter: parent.verticalCenter
-                            anchors.left: parent.left
-                            anchors.leftMargin: 12
-                            spacing: 10
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: modelData.label
-                                color: Theme.text
-                                font.family: Theme.fontDisplay
-                                font.pixelSize: 12
-                                font.weight: Font.Medium
-                                font.letterSpacing: Theme.trackMid
-                            }
-                            Text {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: modelData.section
-                                color: Theme.textFaint
-                                font.family: Theme.fontDisplay
-                                font.pixelSize: 8
-                                font.letterSpacing: 1.5
-                            }
-                        }
-                        TapHandler { onTapped: quick.go(modelData.idx) }
-                    }
-                }
-            }
-        }
+    CommandPalette {
+        id: cmdPalette
+        pages: shell.palettePages()
+        onNavigate: function(idx) { shell.currentIndex = idx }
+        onOpenSession: function(sid) { bridge.openSession(sid); shell.currentIndex = 1 }
     }
 
     // ---- page components ---------------------------------------------------

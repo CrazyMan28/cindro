@@ -78,37 +78,39 @@ Item {
     ColumnLayout {
         anchors.fill: parent
         anchors.topMargin: 16
-        anchors.bottomMargin: 16
+        anchors.bottomMargin: 14
         anchors.leftMargin: 10
         anchors.rightMargin: 10
-        spacing: 12
+        spacing: 10
 
-        // ---- reactor logo + wordmark ---------------------------------------
-        ColumnLayout {
-            Layout.alignment: Qt.AlignHCenter
-            spacing: 4
+        // ---- reactor logo + wordmark (HORIZONTAL, like the mockup) ---------
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.leftMargin: 4
+            spacing: 9
             ArcReactor {
-                size: 40
-                Layout.alignment: Qt.AlignHCenter
+                size: 30
+                Layout.alignment: Qt.AlignVCenter
                 tint: Theme.accent
             }
             Text {
-                Layout.alignment: Qt.AlignHCenter
+                Layout.alignment: Qt.AlignVCenter
+                Layout.fillWidth: true
                 text: "J.A.R.V.I.S"
-                color: Theme.accent
-                opacity: 0.8
+                color: Theme.text
                 font.family: Theme.fontDisplay
-                font.pixelSize: 10
-                font.letterSpacing: 1.8
-                font.weight: Font.DemiBold
+                font.pixelSize: 12
+                font.letterSpacing: 2.0
+                font.weight: Font.Bold
             }
         }
 
         // divider
         Rectangle {
             Layout.fillWidth: true
-            Layout.leftMargin: 6
-            Layout.rightMargin: 6
+            Layout.leftMargin: 4
+            Layout.rightMargin: 4
+            Layout.topMargin: 2
             height: 1
             gradient: Gradient {
                 orientation: Gradient.Horizontal
@@ -118,107 +120,171 @@ Item {
             }
         }
 
-        // ---- nav items (grouped into sections) -----------------------------
-        // Flickable so the grouped rail still fits on a short screen; the active
-        // highlight lives on each row (no fragile index*height math), and a small
-        // uppercase header introduces each section.
-        Flickable {
+        // ---- nav items: a ListView gives a smooth GLIDING active highlight
+        // that animates between rows, plus grouped section headers. Settings is
+        // pinned at the bottom (mockup), so the list is everything-but-settings.
+        ListView {
+            id: navList
             Layout.fillWidth: true
             Layout.fillHeight: true
-            contentHeight: navCol.implicitHeight
             clip: true
+            interactive: contentHeight > height
             boundsBehavior: Flickable.StopAtBounds
+            spacing: 3
+            // all items except the trailing "settings" (index 14), which is pinned
+            model: rail.items.slice(0, rail.items.length - 1)
+            currentIndex: rail.currentIndex < model.length ? rail.currentIndex : -1
+            highlightMoveDuration: 220
+            highlightResizeDuration: 0
+            highlightFollowsCurrentItem: true
+            preferredHighlightBegin: 0
+            preferredHighlightEnd: height
+            highlightRangeMode: ListView.NoHighlightRange
 
-            Column {
-                id: navCol
-                width: parent.width
-                spacing: 3
-
-                Repeater {
-                    model: rail.items
-                    delegate: Column {
-                        id: navItem
-                        required property int index
-                        required property var modelData
-                        width: navCol.width
-                        spacing: 3
-
-                        readonly property bool active: rail.currentIndex === index
-                        readonly property bool firstInSection:
-                            index === 0 ||
-                            rail.items[index - 1].section !== modelData.section
-
-                        // section header
-                        Text {
-                            visible: navItem.firstInSection
-                            topPadding: navItem.index === 0 ? 0 : 9
-                            leftPadding: 14
-                            bottomPadding: 1
-                            text: navItem.modelData.section
-                            color: Theme.textFaint
-                            font.family: Theme.fontDisplay
-                            font.pixelSize: 8
-                            font.letterSpacing: 2.0
-                            font.weight: Font.DemiBold
-                        }
-
-                        // the nav row
-                        Rectangle {
-                            width: navCol.width
-                            height: 40
-                            radius: Theme.radiusSm
-                            color: navItem.active ? Theme.navActive
-                                   : (navMa.containsMouse ? Qt.rgba(1, 1, 1, 0.04) : "transparent")
-                            border.color: navItem.active ? Theme.accentDim : "transparent"
-                            border.width: 1
-                            Behavior on color { ColorAnimation { duration: 120 } }
-
-                            // active left indicator bar
-                            Rectangle {
-                                visible: navItem.active
-                                anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
-                                anchors.leftMargin: 2
-                                width: 3; height: 22; radius: 1.5
-                                color: Theme.accent
-                            }
-
-                            Row {
-                                anchors.verticalCenter: parent.verticalCenter
-                                anchors.left: parent.left
-                                anchors.leftMargin: 16
-                                spacing: 12
-
-                                NavIcon {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    glyph: navItem.modelData.key
-                                    glow: navItem.active
-                                    color: navItem.active ? Theme.accent
-                                           : (navMa.containsMouse ? Theme.text : Theme.textMuted)
-                                }
-                                Text {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    text: navItem.modelData.label
-                                    color: navItem.active ? Theme.accentBright
-                                           : (navMa.containsMouse ? Theme.text : Theme.textMuted)
-                                    font.family: Theme.fontDisplay
-                                    font.pixelSize: 11
-                                    font.weight: navItem.active ? Font.DemiBold : Font.Medium
-                                    font.letterSpacing: Theme.trackMid
-                                    Behavior on color { ColorAnimation { duration: 120 } }
-                                }
-                            }
-
-                            MouseArea {
-                                id: navMa
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: rail.navigate(navItem.index)
-                            }
-                        }
+            // the gliding neon pill
+            highlight: Item {
+                z: 2
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.rightMargin: 1
+                    radius: Theme.radiusSm
+                    color: Theme.navActive
+                    border.color: Theme.accentDim
+                    border.width: 1
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: 2
+                        width: 3; height: 22; radius: 1.5
+                        color: Theme.accent
+                        layer.enabled: true
+                        layer.effect: MultiEffect { blurEnabled: true; blur: 0.6; blurMax: 10 }
                     }
                 }
+            }
+
+            section.property: "section"
+            section.criteria: ViewSection.FullString
+            section.delegate: Text {
+                required property string section
+                width: navList.width
+                topPadding: 9; bottomPadding: 2; leftPadding: 14
+                text: section
+                color: Theme.textFaint
+                font.family: Theme.fontDisplay
+                font.pixelSize: 8
+                font.letterSpacing: 2.0
+                font.weight: Font.DemiBold
+            }
+
+            delegate: Item {
+                id: navItem
+                required property int index
+                required property var modelData
+                width: navList.width
+                height: 40
+                readonly property bool active: rail.currentIndex === index
+
+                // entrance: stagger each row in from the left on first paint
+                opacity: 0
+                Component.onCompleted: navEntrance.start()
+                SequentialAnimation {
+                    id: navEntrance
+                    PauseAnimation { duration: navItem.index * 26 }
+                    ParallelAnimation {
+                        NumberAnimation { target: navItem; property: "opacity"; from: 0; to: 1; duration: 240; easing.type: Easing.OutCubic }
+                        NumberAnimation { target: rowInner; property: "x"; from: -12; to: 16; duration: 300; easing.type: Easing.OutCubic }
+                    }
+                }
+
+                // hover wash (active rows are covered by the gliding highlight)
+                Rectangle {
+                    anchors.fill: parent
+                    radius: Theme.radiusSm
+                    color: Qt.rgba(1, 1, 1, 0.045)
+                    opacity: (navMa.containsMouse && !navItem.active) ? 1 : 0
+                    Behavior on opacity { NumberAnimation { duration: 120 } }
+                }
+
+                Row {
+                    id: rowInner
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: 16
+                    spacing: 12
+                    // a touch of travel on hover for life
+                    Behavior on x { NumberAnimation { duration: 130; easing.type: Easing.OutCubic } }
+
+                    NavIcon {
+                        anchors.verticalCenter: parent.verticalCenter
+                        glyph: navItem.modelData.key
+                        glow: navItem.active
+                        color: navItem.active ? Theme.accent
+                               : (navMa.containsMouse ? Theme.text : Theme.textMuted)
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: navItem.modelData.label
+                        color: navItem.active ? Theme.accentBright
+                               : (navMa.containsMouse ? Theme.text : Theme.textMuted)
+                        font.family: Theme.fontDisplay
+                        font.pixelSize: 11
+                        font.weight: navItem.active ? Font.DemiBold : Font.Medium
+                        font.letterSpacing: Theme.trackMid
+                        Behavior on color { ColorAnimation { duration: 120 } }
+                    }
+                }
+
+                MouseArea {
+                    id: navMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: rail.navigate(navItem.index)
+                    onContainsMouseChanged: rowInner.x = containsMouse ? 19 : 16
+                }
+            }
+        }
+
+        // ---- Settings, pinned at the bottom (mockup) -----------------------
+        Rectangle {
+            Layout.fillWidth: true
+            height: 40
+            radius: Theme.radiusSm
+            readonly property bool active: rail.currentIndex === rail.items.length - 1
+            color: active ? Theme.navActive : (setMa.containsMouse ? Qt.rgba(1,1,1,0.045) : "transparent")
+            border.color: active ? Theme.accentDim : "transparent"
+            border.width: 1
+            Behavior on color { ColorAnimation { duration: 120 } }
+            Rectangle {
+                visible: parent.active
+                anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: 2; width: 3; height: 22; radius: 1.5; color: Theme.accent
+            }
+            Row {
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.left: parent.left; anchors.leftMargin: 16
+                spacing: 12
+                NavIcon {
+                    anchors.verticalCenter: parent.verticalCenter
+                    glyph: "settings"; glow: parent.parent.active
+                    color: parent.parent.active ? Theme.accent : (setMa.containsMouse ? Theme.text : Theme.textMuted)
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "SETTINGS"
+                    color: parent.parent.active ? Theme.accentBright : (setMa.containsMouse ? Theme.text : Theme.textMuted)
+                    font.family: Theme.fontDisplay; font.pixelSize: 11
+                    font.weight: parent.parent.active ? Font.DemiBold : Font.Medium
+                    font.letterSpacing: Theme.trackMid
+                    Behavior on color { ColorAnimation { duration: 120 } }
+                }
+            }
+            MouseArea {
+                id: setMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: rail.navigate(rail.items.length - 1)
             }
         }
     }
