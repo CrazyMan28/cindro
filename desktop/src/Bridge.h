@@ -49,6 +49,10 @@ class Bridge : public QObject
     Q_PROPERTY(bool driving READ driving NOTIFY drivingChanged)
     // True while the engine's agent-desktop mirror is being polled for frames.
     Q_PROPERTY(bool mirroring READ mirroring NOTIFY mirroringChanged)
+    // True when the CURRENT session has a nested agent desktop (auto computer-use
+    // or explicit co-work) — lets the in-chat peek mirror it live for ANY chat,
+    // not only explicit co-worker sessions.
+    Q_PROPERTY(bool hasAgentDesktop READ hasAgentDesktop NOTIFY hasAgentDesktopChanged)
     // Monotonic frame counter; bump source on change to defeat the QML cache.
     Q_PROPERTY(int frameSeq READ frameSeq NOTIFY frameReady)
 
@@ -95,6 +99,7 @@ public:
     QString coworkerSessionId() const { return m_coworkerSessionId; }
     bool driving() const { return m_driving; }
     bool mirroring() const { return m_mirroring; }
+    bool hasAgentDesktop() const { return m_hasAgentDesktop; }
     int frameSeq() const { return m_frameSeq; }
     QString recordingState() const { return m_recordingState; }
     QString voiceState() const { return m_voiceState; }
@@ -591,6 +596,8 @@ signals:
     // ---- System stats -------------------------------------------------------
     void statsChanged();
 
+    void hasAgentDesktopChanged();
+
     // ---- COMPUTER page signals ---------------------------------------------
     void coworkerSessionIdChanged();
     void drivingChanged();
@@ -673,6 +680,10 @@ private:
     // COMPUTER page helpers.
     void setDriving(bool d);
     void setMirroring(bool m);
+    void setHasAgentDesktop(bool v);
+    // Query agent_desktop.info for the current session and update hasAgentDesktop
+    // + the video endpoint. Called whenever the session changes.
+    void refreshAgentDesktop();
     void setCoworkerSessionId(const QString &id);
     // Route control-channel events that the COMPUTER page consumes (agent_pointer,
     // driving.state). Returns true if the event was a computer-page event.
@@ -753,6 +764,7 @@ private:
     QString m_coworkerSessionId;
     bool m_driving = false;
     bool m_mirroring = false;
+    bool m_hasAgentDesktop = false;
     int m_frameSeq = 0;
 
     // Live-video poller (per-session computer-use engine GET /video/frame).
