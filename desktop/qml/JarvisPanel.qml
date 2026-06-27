@@ -22,6 +22,34 @@ Item {
     // event and the turn's "final"/"error"). Drives the composer's Stop button.
     property bool busy: false
 
+    // In-chat agent peek (a live view of the nested desktop / chrome tab, right) +
+    // transcript search (top). The peek auto-opens when Jarvis starts driving its
+    // desktop / a co-worker spins up — replaces the old Browser tab.
+    readonly property bool agentActive: bridge.driving || bridge.coworkerSessionId.length > 0
+    property bool peekOpen: false
+    property bool chatSearchOpen: false
+    onAgentActiveChanged: if (agentActive) peekOpen = true
+    signal requestComputerPage()   // peek "Full" -> Computer page (AppShell wires it)
+
+    property var searchMatches: []
+    property int searchIndex: 0
+    function runChatSearch(q) {
+        var ql = ("" + q).toLowerCase().trim()
+        var m = []
+        if (ql.length >= 2)
+            for (var i = 0; i < chatModel.count; i++)
+                if (("" + chatModel.get(i).text).toLowerCase().indexOf(ql) >= 0) m.push(i)
+        panel.searchMatches = m
+        panel.searchIndex = 0
+        if (m.length > 0) chatView.positionViewAtIndex(m[0], ListView.Center)
+    }
+    function chatSearchNext() {
+        if (panel.searchMatches.length === 0) return
+        panel.searchIndex = (panel.searchIndex + 1) % panel.searchMatches.length
+        chatView.positionViewAtIndex(panel.searchMatches[panel.searchIndex], ListView.Center)
+    }
+    function closeChatSearch() { panel.chatSearchOpen = false; panel.searchMatches = []; panel.searchIndex = 0 }
+
     // The session id the transcript currently represents. The chat transcript is a
     // STRICT FUNCTION of this: the reconciler (onSessionIdChanged) wipes the
     // transcript whenever bridge.sessionId changes to anything else — + New, opening
@@ -86,6 +114,8 @@ Item {
             seedDemo()
         if (bridge.connected)
             bridge.listModels(panel.selectedBrain)
+        if (typeof startPeek !== "undefined" && startPeek)
+            panel.peekOpen = true
     }
 
     // Design preview: set JARVIS_DEMO=1 to seed sample transcript content so the
@@ -428,9 +458,13 @@ Item {
     property bool ttsReadback: false
 
     ColumnLayout {
+        id: chatColumn
         anchors.fill: parent
         anchors.leftMargin: 16
-        anchors.rightMargin: 16
+        // Shrink to make room for the agent peek panel (a root-level sibling overlay
+        // anchored to the right). Reliable here at the root, unlike inside HudFrame.
+        anchors.rightMargin: 16 + (panel.peekOpen ? 322 : 0)
+        Behavior on anchors.rightMargin { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
         anchors.topMargin: 6
         anchors.bottomMargin: 16
         spacing: 12
@@ -582,6 +616,20 @@ Item {
                         }
                     }
                 }
+            }
+
+            // Search this chat (pops the search bar above the transcript).
+            Widgets.PillButton {
+                label: "⌕"
+                Layout.alignment: Qt.AlignVCenter
+                onClicked: panel.chatSearchOpen = !panel.chatSearchOpen
+            }
+
+            // Watch the agent's desktop / chrome tab inline (the peek panel).
+            Widgets.PillButton {
+                label: panel.peekOpen ? "▣ Hide" : "▣ Watch"
+                Layout.alignment: Qt.AlignVCenter
+                onClicked: panel.peekOpen = !panel.peekOpen
             }
 
             // + New chat — wipe the transcript and drop the current session so the
@@ -812,6 +860,45 @@ Item {
                         color: highlighted ? Theme.accentFaint : "transparent"
                     }
                 }
+            }
+        }
+
+        // ===== Transcript search (slides down above the transcript) ==========
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: panel.chatSearchOpen ? 38 : 0
+            visible: Layout.preferredHeight > 1
+            clip: true
+            radius: Theme.radiusSm
+            color: Theme.surfaceDeep
+            border.width: 1
+            border.color: Theme.accentDim
+            Behavior on Layout.preferredHeight { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+            onVisibleChanged: if (visible) searchField.forceActiveFocus()
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 8
+                spacing: 8
+                Text { text: "⌕"; color: Theme.accent; font.pixelSize: 15 }
+                TextField {
+                    id: searchField
+                    Layout.fillWidth: true
+                    placeholderText: "Search this chat…  (Enter = next, Esc = close)"
+                    color: Theme.text
+                    font.pixelSize: 13
+                    background: Item {}
+                    onTextChanged: panel.runChatSearch(text)
+                    Keys.onEscapePressed: { text = ""; panel.closeChatSearch() }
+                    Keys.onReturnPressed: panel.chatSearchNext()
+                }
+                Text { visible: panel.searchMatches.length > 0
+                    text: (panel.searchIndex + 1) + "/" + panel.searchMatches.length
+                    color: Theme.textMuted; font.pixelSize: 11 }
+                Text { text: "✕"; color: Theme.textMuted; font.pixelSize: 13
+                    MouseArea { anchors.fill: parent; anchors.margins: -6
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: { searchField.text = ""; panel.closeChatSearch() } } }
             }
         }
 
@@ -1188,6 +1275,47 @@ Item {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // ---- agent peek panel (live view of the nested desktop / chrome tab) -------
+    // A root-level sibling anchored to the right; the chat column shrinks to make
+    // room. Slides in when Jarvis is driving (or you tap Watch). Replaces Browser.
+    Rectangle {
+        id: peekPanel
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.topMargin: 6
+        anchors.bottomMargin: 16
+        anchors.rightMargin: 16
+        width: panel.peekOpen ? 300 : 0
+        visible: width > 4
+        clip: true
+        color: "transparent"
+        Behavior on width { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 9
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 7
+                Rectangle { Layout.alignment: Qt.AlignVCenter; width: 6; height: 6; radius: 3
+                    color: bridge.driving ? Theme.danger : Theme.success }
+                Text { text: bridge.driving ? "Jarvis is driving" : "Agent desktop"
+                    color: Theme.text; font.family: Theme.fontDisplay; font.pixelSize: 11; font.weight: Font.DemiBold }
+                Item { Layout.fillWidth: true }
+                Text { text: "✕"; color: Theme.textMuted; font.pixelSize: 13
+                    MouseArea { anchors.fill: parent; anchors.margins: -6
+                        cursorShape: Qt.PointingHandCursor; onClicked: panel.peekOpen = false } }
+            }
+            AgentPeek { Layout.fillWidth: true; Layout.fillHeight: true }
+            RowLayout {
+                spacing: 8
+                Widgets.PillButton { label: "⛶ Full"; onClicked: panel.requestComputerPage() }
+                Widgets.PillButton { visible: bridge.driving; label: "■ Stop"
+                    onClicked: bridge.takeOverCancel() }
             }
         }
     }

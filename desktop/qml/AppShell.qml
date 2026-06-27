@@ -61,7 +61,12 @@ Item {
         }
     }
 
-    Component.onCompleted: updateWidgetViewing()
+    Component.onCompleted: {
+        // --page <n> (screenshots/testing): jump to a specific page on load.
+        if (typeof startPage !== "undefined" && startPage >= 0 && startPage < 15)
+            shell.currentIndex = startPage
+        updateWidgetViewing()
+    }
 
     // If the session changes while the Chat page is open, move the lease with it.
     Connections {
@@ -313,7 +318,11 @@ Item {
     }
     Component {
         id: chatComp
-        JarvisPanel { Component.onCompleted: shell.chatPanel = this }
+        JarvisPanel {
+            Component.onCompleted: shell.chatPanel = this
+            // The peek panel's "⛶ Full" jumps to the Computer page (index 3).
+            onRequestComputerPage: shell.currentIndex = 3
+        }
     }
     Component { id: voiceComp;    VoiceMode {} }
     Component { id: computerComp; ComputerPage {} }

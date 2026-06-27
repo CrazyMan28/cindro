@@ -75,6 +75,14 @@ int main(int argc, char **argv)
                                QStringLiteral("Render the UI, save a PNG to <path>, then exit."),
                                QStringLiteral("path"));
     parser.addOption(shotOpt);
+    // --page <n>: start on a specific NavRail page index (for screenshots/testing).
+    QCommandLineOption pageOpt(QStringLiteral("page"),
+                               QStringLiteral("Start on page index <n>."),
+                               QStringLiteral("n"), QStringLiteral("-1"));
+    parser.addOption(pageOpt);
+    QCommandLineOption peekOpt(QStringLiteral("peek"),
+                               QStringLiteral("Open the chat agent-peek panel (screenshots)."));
+    parser.addOption(peekOpt);
     parser.process(app);
 
     if (parser.isSet(toggleOpt)) {
@@ -108,6 +116,11 @@ int main(int argc, char **argv)
     // boot onto the Voice Mode page.
     engine.rootContext()->setContextProperty(QStringLiteral("startOnVoice"),
                                               parser.isSet(voiceOpt));
+    // --page <n>: AppShell reads this and jumps there on load (-1 = leave default).
+    engine.rootContext()->setContextProperty(QStringLiteral("startPage"),
+                                              parser.value(pageOpt).toInt());
+    engine.rootContext()->setContextProperty(QStringLiteral("startPeek"),
+                                              parser.isSet(peekOpt));
 
     // WindowController is QML_SINGLETON; register the concrete instance so C++
     // and QML share one object that survives engine teardown order.
@@ -144,8 +157,9 @@ int main(int argc, char **argv)
                 }
             }
             if (win) {
-                if (win->width() < 200 || win->height() < 200)
-                    win->resize(1120, 920);
+                // Render at a desktop width so screenshots represent the docked/wide
+                // app (the float window is a narrow sidebar).
+                win->resize(1180, 760);
                 win->setVisible(true);
             }
             QTimer::singleShot(900, qApp, [win, shotPath]() {
