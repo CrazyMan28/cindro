@@ -58,11 +58,146 @@ Bridge::Bridge(QObject *parent)
     // instant the agent acts on the REAL screen (which="real"), even outside an
     // explicit take-over.
     startPointerTail();
+
+    // ---- Real system stats (HUD strip + Home dashboard) --------------------
+    m_statsTimer = new QTimer(this);
+    m_statsTimer->setInterval(1500);   // 1.5 s — cheap /proc reads
+    connect(m_statsTimer, &QTimer::timeout, this, &Bridge::pollStats);
+    pollStats();          // prime once so the UI isn't blank on first paint
+    probeGpu();           // one-shot nvidia-smi probe
+    m_statsTimer->start();
 }
 
 Bridge::~Bridge()
 {
     stopPointerTail();
+}
+
+// ---- Real system stats ----------------------------------------------------
+// Cheap, dependency-free: parse /proc/stat (CPU), /proc/meminfo (RAM), and
+// /proc/net/dev (throughput) on a 1.5 s timer; GPU comes from an async
+// nvidia-smi probe (best-effort, disabled after the first miss). All deltas are
+// computed against the previous sample so the first tick just primes baselines.
+void Bridge::pollStats()
+{
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const qreal dtSec = m_statsPrevMs > 0 ? (nowMs - m_statsPrevMs) / 1000.0 : 0.0;
+
+    // --- CPU: aggregate jiffies delta from /proc/stat's first "cpu" line ---
+    {
+        QFile f(QStringLiteral("/proc/stat"));
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QString line = QString::fromUtf8(f.readLine());
+            f.close();
+            const QStringList p = line.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+            if (p.size() >= 8 && p.at(0) == QStringLiteral("cpu")) {
+                quint64 total = 0, idle = 0;
+                for (int i = 1; i < p.size(); ++i) {
+                    const quint64 v = p.at(i).toULongLong();
+                    total += v;
+                    if (i == 4 || i == 5) idle += v;   // idle + iowait
+                }
+                if (m_cpuPrevTotal > 0 && total > m_cpuPrevTotal) {
+                    const quint64 dTotal = total - m_cpuPrevTotal;
+                    const quint64 dIdle = idle - m_cpuPrevIdle;
+                    const qreal busy = dTotal > 0 ? 100.0 * (dTotal - dIdle) / dTotal : 0.0;
+                    m_cpuPercent = qBound(0.0, busy, 100.0);
+                }
+                m_cpuPrevTotal = total;
+                m_cpuPrevIdle = idle;
+            }
+        }
+    }
+
+    // --- RAM: MemTotal - MemAvailable from /proc/meminfo (kB) ---
+    {
+        QFile f(QStringLiteral("/proc/meminfo"));
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            quint64 totalKb = 0, availKb = 0;
+            // NB: /proc files report size 0, so QFile::atEnd() is unreliable —
+            // read until readLine() returns empty instead.
+            QByteArray raw;
+            while (!(raw = f.readLine()).isEmpty()) {
+                const QString l = QString::fromUtf8(raw);
+                if (l.startsWith(QStringLiteral("MemTotal:")))
+                    totalKb = l.split(QLatin1Char(' '), Qt::SkipEmptyParts).value(1).toULongLong();
+                else if (l.startsWith(QStringLiteral("MemAvailable:"))) {
+                    availKb = l.split(QLatin1Char(' '), Qt::SkipEmptyParts).value(1).toULongLong();
+                    break;
+                }
+            }
+            f.close();
+            if (totalKb > 0) {
+                const quint64 usedKb = totalKb > availKb ? totalKb - availKb : 0;
+                m_ramTotalGb = totalKb / 1048576.0;
+                m_ramUsedGb = usedKb / 1048576.0;
+                m_ramPercent = 100.0 * usedKb / totalKb;
+            }
+        }
+    }
+
+    // --- NET: sum rx/tx bytes across real ifaces from /proc/net/dev ---
+    {
+        QFile f(QStringLiteral("/proc/net/dev"));
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            quint64 rx = 0, tx = 0;
+            QByteArray raw;
+            while (!(raw = f.readLine()).isEmpty()) {
+                const QString l = QString::fromUtf8(raw);
+                const int colon = l.indexOf(QLatin1Char(':'));
+                if (colon < 0) continue;
+                const QString iface = l.left(colon).trimmed();
+                if (iface == QStringLiteral("lo") || iface.isEmpty()) continue;
+                const QStringList c = l.mid(colon + 1).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+                if (c.size() >= 9) { rx += c.at(0).toULongLong(); tx += c.at(8).toULongLong(); }
+            }
+            f.close();
+            if (m_netPrevRx > 0 && dtSec > 0.05) {
+                const qreal dRx = rx >= m_netPrevRx ? rx - m_netPrevRx : 0;
+                const qreal dTx = tx >= m_netPrevTx ? tx - m_netPrevTx : 0;
+                m_netDownMbps = (dRx * 8.0 / 1e6) / dtSec;   // megabits/s
+                m_netUpMbps = (dTx * 8.0 / 1e6) / dtSec;
+            }
+            m_netPrevRx = rx;
+            m_netPrevTx = tx;
+        }
+    }
+
+    m_statsPrevMs = nowMs;
+    emit statsChanged();
+}
+
+void Bridge::probeGpu()
+{
+    if (m_gpuProbed)
+        return;
+    auto *proc = new QProcess(this);
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, proc](int code, QProcess::ExitStatus) {
+        m_gpuProbed = true;
+        if (code == 0) {
+            const QString out = QString::fromUtf8(proc->readAllStandardOutput()).trimmed();
+            // CSV: name, utilization.gpu [%], memory.used [MiB], memory.total [MiB]
+            const QStringList row = out.split(QLatin1Char('\n')).value(0).split(QLatin1Char(','));
+            if (row.size() >= 4) {
+                m_gpuName = row.at(0).trimmed();
+                m_gpuPercent = row.at(1).trimmed().toDouble();
+                m_gpuMemUsedMb = row.at(2).trimmed().toDouble();
+                m_gpuMemTotalMb = row.at(3).trimmed().toDouble();
+                m_gpuPresent = true;
+            }
+        }
+        emit statsChanged();
+        proc->deleteLater();
+        // Keep GPU fresh while present: re-probe every few stats ticks.
+        if (m_gpuPresent) {
+            m_gpuProbed = false;
+            QTimer::singleShot(4500, this, &Bridge::probeGpu);
+        }
+    });
+    proc->start(QStringLiteral("nvidia-smi"),
+                {QStringLiteral("--query-gpu=name,utilization.gpu,memory.used,memory.total"),
+                 QStringLiteral("--format=csv,noheader,nounits")});
 }
 
 QString Bridge::readControlToken()

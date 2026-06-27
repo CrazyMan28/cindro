@@ -33,6 +33,15 @@ features the user asked for:
   The preamble tells the model to use it for any 3+-step task. 6 new engine tests.
 - Also fixed a **stale `test_jarvis_seat_routing` test** (it predated the atomic-click
   change and asserted the old press/release contract). Engine suite back to green (62).
+- **Home dashboard — texture, motion + REAL telemetry.** The built Home read flatter/
+  emptier than the mockup (the agent-peek vanished when idle, Live widgets was a bare
+  bar). Rebuilt: the hero card now has an **always-on textured agent peek** (diagonal
+  scanlines + a drifting cyan glow + the spinning ArcReactor), the right column is a
+  **live mini-dashboard wired to REAL system stats** — CPU / RAM (animated bar charts) +
+  GPU (nvidia-smi: name, util, VRAM) / NET — and there's motion throughout (entrance
+  fade-up, hover-lift cards, pulsing status dots). The HUD strip's CPU/RAM/NET are now
+  **real** too (Bridge polls `/proc/stat` + `/proc/meminfo` + `/proc/net/dev` every 1.5 s;
+  was a simulated random-walk). The same textured peek is reused in the chat agent-peek.
 - **Palette refresh to match the mockup** — the desktop render had drifted darker/muddier
   than the approved HTML (`jarvis-desktop-redesign.html`): heavily-translucent surfaces
   over a dark gradient + cyan-tinted borders everywhere. `Theme.qml` now uses **solid,
