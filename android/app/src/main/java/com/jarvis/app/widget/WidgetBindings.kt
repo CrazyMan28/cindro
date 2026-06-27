@@ -38,6 +38,15 @@ object WidgetBindings {
     fun specFor(ctx: Context, appWidgetId: Int): String? =
         prefs(ctx).getString("spec_$appWidgetId", null)
 
+    // Loop guard for content-based sizing: the last height (dp) we asked the
+    // launcher to give this widget, so we don't re-request on every re-render.
+    fun requestedHeight(ctx: Context, appWidgetId: Int): Int =
+        prefs(ctx).getInt("reqh_$appWidgetId", 0)
+
+    fun setRequestedHeight(ctx: Context, appWidgetId: Int, dp: Int) {
+        prefs(ctx).edit().putInt("reqh_$appWidgetId", dp).apply()
+    }
+
     fun titleFor(ctx: Context, appWidgetId: Int): String =
         prefs(ctx).getString("title_$appWidgetId", null) ?: "Jarvis"
 

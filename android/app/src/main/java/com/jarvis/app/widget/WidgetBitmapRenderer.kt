@@ -43,6 +43,17 @@ object WidgetBitmapRenderer {
      * home-screen cell, SCALING the content down to fit so nothing is ever cut off
      * (the old version capped height and clipped the bottom rows).
      */
+    /** The content's NATURAL height (px) at [widthPx], including padding — i.e. the
+     *  height the widget WANTS so nothing is scaled down. Used to size the home-screen
+     *  cell to the widget instead of squishing tall content into a fixed cell. */
+    fun naturalHeightPx(spec: JsonObject, widthPx: Int, density: Float): Int {
+        val w = max(60, widthPx)
+        val pad = 11 * density
+        val ctx = Ctx(density)
+        val contentH = measure(ctx, spec, w - pad * 2, 0)
+        return (contentH + pad * 2).toInt().coerceAtLeast(60)
+    }
+
     fun render(spec: JsonObject, widthPx: Int, heightPx: Int, density: Float): Bitmap {
         val w = max(60, widthPx)
         val targetH = max(60, heightPx)
