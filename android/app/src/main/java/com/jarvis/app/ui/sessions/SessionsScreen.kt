@@ -1,5 +1,6 @@
 package com.jarvis.app.ui.sessions
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -12,6 +13,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -21,6 +25,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
@@ -46,6 +51,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -102,7 +110,11 @@ fun SessionsScreen(
                 )
             } else {
                 TopAppBar(
-                    title = { Text("Sessions") },
+                    title = {
+                        Text("Sessions",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold)
+                    },
                     actions = {
                         ConnectionPill(conn)
                         Spacer(Modifier.height(0.dp))
@@ -205,6 +217,19 @@ fun SessionsScreen(
     }
 }
 
+private fun brainColor(brain: String?): Color = when (brain?.lowercase()) {
+    "codex" -> JarvisPalette.Accent
+    "claude" -> Color(0xFFFF9D5C)   // warm amber
+    "api" -> Color(0xFFB28BFF)      // violet
+    else -> JarvisPalette.TextSecondary
+}
+
+private fun stateColor(state: String?): Color = when (state?.lowercase()) {
+    "working", "running", "busy" -> JarvisPalette.Success
+    "paused" -> JarvisPalette.Warning
+    else -> JarvisPalette.TextSecondary
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SessionRow(
@@ -214,24 +239,40 @@ private fun SessionRow(
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
+    val accent = brainColor(session.brain)
     GlowCard(
         modifier = Modifier.fillMaxWidth().combinedClickable(
             onClick = onClick,
             onLongClick = onLongClick,
         ),
         accent = selected,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
+            // Leading: selection check, or a brain-tinted avatar with its initial.
             if (selecting) {
                 Icon(
                     imageVector = if (selected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
                     contentDescription = if (selected) "Selected" else "Not selected",
                     tint = if (selected) JarvisPalette.Accent else JarvisPalette.TextSecondary,
-                    modifier = Modifier.size(22.dp),
+                    modifier = Modifier.size(24.dp),
                 )
-                Spacer(Modifier.size(12.dp))
+            } else {
+                Box(
+                    Modifier.size(46.dp).clip(RoundedCornerShape(14.dp))
+                        .background(accent.copy(alpha = 0.16f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        (session.brain?.take(1) ?: "J").uppercase(),
+                        color = accent,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
             }
-            Column(Modifier.fillMaxWidth()) {
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
                 Text(
                     text = session.displayTitle,
                     style = MaterialTheme.typography.titleMedium,
@@ -239,24 +280,48 @@ private fun SessionRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Spacer(Modifier.height(4.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    session.brain?.let { Tag(it) }
-                    session.profile?.let { Tag(it) }
-                    session.state?.let { Tag(it) }
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    session.state?.let { StatusDot(it) }
+                    val meta = listOfNotNull(session.brain, session.profile)
+                        .joinToString(" · ") { it.replaceFirstChar(Char::uppercase) }
+                    if (meta.isNotEmpty()) {
+                        Text(
+                            meta,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = JarvisPalette.TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
+            }
+            if (!selecting) {
+                Icon(
+                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = JarvisPalette.TextSecondary.copy(alpha = 0.6f),
+                )
             }
         }
     }
 }
 
 @Composable
-private fun Tag(text: String) {
-    Text(
-        text = text.uppercase(),
-        style = MaterialTheme.typography.labelLarge,
-        color = JarvisPalette.TextSecondary,
-    )
+private fun StatusDot(state: String) {
+    val c = stateColor(state)
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(7.dp).clip(CircleShape).background(c))
+        Spacer(Modifier.width(5.dp))
+        Text(
+            state.replaceFirstChar(Char::uppercase),
+            style = MaterialTheme.typography.labelMedium,
+            color = c,
+        )
+    }
 }
 
 @Composable
