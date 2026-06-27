@@ -40,6 +40,7 @@ data class SettingsUiState(
     // "Let Jarvis use a computer/browser" (daemon pref; default ON). When on,
     // every chat can drive a computer/Chrome on demand with no manual co-work.
     val letJarvisUseComputer: Boolean = true,
+    val permissionLevel: String = "medium", // ask-before-risky: high|medium|low
     val loadingDaemon: Boolean = false,
     val daemonError: String? = null,
     // Voice
@@ -111,6 +112,9 @@ class SettingsViewModel(
                     }
                     val letCompute = s.get("let_jarvis_use_computer")
                         ?.takeIf { !it.isJsonNull }?.asBoolean ?: true
+                    val permLevel = s.get("permission_level")
+                        ?.takeIf { !it.isJsonNull }?.asString
+                        ?.let { if (it == "high" || it == "low") it else "medium" } ?: "medium"
                     _uiState.update {
                         it.copy(
                             defaultBrain = brain,
@@ -119,6 +123,7 @@ class SettingsViewModel(
                             apiKeysSet = keys,
                             canDrive = drive,
                             letJarvisUseComputer = letCompute,
+                            permissionLevel = permLevel,
                             loadingDaemon = false,
                             modelsBrain = brain,
                         )
@@ -164,6 +169,14 @@ class SettingsViewModel(
     fun setLetJarvisUseComputer(enabled: Boolean) {
         patch(JsonObject().apply { addProperty("let_jarvis_use_computer", enabled) }) {
             _uiState.update { it.copy(letJarvisUseComputer = enabled) }
+        }
+    }
+
+    /** Permission level: "high" | "medium" | "low". Biometric-gated patch. */
+    fun setPermissionLevel(level: String) {
+        val normalized = if (level == "high" || level == "low") level else "medium"
+        patch(JsonObject().apply { addProperty("permission_level", normalized) }) {
+            _uiState.update { it.copy(permissionLevel = normalized) }
         }
     }
 

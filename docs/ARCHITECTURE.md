@@ -53,6 +53,13 @@ Methods (v1): `ping`; `settings.get`; `settings.set{patch}`;
 `session.list`; `session.history{session_id, limit?}`;
 `approval.respond{session_id, approval_id, decision:"allow"|"deny"|"always"}`.
 
+`settings.get` returns (among others) `permission_level: "high"|"medium"|"low"` — the
+**soft ask-before-risky policy** (default `medium`). `settings.set{patch:{permission_level}}`
+updates it. It is auto-translated into a clause in the per-session co-work preamble
+(`ControlServer::permissionPolicyClause`) that auto-ranks tools HIGH/MEDIUM/LOW and tells
+the model to call `ask_user` before acting at/above the chosen tier. It does **not** change
+the capability sandbox — that stays enforced independently.
+
 ### Contract B — NormalizedBrainEvent (brain output -> control events)
 
 Every brain emits the same event shape so the UI is brain-agnostic:

@@ -438,6 +438,11 @@ Response ControlServer::handleSettingsGet(const Request &req)
     // launch; handleAuthRequest fail-opens when no approver is reachable.
     s.insert(QStringLiteral("auth_lock_enabled"), m_settings.authLockEnabled());
 
+    // Permission level ("high"|"medium"|"low"): the ask-before-risky policy
+    // surfaced to the model via the co-work preamble. Soft policy only — the
+    // capability sandbox is unchanged.
+    s.insert(QStringLiteral("permission_level"), m_settings.permissionLevel());
+
     // Theme prefs (persisted in config.toml as theme_json). Fall back to a
     // sane default HUD theme when none has been set yet.
     QJsonObject theme = m_settings.theme();
@@ -493,6 +498,11 @@ Response ControlServer::handleSettingsSet(const Request &req)
     if (patch.contains(QStringLiteral("auth_lock_enabled"))) {
         m_settings.setAuthLockEnabled(
             patch.value(QStringLiteral("auth_lock_enabled")).toBool());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("permission_level"))) {
+        m_settings.setPermissionLevel(
+            patch.value(QStringLiteral("permission_level")).toString());
         prefsTouched = true;
     }
     if (patch.contains(QStringLiteral("tts_voice"))) {
@@ -873,6 +883,64 @@ QString ControlServer::prefetchMemoryBlock(const QString &query)
         return QString();
     const QVector<MemoryRow> hits = m_memory.prefetch(query, 6);
     return MemoryStore::renderPromptBlock(hits);
+}
+
+QString ControlServer::permissionPolicyClause() const
+{
+    // Auto-ranked tool risk tiers (by capability, not by individual tool name):
+    //   HIGH   — irreversible / outward-facing / touches the user's real world:
+    //            deleting or overwriting files, destructive shell (rm, mv -f,
+    //            git reset --hard, kill), running the USER'S REAL screen
+    //            (real_screen_* tools), ssh exec on a remote host, sending a
+    //            file/message outward, installing/uninstalling, schedule_task
+    //            that performs an action, anything spending money or posting.
+    //   MEDIUM — meaningful but reversible / scoped to the agent: writing/editing
+    //            files, non-destructive shell, driving the agent's own desktop in
+    //            ways that change state, editing memory/skills, canvas/widget
+    //            deletes, browser form submits.
+    //   LOW    — read-only / cosmetic: reading files, listing, search, recall,
+    //            rendering a widget/canvas, screenshots, status checks.
+    const QString level = m_settings.permissionLevel();
+
+    QString head = QStringLiteral(
+        "[PERMISSION POLICY] Before you ACT, silently rank the action's risk:\n"
+        "  HIGH = irreversible or touches the user's real world — deleting/"
+        "overwriting files, destructive shell (rm, mv -f, git reset --hard, kill), "
+        "operating the USER'S REAL screen, ssh exec on a remote host, "
+        "installing/uninstalling, sending files/messages outward, spending money, "
+        "or posting anything public.\n"
+        "  MEDIUM = meaningful but reversible/scoped to you — writing or editing "
+        "files, non-destructive shell, changing state on your own agent desktop, "
+        "editing memory/skills, deleting a canvas/widget, submitting a web form.\n"
+        "  LOW = read-only or cosmetic — reading, listing, searching, recall, "
+        "rendering a widget, screenshots, status checks. NEVER ask for LOW.\n");
+
+    QString rule;
+    if (level == QStringLiteral("high")) {
+        rule = QStringLiteral(
+            "Your permission level is HIGH (cautious). You MUST call ask_user "
+            "(with a one-line plain-language summary and Yes/No-style choices) and "
+            "wait for approval BEFORE any HIGH or MEDIUM risk action. Only LOW "
+            "read-only actions proceed without asking. When several similar actions "
+            "are part of one approved task, you may ask once for the batch.");
+    } else if (level == QStringLiteral("low")) {
+        rule = QStringLiteral(
+            "Your permission level is LOW (autonomous). Act on your own for LOW and "
+            "MEDIUM actions. You must STILL call ask_user before the most dangerous "
+            "HIGH actions — anything irreversible and destructive (deleting/"
+            "overwriting the user's files, destructive shell, operating their REAL "
+            "screen, ssh exec, installs, spending money, posting publicly).");
+    } else { // medium (default)
+        rule = QStringLiteral(
+            "Your permission level is MEDIUM (balanced). Call ask_user and wait for "
+            "approval BEFORE any HIGH risk action. MEDIUM and LOW actions proceed "
+            "without asking, but narrate what you're about to do so the user can "
+            "stop you.");
+    }
+
+    return QStringLiteral("\n") + head + rule +
+           QStringLiteral(" The user can change this level in Settings → "
+                          "Permissions. Respect it for the whole session.");
 }
 
 QString ControlServer::memorySystemBlock()
@@ -1261,6 +1329,12 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "CALL create_skill to save it as a reusable skill (and edit_skill to refine "
             "it); list_skills / invoke_skill to reuse them. Build skills proactively when "
             "it helps — don't wait to be told.\n"
+            "PLAN / TODO: for any task with 3+ steps (or when the user asks your plan), "
+            "CALL todo_write with your step list up front — [{\"text\":\"…\",\"status\":"
+            "\"pending|in_progress|done\"}] — then call it again to flip each step as you "
+            "go (keep exactly ONE step in_progress). It shows the user a live checklist "
+            "card they can watch; todo_read recalls it; todo_clear when the job is done. "
+            "Skip it for trivial one-shot requests.\n"
             "CANVAS vs WIDGETS: a render_widget draw is a CANVAS (an ad-hoc, drawn-once "
             "thing). A WIDGET is a CANVAS the user SAVED into the reusable Widgets tab. "
             "render_widget puts a canvas on the Canvas tab by default (target:\"canvas\"); "
@@ -1296,7 +1370,8 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "(circle/ellipse/rect/path/line). NEVER a one-word label like \"Duck\".\n"
             "Give the top node a sensible w/h or fill:true so it isn't cramped. Always "
             "actually CALL render_widget — don't describe the widget in words.");
-        effectiveText = guide + QStringLiteral("\n---\n") + effectiveText;
+        effectiveText = guide + permissionPolicyClause() +
+                        QStringLiteral("\n---\n") + effectiveText;
     }
 
     brain->send(effectiveText, images);

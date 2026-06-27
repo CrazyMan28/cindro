@@ -120,6 +120,17 @@ or the OS widget picker (`WidgetConfigActivity`).
 | `widget_save / widget_list / widget_get / widget_edit / widget_del` | the saved library |
 | `widget_render(id,target)` | re-show a saved widget |
 | `widget_live / widget_live_stop / widget_live_list` | live auto-updating canvases |
+| `todo_write(items) / todo_read / todo_clear` | the agent's live **plan/checklist** |
+
+### Model TODO (the agent's plan)
+
+`todo_write([{text,status}])` lets the model publish/maintain a plan for the current job
+— `status` ∈ `pending`/`in_progress`/`done`. It persists per session under
+`~/.local/share/jarvis/todos/<session>.json` (so `todo_read` survives across tool calls)
+**and** renders a checklist card (✓ / ◐ / ○ + a `done/total` count) on the widget bus
+under the stable id `__todo__:<session>`, target `chat` — so a re-write replaces the card
+in place and it shows inline in chat + on the Canvas, on desktop and phone. The co-work
+preamble tells the model to use it for any task with 3+ steps. `todo_clear` removes it.
 
 ## Desktop surfaces
 

@@ -81,6 +81,19 @@ Design pillars:
   `target` (canvas/chat/voice/both) + `session_id`; ad-hoc draws = CANVAS, saved
   reusable ones (`saved_widgets.json`) = WIDGETS. `op:remove`/`op:clear` are delete
   markers. See `docs/WIDGETS_CANVAS.md`.
+- **Permission level is a SOFT policy, not the sandbox.** `permission_level`
+  (`high`/`medium`/`low`, default `medium`; SettingsStore + `settings.get`/`set`) is
+  turned into a clause by `ControlServer::permissionPolicyClause()` and appended to the
+  per-session co-work preamble (right after the long `guide` string, gated by
+  `m_coworkGuided`). It auto-ranks tools HIGH/MEDIUM/LOW and tells the model to call
+  `ask_user` before risky actions. It does **not** touch the capability tiers / bypass
+  flags — don't wire it into the sandbox; it only changes what the model is told to ask
+  about. Configurable in Settings → Permissions on desktop and phone.
+- **Model TODO** (`tools_todo.py`, `todo_write`/`todo_read`/`todo_clear`) persists per
+  session to `~/.local/share/jarvis/todos/<session>.json` AND renders a checklist card to
+  the widget bus under stable id `__todo__:<session>` (target `chat`). It reuses the
+  widget renderer — no new UI. Re-writes replace the card in place; `normalize_items`
+  coerces bare strings + unknown statuses to `pending`. See `docs/WIDGETS_CANVAS.md`.
 - **Live widgets are viewer-gated (battery).** ONE supervisor process
   (`live_widgets.py`, pid-file `widget_supervisor.pid`) runs every job; a job only
   does work while a fresh **viewer lease** covers it (daemon-owned

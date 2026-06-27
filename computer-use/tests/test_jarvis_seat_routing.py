@@ -29,6 +29,10 @@ def fork_running(tmp_path, monkeypatch):
                         lambda gx, gy: seat.append(("move", gx, gy)))
     monkeypatch.setattr(inp.jarvis_seat, "button",
                         lambda b, p: seat.append(("button", b, p)))
+    # Atomic click (refocus+motion+press+release in one DBus call) is the fork
+    # path's click primitive; in-place clicks still fall back to button press.
+    monkeypatch.setattr(inp.jarvis_seat, "click",
+                        lambda b, gx, gy: seat.append(("click", b, gx, gy)))
     monkeypatch.setattr(inp.jarvis_seat, "axis",
                         lambda o, d, v: seat.append(("axis", o, d, v)))
     # uinput emitters must stay silent on the fork path.
@@ -57,7 +61,8 @@ def test_real_move_uses_jarvis_seat(fork_running):
 def test_real_click_uses_jarvis_seat(fork_running):
     seat, uinput, busp = fork_running
     inp.click(10, 20, button="left", coord_space="desktop", which="active")
-    assert ("button", "left", True) in seat and ("button", "left", False) in seat
+    # Targeted click goes through the ATOMIC seat call (not separate press/release).
+    assert ("click", "left", 10, 20) in seat
     assert all(c[0] != "btn" for c in uinput)
     assert any(e["kind"] == "click" and e["session"] == "real" for e in _events(busp))
 
