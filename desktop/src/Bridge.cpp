@@ -2,6 +2,7 @@
 #include "FrameProvider.h"
 
 #include <QWebSocket>
+#include <QSet>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -346,7 +347,17 @@ void Bridge::send(const QString &method, const QVariantMap &params, int id)
 
     const QByteArray payload = QJsonDocument(obj).toJson(QJsonDocument::Compact);
     if (m_socket->state() != QAbstractSocket::ConnectedState) {
-        emit errorOccurred(QStringLiteral("not connected: dropped ") + method);
+        // Best-effort telemetry (viewer-lease heartbeats, pins) must NEVER spam
+        // the chat with "dropped" errors during a reconnect — they're fire-and-
+        // forget and the next heartbeat re-establishes them. Only surface drops
+        // for methods the user actually issued.
+        static const QSet<QString> kQuiet = {
+            QStringLiteral("widget.viewing"),
+            QStringLiteral("widget.pin"),
+            QStringLiteral("widget.unpin")
+        };
+        if (!kQuiet.contains(method))
+            emit errorOccurred(QStringLiteral("not connected: dropped ") + method);
         return;
     }
     m_socket->sendTextMessage(QString::fromUtf8(payload));
