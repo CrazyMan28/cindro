@@ -83,7 +83,8 @@ fun ComputerScreen(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             Text(
-                "Live-view a session's nested agent desktop, drive it remotely, or take over your real screen.",
+                "Watch any chat's agent desktop live, drive it remotely, or take over your real screen. " +
+                    "Pick the chat below and tap Start.",
                 style = MaterialTheme.typography.bodySmall,
                 color = JarvisPalette.TextSecondary,
             )
@@ -91,7 +92,7 @@ fun ComputerScreen(
             // Session selector
             if (state.sessions.isEmpty()) {
                 Text(
-                    state.error ?: "No sessions to mirror. Start a co-worker session first.",
+                    state.error ?: "No sessions yet. Open a chat and have Jarvis use its computer, then come back here to watch it live.",
                     color = if (state.error != null) JarvisPalette.Error else JarvisPalette.TextSecondary,
                     style = MaterialTheme.typography.bodyMedium,
                 )
