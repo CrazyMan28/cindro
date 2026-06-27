@@ -17,13 +17,15 @@ One brain, many hands: it can be a **coder** when you need one and a **co-worker
 
 | Area | Capability |
 |---|---|
-| **Brains** | `CodexBrain` (`codex exec`), `ClaudeBrain` (`claude -p`), `ApiBrain` (direct OpenAI/Anthropic/Ollama). Per-session model + brain picker. |
-| **Computer use** | Pixel-accurate mouse/keyboard/screen on KDE **and** Sway via the Python engine. Runs on a **nested headless agent desktop** by default, or **takes over your real screen** on request (approval-gated, distinct blue cursor + "Jarvis is driving" banner). |
+| **Brains** | `CodexBrain` (`codex exec`), `ClaudeBrain` (`claude -p`), `ApiBrain` (direct OpenAI/Anthropic/Mistral/Ollama, **with vision** — attached photos reach the model). Per-session model + brain picker. |
+| **Desktop UX** | A **Home dashboard** (greeting, active-agent card, quick actions, recent sessions, a **live CPU/RAM/GPU mini-dashboard** from real `/proc` + `nvidia-smi`), a **⌘K command palette** (jump to any page/session), and an **in-chat agent peek** that mirrors the nested desktop live (drag-resizable, "⛶ Full"). Premium HUD theme (solid cards, arc-reactor accents). |
+| **Computer use** | Pixel-accurate mouse/keyboard/screen on KDE **and** Sway via the Python engine. Runs on a **nested headless agent desktop** by default (watchable live in chat *and* on the phone), or **takes over your real screen** on request (approval-gated, distinct blue cursor + "Jarvis is driving" banner). The model can `desktop_reset` its own desktop. |
 | **Chrome** | MV3 extension with a full Jarvis side-panel that sees your tabs and acts in-page (Chrome-only mode, blue cursor + "controlling Chrome" banner). |
 | **Voice** | Hands-free voice mode (just talk — energy VAD auto-sends, no hold-to-talk), STT/TTS via Mistral Voxtral with **pluggable local providers** (whisper.cpp / piper), animated arc-reactor orb. |
-| **Generative renderer** | The model calls `render_widget` to draw **custom UI** from a safe JSON DSL (containers, text, charts, SVG/canvas art, buttons, animation) — sized & styled by the model. *Canvases* are ad-hoc draws (Canvas tab + inline in chat when asked); *Widgets* are saved/reusable (Widgets tab). **Live** canvases auto-refresh from any command (`widget_live`). Renders on desktop **and phone**. See [`docs/WIDGETS_CANVAS.md`](docs/WIDGETS_CANVAS.md). |
-| **Mobile** | Kotlin/Compose app: pair via QR, chat + photos, sessions, queue, live video, file receive, push, and a **Compose widget renderer** for the canvases the model draws. Background WebSocket service delivers notifications **without Firebase**. |
-| **Security** | 2FA + biometric **cross-device unlock** (open desktop → approve on phone with fingerprint), SSH allow-list, prompt-injection gating, strict per-brain **MCP isolation** with opt-in CLI MCP toggles. |
+| **Generative renderer** | The model calls `render_widget` to draw **custom UI** from a safe JSON DSL (containers, text, charts, SVG/canvas art, buttons, animation, and **multi-page `pager`** widgets — tap-to-advance quizzes with right/wrong feedback, no model round-trip). *Canvases* are ad-hoc; *Widgets* are saved/reusable; **pin any to the desktop Home** (`home_pin`, drag to reorder) or to a **real Android home-screen widget** (sizes to its content). **Live** canvases auto-refresh (`widget_live`). Renders on desktop **and phone**. See [`docs/WIDGETS_CANVAS.md`](docs/WIDGETS_CANVAS.md). |
+| **Plan & permissions** | The model keeps a live **plan/checklist** (`todo_write` + granular add/edit/done/del) shown in an animated side panel. A **permission level** (cautious / balanced / autonomous) auto-ranks tools and makes Jarvis `ask_user` before risky actions. |
+| **Mobile** | Kotlin/Compose app: pair via QR, chat + **photos to the model**, sessions, queue, **live agent-desktop video** (watch + drive), file receive, push, real home-screen widgets, and a Compose widget renderer (incl. interactive `pager` quizzes). Background WebSocket service delivers notifications **without Firebase**. |
+| **Security** | 2FA + biometric **cross-device unlock** (open desktop → approve on phone with fingerprint), plus a **local PIN fallback** when the phone can't approve. SSH allow-list, prompt-injection gating, strict per-brain **MCP isolation** with opt-in CLI MCP toggles. |
 | **Productivity** | Scheduler (cron + natural language), memories, skills + "today" digest, custom MCP servers, a plugin registry, and Google connectors (Calendar/Docs/Drive/Gmail) framework. |
 
 ---
@@ -83,8 +85,9 @@ core/         C++/Qt6 shared lib — session model, Brain abstraction, MCP regis
               scheduler, memories, skills, SSH allow-list, settings, FCM sender, voice
 daemon/       jarvisd — headless service: ControlServer (:8795) + DeviceServer (:8796),
               pairing, session orchestration, Jarvis-MCP server, auth challenges
-desktop/      jarvis-sidebar — QML/Quick + LayerShellQt UI (chat, voice, canvas, computer,
-              browser, schedules, memory, skills, sessions, settings, MCP, plugins)
+desktop/      jarvis-sidebar — QML/Quick + LayerShellQt UI (Home dashboard, chat + in-chat
+              agent peek, voice, canvas, widgets, sessions, memory, skills, schedules,
+              activity, MCP, plugins, ssh, settings) + ⌘K command palette
 computer-use/ Python FastMCP engine (mouse/kbd/screen, Chrome bridge, render_widget,
               nested agent desktop, per-session input routing, agent pointer bus)
 extension/    Chrome MV3 "Computer Use Bridge" + Jarvis side-panel
@@ -130,6 +133,7 @@ cd android && ./gradlew :app:assembleDebug
 - [`docs/STATUS.md`](docs/STATUS.md) — **where the project actually is** (done vs partial vs next)
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design
 - [`docs/COMPUTER_USE.md`](docs/COMPUTER_USE.md) — the computer-use engine
+- [`docs/WIDGETS_CANVAS.md`](docs/WIDGETS_CANVAS.md) — canvases, widgets, `pager`, Home pins, home-screen widgets
 - [`docs/JARVIS_VOICE_AND_RENDERER.md`](docs/JARVIS_VOICE_AND_RENDERER.md) — voice + generative renderer
 - [`docs/JARVIS_GOOGLE_CONNECTORS.md`](docs/JARVIS_GOOGLE_CONNECTORS.md) — Google connectors
 - [`docs/KWIN_MULTISEAT_FORK.md`](docs/KWIN_MULTISEAT_FORK.md) — the agent's own seat/cursor
