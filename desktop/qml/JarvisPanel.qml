@@ -31,6 +31,10 @@ Item {
     property real peekWidth: 320      // user-resizable (drag the left edge)
     property bool peekResizing: false
     property bool chatSearchOpen: false
+    // The model's live plan/checklist (todo_write). Routed to a dedicated
+    // animated PLAN panel instead of cluttering the transcript.
+    property string todoSpec: ""
+    property bool todoOpen: true
     onAgentActiveChanged: if (agentActive) peekOpen = true
     signal requestComputerPage()   // peek "Full" -> Computer page (AppShell wires it)
 
@@ -381,6 +385,16 @@ Item {
         function onWidgetRendered(w) {
             if (!w || w.spec === undefined)
                 return
+            // The model's plan/checklist (id "__todo__:<session>") goes to the
+            // dedicated PLAN panel, NOT the transcript — scoped to this session.
+            var twid = (w.id !== undefined) ? ("" + w.id) : ""
+            if (twid.indexOf("__todo__") === 0) {
+                var tsid = (w.session_id !== undefined) ? ("" + w.session_id) : ""
+                if (tsid.length > 0 && tsid !== bridge.sessionId) return
+                panel.todoSpec = JSON.stringify(w.spec)
+                panel.todoOpen = true
+                return
+            }
             // GATING: a widget only enters the chat transcript when the model asked
             // for it there (target "chat"/"both"). "canvas" (default) stays on the
             // Canvas tab; "voice" pops near the orb. Keeps the chat uncluttered.
@@ -415,6 +429,7 @@ Item {
 
         // A canvas was deleted / all cleared — drop any inline copy in the chat too.
         function onWidgetRemoved(id) {
+            if (("" + id).indexOf("__todo__") === 0) { panel.todoSpec = ""; return }
             for (var i = chatModel.count - 1; i >= 0; i--) {
                 var row = chatModel.get(i)
                 if (row.kind === "widget" && row.callId === id) { chatModel.remove(i); break }
@@ -1361,6 +1376,90 @@ Item {
                 Widgets.PillButton { label: "⛶ Full"; onClicked: panel.requestComputerPage() }
                 Widgets.PillButton { visible: bridge.driving; label: "■ Stop"
                     onClicked: bridge.takeOverCancel() }
+            }
+        }
+    }
+
+    // ---- PLAN panel (the model's live todo/checklist) ----------------------
+    // A floating, animated card at the top-right of the chat (left of the peek
+    // when that's open). Pops out when Jarvis updates its plan; collapses to a
+    // small "PLAN" pill. Not "watch" — this is the agent's plan.
+    Item {
+        id: planPanel
+        visible: panel.todoSpec.length > 0
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.topMargin: 10
+        anchors.rightMargin: 16 + (panel.peekOpen ? panel.peekWidth + 22 : 0)
+        width: panel.todoOpen ? 300 : planPill.implicitWidth
+        height: panel.todoOpen ? planCard.implicitHeight : 30
+        z: 50
+
+        Behavior on width { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        Behavior on height { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        // pop-in
+        opacity: 0
+        transform: Translate { id: planRise; y: -8 }
+        onVisibleChanged: if (visible) planIn.restart()
+        ParallelAnimation {
+            id: planIn
+            NumberAnimation { target: planPanel; property: "opacity"; from: 0; to: 1; duration: 240 }
+            NumberAnimation { target: planRise; property: "y"; from: -8; to: 0; duration: 260; easing.type: Easing.OutCubic }
+        }
+
+        // collapsed pill
+        Rectangle {
+            id: planPill
+            visible: !panel.todoOpen
+            anchors.right: parent.right; anchors.top: parent.top
+            implicitWidth: pillRow.implicitWidth + 22
+            height: 30; radius: 15
+            color: pillMa.containsMouse ? Theme.surfaceStrong : Theme.surface
+            border.width: 1; border.color: Theme.accentDim
+            Row {
+                id: pillRow; anchors.centerIn: parent; spacing: 7
+                Text { anchors.verticalCenter: parent.verticalCenter; text: "📋"; font.pixelSize: 12 }
+                Text { anchors.verticalCenter: parent.verticalCenter; text: "PLAN"
+                    color: Theme.accentBright; font.family: Theme.fontDisplay; font.pixelSize: 10
+                    font.letterSpacing: 1.4; font.weight: Font.DemiBold }
+            }
+            MouseArea { id: pillMa; anchors.fill: parent; hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor; onClicked: panel.todoOpen = true }
+        }
+
+        // expanded card
+        Rectangle {
+            id: planCard
+            visible: panel.todoOpen
+            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+            implicitHeight: planCol.implicitHeight + 18
+            radius: Theme.radius
+            color: Theme.surface
+            border.width: 1; border.color: Theme.accentDim
+            clip: true
+            layer.enabled: true
+            layer.effect: MultiEffect { shadowEnabled: true; shadowColor: "#000000"; shadowBlur: 0.8; shadowVerticalOffset: 10 }
+            ColumnLayout {
+                id: planCol
+                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                anchors.margins: 9
+                spacing: 6
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text { text: "📋  PLAN"; color: Theme.accentBright; font.family: Theme.fontDisplay
+                        font.pixelSize: 10; font.letterSpacing: 1.4; font.weight: Font.DemiBold }
+                    Item { Layout.fillWidth: true }
+                    Text { text: "▸"; color: Theme.textMuted; font.pixelSize: 13; rotation: 90
+                        MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor
+                            onClicked: panel.todoOpen = false } }   // collapse
+                    Text { text: "✕"; color: Theme.textMuted; font.pixelSize: 12; Layout.leftMargin: 8
+                        MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor
+                            onClicked: panel.todoSpec = "" } }       // dismiss
+                }
+                WidgetRenderer {
+                    Layout.fillWidth: true
+                    node: { try { return JSON.parse(panel.todoSpec) } catch (e) { return ({}) } }
+                }
             }
         }
     }
