@@ -34,6 +34,8 @@ qt_add_qml_module(jarvis-sidebar
     QML_FILES
         qml/Main.qml
         qml/AppShell.qml
+        qml/HomePage.qml
+        qml/AgentPeek.qml
         qml/NavRail.qml
         qml/PageHeader.qml
         qml/Widgets.qml
