@@ -60,6 +60,10 @@ private:
     void emitEvent(const NormalizedBrainEvent &ev);
     void startOpenAi(const QString &text);
     void startAnthropic(const QString &text);
+    // Build the user-message `content`: a plain string when there are no images,
+    // else a vision content array (text + base64 image parts) in the provider's
+    // format (OpenAI image_url / Anthropic image source). `images` are file paths.
+    QJsonValue userContent(const QString &text, const QStringList &images) const;
     void drainSse();
     void handleSseData(const QByteArray &data); // one `data:` payload (sans prefix)
 

@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -58,10 +59,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
@@ -169,9 +172,12 @@ fun ChatScreen(
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
+          Box(Modifier.weight(1f).fillMaxWidth()) {
+            // Animated empty state for a fresh chat — no more blank "bland" screen.
+            if (state.items.isEmpty()) ChatEmptyState(Modifier.align(Alignment.Center))
             LazyColumn(
                 state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
+                modifier = Modifier.fillMaxSize(),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
@@ -220,6 +226,7 @@ fun ChatScreen(
                     item(key = "typing") { TypingIndicator() }
                 }
             }
+          }
 
             // Bottom dock: the error banner, pending attachments and the input row
             // stay pinned just ABOVE the keyboard (imePadding) and clear of the
@@ -459,5 +466,93 @@ private fun InputRow(
                 }
             }
         }
+    }
+}
+
+// ---- animated empty state for a fresh chat --------------------------------
+@androidx.compose.runtime.Composable
+private fun ChatEmptyState(modifier: Modifier = Modifier) {
+    androidx.compose.foundation.layout.Column(
+        modifier = modifier.padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        JarvisOrb(size = 132.dp)
+        androidx.compose.foundation.layout.Spacer(Modifier.height(22.dp))
+        Text(
+            "HOW CAN I HELP?",
+            color = JarvisPalette.Accent,
+            fontSize = 17.sp,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+            letterSpacing = 2.5.sp,
+        )
+        androidx.compose.foundation.layout.Spacer(Modifier.height(8.dp))
+        Text(
+            "Ask anything, attach a photo, or have Jarvis use its computer.",
+            color = JarvisPalette.TextSecondary,
+            fontSize = 13.sp,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        )
+    }
+}
+
+// A glowing arc-reactor orb: two counter-rotating rings + a breathing core.
+@androidx.compose.runtime.Composable
+private fun JarvisOrb(size: androidx.compose.ui.unit.Dp) {
+    val t = androidx.compose.animation.core.rememberInfiniteTransition(label = "orb")
+    val spin by t.animateFloat(
+        0f, 360f,
+        androidx.compose.animation.core.infiniteRepeatable(
+            androidx.compose.animation.core.tween(9000, easing = androidx.compose.animation.core.LinearEasing),
+        ),
+        label = "spin",
+    )
+    val spin2 by t.animateFloat(
+        360f, 0f,
+        androidx.compose.animation.core.infiniteRepeatable(
+            androidx.compose.animation.core.tween(6000, easing = androidx.compose.animation.core.LinearEasing),
+        ),
+        label = "spin2",
+    )
+    val pulse by t.animateFloat(
+        0.85f, 1.12f,
+        androidx.compose.animation.core.infiniteRepeatable(
+            androidx.compose.animation.core.tween(1600, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+            androidx.compose.animation.core.RepeatMode.Reverse,
+        ),
+        label = "pulse",
+    )
+    androidx.compose.foundation.Canvas(modifier = Modifier.size(size)) {
+        val c = androidx.compose.ui.geometry.Offset(this.size.width / 2f, this.size.height / 2f)
+        val r = this.size.minDimension / 2f
+        val accent = JarvisPalette.Accent
+        // outer halo
+        drawCircle(accent.copy(alpha = 0.10f), radius = r * 0.95f * pulse, center = c)
+        // outer ring (dashed via arcs)
+        rotate(spin, pivot = c) {
+            for (i in 0 until 8) {
+                drawArc(
+                    color = accent.copy(alpha = 0.8f),
+                    startAngle = i * 45f + 6f, sweepAngle = 28f, useCenter = false,
+                    topLeft = androidx.compose.ui.geometry.Offset(c.x - r * 0.88f, c.y - r * 0.88f),
+                    size = androidx.compose.ui.geometry.Size(r * 1.76f, r * 1.76f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f),
+                )
+            }
+        }
+        // inner ring
+        rotate(spin2, pivot = c) {
+            for (i in 0 until 3) {
+                drawArc(
+                    color = JarvisPalette.Accent2.copy(alpha = 0.85f),
+                    startAngle = i * 120f, sweepAngle = 70f, useCenter = false,
+                    topLeft = androidx.compose.ui.geometry.Offset(c.x - r * 0.55f, c.y - r * 0.55f),
+                    size = androidx.compose.ui.geometry.Size(r * 1.10f, r * 1.10f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f),
+                )
+            }
+        }
+        // breathing core
+        drawCircle(accent.copy(alpha = 0.25f), radius = r * 0.30f * pulse, center = c)
+        drawCircle(accent, radius = r * 0.13f * pulse, center = c)
     }
 }
