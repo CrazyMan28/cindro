@@ -91,6 +91,9 @@ private:
         QByteArray challenge;    // nonce we asked the device to sign
         QSet<QString> subscribedSessions; // sessions this device created/opened
         QSet<QString> mirroring;          // sessions whose video this device gets
+        QSet<QString> pinnedWidgets;      // live widget ids pinned to this phone's
+                                          // home screen (relayed even with no
+                                          // session subscription, throttled).
     };
 
     // One running MJPEG read of an agent desktop's engine /video/mjpeg, fanned
@@ -129,6 +132,14 @@ private:
     // a binary 'mirror.frame' to subscribed phones. mirror.stop unsubscribes.
     Response devMirrorStart(Conn &c, QWebSocket *client, const Request &req);
     Response devMirrorStop(Conn &c, QWebSocket *client, const Request &req);
+
+    // Live-widget viewer leases + home-screen pins (battery). widget.viewing holds
+    // a lease while the phone shows a chat (so that session's live widgets keep
+    // updating); widget.pin/unpin keep a pinned home-screen widget alive (60s
+    // floor) and relay its renders to the phone even with no chat open.
+    Response devWidgetViewing(Conn &c, const Request &req);
+    Response devWidgetPin(Conn &c, const Request &req);
+    Response devWidgetUnpin(Conn &c, const Request &req);
 
     // Start/stop the shared MJPEG pump for a session (ref-counted across
     // devices). pumpFrame() parses a complete JPEG out of the multipart stream.

@@ -29,6 +29,7 @@
 #include "jarvis/SshAllowList.h"
 #include "jarvis/VoiceProvider.h"
 #include "jarvis/VoiceService.h"
+#include "jarvis/WidgetLeaseRegistry.h"
 
 #include <QHash>
 #include <QObject>
@@ -80,6 +81,10 @@ public:
     Scheduler &scheduler() { return m_scheduler; }
     SshAllowList &sshAllow() { return m_sshAllow; }
     AuditLog &audit() { return m_audit; }
+    // Live-widget viewer leases (battery gating). The DeviceServer writes phone
+    // leases here too, so a live widget runs only while a desktop/phone viewer or
+    // a home-screen pin is watching it.
+    WidgetLeaseRegistry &widgetLeases() { return m_widgetLeases; }
 
     // Contract A v3 method dispatch shared with the device channel mirror. Each
     // returns the Response for the request; the device server forwards these so
@@ -232,6 +237,11 @@ private:
     // co-work session's transcript from leaking into the desktop.
     Response handleSessionSubscribe(QWebSocket *client, const Request &req);
     Response handleApprovalRespond(const Request &req);
+    // The desktop tells the daemon which live-widget scope it is currently viewing
+    // (a chat session, the Canvas tab = "all", or a popped-out "widget:<id>"), so an
+    // unwatched live widget can idle to save battery. Keyed by the socket so the
+    // lease is dropped when the desktop disconnects. ~15s heartbeats refresh it.
+    Response handleWidgetViewing(QWebSocket *client, const Request &req);
 
     // Contract A v2 handlers.
     Response handleMcpList(const Request &req);
@@ -387,6 +397,9 @@ private:
     // and own the non-storage behavior (real MCP test, codex injection, catalog
     // parsing). Created in start() once m_store is open.
     SettingsStore m_settings;
+    // Live-widget viewer leases (who is watching which live widget) — gates the
+    // engine's live-widget supervisor so an unwatched widget stops doing work.
+    WidgetLeaseRegistry m_widgetLeases;
     std::unique_ptr<McpRegistry> m_mcp;
     std::unique_ptr<PluginRegistry> m_plugins;
     // Wave 7: sandboxed launcher for kind=mcp/both stdio plugins (systemd-run

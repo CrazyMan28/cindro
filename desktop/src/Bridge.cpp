@@ -1869,6 +1869,108 @@ void Bridge::startWidgetWatch()
     m_widgetTimer->setInterval(500);
     connect(m_widgetTimer, &QTimer::timeout, this, &Bridge::readWidgetTail);
     m_widgetTimer->start();
+
+    // Re-assert active live-widget viewer leases every ~15s so the daemon's TTL
+    // (45s) never expires one while a page/popout is still on screen.
+    m_viewerHeartbeat = new QTimer(this);
+    m_viewerHeartbeat->setInterval(15000);
+    connect(m_viewerHeartbeat, &QTimer::timeout, this, [this]() {
+        for (auto it = m_widgetViewers.cbegin(); it != m_widgetViewers.cend(); ++it)
+            sendWidgetViewing(it.key(), true, it.value());
+    });
+    m_viewerHeartbeat->start();
+}
+
+void Bridge::sendWidgetViewing(const QString &scope, bool active, const QString &kind)
+{
+    if (scope.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("scope"), scope);
+    params.insert(QStringLiteral("kind"), kind);
+    params.insert(QStringLiteral("active"), active);
+    request(QStringLiteral("widget.viewing"), params);
+}
+
+void Bridge::setPageViewing(const QString &scope, const QString &kind)
+{
+    // The single "currently visible page" lease. Swapping pages drops the old one
+    // and asserts the new one (empty scope == no page lease, e.g. Settings).
+    if (scope == m_pageScope) {
+        if (!scope.isEmpty())
+            sendWidgetViewing(scope, true, kind); // refresh
+        return;
+    }
+    if (!m_pageScope.isEmpty()) {
+        sendWidgetViewing(m_pageScope, false, m_widgetViewers.value(m_pageScope));
+        m_widgetViewers.remove(m_pageScope);
+    }
+    m_pageScope = scope;
+    if (!scope.isEmpty()) {
+        m_widgetViewers.insert(scope, kind);
+        sendWidgetViewing(scope, true, kind);
+    }
+}
+
+void Bridge::addWidgetViewer(const QString &scope, const QString &kind)
+{
+    if (scope.isEmpty())
+        return;
+    m_widgetViewers.insert(scope, kind);
+    sendWidgetViewing(scope, true, kind);
+}
+
+void Bridge::removeWidgetViewer(const QString &scope)
+{
+    if (scope.isEmpty() || !m_widgetViewers.contains(scope))
+        return;
+    const QString kind = m_widgetViewers.take(scope);
+    sendWidgetViewing(scope, false, kind);
+}
+
+void Bridge::replayAllWidgets()
+{
+    // The Canvas/Widgets tab tails widgets.jsonl from EOF, so a widget rendered
+    // before the page opened wouldn't show. Replay the CURRENT canvas set (apply
+    // remove/clear, keep the last spec per id) so the page comes back populated.
+    QFile f(widgetsPath());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    QStringList order;
+    QHash<QString, QVariantMap> byId;
+    while (!f.atEnd()) {
+        const QByteArray line = f.readLine().trimmed();
+        if (line.isEmpty())
+            continue;
+        const QJsonDocument d = QJsonDocument::fromJson(line);
+        if (!d.isObject())
+            continue;
+        const QJsonObject o = d.object();
+        const QString op = o.value(QStringLiteral("op")).toString();
+        QString id = o.value(QStringLiteral("id")).toString();
+        if (op == QStringLiteral("clear")) { order.clear(); byId.clear(); continue; }
+        if (op == QStringLiteral("remove")) { order.removeAll(id); byId.remove(id); continue; }
+        if (!o.contains(QStringLiteral("spec")))
+            continue;
+        if (id.isEmpty())
+            id = o.value(QStringLiteral("ts")).toVariant().toString();
+        QString target = o.value(QStringLiteral("target")).toString();
+        if (target.isEmpty())
+            target = QStringLiteral("canvas");
+        QVariantMap widget;
+        widget.insert(QStringLiteral("ts"), o.value(QStringLiteral("ts")).toVariant());
+        widget.insert(QStringLiteral("title"), o.value(QStringLiteral("title")).toString());
+        widget.insert(QStringLiteral("id"), id);
+        widget.insert(QStringLiteral("target"), target);
+        widget.insert(QStringLiteral("session_id"),
+                      o.value(QStringLiteral("session_id")).toString());
+        widget.insert(QStringLiteral("spec"), o.value(QStringLiteral("spec")).toVariant());
+        if (!byId.contains(id))
+            order.append(id);
+        byId.insert(id, widget);
+    }
+    for (const QString &id : order)
+        emit widgetRendered(byId.value(id));
 }
 
 void Bridge::readWidgetTail()

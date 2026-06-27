@@ -36,6 +36,36 @@ Item {
         } else {
             bridge.stopConversation()
         }
+        updateWidgetViewing()
+    }
+
+    // Hold a live-widget viewer lease for the visible page so the engine only runs
+    // a live widget while someone is watching it (battery). Chat -> the current
+    // session's scope; Canvas/Widgets -> "all" (and replay so the tab isn't empty);
+    // any other page -> no lease (its live widgets idle until you come back).
+    //   0 Chat · 3 Canvas · 14 Widgets  (keep in sync with the page switch above)
+    function updateWidgetViewing() {
+        if (!bridge)
+            return
+        if (currentIndex === 0) {
+            bridge.setPageViewing(bridge.sessionId, "chat")
+        } else if (currentIndex === 3 || currentIndex === 14) {
+            bridge.setPageViewing("all", "canvas")
+            bridge.replayAllWidgets()
+        } else {
+            bridge.setPageViewing("", "")
+        }
+    }
+
+    Component.onCompleted: updateWidgetViewing()
+
+    // If the session changes while the Chat page is open, move the lease with it.
+    Connections {
+        target: bridge
+        function onSessionIdChanged() {
+            if (shell.currentIndex === 0)
+                bridge.setPageViewing(bridge.sessionId, "chat")
+        }
     }
 
     // Set by the Chat loader so other pages (e.g. Skills /invoke) can inject into
