@@ -227,7 +227,7 @@ Item {
         }
     }
     Component { id: voiceComp;    VoiceMode {} }
-    Component { id: computerComp; ComputerPage {} }
+    Component { id: computerComp; ComputerPage { pageVisible: shell.currentIndex === 3 } }
     Component {
         id: canvasComp
         CanvasPage {

@@ -87,7 +87,10 @@ Rectangle {
         anchors.fill: parent
         fillMode: Image.PreserveAspectFit
         cache: false
-        asynchronous: true
+        // Synchronous: the frame is an already-decoded QImage in the C++ provider,
+        // so loading it inline never blanks the element between frames (no flicker).
+        asynchronous: false
+        smooth: true
         source: ""
         visible: bridge.frameSeq > 0
         Connections {
