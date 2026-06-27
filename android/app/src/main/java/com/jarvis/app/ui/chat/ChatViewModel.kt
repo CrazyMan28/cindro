@@ -11,6 +11,7 @@ import com.jarvis.app.protocol.BrainEvent
 import com.jarvis.app.ui.util.Haptics
 import com.jarvis.app.voice.VoiceController
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -71,6 +72,24 @@ class ChatViewModel(
     init {
         loadHistory()
         subscribe()
+        holdWidgetViewingLease()
+    }
+
+    /**
+     * While this chat is open, hold a live-widget viewer lease for its session so
+     * the session's live widgets keep updating (battery: when you leave the chat the
+     * ViewModel is cleared, the heartbeat stops, and the lease TTLs out in ~45s so
+     * those widgets idle). ~20s cadence stays inside the daemon's 45s lease TTL.
+     */
+    private fun holdWidgetViewingLease() {
+        val sid = _uiState.value.sessionId
+        if (sid.isBlank()) return
+        viewModelScope.launch {
+            while (true) {
+                repo.widgetViewing(sid, active = true, kind = "chat")
+                delay(20_000)
+            }
+        }
     }
 
     // --- voice (push-to-talk) ---------------------------------------------

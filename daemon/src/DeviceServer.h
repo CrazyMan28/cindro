@@ -187,6 +187,11 @@ private:
     void readWidgetTail();
     QTimer *m_widgetTimer = nullptr;
     qint64 m_widgetOffset = 0;
+    // Per-(device|widget id) last push time (ms) for renders delivered ONLY because
+    // the phone has the widget pinned to its home screen (not via a session sub).
+    // Enforces a 60s floor so a 1s desktop-driven job can't blast a backgrounded
+    // phone's home widget (aggressive battery policy).
+    QHash<QString, qint64> m_pinPushMs;
 };
 
 } // namespace jarvis
