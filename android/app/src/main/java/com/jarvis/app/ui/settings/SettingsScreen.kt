@@ -15,7 +15,9 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -27,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -204,6 +207,72 @@ fun SettingsScreen(
                         }
                     },
                 )
+            }
+
+            // --- Permissions (ask-before-risky policy) ---
+            GlowCard(modifier = Modifier.fillMaxWidth()) {
+                Column {
+                    Text("Permissions", style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextPrimary)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "How cautious Jarvis is before risky actions. Tools are auto-ranked: HIGH = irreversible / your real world (delete files, your real screen, ssh, installs, sending things out), MEDIUM = reversible / agent-scoped (edit files, memory), LOW = read-only.",
+                        style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    val levels = listOf(
+                        Triple("high", "Cautious", "Ask before HIGH + MEDIUM"),
+                        Triple("medium", "Balanced", "Ask before HIGH only"),
+                        Triple("low", "Autonomous", "Only confirm the worst"),
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        levels.forEach { (id, name, sub) ->
+                            val selected = state.permissionLevel == id
+                            Surface(
+                                onClick = {
+                                    scope.launch {
+                                        if (Biometric.authenticate(activity, "Set permission level", name)) {
+                                            viewModel.setPermissionLevel(id)
+                                        }
+                                    }
+                                },
+                                shape = MaterialTheme.shapes.medium,
+                                color = if (selected) JarvisPalette.AccentDim else JarvisPalette.SurfaceVariant,
+                                border = if (selected) BorderStroke(1.dp, JarvisPalette.Accent) else null,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            name,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = if (selected) JarvisPalette.TextPrimary else JarvisPalette.TextSecondary,
+                                        )
+                                        Text(
+                                            sub,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = JarvisPalette.TextSecondary,
+                                        )
+                                    }
+                                    if (selected) {
+                                        Icon(
+                                            Icons.Filled.Check,
+                                            contentDescription = "Selected",
+                                            tint = JarvisPalette.Accent,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Jarvis calls ask_user (you approve here or on the laptop) before any action above your line. It's a policy, not the sandbox.",
+                        style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary,
+                    )
+                }
             }
 
             // --- Claude account (Pro vs Max) ---

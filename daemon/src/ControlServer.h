@@ -374,6 +374,13 @@ private:
     QString prefetchMemoryBlock(const QString &query);
     void syncTurnMemory(const QString &sessionId, const QString &userText);
 
+    // Soft permission policy injected into the co-work preamble. Auto-ranks
+    // tools high/medium/low by capability and tells the model to call ask_user
+    // before acting at/above the user's configured permission_level. Returns a
+    // clause to append after the co-work guide (empty when level == "low" and
+    // no HIGH-risk confirm is wanted — but we always confirm the worst).
+    QString permissionPolicyClause() const;
+
     // Render the base system block (memory) injected into ApiBrain's system
     // prompt at session.create time.
     QString memorySystemBlock();

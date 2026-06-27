@@ -50,6 +50,7 @@ void SettingsStore::load()
     // round-trips as `tts_voice = "..."` (empty when absent).
     m_letJarvisUseComputer = true;
     m_authLockEnabled = true;
+    m_permissionLevel = QStringLiteral("medium");
     m_ttsVoice.clear();
     m_sttProvider = QStringLiteral("voxtral");
     m_ttsProvider = QStringLiteral("voxtral");
@@ -78,6 +79,18 @@ void SettingsStore::load()
                         // OFF (mirrors let_jarvis_use_computer above).
                         m_authLockEnabled =
                             !(v == QStringLiteral("false") || v == QStringLiteral("0"));
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("permission_level"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        QString v = line.mid(eq + 1).trimmed();
+                        if (v.size() >= 2 &&
+                            ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
+                             (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
+                            v = v.mid(1, v.size() - 2);
+                        setPermissionLevel(v.toLower()); // normalizes unknown -> medium
                     }
                     continue;
                 }
@@ -198,6 +211,7 @@ bool SettingsStore::saveConfig()
                     t.startsWith(QStringLiteral("claude_account")) ||
                     t.startsWith(QStringLiteral("let_jarvis_use_computer")) ||
                     t.startsWith(QStringLiteral("auth_lock_enabled")) ||
+                    t.startsWith(QStringLiteral("permission_level")) ||
                     t.startsWith(QStringLiteral("tts_voice")) ||
                     t.startsWith(QStringLiteral("stt_provider")) ||
                     t.startsWith(QStringLiteral("tts_provider")) ||
@@ -215,6 +229,7 @@ bool SettingsStore::saveConfig()
     ts << "claude_account = \"" << m_claudeAccount << "\"\n";
     ts << "let_jarvis_use_computer = " << (m_letJarvisUseComputer ? "true" : "false") << "\n";
     ts << "auth_lock_enabled = " << (m_authLockEnabled ? "true" : "false") << "\n";
+    ts << "permission_level = \"" << m_permissionLevel << "\"\n";
     if (!m_ttsVoice.isEmpty())
         ts << "tts_voice = \"" << m_ttsVoice << "\"\n";
     ts << "stt_provider = \"" << m_sttProvider << "\"\n";

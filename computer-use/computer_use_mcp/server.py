@@ -15,7 +15,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from computer_use_mcp import (
     __version__, agent_bus, auth, live_widgets, screen, session, tools_browser,
-    tools_desktop, tools_jarvis_ops, tools_widgets,
+    tools_desktop, tools_jarvis_ops, tools_todo, tools_widgets,
 )
 from computer_use_mcp.browser_bridge import bridge
 from computer_use_mcp.config import load_config
@@ -33,6 +33,7 @@ tools_desktop.register(mcp)
 tools_browser.register(mcp)
 tools_jarvis_ops.register(mcp)   # schedule / memory / skills (proxied to jarvisd)
 tools_widgets.register(mcp)      # render_widget — generative UI on the desktop CANVAS
+tools_todo.register(mcp)         # todo_write/read/clear — the agent's live plan/checklist
 mcp_app = mcp.streamable_http_app()
 
 

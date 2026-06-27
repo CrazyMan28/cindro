@@ -81,6 +81,25 @@ public:
     bool authLockEnabled() const { return m_authLockEnabled; }
     void setAuthLockEnabled(bool v) { m_authLockEnabled = v; }
 
+    // How cautious the agent is before taking risky actions ("permission
+    // level"). This drives a SOFT policy injected into the co-work preamble —
+    // the model is told to call ask_user first before actions at/above the
+    // configured risk tier. It does NOT change the sandbox / capability tiers
+    // (those stay enforced by the daemon); it only tunes how often the model
+    // pauses to ask. Tools are auto-ranked high/medium/low by name pattern.
+    //   "high"   -> ask before HIGH and MEDIUM risk actions (most cautious)
+    //   "medium" -> ask before HIGH risk actions only (balanced, default)
+    //   "low"    -> act freely; only confirm the most destructive HIGH actions
+    // Anything unrecognized normalizes to "medium". Round-trips in config.toml
+    // as a flat key `permission_level = "..."`.
+    QString permissionLevel() const { return m_permissionLevel; }
+    void setPermissionLevel(const QString &p)
+    {
+        m_permissionLevel = (p == QStringLiteral("high") || p == QStringLiteral("low"))
+                                ? p
+                                : QStringLiteral("medium");
+    }
+
     // Which claude OAuth account the claude brain spawns against.
     //   "pro" -> ~/.claude          (ogkihi2024@gmail.com, the default)
     //   "max" -> ~/.claude-secondary (issac676767@proton.me, uses Max quota)
@@ -117,6 +136,7 @@ private:
     QString m_claudeAccount = QStringLiteral("pro"); // default: Pro (~/.claude)
     bool m_letJarvisUseComputer = true; // default ON (auto computer-use in chat)
     bool m_authLockEnabled = true;      // default ON (require phone+fingerprint)
+    QString m_permissionLevel = QStringLiteral("medium"); // ask-before-risky policy
     QString m_ttsVoice;                 // preferred TTS voice slug (empty = default)
     QString m_sttProvider = QStringLiteral("voxtral"); // STT provider id
     QString m_ttsProvider = QStringLiteral("voxtral"); // TTS provider id

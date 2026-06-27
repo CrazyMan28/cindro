@@ -37,6 +37,7 @@ Item {
     property bool glow: true
     property bool compact: false
     property bool authLockEnabled: false        // require phone+fingerprint to open
+    property string permissionLevel: "medium"   // ask-before-risky: high|medium|low
     property bool dirty: false
     property bool saving: false
 
@@ -148,6 +149,8 @@ Item {
             if (s.stt_providers !== undefined) page.sttProviders = s.stt_providers
             if (s.tts_providers !== undefined) page.ttsProviders = s.tts_providers
             page.authLockEnabled = s.auth_lock_enabled === true
+            page.permissionLevel = (s.permission_level === "high" || s.permission_level === "low")
+                                   ? s.permission_level : "medium"
             if (s.theme !== undefined) {
                 page.glow = s.theme.glow !== undefined ? s.theme.glow : true
                 page.compact = s.theme.compact !== undefined ? s.theme.compact : false
@@ -267,6 +270,7 @@ Item {
             "stt_provider": page.sttProvider,
             "tts_provider": page.ttsProvider,
             "auth_lock_enabled": page.authLockEnabled,
+            "permission_level": page.permissionLevel,
             "theme": { "glow": page.glow, "compact": page.compact }
         }
         // only send keys the user actually typed (write-only)
@@ -693,6 +697,116 @@ Item {
                     Widgets.StyledSwitch {
                         checked: page.authLockEnabled
                         onToggled: function(v) { page.authLockEnabled = v; page.dirty = true }
+                    }
+                }
+            }
+
+            // ===== Permissions ============================================
+            Text {
+                text: "// PERMISSIONS"
+                color: Theme.accent
+                font.family: Theme.fontDisplay
+                font.pixelSize: 11
+                font.letterSpacing: Theme.trackMid
+                font.weight: Font.DemiBold
+                Layout.topMargin: 2
+                Layout.leftMargin: 2
+            }
+
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+
+                    Text {
+                        text: "How cautious Jarvis is before risky actions"
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 13
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        text: "Tools are auto-ranked by risk. HIGH = irreversible / touches your real world (delete files, destructive shell, your real screen, ssh, installs, sending things out). MEDIUM = reversible / scoped to the agent (edit files, agent desktop, memory). LOW = read-only (read, list, search, render)."
+                        color: Theme.textMuted
+                        font.family: Theme.fontSans
+                        font.pixelSize: 11
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                    }
+
+                    // 3-way segmented selector
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Repeater {
+                            model: [
+                                { key: "high",   name: "Cautious",    sub: "Ask before HIGH + MEDIUM" },
+                                { key: "medium", name: "Balanced",    sub: "Ask before HIGH only" },
+                                { key: "low",    name: "Autonomous",  sub: "Only confirm the worst" }
+                            ]
+                            delegate: Rectangle {
+                                id: seg
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 58
+                                radius: Theme.radiusSm
+                                readonly property bool sel: page.permissionLevel === seg.modelData.key
+                                color: seg.sel ? Theme.accentDim
+                                           : (segMa.containsMouse ? Theme.surfaceStrong : Theme.surface)
+                                border.width: 1
+                                border.color: seg.sel ? Theme.accent
+                                              : (segMa.containsMouse ? Theme.accentDim : Theme.hairlineSoft)
+                                Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                                Behavior on border.color { ColorAnimation { duration: Theme.durFast } }
+
+                                ColumnLayout {
+                                    anchors.centerIn: parent
+                                    width: seg.width - 16
+                                    spacing: 2
+                                    Text {
+                                        text: seg.modelData.name.toUpperCase()
+                                        color: seg.sel ? Theme.accentBright : Theme.text
+                                        font.family: Theme.fontDisplay
+                                        font.pixelSize: 12
+                                        font.weight: Font.DemiBold
+                                        font.letterSpacing: Theme.trackMid
+                                        Layout.alignment: Qt.AlignHCenter
+                                    }
+                                    Text {
+                                        text: seg.modelData.sub
+                                        color: Theme.textMuted
+                                        font.family: Theme.fontSans
+                                        font.pixelSize: 10
+                                        Layout.alignment: Qt.AlignHCenter
+                                        horizontalAlignment: Text.AlignHCenter
+                                        Layout.fillWidth: true
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                                MouseArea {
+                                    id: segMa
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (page.permissionLevel !== seg.modelData.key) {
+                                            page.permissionLevel = seg.modelData.key
+                                            page.dirty = true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Jarvis calls ask_user (tap to approve on your phone or here) before any action above your chosen line. This is a policy, not the sandbox — capability limits still apply."
+                        color: Theme.textMuted
+                        font.family: Theme.fontSans
+                        font.pixelSize: 10
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
                     }
                 }
             }

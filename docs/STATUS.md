@@ -8,6 +8,34 @@ _Last updated: 2026-06-27._
 
 ---
 
+## 🆕 Desktop redesign + permission system + model TODO (2026-06-27)
+
+The desktop app got the same kind of pass the phone did, plus two new cross-platform
+features the user asked for:
+
+- **Desktop redesign** — new **Home dashboard** landing (greeting, active-agent card
+  with the spinning ArcReactor, quick actions, recent sessions, live-widget preview),
+  NavRail regrouped under WORKSPACE/MIND/SYSTEM headers, and the **Browser** tab removed
+  from the rail (the agent's browser surfaces through the in-chat **agent peek** instead).
+- **In-chat agent peek** — an animated right-side panel that slides open while an agent
+  is active so you can watch its nested desktop / Chrome tab without leaving the chat
+  (`AgentPeek.qml`, mirror-on-visible). Plus an in-transcript **chat search** (⌕).
+- **Permission system (NEW)** — tools are auto-ranked **HIGH / MEDIUM / LOW** by
+  capability, and a `permission_level` setting (`high` *Cautious* · `medium` *Balanced*
+  (default) · `low` *Autonomous*) drives a **soft ask-before-risky policy** injected into
+  the co-work preamble: the model calls `ask_user` before acting at/above your chosen
+  line. It is a *policy*, not the sandbox — capability tiers stay enforced. Configurable
+  in **Settings → Permissions** on **both** desktop and phone (biometric-gated patch).
+- **Model TODO (NEW)** — the agent can publish a live plan with `todo_write` /
+  `todo_read` / `todo_clear` (computer-use engine). It persists per session and renders a
+  **checklist card** (✓ / ◐ / ○ with a `done/total` count) inline in chat + on the Canvas,
+  on desktop **and** phone, via the existing widget bus (stable id → updates in place).
+  The preamble tells the model to use it for any 3+-step task. 6 new engine tests.
+- Also fixed a **stale `test_jarvis_seat_routing` test** (it predated the atomic-click
+  change and asserted the old press/release contract). Engine suite back to green (62).
+
+---
+
 ## 🆕 Premium phone UI + widget/lifecycle fixes + Mistral + scroll (2026-06-27)
 
 - **Premium phone redesign** (v0.8.x): new **Home dashboard** (greeting, quick-action
