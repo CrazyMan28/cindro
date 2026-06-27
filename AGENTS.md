@@ -81,6 +81,20 @@ Design pillars:
   `target` (canvas/chat/voice/both) + `session_id`; ad-hoc draws = CANVAS, saved
   reusable ones (`saved_widgets.json`) = WIDGETS. `op:remove`/`op:clear` are delete
   markers. See `docs/WIDGETS_CANVAS.md`.
+- **Live widgets are viewer-gated (battery).** ONE supervisor process
+  (`live_widgets.py`, pid-file `widget_supervisor.pid`) runs every job; a job only
+  does work while a fresh **viewer lease** covers it (daemon-owned
+  `widget_viewers/*.json`, 45 s TTL, wiped on daemon start). Desktop sends
+  `widget.viewing`; phone sends `widget.viewing`/`widget.pin`/`widget.unpin`. Pinned
+  home-screen widgets get a 60 s floor + relay throttle and only heartbeat while the
+  phone is unlocked. Deleting a canvas/widget (any path, incl. the desktop "✕" bus
+  marker) STOPS its job — don't reintroduce the old "remove render only" behavior.
+  The `WidgetLeaseRegistry` (core) is the single writer; leases are ephemeral
+  (rebuilt from live connections), never persisted across a daemon restart.
+- **Home-screen widget (Android)** draws the DSL to a bitmap headlessly
+  (`WidgetBitmapRenderer`) shown in a classic `AppWidgetProvider` RemoteViews — NO
+  Glance (RemoteViews can't host Compose). Updates are push-driven over the device
+  WS (`updatePeriodMillis=0`); never add a polling `updatePeriodMillis`.
 - Notifications do **not** use Firebase in this setup (no service account). The Android foreground
   `JarvisConnectionService` holds the device WS open and posts local notifications off it —
   `session.opened`, `file.offer`, and **`auth.challenge`** (the desktop/Chrome unlock prompt).

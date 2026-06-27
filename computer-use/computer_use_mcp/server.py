@@ -14,8 +14,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from computer_use_mcp import (
-    __version__, agent_bus, auth, screen, session, tools_browser, tools_desktop,
-    tools_jarvis_ops, tools_widgets,
+    __version__, agent_bus, auth, live_widgets, screen, session, tools_browser,
+    tools_desktop, tools_jarvis_ops, tools_widgets,
 )
 from computer_use_mcp.browser_bridge import bridge
 from computer_use_mcp.config import load_config
@@ -38,6 +38,13 @@ mcp_app = mcp.streamable_http_app()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Make sure the single live-widget supervisor is running (idempotent, pid-file
+    # guarded). The always-on host engine is the primary owner; per-session engines
+    # also call this from live_widgets.start(), but only one supervisor ever exists.
+    try:
+        live_widgets.ensure_supervisor()
+    except Exception:
+        pass
     ping_task = asyncio.create_task(bridge.ping_loop())
     async with mcp.session_manager.run():
         try:

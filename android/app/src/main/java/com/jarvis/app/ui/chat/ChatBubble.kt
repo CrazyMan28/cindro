@@ -105,6 +105,7 @@ fun ChatBubble(
 
 @Composable
 private fun WidgetBubble(item: ChatItem.Widget, onWidgetAction: (com.google.gson.JsonObject) -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     Column(
         Modifier
             .fillMaxWidth()
@@ -126,6 +127,29 @@ private fun WidgetBubble(item: ChatItem.Widget, onWidgetAction: (com.google.gson
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            Spacer(Modifier.weight(1f))
+            // One-tap "pin to home screen" — turns this canvas into a real Android
+            // widget that updates live (stashes the spec; the launcher places it).
+            Text(
+                "📌 PIN",
+                color = Color(0xFF5FE0FF),
+                fontSize = 9.sp,
+                letterSpacing = 1.0.sp,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable {
+                        val ok = com.jarvis.app.widget.WidgetPinHelper.pinToHome(
+                            context, item.id, item.specJson, item.title.ifBlank { "Jarvis" })
+                        android.widget.Toast.makeText(
+                            context,
+                            if (ok) "Confirm to add the widget to your home screen"
+                            else "Add it from your home-screen widget list",
+                            android.widget.Toast.LENGTH_SHORT,
+                        ).show()
+                    }
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+            )
         }
         Spacer(Modifier.height(8.dp))
         WidgetRenderer(item.specJson, onWidgetAction)

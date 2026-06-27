@@ -72,6 +72,31 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Real home-screen widget: renders a pinned Jarvis canvas/widget (drawn to
+             a bitmap) and updates live over the device WS (push-driven, no polling). -->
+        <receiver
+            android:name=".widget.JarvisWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.jarvis.app.WIDGET_PINNED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/jarvis_appwidget_info" />
+        </receiver>
+
+        <!-- Config screen shown when the widget is added from the OS picker (the
+             in-app 1-click pin skips it). Launched by the launcher, so exported. -->
+        <activity
+            android:name=".widget.WidgetConfigActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Jarvis">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
+
         <!-- FileProvider so file.offer downloads can be opened/shared by other apps. -->
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls
 import JarvisSidebar
 
 // AppShell — the full multi-page application body. A slim left NavRail routes
@@ -35,6 +36,36 @@ Item {
             if (bridge.connected) bridge.startConversation()
         } else {
             bridge.stopConversation()
+        }
+        updateWidgetViewing()
+    }
+
+    // Hold a live-widget viewer lease for the visible page so the engine only runs
+    // a live widget while someone is watching it (battery). Chat -> the current
+    // session's scope; Canvas/Widgets -> "all" (and replay so the tab isn't empty);
+    // any other page -> no lease (its live widgets idle until you come back).
+    //   0 Chat · 3 Canvas · 14 Widgets  (keep in sync with the page switch above)
+    function updateWidgetViewing() {
+        if (!bridge)
+            return
+        if (currentIndex === 0) {
+            bridge.setPageViewing(bridge.sessionId, "chat")
+        } else if (currentIndex === 5 || currentIndex === 6) {  // Canvas / Widgets
+            bridge.setPageViewing("all", "canvas")
+            bridge.replayAllWidgets()
+        } else {
+            bridge.setPageViewing("", "")
+        }
+    }
+
+    Component.onCompleted: updateWidgetViewing()
+
+    // If the session changes while the Chat page is open, move the lease with it.
+    Connections {
+        target: bridge
+        function onSessionIdChanged() {
+            if (shell.currentIndex === 0)
+                bridge.setPageViewing(bridge.sessionId, "chat")
         }
     }
 
@@ -90,6 +121,12 @@ Item {
                     enabled: active
                     z: active ? 1 : 0
 
+                    // Chat (0) preloads so its transcript + chatPanel exist at
+                    // startup; every other page loads on first visit, then stays
+                    // warm. Cuts startup cost + memory (was: all 15 built eagerly).
+                    property bool loadedOnce: index === 0
+                    onActiveChanged: if (active) loadedOnce = true
+
                     transform: Translate {
                         // active page rests at 0; inactive pages sit slightly to
                         // the right so the transition reads as a soft push-in.
@@ -100,32 +137,154 @@ Item {
 
                     Loader {
                         anchors.fill: parent
-                        // Instantiate immediately so each page can prefetch its
-                        // data and keep it warm across navigation.
-                        active: true
+                        // Lazy: load on first visit, then keep warm so data prefetched
+                        // by a page survives later navigation.
+                        active: pageWrap.loadedOnce
                         sourceComponent: {
+                            // Index order MUST match NavRail.items (grouped sections).
                             switch (pageWrap.index) {
                             case 0: return chatComp
                             case 1: return voiceComp
-                            case 2: return computerComp
-                            case 3: return canvasComp
+                            case 2: return sessionsComp
+                            case 3: return computerComp
                             case 4: return browserComp
-                            case 5: return schedulesComp
-                            case 6: return memoryComp
-                            case 7: return skillsComp
-                            case 8: return sessionsComp
-                            case 9: return activityComp
-                            case 10: return sshComp
-                            case 11: return settingsComp
-                            case 12: return mcpComp
-                            case 13: return pluginsComp
-                            case 14: return widgetsComp
+                            case 5: return canvasComp
+                            case 6: return widgetsComp
+                            case 7: return memoryComp
+                            case 8: return skillsComp
+                            case 9: return schedulesComp
+                            case 10: return activityComp
+                            case 11: return mcpComp
+                            case 12: return pluginsComp
+                            case 13: return sshComp
+                            case 14: return settingsComp
                             }
                         }
                     }
                 }
             }
         }
+        }
+    }
+
+    // ---- Ctrl+K quick-switcher --------------------------------------------
+    // Jump to any page by typing — the fast path when the rail has 15 entries.
+    property bool quickOpen: false
+
+    Shortcut {
+        sequence: "Ctrl+K"
+        onActivated: shell.quickOpen = true
+    }
+
+    function quickMatches(q) {
+        var ql = (q || "").toLowerCase().trim()
+        var out = []
+        for (var i = 0; i < rail.items.length; i++) {
+            var it = rail.items[i]
+            if (ql === "" || it.label.toLowerCase().indexOf(ql) >= 0
+                          || it.section.toLowerCase().indexOf(ql) >= 0)
+                out.push({ "label": it.label, "section": it.section, "idx": i })
+        }
+        return out
+    }
+
+    Rectangle {
+        id: quick
+        anchors.fill: parent
+        visible: shell.quickOpen
+        z: 200
+        color: Qt.rgba(0, 0, 0, 0.55)
+
+        MouseArea { anchors.fill: parent; onClicked: shell.quickOpen = false }
+
+        function go(idx) {
+            shell.currentIndex = idx
+            shell.quickOpen = false
+            quickInput.text = ""
+        }
+
+        onVisibleChanged: if (visible) { quickInput.text = ""; quickInput.forceActiveFocus() }
+
+        Rectangle {
+            width: Math.min(460, parent.width - 80)
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: Math.round(parent.height * 0.16)
+            implicitHeight: quickCol.implicitHeight + 20
+            radius: Theme.radius
+            color: Theme.panel
+            border.width: 1
+            border.color: Theme.accentDim
+            MouseArea { anchors.fill: parent } // swallow backdrop clicks
+
+            ColumnLayout {
+                id: quickCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 10
+                spacing: 8
+
+                TextField {
+                    id: quickInput
+                    Layout.fillWidth: true
+                    placeholderText: "Jump to a page…  (Esc to close)"
+                    color: Theme.text
+                    font.family: Theme.fontDisplay
+                    font.pixelSize: 13
+                    background: Rectangle {
+                        radius: Theme.radiusSm
+                        color: Theme.surfaceDeep
+                        border.width: 1
+                        border.color: Theme.hairline
+                    }
+                    Keys.onEscapePressed: shell.quickOpen = false
+                    Keys.onReturnPressed: {
+                        var m = shell.quickMatches(text)
+                        if (m.length > 0) quick.go(m[0].idx)
+                    }
+                }
+
+                ListView {
+                    id: quickList
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(320, contentHeight)
+                    clip: true
+                    model: shell.quickMatches(quickInput.text)
+                    delegate: Rectangle {
+                        required property var modelData
+                        required property int index
+                        width: ListView.view.width
+                        height: 36
+                        radius: Theme.radiusSm
+                        color: hov.hovered ? Theme.navActive : "transparent"
+                        HoverHandler { id: hov }
+                        Row {
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.left: parent.left
+                            anchors.leftMargin: 12
+                            spacing: 10
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: modelData.label
+                                color: Theme.text
+                                font.family: Theme.fontDisplay
+                                font.pixelSize: 12
+                                font.weight: Font.Medium
+                                font.letterSpacing: Theme.trackMid
+                            }
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: modelData.section
+                                color: Theme.textFaint
+                                font.family: Theme.fontDisplay
+                                font.pixelSize: 8
+                                font.letterSpacing: 1.5
+                            }
+                        }
+                        TapHandler { onTapped: quick.go(modelData.idx) }
+                    }
+                }
+            }
         }
     }
 
@@ -192,7 +351,7 @@ Item {
             // jumps to Chat so the user sees it land.
             onRenderedToChat: function() { shell.currentIndex = 0 }
             // "Render to canvas" jumps to the Canvas page to show the result.
-            onRenderedToCanvas: function() { shell.currentIndex = 3 }
+            onRenderedToCanvas: function() { shell.currentIndex = 5 }
         }
     }
 }

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Hub
@@ -40,6 +41,7 @@ data class MoreEntry(val route: String, val label: String, val subtitle: String,
 @Composable
 fun MoreScreen(onBack: () -> Unit, onOpen: (String) -> Unit) {
     val entries = listOf(
+        MoreEntry("skills", "Skills", "Browse + invoke Jarvis skills", Icons.Filled.AutoAwesome),
         MoreEntry("queue", "Queue", "Schedule tasks for Jarvis", Icons.Filled.Schedule),
         MoreEntry("mcp", "MCP servers", "Add, test, enable MCP tools", Icons.Filled.Hub),
         MoreEntry("plugins", "Plugins", "Install from the catalog", Icons.Filled.Extension),

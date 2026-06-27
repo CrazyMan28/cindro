@@ -1,5 +1,6 @@
 package com.jarvis.app.net
 
+import android.app.KeyguardManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
@@ -7,15 +8,20 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.jarvis.app.JarvisApp
 import com.jarvis.app.MainActivity
 import com.jarvis.app.R
 import com.jarvis.app.fcm.JarvisNotifier
+import com.jarvis.app.widget.JarvisWidgetProvider
+import com.jarvis.app.widget.WidgetBindings
+import com.jarvis.app.widget.WidgetCatalog
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -39,9 +45,14 @@ class JarvisConnectionService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopSelf()
-            return START_NOT_STICKY
+        when (intent?.action) {
+            ACTION_STOP -> { stopSelf(); return START_NOT_STICKY }
+            ACTION_PIN -> intent.getStringExtra(EXTRA_WIDGET_ID)?.let { id ->
+                scope.launch { (application as JarvisApp).repository.widgetPin(id, active = true) }
+            }
+            ACTION_UNPIN -> intent.getStringExtra(EXTRA_WIDGET_ID)?.let { id ->
+                scope.launch { (application as JarvisApp).repository.widgetUnpin(id) }
+            }
         }
         startForegroundWithNotification()
         startCollecting()
@@ -118,6 +129,43 @@ class JarvisConnectionService : Service() {
                 )
             }
         }
+
+        // A live render forwarded from the bus -> remember it (so the widget picker
+        // can offer it) and redraw any home-screen instance pinned to that id, even
+        // while the app UI is closed (this service holds the socket).
+        scope.launch {
+            app.repository.widgetEvents.collect { w ->
+                if (w.op == "render" && w.spec != null) {
+                    val specJson = w.spec.toString()
+                    WidgetCatalog.remember(applicationContext, w.id, w.title, specJson,
+                        System.currentTimeMillis())
+                    JarvisWidgetProvider.refreshForWidgetId(applicationContext, w.id, specJson, w.title)
+                }
+            }
+        }
+
+        // Home-screen pin heartbeats (AGGRESSIVE battery policy): keep a pinned
+        // widget's live job alive ONLY while the phone is unlocked/interactive; when
+        // it's off/locked we send active=false so the daemon lease expires and the
+        // job idles. ~30s cadence stays well inside the 45s lease TTL.
+        scope.launch {
+            while (true) {
+                val pinned = WidgetBindings.pinnedWidgetIds(applicationContext)
+                if (pinned.isNotEmpty()) {
+                    val awake = isInteractiveAndUnlocked()
+                    for (id in pinned) app.repository.widgetPin(id, active = awake)
+                }
+                delay(30_000)
+            }
+        }
+    }
+
+    private fun isInteractiveAndUnlocked(): Boolean {
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val km = getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
+        val interactive = pm?.isInteractive ?: true
+        val locked = km?.isKeyguardLocked ?: false
+        return interactive && !locked
     }
 
     override fun onDestroy() {
@@ -129,6 +177,9 @@ class JarvisConnectionService : Service() {
 
     companion object {
         const val ACTION_STOP = "com.jarvis.app.CONNECTION_STOP"
+        const val ACTION_PIN = "com.jarvis.app.WIDGET_PIN"
+        const val ACTION_UNPIN = "com.jarvis.app.WIDGET_UNPIN"
+        const val EXTRA_WIDGET_ID = "widget_id"
         private const val NOTIF_ID = 0xC0DE
 
         /** Start the background connection service (paired users only). */
@@ -145,6 +196,23 @@ class JarvisConnectionService : Service() {
             context.startService(
                 Intent(context, JarvisConnectionService::class.java).setAction(ACTION_STOP),
             )
+        }
+
+        /** Immediately register a home-screen pin for [widgetId] (the heartbeat loop
+         *  then keeps it alive while unlocked). */
+        fun requestPin(context: Context, widgetId: String) {
+            val i = Intent(context, JarvisConnectionService::class.java)
+                .setAction(ACTION_PIN).putExtra(EXTRA_WIDGET_ID, widgetId)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
+            else context.startService(i)
+        }
+
+        /** Drop a home-screen pin (the last instance was removed). */
+        fun requestUnpin(context: Context, widgetId: String) {
+            val i = Intent(context, JarvisConnectionService::class.java)
+                .setAction(ACTION_UNPIN).putExtra(EXTRA_WIDGET_ID, widgetId)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(i)
+            else context.startService(i)
         }
     }
 }

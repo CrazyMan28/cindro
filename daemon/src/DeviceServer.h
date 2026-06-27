@@ -91,6 +91,9 @@ private:
         QByteArray challenge;    // nonce we asked the device to sign
         QSet<QString> subscribedSessions; // sessions this device created/opened
         QSet<QString> mirroring;          // sessions whose video this device gets
+        QSet<QString> pinnedWidgets;      // live widget ids pinned to this phone's
+                                          // home screen (relayed even with no
+                                          // session subscription, throttled).
     };
 
     // One running MJPEG read of an agent desktop's engine /video/mjpeg, fanned
@@ -129,6 +132,14 @@ private:
     // a binary 'mirror.frame' to subscribed phones. mirror.stop unsubscribes.
     Response devMirrorStart(Conn &c, QWebSocket *client, const Request &req);
     Response devMirrorStop(Conn &c, QWebSocket *client, const Request &req);
+
+    // Live-widget viewer leases + home-screen pins (battery). widget.viewing holds
+    // a lease while the phone shows a chat (so that session's live widgets keep
+    // updating); widget.pin/unpin keep a pinned home-screen widget alive (60s
+    // floor) and relay its renders to the phone even with no chat open.
+    Response devWidgetViewing(Conn &c, const Request &req);
+    Response devWidgetPin(Conn &c, const Request &req);
+    Response devWidgetUnpin(Conn &c, const Request &req);
 
     // Start/stop the shared MJPEG pump for a session (ref-counted across
     // devices). pumpFrame() parses a complete JPEG out of the multipart stream.
@@ -176,6 +187,11 @@ private:
     void readWidgetTail();
     QTimer *m_widgetTimer = nullptr;
     qint64 m_widgetOffset = 0;
+    // Per-(device|widget id) last push time (ms) for renders delivered ONLY because
+    // the phone has the widget pinned to its home screen (not via a session sub).
+    // Enforces a 60s floor so a 1s desktop-driven job can't blast a backgrounded
+    // phone's home widget (aggressive battery policy).
+    QHash<QString, qint64> m_pinPushMs;
 };
 
 } // namespace jarvis

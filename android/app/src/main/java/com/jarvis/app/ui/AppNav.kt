@@ -4,11 +4,17 @@ import android.Manifest
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -38,6 +44,8 @@ import com.jarvis.app.JarvisApp
 import com.jarvis.app.fcm.PushRegistrar
 import com.jarvis.app.ui.auth.ApproveScreen
 import com.jarvis.app.ui.auth.GateScreen
+import com.jarvis.app.ui.canvas.CanvasScreen
+import com.jarvis.app.ui.canvas.CanvasViewModel
 import com.jarvis.app.ui.chat.ChatScreen
 import com.jarvis.app.ui.chat.ChatViewModel
 import com.jarvis.app.ui.computer.ComputerScreen
@@ -69,6 +77,7 @@ private object Routes {
     const val PAIR = "pair"
     const val SHELL = "shell"
     const val SESSIONS = "sessions"
+    const val CANVAS = "canvas"
     const val COMPUTER = "computer"
     const val SKILLS = "skills"
     const val SETTINGS = "settings"
@@ -89,8 +98,8 @@ private data class Tab(val route: String, val label: String, val icon: ImageVect
 
 private val tabs = listOf(
     Tab(Routes.SESSIONS, "Sessions", Icons.AutoMirrored.Filled.List),
+    Tab(Routes.CANVAS, "Canvas", Icons.Filled.Dashboard),
     Tab(Routes.COMPUTER, "Computer", Icons.Filled.Computer),
-    Tab(Routes.SKILLS, "Skills", Icons.Filled.AutoAwesome),
     Tab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
 )
 
@@ -166,7 +175,15 @@ fun AppNav(
         }
     }
 
-    NavHost(navController = nav, startDestination = start) {
+    NavHost(
+        navController = nav,
+        startDestination = start,
+        // Detail screens (chat, more, …) slide in over the shell; back slides out.
+        enterTransition = { slideInHorizontally(tween(220)) { it / 3 } + fadeIn(tween(220)) },
+        exitTransition = { fadeOut(tween(140)) },
+        popEnterTransition = { fadeIn(tween(180)) },
+        popExitTransition = { slideOutHorizontally(tween(200)) { it / 3 } + fadeOut(tween(180)) },
+    ) {
         composable(Routes.PAIR) {
             val vm: PairingViewModel = viewModel(factory = PairingViewModel.factory(app))
             PairScreen(
@@ -224,6 +241,10 @@ fun AppNav(
         }
         composable(Routes.FILES) {
             FilesScreen(app = app)
+        }
+        composable(Routes.SKILLS) {
+            val vm: SkillsViewModel = viewModel(factory = SkillsViewModel.factory(app))
+            SkillsScreen(viewModel = vm)
         }
 
         composable(Routes.CHAT) { entry ->
@@ -285,6 +306,11 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
             navController = tabNav,
             startDestination = Routes.SESSIONS,
             modifier = Modifier.padding(padding),
+            // Fade-through between tabs (Material 3 Expressive motion) instead of a hard cut.
+            enterTransition = { fadeIn(tween(190)) + scaleIn(initialScale = 0.985f, animationSpec = tween(190)) },
+            exitTransition = { fadeOut(tween(110)) },
+            popEnterTransition = { fadeIn(tween(190)) },
+            popExitTransition = { fadeOut(tween(110)) },
         ) {
             composable(Routes.SESSIONS) {
                 val vm: SessionsViewModel = viewModel(factory = SessionsViewModel.factory(app))
@@ -294,13 +320,13 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
                     onOpenMore = { parentNav.navigate(Routes.MORE) },
                 )
             }
+            composable(Routes.CANVAS) {
+                val vm: CanvasViewModel = viewModel(factory = CanvasViewModel.factory(app))
+                CanvasScreen(viewModel = vm)
+            }
             composable(Routes.COMPUTER) {
                 val vm: ComputerViewModel = viewModel(factory = ComputerViewModel.factory(app))
                 ComputerScreen(viewModel = vm, activity = activity)
-            }
-            composable(Routes.SKILLS) {
-                val vm: SkillsViewModel = viewModel(factory = SkillsViewModel.factory(app))
-                SkillsScreen(viewModel = vm)
             }
             composable(Routes.SETTINGS) {
                 val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(app))

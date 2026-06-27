@@ -77,6 +77,11 @@ bool ControlServer::start()
         return false;
     }
 
+    // Live-widget viewer leases are EPHEMERAL — rebuilt from live connections +
+    // ~15s heartbeats. Wipe any left by a previous (possibly crashed) run so a
+    // stale "all" lease can't keep every live widget running with no one watching.
+    m_widgetLeases.wipeAll();
+
     // Wave 5: Jarvis long-term memory (SQLite+FTS5, same jarvis.db, distinct
     // connection). Non-fatal if it fails (memory simply stays empty) — but log.
     if (!m_memory.open())
@@ -208,6 +213,9 @@ void ControlServer::onSocketDisconnected()
     m_clients.remove(client);
     m_scopedClients.remove(client);
     m_subscriptions.remove(client);
+    // Drop this desktop client's live-widget viewer leases so unwatched widgets idle.
+    m_widgetLeases.clearSource(
+        QStringLiteral("desktop:") + QString::number(reinterpret_cast<quintptr>(client), 16));
     client->deleteLater();
 }
 
@@ -269,6 +277,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionHistory(req);
     else if (m == QStringLiteral("session.subscribe"))
         resp = handleSessionSubscribe(client, req);
+    else if (m == QStringLiteral("widget.viewing"))
+        resp = handleWidgetViewing(client, req);
     else if (m == QStringLiteral("approval.respond"))
         resp = handleApprovalRespond(req);
     else if (m == QStringLiteral("mcp.list"))
@@ -1577,6 +1587,31 @@ Response ControlServer::handleSessionSubscribe(QWebSocket *client, const Request
     QJsonObject result;
     result.insert(QStringLiteral("subscribed"),
                   QJsonArray::fromStringList(QStringList(ids.cbegin(), ids.cend())));
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleWidgetViewing(QWebSocket *client, const Request &req)
+{
+    // The desktop holds a viewer lease for each live-widget scope it is showing
+    // (a chat session id, "all" for the Canvas/Widgets tab, or "widget:<id>" for a
+    // popped-out window). active=true touches/refreshes it (~15s heartbeat);
+    // active=false drops it. Keyed by the socket so all of a desktop's leases are
+    // released when it disconnects. The engine's live-widget supervisor reads these
+    // and idles any widget no one is watching.
+    const QString scope = req.params.value(QStringLiteral("scope")).toString();
+    if (scope.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("widget.viewing needs a scope"));
+    const QString kind = req.params.value(QStringLiteral("kind")).toString(QStringLiteral("chat"));
+    const bool active = req.params.value(QStringLiteral("active")).toBool(true);
+    const QString source =
+        QStringLiteral("desktop:") + QString::number(reinterpret_cast<quintptr>(client), 16);
+    if (active)
+        m_widgetLeases.touch(scope, kind, source);
+    else
+        m_widgetLeases.clear(scope, source);
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, result);
 }
 
