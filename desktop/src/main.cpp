@@ -68,6 +68,13 @@ int main(int argc, char **argv)
     QCommandLineOption selftestOpt(QStringLiteral("selftest"),
                                    QStringLiteral("Load the UI, verify it renders, then exit."));
     parser.addOption(selftestOpt);
+    // --shot <path>: render the UI, grab the window to a PNG, then exit. Works under
+    // QT_QPA_PLATFORM=offscreen (like --selftest) so it can capture the GUI even on a
+    // locked/headless screen where wlr screencopy isn't available.
+    QCommandLineOption shotOpt(QStringLiteral("shot"),
+                               QStringLiteral("Render the UI, save a PNG to <path>, then exit."),
+                               QStringLiteral("path"));
+    parser.addOption(shotOpt);
     parser.process(app);
 
     if (parser.isSet(toggleOpt)) {
@@ -118,6 +125,42 @@ int main(int argc, char **argv)
         QTimer::singleShot(2000, &app, []() {
             qInfo("jarvis-sidebar selftest: UI rendered OK");
             QCoreApplication::exit(0);
+        });
+        return app.exec();
+    }
+
+    // --shot: float the panel, let it settle, grab the float window to a PNG, exit.
+    if (parser.isSet(shotOpt)) {
+        const QString shotPath = parser.value(shotOpt);
+        QTimer::singleShot(2600, &app, [&engine, windowController, shotPath]() {
+            // Force the shared panel into the FLOAT window (otherwise it may be in
+            // the dock window, which is unmapped offscreen → an empty grab).
+            QMetaObject::invokeMethod(windowController, "undock");
+            QQuickWindow *win = nullptr;
+            for (QObject *o : engine.rootObjects()) {
+                if (auto *w = qobject_cast<QQuickWindow *>(o)) {
+                    if (o->objectName() == QStringLiteral("floatWin")) { win = w; break; }
+                    if (!win) win = w;
+                }
+            }
+            if (win) {
+                if (win->width() < 200 || win->height() < 200)
+                    win->resize(1120, 920);
+                win->setVisible(true);
+            }
+            QTimer::singleShot(900, qApp, [win, shotPath]() {
+                if (win) {
+                    const QImage img = win->grabWindow();
+                    if (!img.isNull() && img.save(shotPath))
+                        qInfo("jarvis-sidebar shot saved: %s (%dx%d)",
+                              qPrintable(shotPath), img.width(), img.height());
+                    else
+                        qWarning("jarvis-sidebar shot: grab/save failed");
+                } else {
+                    qWarning("jarvis-sidebar shot: no window found");
+                }
+                QCoreApplication::exit(0);
+            });
         });
         return app.exec();
     }
