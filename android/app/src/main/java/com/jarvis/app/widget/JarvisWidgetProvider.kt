@@ -113,11 +113,35 @@ class JarvisWidgetProvider : AppWidgetProvider() {
             val wpx = (minWidthDp * density).toInt().coerceAtLeast(120)
             val hpx = (heightDp * density).toInt().coerceIn(90, 1400)
 
-            val bitmap = specJson?.let {
-                runCatching {
-                    WidgetBitmapRenderer.render(
-                        JsonParser.parseString(it).asJsonObject, wpx, hpx, density)
-                }.getOrNull()
+            val specObj = specJson?.let {
+                runCatching { JsonParser.parseString(it).asJsonObject }.getOrNull()
+            }
+
+            // SIZE-TO-CONTENT: measure the widget's natural height for the current
+            // width and ask the launcher to give the cell that height, so a tall
+            // widget gets a tall tile (instead of squishing every widget into the
+            // same 3×2 default). Best-effort — launchers that honor the size hints
+            // re-lay-out; others keep the user's drag size, which still works.
+            if (specObj != null) {
+                val naturalDp = (WidgetBitmapRenderer.naturalHeightPx(specObj, wpx, density)
+                                 / density).toInt().coerceIn(110, 600)
+                // Only nudge when our target meaningfully differs from what's shown,
+                // and only once per target (loop guard) so we never thrash.
+                val already = WidgetBindings.requestedHeight(context, appWidgetId)
+                if (kotlin.math.abs(naturalDp - heightDp) > 24 && naturalDp != already) {
+                    WidgetBindings.setRequestedHeight(context, appWidgetId, naturalDp)
+                    val sizing = android.os.Bundle().apply {
+                        putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, naturalDp)
+                        putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, naturalDp)
+                        putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, minWidthDp)
+                        putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, minWidthDp)
+                    }
+                    runCatching { mgr.updateAppWidgetOptions(appWidgetId, sizing) }
+                }
+            }
+
+            val bitmap = specObj?.let {
+                runCatching { WidgetBitmapRenderer.render(it, wpx, hpx, density) }.getOrNull()
             }
             if (bitmap != null) {
                 views.setImageViewBitmap(R.id.widget_image, bitmap)
