@@ -3,6 +3,8 @@ package com.jarvis.app.ui.chat
 import android.graphics.Color as AndroidColor
 import android.util.Base64
 import android.webkit.WebView
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -27,7 +29,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -50,6 +56,8 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 // ---------------------------------------------------------------------------
 // WidgetRenderer — a SAFE, recursive Compose interpreter for the render_widget
@@ -64,6 +72,8 @@ private val SURFACE = Color(0xFF0E2233)
 private val HAIRLINE = Color(0xFF1F3A4D)
 private val TEXT = Color(0xFFDDEAF2)
 private val MUTED = Color(0xFF8FB6C9)
+private val SUCCESS = Color(0xFF39E6A0)
+private val DANGER = Color(0xFFFF6B6B)
 
 @Composable
 fun WidgetRenderer(specJson: String, onAction: (JsonObject) -> Unit = {}) {
@@ -81,6 +91,7 @@ private fun WidgetNode(node: JsonObject, fill: Boolean, onAction: (JsonObject) -
     m = m.applyAnim(node)
     when (type) {
         "column", "row" -> Container(node, type, m, onAction)
+        "pager" -> PagerNode(node, onAction)
         "grid" -> Grid(node, m, onAction)
         "text" -> TextNode(node, m)
         "badge" -> Badge(node)
@@ -362,19 +373,79 @@ private fun CanvasNode(node: JsonObject) {
 @Composable
 private fun ButtonNode(node: JsonObject, onAction: (JsonObject) -> Unit) {
     val action = node.getAsJsonObject("action")
+    val scope = rememberCoroutineScope()
+    // "" | "correct" | "wrong" — quiz feedback flash
+    var feedback by remember { mutableStateOf("") }
+    val base = node.color("color") ?: ACCENT
+    val bg by animateColorAsState(
+        when (feedback) { "correct" -> SUCCESS; "wrong" -> DANGER; else -> base },
+        label = "btnbg",
+    )
+    val label = node.str("text") ?: "Button"
     Box(
         Modifier.clip(RoundedCornerShape(node.num("radius", 8f).dp))
-            .background(node.color("color") ?: ACCENT)
+            .background(bg)
             .border(1.dp, HAIRLINE, RoundedCornerShape(node.num("radius", 8f).dp))
-            .clickable(enabled = action != null) { action?.let(onAction) }
+            .clickable(enabled = action != null) {
+                val a = action ?: return@clickable
+                if (a.has("correct")) {
+                    feedback = if (a.bool("correct")) "correct" else "wrong"
+                    if (a.bool("next") || a.bool("prev") || a.has("goto")) {
+                        scope.launch { delay(520); onAction(a) }   // flash, then navigate
+                    } else {
+                        onAction(a)
+                    }
+                } else {
+                    onAction(a)
+                }
+            }
             .padding(horizontal = 14.dp, vertical = 8.dp),
     ) {
         Text(
-            node.str("text") ?: "Button",
-            color = node.color("textColor") ?: Color(0xFF03121A),
+            when (feedback) { "correct" -> "✓ $label"; "wrong" -> "✗ $label"; else -> label },
+            color = if (feedback != "") Color(0xFF06140C) else node.color("textColor") ?: Color(0xFF03121A),
             fontSize = node.num("size", 12f).sp,
             fontWeight = FontWeight.SemiBold,
         )
+    }
+}
+
+// ---- pager : multi-page widget (quizzes, wizards, slideshows) --------------
+@Composable
+private fun PagerNode(node: JsonObject, onAction: (JsonObject) -> Unit) {
+    val pages = node.arr("pages").objs()
+    if (pages.isEmpty()) return
+    var page by remember { mutableIntStateOf(node.num("page", 0f).toInt().coerceIn(0, pages.size - 1)) }
+    // Intercept navigation; bubble everything else (send/skill) to the host.
+    val pagerAction: (JsonObject) -> Unit = { a ->
+        when {
+            a.has("goto") -> page = a.num("goto", page.toFloat()).toInt().coerceIn(0, pages.size - 1)
+            a.bool("next") -> page = (page + 1).coerceIn(0, pages.size - 1)
+            a.bool("prev") -> page = (page - 1).coerceIn(0, pages.size - 1)
+            else -> onAction(a)
+        }
+    }
+    Column(Modifier.fillMaxWidth()) {
+        Crossfade(targetState = page, label = "pager") { p ->
+            WidgetNode(pages[p.coerceIn(0, pages.size - 1)], fill = true, onAction = pagerAction)
+        }
+        if (pages.size > 1 && node.str("dots") != "false") {
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                for (i in pages.indices) {
+                    Box(
+                        Modifier.padding(horizontal = 3.dp)
+                            .width(if (i == page) 14.dp else 6.dp)
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                            .background(if (i == page) ACCENT else HAIRLINE),
+                    )
+                }
+            }
+        }
     }
 }
 

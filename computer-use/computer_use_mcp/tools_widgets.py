@@ -63,10 +63,21 @@ def register(mcp: FastMCP) -> None:
           link     : {type, text, url, color?}              opens url externally (http/https ONLY)
           image    : {type, url, w?, h?}                     url is http(s):// or a data: URI
           button   : {type, text, color?, textColor?, radius?, size?, action:{...}}
-                       a tappable button. `action` is ONE of:
+                       a tappable button. `action` keys (combine freely):
                         {"send":"<chat text>"}              sends that text back into THIS chat
                         {"skill":"<name>", "args"?:"<...>"} invokes a skill by name
-                       Any other action key does nothing. Great for one-tap follow-ups.
+                        {"next":true} / {"prev":true} / {"goto":N}   move pages in a `pager`
+                        {"correct":true|false}              QUIZ: flash the button green/red
+                       e.g. a right answer: {"correct":true,"next":true} (✓ then next page);
+                       a wrong answer: {"correct":false}. Nav + correct are handled IN the
+                       widget (no model round-trip); send/skill come back to you.
+
+        MULTI-PAGE (quizzes, wizards, slideshows) — render a stateful, animated widget:
+          pager    : {type, pages:[<node>,…], page?:0, dots?:true}
+                       shows ONE page at a time with a slide/fade transition + page dots.
+                       Put a button with {"next":true}/{"goto":N} on each page to advance.
+                       A quiz = one page per question; answer buttons carry
+                       {"correct":true|false, "next":true}. NO model turn per tap.
 
         ART / CHARTS (the "real renderer" — draw actual graphics, not a label):
           svg      : {type, svg:"<svg …>…</svg>", w?, h?}   raw SVG markup, rendered for real

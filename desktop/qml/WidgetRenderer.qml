@@ -126,6 +126,7 @@ Item {
             switch (root.nodeType) {
             case "column":
             case "row":     return containerComp
+            case "pager":   return pagerComp
             case "text":    return textComp
             case "rect":    return rectComp
             case "badge":   return badgeComp
@@ -140,6 +141,92 @@ Item {
             case "spacer":  return spacerComp
             case "link":    return linkComp
             default:        return null   // unknown / malformed → render nothing
+            }
+        }
+    }
+
+    // ---- pager : a MULTI-PAGE widget (quizzes, wizards, slideshows) ---------
+    // {type:"pager", pages:[<node>,…], page:0}. Shows ONE page at a time with an
+    // animated slide/fade between them. Buttons inside drive navigation WITHOUT a
+    // model round-trip: an action of {next:true}/{prev:true}/{goto:N} is consumed
+    // by the pager; any OTHER action (send/skill) still bubbles up to the host.
+    Component {
+        id: pagerComp
+        Item {
+            id: pager
+            readonly property var pages: root.asArray(root.node ? root.node.pages : null)
+            readonly property int pageCount: pages ? pages.length : 0
+            property int curPage: Math.max(0, Math.min(pageCount - 1,
+                                  root.numOr(root.node ? root.node.page : undefined, 0)))
+            implicitWidth: root.width
+            implicitHeight: pageHolder.implicitHeight
+            clip: true
+
+            function navigate(a) {
+                var np = curPage
+                if (a.goto !== undefined) np = root.numOr(a.goto, curPage)
+                else if (a.next === true) np = curPage + 1
+                else if (a.prev === true) np = curPage - 1
+                np = Math.max(0, Math.min(pageCount - 1, np))
+                if (np !== curPage) curPage = np
+            }
+
+            Item {
+                id: pageHolder
+                width: pager.width
+                implicitHeight: pageLoader.item ? pageLoader.item.implicitHeight : 0
+                height: implicitHeight
+                opacity: 1
+                transform: Translate { id: pageSlide; x: 0 }
+
+                Loader {
+                    id: pageLoader
+                    width: pageHolder.width
+                    source: Qt.resolvedUrl("WidgetRenderer.qml")
+                    onLoaded: if (item) item.node = pager.pages[pager.curPage]
+                    Connections {
+                        target: pageLoader.item
+                        ignoreUnknownSignals: true
+                        function onActionRequested(a) {
+                            if (a && (a.next === true || a.prev === true || a.goto !== undefined))
+                                pager.navigate(a)        // consume nav locally
+                            else
+                                root.actionRequested(a)  // bubble send/skill to host
+                        }
+                    }
+                }
+
+                // animate the new page in (slide + fade) whenever it changes
+                Connections {
+                    target: pager
+                    function onCurPageChanged() {
+                        if (pageLoader.item) pageLoader.item.node = pager.pages[pager.curPage]
+                        pageAnim.restart()
+                    }
+                }
+                ParallelAnimation {
+                    id: pageAnim
+                    NumberAnimation { target: pageHolder; property: "opacity"; from: 0.0; to: 1.0; duration: root.animDur }
+                    NumberAnimation { target: pageSlide; property: "x"; from: 26; to: 0; duration: root.animDur; easing.type: Easing.OutCubic }
+                }
+            }
+
+            // page dots
+            Row {
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.bottom: parent.bottom
+                spacing: 5
+                visible: pager.pageCount > 1 && (root.node ? root.node.dots !== false : true)
+                Repeater {
+                    model: pager.pageCount
+                    delegate: Rectangle {
+                        required property int index
+                        width: index === pager.curPage ? 14 : 6
+                        height: 6; radius: 3
+                        color: index === pager.curPage ? Theme.accent : Theme.hairline
+                        Behavior on width { NumberAnimation { duration: 160 } }
+                    }
+                }
             }
         }
     }
@@ -396,26 +483,42 @@ Item {
         id: buttonComp
         Rectangle {
             id: btn
+            // feedback state for quiz answers: "" | "correct" | "wrong"
+            property string feedback: ""
+            readonly property color baseColor: root.colorOr(root.node ? root.node.color : "", Theme.accent)
             implicitWidth: Math.max(btnText.implicitWidth + 28,
                                     root.numOr(root.node ? root.node.w : undefined, 0))
             implicitHeight: Math.max(btnText.implicitHeight + 16,
                                      root.numOr(root.node ? root.node.h : undefined, 0))
             radius: root.numOr(root.node ? root.node.radius : undefined, Theme.radiusSm)
-            color: btnArea.pressed
-                   ? Qt.darker(root.colorOr(root.node ? root.node.color : "", Theme.accent), 1.2)
-                   : root.colorOr(root.node ? root.node.color : "", Theme.accent)
+            color: btn.feedback === "correct" ? Theme.success
+                   : btn.feedback === "wrong" ? Theme.danger
+                   : btnArea.pressed ? Qt.darker(btn.baseColor, 1.2) : btn.baseColor
+            Behavior on color { ColorAnimation { duration: 140 } }
             border.width: 1
             border.color: Theme.hairline
             opacity: btnArea.containsMouse ? 1.0 : 0.92
+            scale: btnArea.pressed ? 0.96 : 1.0
+            Behavior on scale { NumberAnimation { duration: 90 } }
             Text {
                 id: btnText
                 anchors.centerIn: parent
-                text: (root.node && root.node.text !== undefined) ? ("" + root.node.text) : "Button"
-                color: root.colorOr(root.node ? root.node.textColor : "", Theme.inkOnAccent)
+                text: btn.feedback === "correct" ? "✓ " + (root.node && root.node.text !== undefined ? ("" + root.node.text) : "")
+                      : btn.feedback === "wrong" ? "✗ " + (root.node && root.node.text !== undefined ? ("" + root.node.text) : "")
+                      : (root.node && root.node.text !== undefined) ? ("" + root.node.text) : "Button"
+                color: (btn.feedback !== "") ? "#06140C"
+                       : root.colorOr(root.node ? root.node.textColor : "", Theme.inkOnAccent)
                 font.family: Theme.fontDisplay
                 font.pixelSize: root.numOr(root.node ? root.node.size : undefined, 12)
                 font.weight: Font.DemiBold
                 font.letterSpacing: Theme.trackTight
+            }
+            // after a correct/wrong flash, run any navigation in the action
+            Timer {
+                id: navTimer
+                interval: 520
+                property var pendingAction: null
+                onTriggered: { if (pendingAction) root.actionRequested(pendingAction); pendingAction = null }
             }
             MouseArea {
                 id: btnArea
@@ -423,12 +526,22 @@ Item {
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
                 onClicked: {
-                    // Emit the node's `action` map as DATA; the host allow-lists
-                    // its keys (send / skill). Nothing is evaluated here.
                     var act = (root.node && root.node.action && typeof root.node.action === "object")
                               ? root.node.action : null
-                    if (act)
-                        root.actionRequested(act)
+                    if (!act) return
+                    // Quiz feedback: action.correct = true/false flashes the answer
+                    // green/red, THEN (after a beat) runs any next/goto navigation.
+                    if (act.correct !== undefined) {
+                        btn.feedback = (act.correct === true) ? "correct" : "wrong"
+                        if (act.next === true || act.prev === true || act.goto !== undefined) {
+                            navTimer.pendingAction = act
+                            navTimer.restart()
+                        } else {
+                            root.actionRequested(act)   // e.g. {correct, send:"…"}
+                        }
+                    } else {
+                        root.actionRequested(act)       // nav or send/skill, immediate
+                    }
                 }
             }
         }
