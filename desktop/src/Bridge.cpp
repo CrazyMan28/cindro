@@ -1013,6 +1013,22 @@ void Bridge::phoneMcp(const QString &callId, const QString &name,
     request(QStringLiteral("phone.mcp"), params, callId);
 }
 
+// ---- Phone (Contract A phone.http proxy) -----------------------------------
+
+void Bridge::phoneHttp(const QString &callId, const QString &method,
+                       const QString &path, const QVariantMap &body)
+{
+    if (path.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("method"), method.isEmpty() ? QStringLiteral("GET") : method);
+    params.insert(QStringLiteral("path"), path);
+    if (!body.isEmpty())
+        params.insert(QStringLiteral("body"), body);
+    // Store callId as ctx so the reply routing in handleResponse can echo it back.
+    request(QStringLiteral("phone.http"), params, callId);
+}
+
 // ---- Notifications ---------------------------------------------------------
 
 void Bridge::setNotificationsEnabled(bool enabled)
@@ -2993,6 +3009,13 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             emit phoneResult(ctx, r);
             return;
         }
+        // phone.http errors: surface through phoneHttpResult (never a generic toast).
+        if (method == QStringLiteral("phone.http")) {
+            QVariantMap r;
+            r.insert(QStringLiteral("error"), error);
+            emit phoneHttpResult(ctx, r);
+            return;
+        }
         // SSH exec can also fail with the daemon's allow-list / tier errors; route
         // those to the console rather than a toast so the user sees the reason.
         if (method == QStringLiteral("ssh.exec")) {
@@ -3365,6 +3388,10 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         // Echo the result back to QML tagged with the caller's callId (ctx).
         // result is already the parsed { tool, data, text, error? } payload.
         emit phoneResult(ctx, result);
+    } else if (method == QStringLiteral("phone.http")) {
+        // Echo the result back to QML tagged with the caller's callId (ctx).
+        // result shape: {status:int, data:<obj|array>, text?}.
+        emit phoneHttpResult(ctx, result);
     }
     // ping / session.send / session.cancel / approval.respond: ack only.
 }
