@@ -34,10 +34,14 @@ A cross-surface pass — desktop, phone, AND the Chrome extension.
   path now share ONE strict FIFO queue (single player; requests serialized one at a
   time), so message 1 finishes before message 2 starts. Desktop (`Bridge` TTS) +
   phone (`TtsPlayer` rewritten from new-player-per-clip to a shared queue).
-- **Skill creation fixed** — the model is steered to use the `create_skill` MCP tool
-  (not its CLI's own skill files), and the Skills list now also surfaces skills found
-  in `~/.codex/skills` + `~/.claude/skills` (`SkillStore::listAll`), so a created
-  skill always shows in the tab.
+- **Skill creation/visibility fixed (2-part)** — the model is steered to use the
+  `create_skill` MCP tool (not its CLI's own skill files), and the Skills list now
+  surfaces skills found in `~/.codex/skills` + `~/.claude/skills` (`SkillStore::
+  listAll`, skipping `.system` internals). Crucially, **`skills.get`/`invoke`/`remove`
+  now resolve those CLI skills too** (the first pass only made them *visible* — View/
+  Run returned `no_skill`); `remove` also clears the mirror copies so a deleted skill
+  can't resurface. CLI scanning/mirroring is gated to the default root so unit tests
+  stay isolated. Live-verified: list → get → invoke on a CLI-only skill all succeed.
 - **Chrome extension caught up** — renders the generative widget DSL + the PLAN
   checklist (control-WS `widget.subscribe` broadcast), dispatches/sees agents, the
   "/" palette + quick chips, and a UI/flow polish. (Deep config — MCP/plugins/

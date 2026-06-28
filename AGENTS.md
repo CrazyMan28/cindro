@@ -146,7 +146,13 @@ Design pillars:
 - **Skills:** the model MUST create skills via the `create_skill` MCP tool, not its
   CLI's own skill files (the SKILLS preamble says so). The Skills list uses
   `SkillStore::listAll()` (root + `~/.codex/skills` + `~/.claude/skills`, dedup by
-  name) so a skill always shows up; keep `list()` (root-only) for the unit test.
+  name, **skipping dotted/`.system` CLI internals**) so a skill always shows up.
+  `get()`/`read()`/`invoke()`/`remove()` ALSO resolve via `listAll()`, so a CLI-only
+  skill is viewable/runnable/removable — not just visible (the earlier bug:
+  list showed it but get/invoke returned `no_skill`). `remove()` deletes the root +
+  both CLI mirror copies so a deleted skill can't resurface. CLI scanning + mirroring
+  are gated on the DEFAULT root (`m_root.isEmpty()`) so a temp-root unit test stays
+  isolated and never touches the real `~/.codex` / `~/.claude` dirs.
 - **Chrome extension widgets:** the side panel subscribes via control-WS
   `widget.subscribe` and the daemon tails `widgets.jsonl` → broadcasts
   `widget.render/remove/clear` to opted-in control clients ONLY. The desktop tails

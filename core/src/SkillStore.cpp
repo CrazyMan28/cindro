@@ -254,6 +254,11 @@ QVector<SkillRow> SkillStore::list()
 QVector<SkillRow> SkillStore::listAll()
 {
     QVector<SkillRow> out = list();   // the Jarvis library (root())
+    // Only fold in the CLI dirs for the PRODUCTION store (default root). A test
+    // with an overridden root stays isolated (and deterministic) — it must not
+    // read the real ~/.codex / ~/.claude skill dirs.
+    if (!m_root.isEmpty())
+        return out;
     QSet<QString> seen;
     for (const SkillRow &r : out)
         seen.insert(r.fm.name.toLower());
@@ -269,6 +274,13 @@ QVector<SkillRow> SkillStore::listAll()
                         QDirIterator::Subdirectories);
         while (it.hasNext()) {
             const QString path = it.next();
+            // Skip the CLI's INTERNAL skills (a dotted dir component like
+            // ".system") — those are the tool's own built-ins (imagegen,
+            // skill-creator, …), not the user's Jarvis skills. Check ONLY the path
+            // BELOW cliRoot (cliRoot itself is dotted: ~/.codex, ~/.claude).
+            const QString rel = path.mid(cliRoot.length());
+            if (rel.contains(QStringLiteral("/.")))
+                continue;
             QFile f(path);
             if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
                 continue;
@@ -305,7 +317,9 @@ std::optional<SkillRow> SkillStore::get(const QString &name)
 {
     const QString want = name.trimmed();
     const QString wantSlug = slug(want);
-    for (const SkillRow &row : list()) {
+    // listAll() so a skill that lives ONLY in a CLI dir (model created it there)
+    // is still get-able / invokable / removable — not just visible in the list.
+    for (const SkillRow &row : listAll()) {
         if (row.fm.name.compare(want, Qt::CaseInsensitive) == 0)
             return row;
         const QString dirName = QFileInfo(row.path).absoluteDir().dirName();
@@ -393,7 +407,10 @@ QString SkillStore::create(const QString &name, const QString &description,
     }
 
     // Mirror into the active CLI brains' skill dirs so codex/claude pick it up.
-    mirrorToCli(grp, nm, md, scripts);
+    // Production only — a test with an overridden root must not write to the real
+    // ~/.codex / ~/.claude dirs (that used to leave stale skills behind).
+    if (m_root.isEmpty())
+        mirrorToCli(grp, nm, md, scripts);
 
     return mdPath;
 }
@@ -445,6 +462,19 @@ bool SkillStore::remove(const QString &name)
         m_lastError = QStringLiteral("failed to remove skill dir: ") +
                       skillDir.absolutePath();
         return false;
+    }
+    // Also remove the root + CLI MIRROR copies for this group/name so a deleted
+    // skill can't resurface in the list from a leftover ~/.codex / ~/.claude copy
+    // (production only — a test with an overridden root doesn't touch real dirs).
+    if (m_root.isEmpty()) {
+        const QString grp = row->fm.group.isEmpty() ? QStringLiteral("self") : row->fm.group;
+        const QString nm = slug(row->fm.name);
+        const QStringList roots = {root(), codexSkillsRoot(), claudeSkillsRoot()};
+        for (const QString &r : roots) {
+            QDir d(r + QStringLiteral("/") + grp + QStringLiteral("/") + nm);
+            if (d.exists())
+                d.removeRecursively();
+        }
     }
     return true;
 }
