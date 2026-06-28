@@ -1813,7 +1813,7 @@ function _extArg(ext) {
 }
 
 // ---- dialer state ----
-let dialTarget = "";
+let dialTarget = "101";
 
 function dialPad_setFull(v) {
   dialTarget = String(v || "");
