@@ -291,6 +291,9 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
     val tabNav = rememberNavController()
     val backStack by tabNav.currentBackStackEntryAsState()
     val current = backStack?.destination
+    // Phone is an immersive full-screen surface with its OWN bottom nav — hide
+    // Jarvis's main nav while it's active so they don't stack (double nav bug).
+    val isPhoneTab = current?.hierarchy?.any { it.route == Routes.PHONE } == true
     val haptics = com.jarvis.app.ui.util.LocalHaptics.current
 
     fun switchTab(route: String) {
@@ -304,7 +307,7 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
     Scaffold(
         containerColor = JarvisPalette.Background,
         bottomBar = {
-            NavigationBar(containerColor = JarvisPalette.Surface) {
+            if (!isPhoneTab) NavigationBar(containerColor = JarvisPalette.Surface) {
                 tabs.forEach { tab ->
                     val selected = current?.hierarchy?.any { it.route == tab.route } == true
                     NavigationBarItem(
@@ -363,7 +366,7 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
             }
             composable(Routes.PHONE) {
                 val vm: PhoneViewModel = viewModel(factory = PhoneViewModel.factory(app))
-                PhoneScreen(viewModel = vm)
+                PhoneScreen(viewModel = vm, onBack = { switchTab(Routes.HOME) })
             }
             composable(Routes.SETTINGS) {
                 val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(app))
