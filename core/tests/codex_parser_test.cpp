@@ -127,6 +127,44 @@ int main(int argc, char **argv)
               "tool_result carries the input args");
     }
 
+    // An item.started for an mcp_tool_call must surface an IN-PROGRESS tool_call
+    // IMMEDIATELY (status:"in_progress", no output yet) so a long-running tool
+    // shows in the chat the instant it is invoked, not only when it returns.
+    {
+        const QByteArray started =
+            "{\"type\":\"item.started\",\"item\":{\"id\":\"call_w\","
+            "\"type\":\"mcp_tool_call\",\"server\":\"jarvis\",\"name\":\"agent_wait\","
+            "\"status\":\"in_progress\",\"arguments\":{\"session_id\":\"s1\"}}}\n";
+        const auto evs3 = jarvis::parseCodexStream({started});
+        const NormalizedBrainEvent *tc = nullptr;
+        for (const auto &e : evs3)
+            if (e.kind == NormalizedBrainEvent::Kind::ToolCall)
+                tc = &e;
+        check(tc != nullptr, "item.started mcp_tool_call -> an in-progress tool_call");
+        check(tc && tc->fields.value(QStringLiteral("name")).toString() == QStringLiteral("agent_wait"),
+              "in-progress tool_call carries the tool name");
+        check(tc && tc->fields.value(QStringLiteral("call_id")).toString() == QStringLiteral("call_w"),
+              "in-progress tool_call carries the call id (so the result merges)");
+    }
+
+    // An in-progress command_execution (item.started carries exit_code:null +
+    // empty aggregated_output) must NOT be mistaken for a finished tool_result —
+    // it is an in-progress tool_call.
+    {
+        const QByteArray startedCmd =
+            "{\"type\":\"item.started\",\"item\":{\"id\":\"item_0\","
+            "\"type\":\"command_execution\",\"command\":\"sleep 4\","
+            "\"aggregated_output\":\"\",\"exit_code\":null,\"status\":\"in_progress\"}}\n";
+        const auto evs4 = jarvis::parseCodexStream({startedCmd});
+        bool sawCall = false, sawResult = false;
+        for (const auto &e : evs4) {
+            if (e.kind == NormalizedBrainEvent::Kind::ToolCall) sawCall = true;
+            if (e.kind == NormalizedBrainEvent::Kind::ToolResult) sawResult = true;
+        }
+        check(sawCall && !sawResult,
+              "in-progress command_execution -> tool_call only (not a premature result)");
+    }
+
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

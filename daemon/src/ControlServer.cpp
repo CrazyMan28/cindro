@@ -762,6 +762,10 @@ CodexMcpOverrides ControlServer::agentMcpOverridesFor(const AgentDesktopInfo &de
     // (set on the codex child) instead.
     const QString key = QStringLiteral("computer_use");
     out.args << QStringLiteral("mcp_servers.%1.url=%2").arg(key, desk.mcpUrl);
+    // A long per-tool timeout so a BLOCKING tool (e.g. agent_wait, which can wait
+    // for a slow subagent) is never killed by codex's default MCP tool timeout —
+    // the user saw agent_wait "time out" because codex cut the call short. 2h.
+    out.args << QStringLiteral("mcp_servers.%1.tool_timeout_sec=7200").arg(key);
     if (!desk.bearer.isEmpty()) {
         const QString envName = QStringLiteral("JARVIS_AGENT_CU_BEARER");
         out.args << QStringLiteral("mcp_servers.%1.bearer_token_env_var=%2").arg(key, envName);
@@ -776,6 +780,7 @@ CodexMcpOverrides ControlServer::agentMcpOverridesFor(const AgentDesktopInfo &de
     {
         const QString realUrl = McpRegistry::builtinEndpoint();
         out.args << QStringLiteral("mcp_servers.real_screen.url=%1").arg(realUrl);
+        out.args << QStringLiteral("mcp_servers.real_screen.tool_timeout_sec=7200");
         const QString realBearer = McpRegistry::computerUseBearer();
         if (!realBearer.isEmpty()) {
             const QString envName = QStringLiteral("JARVIS_REAL_CU_BEARER");
@@ -1272,34 +1277,40 @@ QString ControlServer::subagentSummary(const QString &sessionId)
     return last;
 }
 
+void ControlServer::wakeParentForSubagent(const QString &childSid)
+{
+    // One-shot: only the FIRST trigger (final OR turnFinished) wakes the parent.
+    if (!m_subagentPendingWake.contains(childSid))
+        return;
+    const QString parentSid = m_subagentPendingWake.take(childSid);
+    const bool parentOk = m_store.get(parentSid).has_value();
+    qInfo("jarvisd: subagent %s done -> waking parent %s (parentOk=%d)",
+          qPrintable(childSid), qPrintable(parentSid), int(parentOk));
+    if (!parentOk)
+        return;
+    const auto row = m_store.get(childSid);
+    const QString label = (row && !row->agent.isEmpty()) ? row->agent
+                                                          : QStringLiteral("subagent");
+    const QString state = row ? row->state : QStringLiteral("done");
+    QString summary = subagentSummary(childSid);
+    if (summary.trimmed().isEmpty())
+        summary = QStringLiteral("(the subagent returned no text — check its session)");
+    const QString wake = QStringLiteral(
+        "[SUBAGENT DONE] Your subagent \"%1\" (session %2) finished — status: %3.\n"
+        "Its summary / result:\n%4\n\nReview this result and continue the task "
+        "(you can call agent_result(\"%2\") for the full details).")
+        .arg(label, childSid, state, summary);
+    QString werr;
+    // sendToSession queues if the parent is still busy (flushed on its turn end),
+    // so the main agent is pinged whether it waited or kept working.
+    if (!sendToSession(parentSid, wake, {}, &werr))
+        qWarning("jarvisd: subagent wake send failed: %s", qPrintable(werr));
+}
+
 void ControlServer::onTurnFinished(const QString &sessionId)
 {
-    // A dispatched SUBAGENT just finished → WAKE its parent with the result + status
-    // so the main agent reviews it (instead of only seeing "done" and redoing it).
-    if (m_subagentPendingWake.contains(sessionId)) {
-        const QString parentSid = m_subagentPendingWake.take(sessionId);
-        const bool parentOk = m_store.get(parentSid).has_value();
-        qInfo("jarvisd: subagent %s finished -> waking parent %s (parentOk=%d)",
-              qPrintable(sessionId), qPrintable(parentSid), int(parentOk));
-        if (parentOk) {
-            const auto row = m_store.get(sessionId);
-            const QString label = (row && !row->agent.isEmpty()) ? row->agent
-                                                                  : QStringLiteral("subagent");
-            const QString state = row ? row->state : QStringLiteral("done");
-            QString summary = subagentSummary(sessionId);
-            if (summary.trimmed().isEmpty())
-                summary = QStringLiteral("(the subagent returned no text — check its session)");
-            const QString wake = QStringLiteral(
-                "[SUBAGENT DONE] Your subagent \"%1\" (session %2) finished — status: %3.\n"
-                "Its summary / result:\n%4\n\nReview this result and continue the task "
-                "(you can call agent_result(\"%2\") for the full details).")
-                .arg(label, sessionId, state, summary);
-            QString werr;
-            // sendToSession queues if the parent is still busy (flushed on its turn end).
-            if (!sendToSession(parentSid, wake, {}, &werr))
-                qWarning("jarvisd: subagent wake send failed: %s", qPrintable(werr));
-        }
-    }
+    // Backup wake trigger (the primary is the `final` event in onBrainEvent).
+    wakeParentForSubagent(sessionId);
 
     if (!m_pendingTurns.contains(sessionId))
         return;
@@ -1541,12 +1552,15 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "predefined agent: `name` can be any label and you spawn an AD-HOC subagent "
             "(optionally picking its brain/model and giving a one-off system_prompt). It "
             "runs as its own child session and reports back. Do NOT just SAY you delegated "
-            "and then do the work yourself — call agent_start. SIMPLEST PATTERN: "
-            "agent_start(name, task) returns a session_id; then call agent_wait(session_id) "
-            "— it BLOCKS until the subagent finishes and returns its summary, so you act on "
-            "the result right away. Do NOT poll agent_status in a loop. The subagent always "
-            "ends with a summary, and you are ALSO auto-woken with a [SUBAGENT DONE] message "
-            "the moment it finishes. agent_result(session_id) re-fetches a summary; "
+            "and then do the work yourself — call agent_start(name, task) (returns a "
+            "session_id). THEN CHOOSE, by the user's intent:\n"
+            "  • Need the result before continuing? → call agent_wait(session_id): it BLOCKS "
+            "until the subagent finishes and returns its summary. (Don't poll agent_status "
+            "in a loop — use agent_wait.)\n"
+            "  • Have other work to do meanwhile? → just keep working; you'll be AUTO-PINGED "
+            "with a [SUBAGENT DONE] message (its summary + status) the moment it finishes, "
+            "then read that and continue.\n"
+            "Either way you always get the summary. agent_result(session_id) re-fetches it; "
             "agent_status lists running ones; agent_stop cancels; agent_create saves a "
             "reusable agent for recurring work.\n"
             "CAPABILITIES: if the user asks what you can do / your features / how to do "
@@ -3344,7 +3358,24 @@ Response ControlServer::handleAgentsDispatch(const Request &req, bool remote)
     const QJsonObject p = req.params;
     const QString agent = p.value(QStringLiteral("agent")).toString().trimmed();
     const QString task = p.value(QStringLiteral("task")).toString();
-    const QString parent = p.value(QStringLiteral("parent_session_id")).toString();
+    QString parent = p.value(QStringLiteral("parent_session_id")).toString();
+    // The caller's engine supplies its own session id via JARVIS_AGENT_SESSION,
+    // but the SHARED real-screen engine (the global :8794 server, reused by every
+    // session) has no per-session id — so when the model invokes agent_start
+    // through it, parent arrives empty and the subagent would be ORPHANED (no
+    // tree link, no done-wake). Fall back to the session that is mid-turn right
+    // now: the caller is necessarily in state "running" while it calls this tool,
+    // and a top-level chat has no parent of its own. This keeps the parent link
+    // — and therefore the subagent pop-out + the done-wake — working no matter
+    // which computer-use server the call came through.
+    if (parent.isEmpty()) {
+        for (const SessionRow &s : m_store.list()) {
+            if (s.state == QStringLiteral("running") && s.parentSessionId.isEmpty()) {
+                parent = s.id;
+                break;
+            }
+        }
+    }
     // Inline (ad-hoc subagent) overrides: the model can pick brain/model and give
     // a one-off system prompt without a stored agent definition.
     const QString brain = p.value(QStringLiteral("brain")).toString();
@@ -3401,11 +3432,17 @@ Response ControlServer::handleAgentsResult(const Request &req)
     if (!row)
         return Response::failure(req.id, QStringLiteral("no_session"),
                                  QStringLiteral("no such session: ") + sid);
+    // "running" must reflect whether the TURN is still going — by STATE, not by
+    // m_brains (a brain persists across turns, so it'd say "running" forever and
+    // agent_wait would never return until timeout). state=idle/done/error = not running.
+    const QString st = row->state;
+    const bool running = (st == QStringLiteral("running") || st == QStringLiteral("starting"));
     QJsonObject result;
     result.insert(QStringLiteral("session_id"), sid);
     result.insert(QStringLiteral("agent"), row->agent);
-    result.insert(QStringLiteral("status"), row->state);
-    result.insert(QStringLiteral("running"), m_brains.contains(sid));
+    result.insert(QStringLiteral("status"), st);
+    result.insert(QStringLiteral("running"), running);
+    result.insert(QStringLiteral("live"), m_brains.contains(sid));
     result.insert(QStringLiteral("summary"), subagentSummary(sid));
     return Response::success(req.id, result);
 }
@@ -4086,8 +4123,14 @@ void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrain
             m_store.updateThreadId(sessionId, threadId);
     } else if (ev.kind == NormalizedBrainEvent::Kind::Final) {
         m_store.updateState(sessionId, QStringLiteral("idle"));
+        // PRIMARY subagent-done trigger: a subagent's turn just completed (its
+        // summary is already persisted above), so wake its parent now. This is far
+        // more reliable than turnFinished (which can lag/never fire for a child).
+        wakeParentForSubagent(sessionId);
     } else if (ev.kind == NormalizedBrainEvent::Kind::Error) {
         m_store.updateState(sessionId, QStringLiteral("error"));
+        // A failed subagent should still un-block the parent.
+        wakeParentForSubagent(sessionId);
     }
 
     // Desktop notifications on attention events (BUILD_SPEC: approval needed /

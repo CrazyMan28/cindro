@@ -494,6 +494,10 @@ private:
     QHash<QString, QString> m_subagentPendingWake;
     // The child's last assistant message (its summary), for the wake + agents.result.
     QString subagentSummary(const QString &sessionId);
+    // If `childSid` is a dispatched subagent awaiting completion, WAKE its parent
+    // with the summary + status (one-shot). Called on the child's `final` event
+    // (reliable) AND turnFinished (backup); m_subagentPendingWake.take makes it once.
+    void wakeParentForSubagent(const QString &childSid);
 
     // Wave 5: per-coworker(agent) nested desktops + their bound engines.
     AgentDesktop m_agentDesktops{AgentDesktop::Options{}};
