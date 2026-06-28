@@ -426,7 +426,11 @@ Item {
                 border.width: 1
                 border.color: del.isUser ? Theme.amberDim : Theme.accentDim
 
-                // role-colored edge bar (glowing)
+                // role-colored edge bar. NOTE: this used a per-bubble MultiEffect
+                // brightness layer for a glow — removed. Those always-on layers
+                // intermittently mis-composited and flooded the whole bubble bright
+                // cyan (the "random bright text" bug), and cost a GPU layer PER
+                // message. A solid bar reads the same without the glitch/cost.
                 Rectangle {
                     anchors.top: parent.top; anchors.bottom: parent.bottom
                     anchors.topMargin: 4; anchors.bottomMargin: 4
@@ -436,8 +440,6 @@ Item {
                     width: 2.5
                     radius: 1.5
                     color: del.isUser ? Theme.amber : Theme.accent
-                    layer.enabled: true
-                    layer.effect: MultiEffect { blurEnabled: true; blur: 0.5; blurMax: 10; brightness: 0.15 }
                 }
 
                 Text {
