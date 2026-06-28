@@ -84,9 +84,15 @@ The model drives its own agents through MCP (engine `tools_jarvis_ops.py`,
 re-exported by `jarvis-mcp`), so it decides *when* to delegate:
 `agent_create`, `agent_list` (each with its `when_to_use`), `agent_get`,
 `agent_remove`, `agent_start(name, task, brain?, model?, system_prompt?)` → child
-session id (ad-hoc OK), `agent_status`, `agent_result(session_id)` → the child's
-summary, `agent_stop(session_id)`. The model is **auto-woken** with a subagent's
-summary the moment it finishes (no polling). The co-work preamble tells the model to
+session id (ad-hoc OK), **`agent_wait(session_id)` — blocks until the subagent
+finishes and returns its summary (the simplest pattern: `agent_start` then
+`agent_wait`)**, `agent_status`, `agent_result(session_id)` → the child's summary,
+`agent_stop(session_id)`. The model is also **auto-woken** with a subagent's summary
+the moment it finishes (no polling needed either way).
+
+There's a built-in **`internal_docs`** skill (seeded on daemon start) that lists all
+of Jarvis's features + docs; the preamble tells the model to `skill_load("internal_docs")`
+when the user asks what it can do or it's unsure of its capabilities. The co-work preamble tells the model to
 actually CALL `agent_start` (not narrate delegation), consult each agent's
 `when_to_use`, and review the `[SUBAGENT DONE]` summary it gets back.
 
