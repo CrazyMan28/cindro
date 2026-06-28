@@ -1276,7 +1276,9 @@ if (els.quickbar) {
   els.quickbar.querySelectorAll(".chip").forEach((chip) => {
     chip.addEventListener("click", () => {
       const cmd = chip.getAttribute("data-cmd");
-      if (cmd === "slash") {
+      if (cmd === "phone") {
+        togglePhone();
+      } else if (cmd === "slash") {
         els.input.value = "/"; els.input.focus(); onInputChanged();
       } else if (cmd) {
         handleSlash(cmd);
@@ -1285,8 +1287,529 @@ if (els.quickbar) {
   });
 }
 
+// ================================================================= PHONE PANEL
+// All phone tools reach the daemon via rpc("phone.mcp", {name, arguments}).
+// The daemon proxies to the agent-phone MCP server and returns
+// {tool, data, text, error?} — we surface data (parsed result) or error.
+
+async function phoneMcp(name, args) {
+  const res = await rpc("phone.mcp", { name, arguments: args || {} });
+  if (res && res.error) throw new Error(res.error);
+  return (res && res.data != null) ? res.data : res;
+}
+
+// ---- panel / tab state ----
+let phoneOpen = false;
+let phoneTab = "calls"; // "calls" | "inbox" | "settings"
+
+function openPhone() {
+  phoneOpen = true;
+  $("phonePanel").classList.remove("hidden");
+  $("transcript").classList.add("hidden");
+  const w = $("working"); if (w) w.classList.add("hidden");
+  closeSlash();
+  loadPhoneTab(phoneTab);
+}
+
+function closePhone() {
+  phoneOpen = false;
+  $("phonePanel").classList.add("hidden");
+  $("transcript").classList.remove("hidden");
+  if (turnInFlight) { const w = $("working"); if (w) w.classList.remove("hidden"); }
+}
+
+function togglePhone() { phoneOpen ? closePhone() : openPhone(); }
+
+function setPhoneTab(tab) {
+  phoneTab = tab;
+  document.querySelectorAll(".phone-tab").forEach((b) => {
+    b.classList.toggle("active", b.getAttribute("data-ptab") === tab);
+  });
+  const views = { calls: "phoneViewCalls", inbox: "phoneViewInbox", settings: "phoneViewSettings" };
+  Object.entries(views).forEach(([t, id]) => {
+    const el = $(id); if (el) el.classList.toggle("hidden", t !== tab);
+  });
+  loadPhoneTab(tab);
+}
+
+function loadPhoneTab(tab) {
+  if (tab === "calls") loadActiveCalls();
+  else if (tab === "inbox") loadInbox();
+  else if (tab === "settings") { loadTwilioStatus(); loadAllowlist(); }
+}
+
+// ---- result helpers ----
+function phoneResult(id, text, kind) {
+  const el = $(id);
+  if (!el) return;
+  el.textContent = text;
+  el.className = "phone-result" + (kind ? " " + kind : "");
+}
+
+function fmtPhoneData(obj) {
+  if (obj == null) return "(no data)";
+  if (typeof obj === "string") return obj;
+  return JSON.stringify(obj, null, 2);
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// ---- CALLS TAB ----
+async function loadActiveCalls() {
+  const box = $("phoneCallsList");
+  if (!box) return;
+  box.innerHTML = '<div class="phone-card"><div class="phone-card-meta">Loading…</div></div>';
+  try {
+    const data = await phoneMcp("list_active_calls");
+    const calls = Array.isArray(data) ? data : [];
+    renderCallsList(calls);
+    updateCallBanner(calls);
+  } catch (e) {
+    box.innerHTML =
+      '<div class="phone-card"><div class="phone-card-meta" style="color:var(--bad)">' +
+      escHtml(e.message || String(e)) + '</div></div>';
+  }
+}
+
+function renderCallsList(calls) {
+  const box = $("phoneCallsList"); if (!box) return;
+  box.innerHTML = "";
+  if (!calls.length) {
+    const d = document.createElement("div"); d.className = "phone-card";
+    d.innerHTML = '<div class="phone-card-meta">No active calls.</div>';
+    box.appendChild(d); return;
+  }
+  calls.forEach((c) => {
+    const card = document.createElement("div");
+    card.className = "phone-card";
+    const stateClass =
+      (c.state === "active" || c.state === "accepted") ? "ok" :
+      (c.state === "ringing") ? "" : "bad";
+    card.innerHTML =
+      '<div style="display:flex;align-items:center;gap:6px">' +
+        '<span class="phone-card-title">' + escHtml(c.reason || "Call") + '</span>' +
+        '<span class="phone-card-badge ' + stateClass + '">' + escHtml(c.state || "?") + '</span>' +
+      '</div>' +
+      '<div class="phone-card-meta">id: ' + escHtml(c.id || c.call_id || "?") +
+        ' · ext ' + escHtml(String(c.from_extension || "?")) +
+        ' → ' + escHtml(String(c.to_extension || "?")) + '</div>';
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:6px;margin-top:6px";
+    const endBtn = document.createElement("button");
+    endBtn.className = "phone-sm-btn bad"; endBtn.textContent = "End Call";
+    endBtn.addEventListener("click", () => endPhoneCall(c.id || c.call_id));
+    const txBtn = document.createElement("button");
+    txBtn.className = "phone-sm-btn"; txBtn.textContent = "Transcript";
+    txBtn.addEventListener("click", () => loadCallTranscript(c.id || c.call_id));
+    actions.appendChild(endBtn); actions.appendChild(txBtn);
+    card.appendChild(actions);
+    box.appendChild(card);
+  });
+}
+
+function updateCallBanner(calls) {
+  const banner = $("phoneBanner"); if (!banner) return;
+  const ringing = calls.find((c) => c.state === "ringing");
+  const active  = calls.find((c) => c.state === "active" || c.state === "accepted");
+  const shown   = ringing || active;
+  if (shown) {
+    banner.classList.remove("hidden");
+    $("phoneBannerLabel").textContent = ringing ? "Incoming call…" : "Call active";
+    $("phoneBannerMeta").textContent  =
+      (shown.reason || "") + (shown.from_extension ? "  ext " + shown.from_extension : "");
+    banner.dataset.callId = shown.id || shown.call_id || "";
+    const acceptBtn = $("phoneBannerAccept");
+    if (acceptBtn) acceptBtn.style.display = ringing ? "" : "none";
+  } else {
+    banner.classList.add("hidden");
+  }
+}
+
+async function endPhoneCall(callId) {
+  if (!callId) return;
+  try {
+    await phoneMcp("end_call", { call_id: String(callId) });
+    await loadActiveCalls();
+  } catch (e) {
+    addSys("end_call: " + (e.message || e));
+  }
+}
+
+async function loadCallTranscript(callId) {
+  if (!callId) return;
+  const wrap = $("phoneTranscriptWrap");
+  const body = $("phoneTranscriptBody");
+  if (!wrap || !body) return;
+  wrap.classList.remove("hidden");
+  body.textContent = "Loading…";
+  try {
+    const data = await phoneMcp("get_call_transcript", { call_id: String(callId) });
+    const lines = [];
+    if (data.transcripts && data.transcripts.length) {
+      data.transcripts.forEach((t) =>
+        lines.push("[" + (t.speaker || t.from_extension || "?") + "] " + (t.text || "")));
+    }
+    if (data.messages && data.messages.length) {
+      data.messages.forEach((m) => lines.push("[msg] " + (m.content || m.message || "")));
+    }
+    if (data.summary) {
+      lines.push("\n--- Summary ---\n" +
+        (typeof data.summary === "string" ? data.summary : JSON.stringify(data.summary, null, 2)));
+    }
+    body.textContent = lines.length ? lines.join("\n") : "No transcript yet.";
+  } catch (e) {
+    body.textContent = "Error: " + (e.message || e);
+  }
+}
+
+async function doPhoneDial() {
+  const mode   = $("phoneDialMode").value;
+  const reason = ($("phoneDialReason").value || "").trim();
+  const say    = ($("phoneDialSay").value || "").trim();
+  const toNum  = ($("phoneToNumber").value || "").trim();
+  if (!reason || !say) {
+    phoneResult("phoneDialResult", "Reason and Say are required.", "bad"); return;
+  }
+  phoneResult("phoneDialResult", "Dialing…", "");
+  $("phoneDialBtn").disabled = true;
+  try {
+    let data;
+    if (mode === "twilio") {
+      const args = { reason, say };
+      if (toNum) args.to_number = toNum;
+      data = await phoneMcp("twilio_call_and_wait", args);
+    } else {
+      data = await phoneMcp("call_user_and_wait", { reason, say, from_extension: 101 });
+    }
+    phoneResult(
+      "phoneDialResult",
+      data.ok
+        ? "✓ " + (data.user_transcript || data.decision || "Call placed")
+        : "✗ " + (data.error || "Call failed"),
+      data.ok ? "ok" : "bad"
+    );
+    await loadActiveCalls();
+  } catch (e) {
+    phoneResult("phoneDialResult", "Error: " + (e.message || e), "bad");
+  } finally {
+    $("phoneDialBtn").disabled = false;
+  }
+}
+
+// ---- INBOX TAB ----
+async function loadInbox() {
+  const box = $("phoneInboxList"); if (!box) return;
+  box.innerHTML = '<div class="phone-card"><div class="phone-card-meta">Loading…</div></div>';
+  try {
+    const data = await phoneMcp("list_inbox", { limit: 30 });
+    const msgs = Array.isArray(data) ? data : (data.messages || []);
+    renderInboxList(msgs);
+  } catch (e) {
+    box.innerHTML =
+      '<div class="phone-card"><div class="phone-card-meta" style="color:var(--bad)">' +
+      escHtml(e.message || String(e)) + '</div></div>';
+  }
+}
+
+function renderInboxList(msgs) {
+  const box = $("phoneInboxList"); if (!box) return;
+  box.innerHTML = "";
+  if (!msgs.length) {
+    const d = document.createElement("div"); d.className = "phone-card";
+    d.innerHTML = '<div class="phone-card-meta">Inbox is empty.</div>';
+    box.appendChild(d); return;
+  }
+  msgs.slice(0, 30).forEach((m) => {
+    const card = document.createElement("div");
+    card.className = "phone-card";
+    const priClass = (m.priority === "critical" || m.priority === "urgent") ? "bad" : "";
+    card.innerHTML =
+      '<div style="display:flex;align-items:center;gap:6px">' +
+        '<span class="phone-card-title">' +
+          escHtml(m.title || m.subject || "(no subject)") +
+        '</span>' +
+        '<span class="phone-card-badge ' + priClass + '">' +
+          escHtml(m.status || m.priority || "") + '</span>' +
+      '</div>' +
+      '<div class="phone-card-meta">' +
+        escHtml(truncate(m.message || m.body || "", 70)) + '</div>';
+    if (m.thread_id) {
+      const btn = document.createElement("button");
+      btn.className = "phone-sm-btn"; btn.style.marginTop = "4px";
+      btn.textContent = "Thread";
+      btn.addEventListener("click", () => loadThread(String(m.thread_id)));
+      card.appendChild(btn);
+    }
+    box.appendChild(card);
+  });
+}
+
+async function loadThread(threadId) {
+  const wrap = $("phoneThreadWrap");
+  const body = $("phoneThreadBody");
+  if (!wrap || !body) return;
+  wrap.classList.remove("hidden");
+  body.textContent = "Loading…";
+  try {
+    const data = await phoneMcp("get_thread_messages", { thread_id: threadId });
+    const msgs = data.messages || data || [];
+    if (!Array.isArray(msgs) || !msgs.length) {
+      body.textContent = "No messages in thread."; return;
+    }
+    body.textContent = msgs.map((m) =>
+      "[ext " + (m.from_extension || "?") + " → " + (m.to_extension || "?") + "]" +
+      (m.title ? "  " + m.title : "") + "\n" +
+      (m.message || m.body || "") +
+      (m.reply_text ? "\n↩ " + m.reply_text : "")
+    ).join("\n\n---\n\n");
+  } catch (e) {
+    body.textContent = "Error: " + (e.message || e);
+  }
+}
+
+async function doCompose() {
+  const title   = ($("phoneComposeTitle").value || "").trim();
+  const message = ($("phoneComposeBody").value  || "").trim();
+  const wait    = $("phoneComposeWait").checked;
+  if (!title || !message) {
+    phoneResult("phoneComposeResult", "Title and body required.", "bad"); return;
+  }
+  phoneResult("phoneComposeResult", "Sending…", "");
+  $("phoneComposeBtn").disabled = true;
+  try {
+    const tool = wait ? "notify_user_and_wait" : "notify_user";
+    const data = await phoneMcp(tool, { title, message, priority: "normal" });
+    phoneResult(
+      "phoneComposeResult",
+      data.ok
+        ? "✓ " + (wait
+            ? (data.replied ? "Reply: " + (data.reply_text || "") : "No reply (yet)")
+            : "Sent  thread:" + (data.thread_id || ""))
+        : "✗ " + (data.error || "Failed"),
+      data.ok ? "ok" : "bad"
+    );
+    if (data.ok) { $("phoneComposeTitle").value = ""; $("phoneComposeBody").value = ""; }
+    await loadInbox();
+  } catch (e) {
+    phoneResult("phoneComposeResult", "Error: " + (e.message || e), "bad");
+  } finally {
+    $("phoneComposeBtn").disabled = false;
+  }
+}
+
+// ---- SETTINGS TAB ----
+async function loadTwilioStatus() {
+  const box = $("phoneTwilioStatus"); if (!box) return;
+  box.textContent = "Loading…";
+  try {
+    const d = await phoneMcp("twilio_status");
+    box.textContent = [
+      "configured : " + (d.configured    ? "✓ yes" : "✗ no"),
+      "from_number: " + (d.from_number   || "—"),
+      "screening  : " + (d.screening_enabled ? "enabled"  : "disabled"),
+      "sms_agent  : " + (d.sms_agent_enabled ? "enabled"  : "disabled"),
+      "bridge     : " + (d.bridge        || "—"),
+    ].join("\n");
+    const badge = $("phoneScreeningBadge");
+    if (badge) {
+      badge.textContent  = d.screening_enabled ? "enabled" : "disabled";
+      badge.className    = "phone-badge " + (d.screening_enabled ? "ok" : "bad");
+    }
+  } catch (e) {
+    box.textContent = "Error: " + (e.message || e);
+  }
+}
+
+async function loadAllowlist() {
+  const box = $("phoneAllowlist"); if (!box) return;
+  box.innerHTML = '<div class="phone-card"><div class="phone-card-meta">Loading…</div></div>';
+  try {
+    const data = await phoneMcp("twilio_allowlist_list");
+    const numbers = Array.isArray(data.numbers) ? data.numbers : [];
+    box.innerHTML = "";
+    if (!numbers.length) {
+      const d = document.createElement("div"); d.className = "phone-card";
+      d.innerHTML = '<div class="phone-card-meta">No numbers allowlisted.</div>';
+      box.appendChild(d);
+    } else {
+      numbers.forEach((n) => {
+        const card = document.createElement("div");
+        card.className = "phone-card";
+        card.style.cssText = "flex-direction:row;align-items:center;gap:8px";
+        card.innerHTML =
+          '<span class="phone-card-title" style="flex:1">' +
+            escHtml(n.phone_number || n) + '</span>' +
+          (n.label ? '<span class="phone-card-meta">' + escHtml(n.label) + '</span>' : "");
+        box.appendChild(card);
+      });
+    }
+    if (data.default_user_number) {
+      const d = document.createElement("div"); d.className = "phone-card";
+      d.innerHTML = '<div class="phone-card-meta">user#: ' +
+        escHtml(data.default_user_number) + '</div>';
+      box.appendChild(d);
+    }
+  } catch (e) {
+    box.innerHTML =
+      '<div class="phone-card"><div class="phone-card-meta" style="color:var(--bad)">' +
+      escHtml(e.message || String(e)) + '</div></div>';
+  }
+}
+
+async function doAllowlistAdd() {
+  const num   = ($("phoneAllowlistNum").value   || "").trim();
+  const label = ($("phoneAllowlistLabel").value || "").trim();
+  if (!num) { phoneResult("phoneAllowlistResult", "Enter a phone number.", "bad"); return; }
+  phoneResult("phoneAllowlistResult", "Adding…", "");
+  try {
+    const args = { phone_number: num };
+    if (label) args.label = label;
+    const data = await phoneMcp("twilio_allowlist_add", args);
+    phoneResult("phoneAllowlistResult",
+      data.ok ? "✓ Added" : "✗ " + (data.error || ""), data.ok ? "ok" : "bad");
+    await loadAllowlist();
+  } catch (e) { phoneResult("phoneAllowlistResult", "Error: " + (e.message || e), "bad"); }
+}
+
+async function doAllowlistRemove() {
+  const num = ($("phoneAllowlistNum").value || "").trim();
+  if (!num) { phoneResult("phoneAllowlistResult", "Enter a phone number to remove.", "bad"); return; }
+  phoneResult("phoneAllowlistResult", "Removing…", "");
+  try {
+    const data = await phoneMcp("twilio_allowlist_remove", { phone_number: num });
+    phoneResult("phoneAllowlistResult",
+      data.ok ? "✓ Removed" : "✗ " + (data.error || ""), data.ok ? "ok" : "bad");
+    await loadAllowlist();
+  } catch (e) { phoneResult("phoneAllowlistResult", "Error: " + (e.message || e), "bad"); }
+}
+
+async function doSetUserNumber() {
+  const num = ($("phoneUserNumber").value || "").trim();
+  if (!num) { phoneResult("phoneUserNumResult", "Enter a phone number.", "bad"); return; }
+  phoneResult("phoneUserNumResult", "Setting…", "");
+  try {
+    const data = await phoneMcp("twilio_set_user_number", { phone_number: num });
+    phoneResult("phoneUserNumResult",
+      data.ok ? "✓ " + (data.default_user_number || num) : "✗ " + (data.error || ""),
+      data.ok ? "ok" : "bad");
+    await loadAllowlist();
+  } catch (e) { phoneResult("phoneUserNumResult", "Error: " + (e.message || e), "bad"); }
+}
+
+async function doSetVoice() {
+  const ext   = ($("phoneVoiceExt").value   || "").trim();
+  const vid   = ($("phoneVoiceId").value    || "").trim();
+  const speed = ($("phoneVoiceSpeed").value || "").trim();
+  if (!ext) { phoneResult("phoneVoiceResult", "Extension required.", "bad"); return; }
+  phoneResult("phoneVoiceResult", "Setting…", "");
+  try {
+    const args = { extension: isNaN(Number(ext)) ? ext : Number(ext) };
+    if (vid)   args.voice_id = vid;
+    if (speed) args.speed    = parseFloat(speed);
+    const data = await phoneMcp("set_voice_profile", args);
+    phoneResult("phoneVoiceResult", "✓ " + fmtPhoneData(data.voice || data), "ok");
+  } catch (e) { phoneResult("phoneVoiceResult", "Error: " + (e.message || e), "bad"); }
+}
+
+async function doGetVoice() {
+  const ext = ($("phoneVoiceExt").value || "").trim();
+  if (!ext) { phoneResult("phoneVoiceResult", "Extension required.", "bad"); return; }
+  phoneResult("phoneVoiceResult", "Loading…", "");
+  try {
+    const data = await phoneMcp("get_voice_profile", { extension: isNaN(Number(ext)) ? ext : Number(ext) });
+    phoneResult("phoneVoiceResult", fmtPhoneData(data.voice || data), "");
+  } catch (e) { phoneResult("phoneVoiceResult", "Error: " + (e.message || e), "bad"); }
+}
+
+async function doToggleScreening(enable) {
+  try {
+    await phoneMcp(enable ? "twilio_screening_enable" : "twilio_screening_disable");
+    await loadTwilioStatus();
+  } catch (e) { addSys("Screening: " + (e.message || e)); }
+}
+
+async function doRedAlert() {
+  const message = ($("phoneAlertMsg").value || "").trim();
+  if (!message) { phoneResult("phoneAlertResult", "Message required.", "bad"); return; }
+  if (!confirm("Broadcast RED ALERT to all agents?")) return;
+  phoneResult("phoneAlertResult", "Alerting…", "");
+  $("phoneRedAlert").disabled = true;
+  try {
+    const data = await phoneMcp("red_alert", { message });
+    phoneResult("phoneAlertResult", "✓ " + fmtPhoneData(data), "ok");
+  } catch (e) {
+    phoneResult("phoneAlertResult", "Error: " + (e.message || e), "bad");
+  } finally {
+    $("phoneRedAlert").disabled = false;
+  }
+}
+
+// ---- wire up all phone panel events once DOM is ready ----
+function initPhonePanel() {
+  // close
+  const cl = $("phoneClose"); if (cl) cl.addEventListener("click", closePhone);
+
+  // tabs
+  document.querySelectorAll(".phone-tab").forEach((btn) =>
+    btn.addEventListener("click", () => setPhoneTab(btn.getAttribute("data-ptab")))
+  );
+
+  // call banner
+  const bAccept = $("phoneBannerAccept");
+  if (bAccept) bAccept.addEventListener("click", () => {
+    // accept requires a WS call_accept frame — not wired in the extension.
+    // Surface the call id so the user knows which call to act on from the phone.
+    const cid = ($("phoneBanner") || {}).dataset && $("phoneBanner").dataset.callId;
+    addSys("Call accept must be done on the phone app (call id: " + (cid || "?") + ").");
+  });
+  const bEnd = $("phoneBannerEnd");
+  if (bEnd) bEnd.addEventListener("click", () => {
+    const cid = $("phoneBanner") && $("phoneBanner").dataset.callId;
+    if (cid) endPhoneCall(cid);
+  });
+
+  // calls tab
+  const rc = $("phoneRefreshCalls"); if (rc) rc.addEventListener("click", loadActiveCalls);
+  const db = $("phoneDialBtn");     if (db) db.addEventListener("click", doPhoneDial);
+  const dm = $("phoneDialMode");
+  if (dm) dm.addEventListener("change", () => {
+    const row = $("phoneToNumberRow");
+    if (row) row.style.display = dm.value === "twilio" ? "" : "none";
+  });
+  const txBack = $("phoneTranscriptBack");
+  if (txBack) txBack.addEventListener("click", () => {
+    const w = $("phoneTranscriptWrap"); if (w) w.classList.add("hidden");
+  });
+
+  // inbox tab
+  const ri = $("phoneRefreshInbox"); if (ri) ri.addEventListener("click", loadInbox);
+  const cb = $("phoneComposeBtn");   if (cb) cb.addEventListener("click", doCompose);
+  const thBack = $("phoneThreadBack");
+  if (thBack) thBack.addEventListener("click", () => {
+    const w = $("phoneThreadWrap"); if (w) w.classList.add("hidden");
+  });
+
+  // settings tab
+  const rs = $("phoneRefreshStatus");
+  if (rs) rs.addEventListener("click", () => { loadTwilioStatus(); loadAllowlist(); });
+  const son  = $("phoneScreeningOn");      if (son)  son.addEventListener("click",  () => doToggleScreening(true));
+  const soff = $("phoneScreeningOff");     if (soff) soff.addEventListener("click", () => doToggleScreening(false));
+  const ral  = $("phoneRefreshAllowlist"); if (ral)  ral.addEventListener("click",  loadAllowlist);
+  const aa   = $("phoneAllowlistAdd");     if (aa)   aa.addEventListener("click",   doAllowlistAdd);
+  const ar   = $("phoneAllowlistRemove");  if (ar)   ar.addEventListener("click",   doAllowlistRemove);
+  const sun  = $("phoneSetUserNum");       if (sun)  sun.addEventListener("click",  doSetUserNumber);
+  const vs   = $("phoneVoiceSet");         if (vs)   vs.addEventListener("click",   doSetVoice);
+  const vg   = $("phoneVoiceGet");         if (vg)   vg.addEventListener("click",   doGetVoice);
+  const red  = $("phoneRedAlert");         if (red)  red.addEventListener("click",  doRedAlert);
+}
+
 // ----------------------------------------------------------------- boot
 async function init() {
+  initPhonePanel();
   addSys("Jarvis co-worker ready. Type a request to drive this browser.");
   await refreshTabs();
   await connect();

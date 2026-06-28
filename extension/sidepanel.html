@@ -289,6 +289,182 @@
     .slash-grp { flex: none; font-family: var(--mono); font-size: 8px; letter-spacing: 1px; color: var(--muted); }
 
     .hidden { display: none !important; }
+
+    /* ================================================= phone panel */
+    .phone-panel {
+      flex: 1 1 auto; display: flex; flex-direction: column;
+      overflow: hidden; background: var(--panel);
+    }
+
+    /* active / incoming call banner with pulsing ring */
+    .phone-banner {
+      flex: none; display: flex; align-items: center; gap: 10px;
+      padding: 10px 12px;
+      background: rgba(41,231,255,0.07);
+      border-bottom: 2px solid var(--accent);
+    }
+    .phone-banner-ring {
+      flex: none; width: 34px; height: 34px; border-radius: 50%;
+      background: rgba(41,231,255,0.12); border: 2px solid var(--accent);
+      display: grid; place-items: center; font-size: 17px;
+      animation: ringPulse 1.3s ease-in-out infinite;
+    }
+    @keyframes ringPulse {
+      0%,100% { box-shadow: 0 0 0 0 rgba(41,231,255,0.55); }
+      50%      { box-shadow: 0 0 0 9px rgba(41,231,255,0); }
+    }
+    .phone-banner-info { flex: 1 1 auto; min-width: 0; }
+    .phone-banner-label { font-family: var(--mono); font-size: 12px; font-weight: 700; color: var(--accent-bright); }
+    .phone-banner-meta  { font-size: 10.5px; color: var(--muted); }
+    .phone-banner-actions { flex: none; display: flex; gap: 6px; }
+
+    /* tab bar */
+    .phone-tabs {
+      flex: none; display: flex; align-items: center; gap: 2px;
+      padding: 6px 8px; border-bottom: 1px solid var(--hairline);
+      background: var(--panel-2);
+    }
+    .phone-tab {
+      font-family: var(--mono); font-size: 11px; font-weight: 600;
+      background: transparent; color: var(--muted);
+      border: 1px solid transparent; border-radius: 7px;
+      padding: 4px 10px; cursor: pointer; outline: none;
+      transition: color 150ms, background 150ms, border-color 150ms;
+      white-space: nowrap;
+    }
+    .phone-tab.active {
+      color: var(--accent-bright); background: rgba(41,231,255,0.10);
+      border-color: var(--hairline);
+    }
+    .phone-tab:hover:not(.active) { color: var(--text); }
+
+    /* scrollable tab view */
+    .phone-view {
+      flex: 1 1 auto; overflow-y: auto;
+      scrollbar-width: thin; scrollbar-color: var(--hairline) transparent;
+    }
+    .phone-view::-webkit-scrollbar { width: 6px; }
+    .phone-view::-webkit-scrollbar-thumb { background: var(--hairline); border-radius: 3px; }
+
+    /* section headings */
+    .phone-section-head {
+      padding: 8px 12px 4px;
+      font-family: var(--mono); font-size: 10px; letter-spacing: 1.2px;
+      color: var(--accent); text-transform: uppercase;
+      display: flex; align-items: center; gap: 6px;
+      border-top: 1px solid var(--hairline-soft);
+    }
+    .phone-section-head:first-child { border-top: none; }
+
+    /* card list */
+    .phone-list { display: flex; flex-direction: column; }
+    .phone-card {
+      padding: 8px 12px; border-bottom: 1px solid var(--hairline-soft);
+      display: flex; flex-direction: column; gap: 2px;
+      transition: background 120ms;
+    }
+    .phone-card:hover { background: rgba(41,231,255,0.05); }
+    .phone-card-title {
+      font-size: 12px; font-weight: 600; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .phone-card-meta { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+    .phone-card-badge {
+      display: inline-block; padding: 1px 6px; border-radius: 4px;
+      font-size: 10px; font-family: var(--mono);
+      background: rgba(41,231,255,0.12); color: var(--accent);
+    }
+    .phone-card-badge.bad { background: rgba(255,93,108,0.12); color: var(--bad); }
+    .phone-card-badge.ok  { background: rgba(54,224,138,0.12);  color: var(--ok); }
+
+    /* form area */
+    .phone-dialer { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 6px; }
+    .phone-field-row { display: flex; flex-direction: column; gap: 3px; }
+    .phone-field-row label {
+      font-family: var(--mono); font-size: 10px; color: var(--muted); letter-spacing: 0.4px;
+    }
+    .phone-input {
+      font-family: var(--mono); font-size: 12px; color: var(--text);
+      background: var(--panel-2); border: 1px solid var(--hairline);
+      border-radius: 7px; padding: 6px 8px; outline: none;
+      resize: none; width: 100%;
+    }
+    .phone-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(41,231,255,0.10); }
+    .phone-select {
+      font-family: var(--mono); font-size: 11px; color: var(--accent-bright);
+      background: var(--panel-2); border: 1px solid var(--hairline);
+      border-radius: 7px; padding: 5px 7px; outline: none; cursor: pointer; width: 100%;
+    }
+
+    /* action buttons */
+    .phone-btn {
+      font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: 0.4px;
+      border-radius: 8px; padding: 7px 16px; cursor: pointer; outline: none;
+      border: 1px solid var(--accent); background: var(--accent); color: #04121a;
+      transition: background 150ms, transform 120ms;
+      box-shadow: 0 0 10px rgba(41,231,255,0.25);
+    }
+    .phone-btn:hover   { background: var(--accent-bright); }
+    .phone-btn:active  { transform: scale(0.96); }
+    .phone-btn:disabled { opacity: 0.45; cursor: default; }
+    .phone-btn.bad {
+      background: rgba(255,93,108,0.12); color: var(--bad);
+      border-color: rgba(255,93,108,0.55); box-shadow: none;
+    }
+    .phone-btn.bad:hover { background: rgba(255,93,108,0.22); }
+    .phone-btn.ok {
+      background: rgba(54,224,138,0.14); color: var(--ok);
+      border-color: rgba(54,224,138,0.5); box-shadow: none;
+    }
+    .phone-btn.ok:hover { background: rgba(54,224,138,0.24); }
+    .phone-sm-btn {
+      font-family: var(--mono); font-size: 10px; font-weight: 600;
+      border-radius: 6px; padding: 3px 8px; cursor: pointer; outline: none;
+      border: 1px solid var(--hairline); background: var(--panel-2); color: var(--accent);
+      transition: background 150ms; white-space: nowrap;
+    }
+    .phone-sm-btn:hover { background: rgba(41,231,255,0.12); }
+    .phone-sm-btn.ok  { color: var(--ok);  border-color: rgba(54,224,138,0.4); }
+    .phone-sm-btn.bad { color: var(--bad); border-color: rgba(255,93,108,0.4); }
+
+    /* result text */
+    .phone-result {
+      font-family: var(--mono); font-size: 11px; line-height: 1.5;
+      color: var(--muted); padding: 4px 0;
+      white-space: pre-wrap; word-wrap: break-word; min-height: 0;
+    }
+    .phone-result.ok  { color: var(--ok); }
+    .phone-result.bad { color: var(--bad); }
+
+    /* status readout */
+    .phone-status-box {
+      margin: 4px 12px 8px; padding: 10px;
+      background: var(--panel-2); border: 1px solid var(--hairline);
+      border-radius: 10px; font-family: var(--mono); font-size: 11px;
+      line-height: 1.7; color: var(--text); white-space: pre-wrap;
+    }
+
+    /* inline badge */
+    .phone-badge {
+      display: inline-block; padding: 2px 8px; border-radius: 6px;
+      font-family: var(--mono); font-size: 10px;
+      background: rgba(41,231,255,0.12); color: var(--accent);
+    }
+    .phone-badge.ok  { background: rgba(54,224,138,0.12); color: var(--ok); }
+    .phone-badge.bad { background: rgba(255,93,108,0.12); color: var(--bad); }
+
+    /* transcript / thread view */
+    .phone-transcript {
+      padding: 8px 12px 14px; font-family: var(--mono); font-size: 11px;
+      line-height: 1.6; color: var(--text);
+      white-space: pre-wrap; word-wrap: break-word;
+    }
+    /* slide-in animation for the phone panel */
+    @keyframes phoneSlideIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .phone-panel:not(.hidden) { animation: phoneSlideIn 180ms ease-out; }
   </style>
 </head>
 <body>
@@ -325,6 +501,190 @@
     <div class="iconbtn" id="refreshBtn" title="refresh tab context">⟳</div>
   </div>
 
+  <!-- Phone panel — overlays transcript while open, toggled by ☎ Phone chip -->
+  <div id="phonePanel" class="phone-panel hidden">
+
+    <!-- Incoming / active call banner with pulsing ring -->
+    <div id="phoneBanner" class="phone-banner hidden">
+      <div class="phone-banner-ring">☎</div>
+      <div class="phone-banner-info">
+        <div class="phone-banner-label" id="phoneBannerLabel">Incoming call…</div>
+        <div class="phone-banner-meta"  id="phoneBannerMeta"></div>
+      </div>
+      <div class="phone-banner-actions">
+        <button class="phone-btn ok"  id="phoneBannerAccept">Accept</button>
+        <button class="phone-btn bad" id="phoneBannerEnd">End</button>
+      </div>
+    </div>
+
+    <!-- Tab bar -->
+    <div class="phone-tabs">
+      <button class="phone-tab active" data-ptab="calls">☎ Calls</button>
+      <button class="phone-tab"        data-ptab="inbox">✉ Inbox</button>
+      <button class="phone-tab"        data-ptab="settings">⚙ Settings</button>
+      <span class="spacer"></span>
+      <div class="iconbtn" id="phoneClose" title="close phone panel">✕</div>
+    </div>
+
+    <!-- ===== CALLS TAB ===== -->
+    <div class="phone-view" id="phoneViewCalls">
+      <div class="phone-section-head">
+        Active Calls
+        <button class="phone-sm-btn" id="phoneRefreshCalls">↻</button>
+      </div>
+      <div id="phoneCallsList" class="phone-list"></div>
+
+      <div id="phoneTranscriptWrap" class="hidden">
+        <div class="phone-section-head">
+          Call Transcript
+          <button class="phone-sm-btn" id="phoneTranscriptBack">✕ Close</button>
+        </div>
+        <div id="phoneTranscriptBody" class="phone-transcript">Loading…</div>
+      </div>
+
+      <div class="phone-section-head">Dialer</div>
+      <div class="phone-dialer">
+        <div class="phone-field-row">
+          <label>Mode</label>
+          <select id="phoneDialMode" class="phone-select">
+            <option value="inapp">In-App (call_user_and_wait)</option>
+            <option value="twilio">PSTN / Twilio (twilio_call_and_wait)</option>
+          </select>
+        </div>
+        <div class="phone-field-row" id="phoneToNumberRow" style="display:none">
+          <label>To Number (Twilio only)</label>
+          <input id="phoneToNumber" class="phone-input" placeholder="+15555550100">
+        </div>
+        <div class="phone-field-row">
+          <label>Reason</label>
+          <input id="phoneDialReason" class="phone-input" placeholder="Why calling?">
+        </div>
+        <div class="phone-field-row">
+          <label>Say</label>
+          <textarea id="phoneDialSay" class="phone-input" rows="2" placeholder="What to say on the call…"></textarea>
+        </div>
+        <button class="phone-btn" id="phoneDialBtn">☎ Call</button>
+        <div id="phoneDialResult" class="phone-result"></div>
+      </div>
+    </div>
+
+    <!-- ===== INBOX TAB ===== -->
+    <div class="phone-view hidden" id="phoneViewInbox">
+      <div class="phone-section-head">
+        Messages
+        <button class="phone-sm-btn" id="phoneRefreshInbox">↻</button>
+      </div>
+      <div id="phoneInboxList" class="phone-list"></div>
+
+      <div id="phoneThreadWrap" class="hidden">
+        <div class="phone-section-head">
+          Thread
+          <button class="phone-sm-btn" id="phoneThreadBack">✕ Close</button>
+        </div>
+        <div id="phoneThreadBody" class="phone-transcript"></div>
+      </div>
+
+      <div class="phone-section-head">Compose</div>
+      <div class="phone-dialer">
+        <div class="phone-field-row">
+          <label>Title / Subject</label>
+          <input id="phoneComposeTitle" class="phone-input" placeholder="Subject">
+        </div>
+        <div class="phone-field-row">
+          <label>Body</label>
+          <textarea id="phoneComposeBody" class="phone-input" rows="3" placeholder="Message body…"></textarea>
+        </div>
+        <div class="phone-field-row" style="flex-direction:row;align-items:center;gap:8px">
+          <input type="checkbox" id="phoneComposeWait" style="accent-color:var(--accent);cursor:pointer">
+          <label for="phoneComposeWait" style="cursor:pointer;margin:0;font-family:var(--mono);font-size:10px;color:var(--muted)">
+            Wait for reply (notify_user_and_wait)
+          </label>
+        </div>
+        <button class="phone-btn" id="phoneComposeBtn">✉ Send</button>
+        <div id="phoneComposeResult" class="phone-result"></div>
+      </div>
+    </div>
+
+    <!-- ===== SETTINGS TAB ===== -->
+    <div class="phone-view hidden" id="phoneViewSettings">
+      <div class="phone-section-head">
+        Twilio Status
+        <button class="phone-sm-btn" id="phoneRefreshStatus">↻</button>
+      </div>
+      <div id="phoneTwilioStatus" class="phone-status-box">—</div>
+
+      <div class="phone-section-head">Call Screening</div>
+      <div class="phone-dialer">
+        <div class="phone-field-row" style="flex-direction:row;align-items:center;gap:8px;flex-wrap:wrap">
+          <span id="phoneScreeningBadge" class="phone-badge">—</span>
+          <button class="phone-sm-btn ok"  id="phoneScreeningOn">Enable</button>
+          <button class="phone-sm-btn bad" id="phoneScreeningOff">Disable</button>
+        </div>
+      </div>
+
+      <div class="phone-section-head">
+        Allowlist
+        <button class="phone-sm-btn" id="phoneRefreshAllowlist">↻</button>
+      </div>
+      <div id="phoneAllowlist" class="phone-list"></div>
+      <div class="phone-dialer" style="padding-top:4px">
+        <div class="phone-field-row">
+          <label>Phone number (E.164)</label>
+          <input id="phoneAllowlistNum" class="phone-input" placeholder="+15555550100">
+        </div>
+        <div class="phone-field-row">
+          <label>Label (optional)</label>
+          <input id="phoneAllowlistLabel" class="phone-input" placeholder="Home, Mom, …">
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="phone-sm-btn ok"  id="phoneAllowlistAdd">+ Add</button>
+          <button class="phone-sm-btn bad" id="phoneAllowlistRemove">− Remove</button>
+        </div>
+        <div id="phoneAllowlistResult" class="phone-result"></div>
+      </div>
+
+      <div class="phone-section-head">User Number</div>
+      <div class="phone-dialer">
+        <div class="phone-field-row">
+          <input id="phoneUserNumber" class="phone-input" placeholder="+15555550100">
+        </div>
+        <button class="phone-sm-btn ok" id="phoneSetUserNum">Set Number</button>
+        <div id="phoneUserNumResult" class="phone-result"></div>
+      </div>
+
+      <div class="phone-section-head">Voice Profile</div>
+      <div class="phone-dialer">
+        <div class="phone-field-row">
+          <label>Extension</label>
+          <input id="phoneVoiceExt" class="phone-input" value="101" placeholder="101">
+        </div>
+        <div class="phone-field-row">
+          <label>Voice ID</label>
+          <input id="phoneVoiceId" class="phone-input" placeholder="UUID or local:jarvis">
+        </div>
+        <div class="phone-field-row">
+          <label>Speed (0.5 – 2.0)</label>
+          <input id="phoneVoiceSpeed" class="phone-input" type="number" min="0.5" max="2" step="0.1" placeholder="1.0">
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="phone-sm-btn ok" id="phoneVoiceSet">Set</button>
+          <button class="phone-sm-btn"    id="phoneVoiceGet">Get</button>
+        </div>
+        <div id="phoneVoiceResult" class="phone-result"></div>
+      </div>
+
+      <div class="phone-section-head" style="color:var(--bad)">War Room</div>
+      <div class="phone-dialer">
+        <div class="phone-field-row">
+          <textarea id="phoneAlertMsg" class="phone-input" rows="2" placeholder="Red alert message…"></textarea>
+        </div>
+        <button class="phone-btn bad" id="phoneRedAlert">🚨 RED ALERT</button>
+        <div id="phoneAlertResult" class="phone-result"></div>
+      </div>
+    </div>
+
+  </div><!-- /phonePanel -->
+
   <div id="transcript"></div>
 
   <div class="working hidden" id="working">
@@ -336,6 +696,7 @@
 
   <!-- quick-access flow chips (parity with desktop/phone) -->
   <div class="quickbar" id="quickbar">
+    <button class="chip" data-cmd="phone">☎ Phone</button>
     <button class="chip" data-cmd="/agents">✦ Agents</button>
     <button class="chip" data-cmd="/skills">⚡ Skills</button>
     <button class="chip" data-cmd="/running">◴ Running</button>
