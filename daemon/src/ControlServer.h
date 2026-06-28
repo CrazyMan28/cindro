@@ -483,6 +483,10 @@ private:
     QHash<QString, QString> m_hookSessionContext;
     // Seed the built-in "internal_docs" capability-catalog skill (once).
     void seedInternalDocsSkill();
+    // Seed the native phone subsystem's MCP endpoint (call_user / notify_user /
+    // twilio_* etc.) into the brain's registry from ~/.config/jarvis/phone.env, if
+    // present. Idempotent; no-op when the phone isn't set up.
+    void seedPhoneMcp();
 
     // Wave 8 co-worker ops backend: cron/at scheduler (fires session.create+send
     // via a QTimer tick), the SSH allow-list (gated ssh.exec), the audit log
