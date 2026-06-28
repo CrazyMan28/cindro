@@ -46,6 +46,9 @@ Item {
     // Each: {id,title,agent,status}. Click one to open it + watch its tool calls.
     property var subagents: []
     readonly property bool hasSubagents: panel.subagents.length > 0
+    // If the CURRENT session is itself a subagent (has a parent), this holds the
+    // parent id so we can show a "← Main agent" button to jump back.
+    property string currentParentId: ""
     // Auto-open the panel on a new plan, a dispatched subagent, OR an active desktop.
     onHasPlanChanged: if (hasPlan) peekOpen = true
     onHasSubagentsChanged: if (hasSubagents) peekOpen = true
@@ -334,17 +337,24 @@ Item {
         // subagents shown in the right-side pop-out.
         function onSubAgentTree(rows) {
             var kids = []
+            var pid = ""
             for (var i = 0; i < rows.length; i++) {
                 var r = rows[i]
-                if (("" + (r.parent !== undefined ? r.parent : "")) === ("" + bridge.sessionId))
+                var rid = "" + (r.id !== undefined ? r.id : "")
+                var rparent = "" + (r.parent !== undefined ? r.parent : "")
+                if (rparent === ("" + bridge.sessionId))
                     kids.push({
-                        "id": "" + (r.id !== undefined ? r.id : ""),
+                        "id": rid,
                         "title": "" + (r.title !== undefined ? r.title : ""),
                         "agent": "" + (r.agent !== undefined ? r.agent : (r.brain !== undefined ? r.brain : "")),
                         "status": "" + (r.status !== undefined ? r.status : "")
                     })
+                // Is the CURRENT session itself a child? remember its parent.
+                if (rid === ("" + bridge.sessionId) && rparent.length > 0)
+                    pid = rparent
             }
             panel.subagents = kids
+            panel.currentParentId = pid
         }
         // A subagent was dispatched (by the user via the palette OR by the model):
         // open the panel + refresh the list so it shows up immediately.
@@ -1420,6 +1430,36 @@ Item {
                     }
                 }
             }
+        }
+    }
+
+    // ---- "← Main agent" pill: shown when viewing a SUBAGENT's session, jumps back
+    // to the parent (main agent) chat. Floats at the top-left of the transcript.
+    Rectangle {
+        id: backToParentPill
+        visible: panel.currentParentId.length > 0
+        anchors.left: parent.left; anchors.top: parent.top
+        anchors.leftMargin: 18; anchors.topMargin: 10
+        z: 60
+        implicitWidth: backRow.implicitWidth + 22
+        height: 28; radius: 14
+        color: backMa.containsMouse ? Theme.surfaceStrong : Theme.surface
+        border.width: 1; border.color: Qt.rgba(0.694, 0.294, 1.0, 0.45)
+        Behavior on color { ColorAnimation { duration: Theme.durFast } }
+        // entrance
+        opacity: visible ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 180 } }
+        Row {
+            id: backRow; anchors.centerIn: parent; spacing: 6
+            Text { anchors.verticalCenter: parent.verticalCenter; text: "←"; color: Theme.violet; font.pixelSize: 13 }
+            Text { anchors.verticalCenter: parent.verticalCenter; text: "MAIN AGENT"
+                color: Theme.violet; font.family: Theme.fontDisplay; font.pixelSize: 9
+                font.letterSpacing: 1.4; font.weight: Font.DemiBold }
+        }
+        MouseArea {
+            id: backMa; anchors.fill: parent; hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: if (panel.currentParentId.length > 0) bridge.openSession(panel.currentParentId)
         }
     }
 
