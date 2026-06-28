@@ -268,7 +268,14 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
     }
 
     fun acceptCall(callId: String) {
-        _uiState.update { it.copy(incomingCall = null) }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    repo.phoneHttp("POST", "/api/calls/$callId/accept", null)
+                }
+            }.onSuccess { _uiState.update { it.copy(incomingCall = null) } }
+                .onFailure { e -> _uiState.update { it.copy(incomingCall = null, error = e.message) } }
+        }
     }
 
     fun declineCall(callId: String) {
