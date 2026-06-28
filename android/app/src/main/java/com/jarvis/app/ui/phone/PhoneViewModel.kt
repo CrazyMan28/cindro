@@ -445,13 +445,23 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
     fun loadScreeningConfig() {
         viewModelScope.launch {
             val agents = safePhoneMcp("list_agents") { parseAgentPairs(it) } ?: emptyList()
+            val sc = runCatching {
+                withContext(Dispatchers.IO) { repo.phoneHttp("GET", "/api/screening") }
+            }.getOrNull()
+            val data = sc?.dataObj() ?: sc
+            val enabled      = data?.get("enabled")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+            val inboundExt   = data?.get("inbound_extension")?.takeIf { !it.isJsonNull }?.asString ?: ""
+            val screeningExt = data?.get("screening_extension")?.takeIf { !it.isJsonNull }?.asString ?: ""
+            val transport    = data?.get("transport")?.takeIf { !it.isJsonNull }?.asString ?: "twilio"
             val ts = safePhoneMcp("twilio_status") { parseTwilioStatus(it) }
             _uiState.update {
                 it.copy(
                     screeningConfig = ScreeningConfig(
-                        enabled = ts?.screeningEnabled ?: false,
+                        enabled = enabled,
+                        inboundExtension = inboundExt,
+                        screeningExtension = screeningExt,
+                        transport = transport,
                         agents = agents,
-                        transport = "twilio",
                     ),
                     twilioStatus = ts,
                 )
@@ -463,7 +473,8 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    repo.phoneMcp("twilio_register_inbound_agent", Params.of("extension" to extension))
+                    val body = JsonObject().apply { addProperty("inbound_extension", extension) }
+                    repo.phoneHttp("POST", "/api/screening", body)
                 }
             }
                 .onSuccess { callback(true) }
@@ -475,8 +486,8 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    repo.phoneMcp("twilio_register_inbound_agent",
-                        Params.of("screening_extension" to extension))
+                    val body = JsonObject().apply { addProperty("screening_extension", extension) }
+                    repo.phoneHttp("POST", "/api/screening", body)
                 }
             }
                 .onSuccess { callback(true) }
@@ -488,7 +499,8 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    repo.phoneMcp("set_screening_transport", Params.of("transport" to transport))
+                    val body = JsonObject().apply { addProperty("transport", transport) }
+                    repo.phoneHttp("POST", "/api/screening", body)
                 }
             }
                 .onSuccess { callback(true) }
@@ -508,11 +520,17 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
     fun loadSmsConfig() {
         viewModelScope.launch {
             val agents = safePhoneMcp("list_agents") { parseAgentPairs(it) } ?: emptyList()
-            val ts = safePhoneMcp("twilio_status") { parseTwilioStatus(it) }
+            val sc = runCatching {
+                withContext(Dispatchers.IO) { repo.phoneHttp("GET", "/api/sms-agent") }
+            }.getOrNull()
+            val data = sc?.dataObj() ?: sc
+            val enabled = data?.get("enabled")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+            val ext     = data?.get("extension")?.takeIf { !it.isJsonNull }?.asString ?: ""
             _uiState.update {
                 it.copy(
                     smsAgentConfig = SmsAgentConfig(
-                        enabled = ts?.smsAgentEnabled ?: false,
+                        enabled = enabled,
+                        extension = ext,
                         agents = agents,
                     ),
                 )
@@ -521,9 +539,13 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
     }
 
     fun setSmsEnabled(enabled: Boolean, callback: (Boolean?) -> Unit) {
-        val tool = if (enabled) "twilio_sms_enable" else "twilio_sms_disable"
         viewModelScope.launch {
-            runCatching { withContext(Dispatchers.IO) { repo.phoneMcp(tool) } }
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val body = JsonObject().apply { addProperty("enabled", enabled) }
+                    repo.phoneHttp("POST", "/api/sms-agent", body)
+                }
+            }
                 .onSuccess { callback(enabled) }
                 .onFailure { callback(null) }
         }
@@ -533,7 +555,8 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    repo.phoneMcp("twilio_register_sms_agent", Params.of("extension" to extension))
+                    val body = JsonObject().apply { addProperty("extension", extension) }
+                    repo.phoneHttp("POST", "/api/sms-agent", body)
                 }
             }
                 .onSuccess { callback(true) }
@@ -594,21 +617,27 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
 
     fun listVoices() {
         viewModelScope.launch {
-            val options = safePhoneMcp("list_voices") { parseVoices(it) }
-                ?: listOf(VoiceOption(null, "Default"))
+            val options = runCatching {
+                withContext(Dispatchers.IO) {
+                    parseVoicesHttp(repo.phoneHttp("GET", "/api/voices"))
+                }
+            }.getOrDefault(listOf(VoiceOption(null, "Default")))
             _uiState.update { it.copy(voiceOptions = options) }
         }
     }
 
     fun getVoiceProfile(extension: String) {
         viewModelScope.launch {
-            val pair = safePhoneMcp("get_voice_profile", Params.of("extension" to extension)) { r ->
-                val data = r.dataObj()
-                val vid = data?.get("voiceId")?.takeIf { !it.isJsonNull }?.asString
-                    ?: data?.get("voice_id")?.takeIf { !it.isJsonNull }?.asString
-                val spd = data?.get("speed")?.takeIf { !it.isJsonNull }?.asDouble ?: 1.0
-                vid to (if (spd.isNaN()) 1.0 else spd)
-            } ?: (null to 1.0)
+            val pair = runCatching {
+                withContext(Dispatchers.IO) {
+                    val r = repo.phoneHttp("GET", "/api/extensions/$extension/voice")
+                    val data = r.dataObj() ?: r
+                    val vid = data.get("voice_id")?.takeIf { !it.isJsonNull }?.asString
+                        ?: data.get("voiceId")?.takeIf { !it.isJsonNull }?.asString
+                    val spd = data.get("speed")?.takeIf { !it.isJsonNull }?.asDouble ?: 1.0
+                    vid to (if (spd.isNaN()) 1.0 else spd)
+                }
+            }.getOrDefault(null to 1.0)
             _uiState.update { it.copy(agentVoiceConfigs = it.agentVoiceConfigs + (extension to pair)) }
         }
     }
@@ -618,11 +647,11 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    val args = Params.of("extension" to extension)
-                    if (voiceId != null) args.addProperty("voice_id", voiceId)
-                    else args.add("voice_id", JsonNull.INSTANCE)
-                    if (voiceName != null) args.addProperty("name", voiceName)
-                    repo.phoneMcp("set_voice_profile", args)
+                    val body = JsonObject().apply {
+                        if (voiceId != null) addProperty("voice_id", voiceId)
+                        else add("voice_id", JsonNull.INSTANCE)
+                    }
+                    repo.phoneHttp("PUT", "/api/extensions/$extension/voice", body)
                 }
             }
                 .onSuccess { callback(true) }
@@ -634,8 +663,8 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    repo.phoneMcp("set_voice_speed",
-                        Params.of("extension" to extension, "speed" to speed))
+                    val body = JsonObject().apply { addProperty("speed", speed) }
+                    repo.phoneHttp("PUT", "/api/extensions/$extension/voice", body)
                 }
             }
                 .onSuccess {
@@ -654,7 +683,7 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    repo.phoneMcp("preview_voice", Params.of("voice_id" to voiceId))
+                    repo.phoneHttp("GET", "/api/voices/$voiceId/sample")
                 }
             }
                 .onSuccess { _uiState.update { it.copy(voicePreviewStatus = "Preview playing on device") } }
@@ -664,12 +693,15 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
 
     fun getModelConfig(extension: String) {
         viewModelScope.launch {
-            val pair = safePhoneMcp("get_agent_model", Params.of("extension" to extension)) { r ->
-                val data = r.dataObj() ?: r
-                val m = data.get("model")?.takeIf { !it.isJsonNull }?.asString
-                val rs = data.get("reasoning")?.takeIf { !it.isJsonNull }?.asString
-                m to rs
-            } ?: (null to null)
+            val pair = runCatching {
+                withContext(Dispatchers.IO) {
+                    val r = repo.phoneHttp("GET", "/api/extensions/$extension/model")
+                    val data = r.dataObj() ?: r
+                    val m = data.get("model")?.takeIf { !it.isJsonNull }?.asString
+                    val rs = data.get("reasoning")?.takeIf { !it.isJsonNull }?.asString
+                    m to rs
+                }
+            }.getOrDefault(null to null)
             _uiState.update { it.copy(agentModelConfigs = it.agentModelConfigs + (extension to pair)) }
         }
     }
@@ -678,10 +710,11 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    val args = Params.of("extension" to extension)
-                    if (model != null) args.addProperty("model", model)
-                    if (reasoning != null) args.addProperty("reasoning", reasoning)
-                    repo.phoneMcp("set_agent_model", args)
+                    val body = JsonObject().apply {
+                        if (model != null) addProperty("model", model)
+                        if (reasoning != null) addProperty("reasoning", reasoning)
+                    }
+                    repo.phoneHttp("PUT", "/api/extensions/$extension/model", body)
                 }
             }
                 .onSuccess { getModelConfig(extension) }
@@ -694,11 +727,18 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
     fun loadHistory() {
         _uiState.update { it.copy(historyLoading = true) }
         viewModelScope.launch {
-            val recent = safePhoneMcp("get_session_calls") { parseCallHistory(it) } ?: emptyList()
+            val all = runCatching {
+                withContext(Dispatchers.IO) {
+                    val calls  = repo.phoneHttp("GET", "/api/calls")
+                    val missed = repo.phoneHttp("GET", "/api/missed-calls")
+                    parseCallHistory(calls) + parseCallHistory(missed)
+                }
+            }.getOrDefault(emptyList())
+            val unique = all.distinctBy { "${it.from}|${it.to}|${it.createdAt}" }
             _uiState.update {
                 it.copy(
                     historyLoading = false,
-                    callHistory = recent.sortedByDescending { e -> e.createdAt }.take(50)
+                    callHistory = unique.sortedByDescending { e -> e.createdAt }.take(50),
                 )
             }
         }
@@ -716,7 +756,7 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
             var lastError: String? = null
 
             runCatching {
-                withContext(Dispatchers.IO) { repo.phoneMcp("list_active_calls") }
+                withContext(Dispatchers.IO) { repo.phoneHttp("GET", "/api/setup/status") }
             }
                 .onSuccess { healthOk = true; authOk = true }
                 .onFailure { e -> healthOk = false; lastError = e.message }
@@ -737,7 +777,7 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
                         agentsOk = agentsOk,
                         agentCount = agentCount,
                         lastError = lastError,
-                        lastWebSocketState = if (healthOk == true) "connected via phone.mcp" else "error",
+                        lastWebSocketState = if (healthOk == true) "connected via phone.http" else "error",
                         suggestedFix = lastError?.let { "Check Jarvis daemon connection and phone server on :8801" },
                     )
                 )
@@ -960,6 +1000,28 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
                 if (el.isJsonObject) {
                     val o = el.asJsonObject
                     val id = o.get("id")?.takeIf { !it.isJsonNull }?.asString
+                    val name = o.get("name")?.takeIf { !it.isJsonNull }?.asString ?: id ?: "Voice"
+                    add(VoiceOption(id, name))
+                }
+            }
+        }
+    }
+
+    /** Parse voices from phone.http GET /api/voices — data may be a JsonArray or JsonObject{voices:[]}. */
+    private fun parseVoicesHttp(result: JsonObject): List<VoiceOption> {
+        val dataEl = result.get("data") ?: return listOf(VoiceOption(null, "Default"))
+        val arr = when {
+            dataEl.isJsonArray -> dataEl.asJsonArray
+            dataEl.isJsonObject -> dataEl.asJsonObject.getAsJsonArray("voices")
+            else -> null
+        } ?: return listOf(VoiceOption(null, "Default"))
+        return buildList {
+            add(VoiceOption(null, "Default"))
+            arr.forEach { el ->
+                if (el.isJsonObject) {
+                    val o = el.asJsonObject
+                    val id = o.get("id")?.takeIf { !it.isJsonNull }?.asString
+                        ?: o.get("voice_id")?.takeIf { !it.isJsonNull }?.asString
                     val name = o.get("name")?.takeIf { !it.isJsonNull }?.asString ?: id ?: "Voice"
                     add(VoiceOption(id, name))
                 }

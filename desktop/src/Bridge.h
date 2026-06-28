@@ -396,6 +396,15 @@ public:
                               const QString &name,
                               const QVariantMap &arguments);
 
+    // ---- Phone (Contract A phone.http proxy) --------------------------------
+    // Forward a plain REST call to the phone server through the daemon's phone.http
+    // method.  callId echoed back in phoneHttpResult(); body may be empty {}.
+    // Result shape: {status:int, data:<obj|array>, text?}.
+    Q_INVOKABLE void phoneHttp(const QString &callId,
+                               const QString &method,
+                               const QString &path,
+                               const QVariantMap &body);
+
     // ---- Notifications ------------------------------------------------------
     // Toggle desktop notify-send on attention events. Persisted via settings.set so
     // the daemon's NotifyService honors it too.
@@ -651,6 +660,11 @@ signals:
     // phoneMcp().  result contains the parsed tool response
     // {tool, data, text, error?} or {error: {...}} on failure.
     void phoneResult(const QString &callId, const QVariantMap &result);
+
+    // Emitted when a phone.http reply arrives; callId matches what was passed to
+    // phoneHttp().  result shape: {status:int, data:<obj|array>, text?} or
+    // {error: {...}} on failure.
+    void phoneHttpResult(const QString &callId, const QVariantMap &result);
 
     // ---- Notifications ------------------------------------------------------
     void notificationsChanged();

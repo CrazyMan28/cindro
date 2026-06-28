@@ -475,6 +475,21 @@ class JarvisRepository(
         ).orThrow()
     }
 
+    /**
+     * Proxy a REST call to the phone server via the `phone.http` Contract A method.
+     * Request: {method:"phone.http", params:{method, path, body?}}
+     * Response result: {status:Int, data:<object|array>, text?}
+     */
+    suspend fun phoneHttp(method: String, path: String, body: JsonObject? = null): JsonObject {
+        val params = Params.of("method" to method, "path" to path)
+        body?.let { params.add("body", it) }
+        return client.request(
+            "phone.http",
+            params,
+            timeoutMs = 60_000,
+        ).orThrow()
+    }
+
     // --- live widgets: viewer leases + home-screen pins --------------------
     // Best-effort (a dropped heartbeat must not crash the UI). The daemon records
     // a lease so the engine's live-widget supervisor only runs a widget someone is
