@@ -41,9 +41,6 @@ Item {
         function onSkillLoaded(name, frontmatter, body, path) {
             viewDialog.openWith(name, frontmatter, body, path)
         }
-        function onSkillInvoked(name, message) {
-            page.runSkill(name, message)
-        }
     }
 
     ColumnLayout {
@@ -242,7 +239,8 @@ Item {
                             label: "Run"
                             primary: true
                             enabledBtn: bridge.connected
-                            onClicked: bridge.skillInvoke(row.name, "")
+                            // Send "/name" into chat; the model loads it via skill_load.
+                            onClicked: page.runSkill(row.name, "")
                         }
                         Widgets.PillButton {
                             label: "Remove"
@@ -345,7 +343,7 @@ Item {
                 Widgets.PillButton {
                     label: "Run"
                     primary: true
-                    onClicked: { bridge.skillInvoke(viewDialog.skillName, ""); viewDialog.close() }
+                    onClicked: { page.runSkill(viewDialog.skillName, ""); viewDialog.close() }
                 }
             }
 
