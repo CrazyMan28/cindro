@@ -1040,6 +1040,20 @@ Item {
                 clip: true
                 spacing: 12
                 model: chatModel
+                // Animated session switch: fade + slide the transcript in when the
+                // session changes (e.g. opening a subagent or jumping back).
+                transform: Translate { id: chatSlide; y: 0 }
+                Connections {
+                    target: bridge
+                    function onSessionIdChanged() { chatSwitchAnim.restart() }
+                }
+                SequentialAnimation {
+                    id: chatSwitchAnim
+                    ParallelAnimation {
+                        NumberAnimation { target: chatView; property: "opacity"; from: 0.0; to: 1.0; duration: 240; easing.type: Easing.OutCubic }
+                        NumberAnimation { target: chatSlide; property: "y"; from: 14; to: 0; duration: 260; easing.type: Easing.OutCubic }
+                    }
+                }
                 // Keep a smaller off-screen buffer so a long transcript doesn't keep
                 // dozens of heavy chat delegates (tool output, diffs) alive at once —
                 // the main cause of lag past ~95 messages. ~2 screens is plenty.
