@@ -465,6 +465,160 @@
       to   { opacity: 1; transform: translateY(0); }
     }
     .phone-panel:not(.hidden) { animation: phoneSlideIn 180ms ease-out; }
+
+    /* ===================================================== dialpad */
+    .phone-dial-wrap { padding: 0 0 6px; }
+    .dial-display-wrap {
+      text-align: center; padding: 16px 12px 8px;
+      background: linear-gradient(180deg, rgba(41,231,255,0.05), transparent);
+    }
+    .dial-display {
+      font-family: var(--mono); font-size: 38px; font-weight: 700;
+      color: var(--text); letter-spacing: 6px; min-height: 50px;
+      text-shadow: 0 0 18px rgba(41,231,255,0.22);
+    }
+    .dial-hint { font-family: var(--mono); font-size: 10.5px; color: var(--muted); margin-top: 2px; }
+    .dial-ext-chips {
+      display: flex; gap: 6px; justify-content: center; flex-wrap: wrap;
+      padding: 6px 12px 10px;
+    }
+    .dial-ext-chip {
+      font-family: var(--mono); font-size: 11px; font-weight: 600;
+      background: var(--panel-2); color: var(--accent-bright);
+      border: 1px solid var(--hairline); border-radius: 999px;
+      padding: 4px 14px; cursor: pointer; outline: none;
+      transition: background 130ms, border-color 130ms, transform 100ms;
+    }
+    .dial-ext-chip:hover { background: rgba(41,231,255,0.12); border-color: var(--accent); }
+    .dial-ext-chip:active { transform: scale(0.92); }
+    .dialpad {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: 9px; padding: 0 14px;
+    }
+    .dialpad-key {
+      font-family: var(--mono); font-size: 22px; font-weight: 600;
+      background: var(--panel-2); color: var(--text);
+      border: 1px solid var(--hairline); border-radius: 16px;
+      height: 54px; cursor: pointer; outline: none;
+      transition: background 130ms, transform 100ms, box-shadow 130ms;
+      display: grid; place-items: center;
+    }
+    .dialpad-key:hover { background: rgba(41,231,255,0.09); box-shadow: 0 0 8px rgba(41,231,255,0.1); }
+    .dialpad-key:active { transform: scale(0.90); background: rgba(41,231,255,0.18); }
+    .dialpad-sym { font-size: 19px; color: var(--muted); }
+    .dial-action-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 24px 4px;
+    }
+    .dial-call-btn {
+      width: 64px; height: 64px; border-radius: 50%;
+      background: var(--accent); color: #04121a; font-size: 24px;
+      cursor: pointer; border: none; outline: none;
+      display: grid; place-items: center;
+      box-shadow: 0 0 22px rgba(41,231,255,0.45), 0 0 8px rgba(41,231,255,0.22);
+      transition: background 150ms, transform 120ms, box-shadow 150ms;
+    }
+    .dial-call-btn:hover { background: var(--accent-bright); box-shadow: 0 0 28px rgba(41,231,255,0.6); }
+    .dial-call-btn:active { transform: scale(0.91); }
+    .dial-call-btn:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
+    .dialpad-backspace {
+      background: transparent; border: none; font-size: 22px;
+      color: var(--muted); cursor: pointer; outline: none;
+      padding: 10px; border-radius: 12px;
+      transition: color 150ms, background 150ms;
+    }
+    .dialpad-backspace:hover { color: var(--text); background: rgba(255,255,255,0.06); }
+    .dialpad-backspace:active { transform: scale(0.88); }
+    .dial-extras {
+      padding: 4px 14px 6px; font-family: var(--mono); font-size: 11px;
+    }
+    .dial-extras summary {
+      cursor: pointer; color: var(--accent); letter-spacing: 0.4px;
+      outline: none; user-select: none;
+      padding: 4px 0;
+    }
+    .dial-extras[open] summary { color: var(--accent-bright); }
+    .dial-extras > div { padding: 2px 0 4px; }
+
+    /* ===================================================== agent config */
+    .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0; }
+    .config-chip {
+      font-family: var(--mono); font-size: 11px; font-weight: 600;
+      background: var(--panel-2); color: var(--muted);
+      border: 1px solid var(--hairline-soft); border-radius: 8px;
+      padding: 4px 11px; cursor: pointer; outline: none;
+      transition: background 130ms, color 130ms, border-color 130ms;
+      white-space: nowrap;
+    }
+    .config-chip.selected {
+      background: rgba(41,231,255,0.14); color: var(--accent-bright);
+      border-color: rgba(41,231,255,0.5);
+    }
+    .config-chip:hover:not(.selected) { color: var(--text); background: rgba(255,255,255,0.05); }
+    .phone-config-section-label {
+      font-family: var(--mono); font-size: 10px; letter-spacing: 1.1px;
+      color: var(--accent); text-transform: uppercase;
+      margin: 4px 0 3px; display: flex; align-items: center; gap: 6px;
+    }
+    .voice-group { padding: 6px 0; border-bottom: 1px solid var(--hairline-soft); }
+    .voice-group:last-child { border-bottom: none; }
+    .voice-group-label {
+      font-family: var(--mono); font-size: 9.5px; color: var(--muted);
+      letter-spacing: 0.7px; text-transform: uppercase; margin-bottom: 5px;
+    }
+    .dial-slider {
+      width: 100%; accent-color: var(--accent); cursor: pointer; height: 4px;
+    }
+
+    /* ===================================================== toggle switch */
+    .toggle-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 5px 0; gap: 8px;
+    }
+    .toggle-row .tgl-body { flex: 1 1 auto; min-width: 0; }
+    .toggle-row .tgl-label { font-size: 12px; font-weight: 600; color: var(--text); }
+    .toggle-row .tgl-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+    .toggle-switch { position: relative; width: 42px; height: 24px; flex: none; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute; inset: 0;
+      background: var(--panel-2); border: 1px solid var(--hairline);
+      border-radius: 12px; cursor: pointer; transition: background 200ms;
+    }
+    .toggle-slider::before {
+      content: ''; position: absolute; width: 18px; height: 18px;
+      left: 2px; top: 2px; background: var(--muted); border-radius: 50%;
+      transition: transform 200ms, background 200ms;
+    }
+    .toggle-switch input:checked + .toggle-slider { background: rgba(41,231,255,0.18); border-color: var(--accent); }
+    .toggle-switch input:checked + .toggle-slider::before { transform: translateX(18px); background: var(--accent); }
+
+    /* ===================================================== settings tiles */
+    .settings-tile {
+      display: flex; align-items: center; gap: 12px;
+      padding: 11px 12px; border-bottom: 1px solid var(--hairline-soft);
+      cursor: pointer; transition: background 120ms;
+    }
+    .settings-tile:hover { background: rgba(41,231,255,0.05); }
+    .settings-tile-icon {
+      width: 36px; height: 36px; border-radius: 50%;
+      background: rgba(41,231,255,0.12); display: grid; place-items: center;
+      font-size: 16px; flex: none;
+    }
+    .settings-tile-body { flex: 1 1 auto; min-width: 0; }
+    .settings-tile-label { font-size: 12px; font-weight: 600; color: var(--text); }
+    .settings-tile-desc { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+    .settings-tile-arrow { color: var(--muted); font-size: 14px; flex: none; }
+
+    /* ===================================================== HUD iframe */
+    .hud-frame-host {
+      flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0;
+      overflow: hidden;
+    }
+    #phoneHudFrame {
+      flex: 1; width: 100%; border: none; background: var(--bg);
+      min-height: 380px;
+    }
   </style>
 </head>
 <body>
@@ -518,9 +672,11 @@
     </div>
 
     <!-- Tab bar -->
-    <div class="phone-tabs">
+    <div class="phone-tabs" style="overflow-x:auto;scrollbar-width:none">
       <button class="phone-tab active" data-ptab="calls">☎ Calls</button>
+      <button class="phone-tab"        data-ptab="agents">✦ Agents</button>
       <button class="phone-tab"        data-ptab="inbox">✉ Inbox</button>
+      <button class="phone-tab"        data-ptab="hud">◉ HUD</button>
       <button class="phone-tab"        data-ptab="settings">⚙ Settings</button>
       <span class="spacer"></span>
       <div class="iconbtn" id="phoneClose" title="close phone panel">✕</div>
@@ -543,28 +699,71 @@
       </div>
 
       <div class="phone-section-head">Dialer</div>
-      <div class="phone-dialer">
-        <div class="phone-field-row">
-          <label>Mode</label>
-          <select id="phoneDialMode" class="phone-select">
-            <option value="inapp">In-App (call_user_and_wait)</option>
-            <option value="twilio">PSTN / Twilio (twilio_call_and_wait)</option>
-          </select>
+      <div class="phone-dial-wrap">
+        <!-- Number display -->
+        <div class="dial-display-wrap">
+          <div id="dialDisplay" class="dial-display">•</div>
+          <div id="dialHint" class="dial-hint">tap a key or ext chip</div>
         </div>
-        <div class="phone-field-row" id="phoneToNumberRow" style="display:none">
-          <label>To Number (Twilio only)</label>
-          <input id="phoneToNumber" class="phone-input" placeholder="+15555550100">
+        <!-- Extension quick-contact chips -->
+        <div class="dial-ext-chips">
+          <button class="dial-ext-chip" data-ext="101">101</button>
+          <button class="dial-ext-chip" data-ext="102">102</button>
+          <button class="dial-ext-chip" data-ext="103">103</button>
+          <button class="dial-ext-chip" data-ext="104">104</button>
+          <button class="dial-ext-chip" data-ext="105">105</button>
+          <button class="dial-ext-chip" data-ext="900">900</button>
         </div>
-        <div class="phone-field-row">
-          <label>Reason</label>
-          <input id="phoneDialReason" class="phone-input" placeholder="Why calling?">
+        <!-- Keypad grid 3×4 -->
+        <div class="dialpad">
+          <button class="dialpad-key" data-key="1">1</button>
+          <button class="dialpad-key" data-key="2">2</button>
+          <button class="dialpad-key" data-key="3">3</button>
+          <button class="dialpad-key" data-key="4">4</button>
+          <button class="dialpad-key" data-key="5">5</button>
+          <button class="dialpad-key" data-key="6">6</button>
+          <button class="dialpad-key" data-key="7">7</button>
+          <button class="dialpad-key" data-key="8">8</button>
+          <button class="dialpad-key" data-key="9">9</button>
+          <button class="dialpad-key dialpad-sym" data-key="*">✱</button>
+          <button class="dialpad-key" data-key="0">0</button>
+          <button class="dialpad-key dialpad-sym" data-key="#">#</button>
         </div>
-        <div class="phone-field-row">
-          <label>Say</label>
-          <textarea id="phoneDialSay" class="phone-input" rows="2" placeholder="What to say on the call…"></textarea>
+        <!-- Call / backspace row -->
+        <div class="dial-action-row">
+          <div style="flex:1"></div>
+          <button class="dial-call-btn" id="phoneDialBtn" title="Call">☎</button>
+          <div style="flex:1;display:flex;justify-content:center;align-items:center">
+            <button class="dialpad-backspace" id="phoneDialBackspace" title="Backspace">⌫</button>
+          </div>
         </div>
-        <button class="phone-btn" id="phoneDialBtn">☎ Call</button>
-        <div id="phoneDialResult" class="phone-result"></div>
+        <!-- Advanced options (collapsed by default) -->
+        <details class="dial-extras">
+          <summary>⚙ Advanced options</summary>
+          <div style="display:flex;flex-direction:column;gap:6px">
+            <div class="phone-field-row">
+              <label>Mode</label>
+              <select id="phoneDialMode" class="phone-select">
+                <option value="extension">Extension Direct (call_extension)</option>
+                <option value="inapp">In-App (call_user_and_wait)</option>
+                <option value="twilio">PSTN / Twilio (twilio_call_and_wait)</option>
+              </select>
+            </div>
+            <div class="phone-field-row hidden" id="phoneToNumberRow">
+              <label>To Number (Twilio/In-App)</label>
+              <input id="phoneToNumber" class="phone-input" placeholder="+15555550100">
+            </div>
+            <div class="phone-field-row">
+              <label>Reason</label>
+              <input id="phoneDialReason" class="phone-input" placeholder="Why calling?">
+            </div>
+            <div class="phone-field-row">
+              <label>Say</label>
+              <textarea id="phoneDialSay" class="phone-input" rows="2" placeholder="What to say on the call…"></textarea>
+            </div>
+          </div>
+        </details>
+        <div id="phoneDialResult" class="phone-result" style="padding:4px 14px"></div>
       </div>
     </div>
 
@@ -605,21 +804,204 @@
       </div>
     </div>
 
+    <!-- ===== AGENTS TAB ===== -->
+    <div class="phone-view hidden" id="phoneViewAgents">
+
+      <!-- Agent list subview -->
+      <div id="agentListView">
+        <div class="phone-section-head">
+          Agents
+          <button class="phone-sm-btn" id="phoneRefreshAgents">↻</button>
+        </div>
+        <div id="phoneAgentsList" class="phone-list"></div>
+      </div>
+
+      <!-- Agent config subview (shown when tapping ⚙ Config on an agent) -->
+      <div id="agentConfigView" class="hidden">
+        <div class="phone-section-head" style="gap:8px">
+          <button class="phone-sm-btn" id="agentConfigBack">← Back</button>
+          <span id="agentConfigName" style="font-size:12px;color:var(--text);font-weight:600">Config</span>
+          <span id="agentConfigExt" class="phone-card-meta"></span>
+        </div>
+        <div class="phone-dialer">
+
+          <!-- Voice picker (grouped by speaker + emotion chips) -->
+          <div class="phone-config-section-label">Voice</div>
+          <div id="agentVoiceCurrent" class="phone-result" style="margin-bottom:6px">Loading…</div>
+          <div id="agentVoiceGroups"></div>
+          <button class="phone-sm-btn" id="agentVoicePreview" style="margin-top:6px">▶ Preview voice</button>
+
+          <!-- Speaking rate slider 0.5–2× -->
+          <div class="phone-config-section-label" style="margin-top:12px">
+            Speaking Rate
+            <span id="agentSpeedValue" style="color:var(--accent-bright)">1.0×</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin:4px 0 2px">
+            <span class="phone-card-meta">0.5×</span>
+            <input type="range" id="agentSpeedSlider" class="dial-slider"
+              min="0.5" max="2.0" step="0.05" value="1.0" style="flex:1">
+            <span class="phone-card-meta">2.0×</span>
+          </div>
+          <div class="phone-card-meta" style="text-align:center;font-size:9.5px">
+            0.5× slow · 1× normal · 2× fast
+          </div>
+
+          <!-- Model + thinking (shown only for agents with selectable models) -->
+          <div id="agentModelSection" class="hidden">
+            <div class="phone-config-section-label" style="margin-top:12px">Model</div>
+            <div id="agentModelChips" class="chip-row"></div>
+            <div class="phone-config-section-label" style="margin-top:8px">Thinking</div>
+            <div id="agentThinkingChips" class="chip-row"></div>
+          </div>
+
+          <div id="agentConfigResult" class="phone-result" style="margin-top:8px"></div>
+        </div>
+      </div>
+
+    </div><!-- /phoneViewAgents -->
+
+    <!-- ===== HUD TAB ===== -->
+    <div class="phone-view hidden hud-frame-host" id="phoneViewHud">
+      <div class="phone-section-head">
+        Ops HUD
+        <button class="phone-sm-btn" id="phoneHudRefresh">↻</button>
+        <button class="phone-sm-btn" id="phoneHudOpen" style="margin-left:auto">↗ New tab</button>
+      </div>
+      <div id="phoneHudPlaceholder" class="phone-status-box" style="margin:8px 12px">
+        Set Server URL in Settings → Connection to load the ops HUD.
+      </div>
+      <iframe id="phoneHudFrame" class="hidden"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-popups">
+      </iframe>
+    </div><!-- /phoneViewHud -->
+
     <!-- ===== SETTINGS TAB ===== -->
     <div class="phone-view hidden" id="phoneViewSettings">
+
+      <!-- Connection -->
+      <div class="phone-section-head">Connection</div>
+      <div class="phone-dialer">
+        <div class="phone-field-row">
+          <label>Server URL</label>
+          <input id="connServerUrl" class="phone-input" placeholder="https://your-server.example.com">
+        </div>
+        <div class="phone-field-row">
+          <label>Extension</label>
+          <input id="connExtension" class="phone-input" placeholder="101">
+        </div>
+        <div class="phone-field-row">
+          <label>Device Token</label>
+          <input id="connToken" class="phone-input" type="password" placeholder="device token…">
+        </div>
+        <div class="phone-field-row">
+          <label>Audio Format</label>
+          <input id="connAudioFormat" class="phone-input" placeholder="pcm_16000">
+        </div>
+        <div style="display:flex;gap:6px">
+          <button class="phone-sm-btn ok" id="connSave">Save</button>
+          <button class="phone-sm-btn"    id="connTest">Test</button>
+        </div>
+        <div id="connResult" class="phone-result"></div>
+      </div>
+
+      <!-- Twilio Status -->
       <div class="phone-section-head">
         Twilio Status
         <button class="phone-sm-btn" id="phoneRefreshStatus">↻</button>
       </div>
       <div id="phoneTwilioStatus" class="phone-status-box">—</div>
 
-      <div class="phone-section-head">Call Screening</div>
+      <!-- Call History -->
+      <div class="phone-section-head">
+        Call History
+        <button class="phone-sm-btn" id="phoneRefreshHistory">↻</button>
+      </div>
+      <div id="phoneHistoryList" class="phone-list"></div>
+
+      <!-- Call Screening (expanded) -->
+      <div class="phone-section-head">
+        Call Screening
+        <span id="phoneScreeningBadge" class="phone-badge" style="margin-left:4px">—</span>
+      </div>
       <div class="phone-dialer">
-        <div class="phone-field-row" style="flex-direction:row;align-items:center;gap:8px;flex-wrap:wrap">
-          <span id="phoneScreeningBadge" class="phone-badge">—</span>
+        <div class="phone-config-section-label">Transport</div>
+        <div class="chip-row" style="margin-bottom:8px">
+          <button class="config-chip selected" id="screeningTransportTwilio">Twilio (anywhere)</button>
+          <button class="config-chip"          id="screeningTransportRelay">BT Relay (M507)</button>
+        </div>
+
+        <div class="toggle-row">
+          <div class="tgl-body">
+            <div class="tgl-label">Auto-screen calls</div>
+            <div class="tgl-sub">Agent answers declined / missed calls</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="screeningAutoToggle">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+
+        <div id="screeningAgentSection">
+          <div class="phone-config-section-label" style="margin-top:8px">Who answers when you call in</div>
+          <div class="phone-card-meta" style="margin-bottom:4px">Picks up when you dial your own number</div>
+          <div id="screeningInboundPicker" class="chip-row"></div>
+          <div class="phone-config-section-label" style="margin-top:8px">Who screens unknown callers</div>
+          <div class="phone-card-meta" style="margin-bottom:4px">Screener agent for unrecognised inbound calls</div>
+          <div id="screeningScreenerPicker" class="chip-row"></div>
+        </div>
+
+        <div id="carrierForwardingSection">
+          <div class="phone-config-section-label" style="margin-top:10px">Carrier Forwarding (one-time)</div>
+          <div class="phone-card-meta" style="margin-bottom:6px">
+            Forwards missed/declined calls to agent instead of voicemail.
+            Tap to copy code, then dial it on your phone.
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:5px">
+            <button class="phone-sm-btn" id="cfAll">**004* all</button>
+            <button class="phone-sm-btn" id="cfBusy">**67* busy</button>
+            <button class="phone-sm-btn" id="cfNoAns">**61* no-ans</button>
+            <button class="phone-sm-btn" id="cfUnreach">**62* unreach</button>
+            <button class="phone-sm-btn bad" id="cfUndo">##002# undo</button>
+          </div>
+          <div class="phone-card-meta" style="margin-top:6px">
+            Verizon:
+            <button class="phone-sm-btn" style="margin:0 3px" id="vzBusyNoAns">*71 busy/no-ans</button>
+            <button class="phone-sm-btn" style="margin:0 3px" id="vzAll">*72 all</button>
+            <button class="phone-sm-btn bad" style="margin:0 3px" id="vzOff">*73 off</button>
+          </div>
+        </div>
+
+        <div id="screeningRoleSection" style="margin-top:8px">
+          <div class="phone-config-section-label">Permissions (Android only)</div>
+          <div class="phone-card-meta">Role + Decline + Bluetooth status shown here on Android.</div>
+        </div>
+
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
           <button class="phone-sm-btn ok"  id="phoneScreeningOn">Enable</button>
           <button class="phone-sm-btn bad" id="phoneScreeningOff">Disable</button>
         </div>
+        <div id="screeningResult" class="phone-result"></div>
+      </div>
+
+      <!-- SMS Agent -->
+      <div class="phone-section-head">Text Your Agent (SMS)</div>
+      <div class="phone-dialer">
+        <div class="toggle-row">
+          <div class="tgl-body">
+            <div class="tgl-label">SMS Agent</div>
+            <div class="tgl-sub">Texts to your number → agent replies back</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="smsAgentToggle">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="phone-config-section-label" style="margin-top:8px">Who answers your texts</div>
+        <div id="smsAgentPicker" class="chip-row"></div>
+        <div class="phone-card-meta" style="margin-top:6px">
+          Your number must be on the Twilio allowlist. Toll-free SMS may need carrier verification.
+        </div>
+        <div id="smsAgentResult" class="phone-result"></div>
       </div>
 
       <div class="phone-section-head">
