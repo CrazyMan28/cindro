@@ -1325,7 +1325,13 @@ function setPhoneTab(tab) {
   document.querySelectorAll(".phone-tab").forEach((b) => {
     b.classList.toggle("active", b.getAttribute("data-ptab") === tab);
   });
-  const views = { calls: "phoneViewCalls", inbox: "phoneViewInbox", settings: "phoneViewSettings" };
+  const views = {
+    calls:    "phoneViewCalls",
+    agents:   "phoneViewAgents",
+    inbox:    "phoneViewInbox",
+    hud:      "phoneViewHud",
+    settings: "phoneViewSettings"
+  };
   Object.entries(views).forEach(([t, id]) => {
     const el = $(id); if (el) el.classList.toggle("hidden", t !== tab);
   });
@@ -1333,9 +1339,18 @@ function setPhoneTab(tab) {
 }
 
 function loadPhoneTab(tab) {
-  if (tab === "calls") loadActiveCalls();
-  else if (tab === "inbox") loadInbox();
-  else if (tab === "settings") { loadTwilioStatus(); loadAllowlist(); }
+  if (tab === "calls")    { loadActiveCalls(); }
+  else if (tab === "agents")   { loadAgents(); }
+  else if (tab === "inbox")    { loadInbox(); }
+  else if (tab === "hud")      { loadHud(); }
+  else if (tab === "settings") {
+    loadConnectionSettings();
+    loadTwilioStatus();
+    loadAllowlist();
+    loadCallHistory();
+    loadSmsAgentConfig();
+    loadScreeningConfig();
+  }
 }
 
 // ---- result helpers ----
@@ -1467,23 +1482,57 @@ async function loadCallTranscript(callId) {
 }
 
 async function doPhoneDial() {
-  const mode   = $("phoneDialMode").value;
-  const reason = ($("phoneDialReason").value || "").trim();
-  const say    = ($("phoneDialSay").value || "").trim();
-  const toNum  = ($("phoneToNumber").value || "").trim();
+  const target = dialTarget || "";
+  const modeEl = $("phoneDialMode");
+  const mode   = (modeEl && modeEl.value) || "extension";
+  const reason = (($("phoneDialReason") && $("phoneDialReason").value) || "").trim();
+  const say    = (($("phoneDialSay")    && $("phoneDialSay").value)    || "").trim();
+  const toNum  = (($("phoneToNumber")   && $("phoneToNumber").value)   || "").trim();
+  const btn    = $("phoneDialBtn");
+
+  if (!target) {
+    phoneResult("phoneDialResult", "Enter a number or tap an extension chip.", "bad"); return;
+  }
+
+  if (mode === "extension") {
+    // Direct extension call — no reason/say needed.
+    const ext = parseInt(target, 10);
+    if (isNaN(ext)) {
+      phoneResult("phoneDialResult", "Extension must be a number (e.g. 101).", "bad"); return;
+    }
+    phoneResult("phoneDialResult", "Calling ext " + ext + "…", "");
+    if (btn) btn.disabled = true;
+    try {
+      const data = await phoneMcp("call_extension", { extension: ext });
+      phoneResult("phoneDialResult",
+        (data.ok !== false)
+          ? "✓ " + (data.call_id ? "call_id: " + data.call_id : "Dialing…")
+          : "✗ " + (data.error || "Failed"),
+        (data.ok !== false) ? "ok" : "bad");
+      await loadActiveCalls();
+    } catch (e) {
+      phoneResult("phoneDialResult", "Error: " + (e.message || e), "bad");
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+    return;
+  }
+
   if (!reason || !say) {
-    phoneResult("phoneDialResult", "Reason and Say are required.", "bad"); return;
+    phoneResult("phoneDialResult", "Reason and Say are required for in-app / PSTN calls.", "bad"); return;
   }
   phoneResult("phoneDialResult", "Dialing…", "");
-  $("phoneDialBtn").disabled = true;
+  if (btn) btn.disabled = true;
   try {
     let data;
     if (mode === "twilio") {
       const args = { reason, say };
-      if (toNum) args.to_number = toNum;
+      const num = toNum || (target.startsWith("+") ? target : "");
+      if (num) args.to_number = num;
       data = await phoneMcp("twilio_call_and_wait", args);
     } else {
-      data = await phoneMcp("call_user_and_wait", { reason, say, from_extension: 101 });
+      const fromExt = parseInt(target, 10) || 101;
+      data = await phoneMcp("call_user_and_wait", { reason, say, from_extension: fromExt });
     }
     phoneResult(
       "phoneDialResult",
@@ -1496,7 +1545,7 @@ async function doPhoneDial() {
   } catch (e) {
     phoneResult("phoneDialResult", "Error: " + (e.message || e), "bad");
   } finally {
-    $("phoneDialBtn").disabled = false;
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -1748,22 +1797,608 @@ async function doRedAlert() {
   }
 }
 
+// ================================================================= PHONE PANEL EXTENSIONS
+
+// ---- helper: convert ext string to the right type for phoneMcp args ----
+function _extArg(ext) {
+  const n = Number(ext);
+  return isNaN(n) ? String(ext) : n;
+}
+
+// ---- dialer state ----
+let dialTarget = "";
+
+function dialPad_setFull(v) {
+  dialTarget = String(v || "");
+  const el = $("dialDisplay");
+  if (el) el.textContent = dialTarget || "•";
+}
+
+function dialPad_append(digit) {
+  if (dialTarget.length >= 12) return;
+  dialTarget = dialTarget + digit;
+  const el = $("dialDisplay");
+  if (el) el.textContent = dialTarget || "•";
+}
+
+function dialPad_backspace() {
+  dialTarget = dialTarget.slice(0, -1);
+  const el = $("dialDisplay");
+  if (el) el.textContent = dialTarget || "•";
+}
+
+// ================================================================= AGENTS TAB
+
+let agentConfigState = {
+  ext: null, name: null,
+  voiceId: null, speed: 1.0,
+  model: null, reasoning: null,
+  voices: []
+};
+
+async function loadAgents() {
+  const box = $("phoneAgentsList"); if (!box) return;
+  box.innerHTML = '<div class="phone-card"><div class="phone-card-meta">Loading…</div></div>';
+  try {
+    const data = await phoneMcp("list_agents");
+    const agents = Array.isArray(data) ? data : (data.agents || data.extensions || []);
+    renderAgentsList(agents);
+  } catch (e) {
+    box.innerHTML =
+      '<div class="phone-card"><div class="phone-card-meta" style="color:var(--bad)">' +
+      escHtml(e.message || String(e)) + '</div></div>';
+  }
+}
+
+function renderAgentsList(agents) {
+  const box = $("phoneAgentsList"); if (!box) return;
+  box.innerHTML = "";
+  if (!agents.length) {
+    const d = document.createElement("div"); d.className = "phone-card";
+    d.innerHTML = '<div class="phone-card-meta">No agents registered — run dev-fix-empty-extensions.sh on the server.</div>';
+    box.appendChild(d); return;
+  }
+  agents.forEach((a) => {
+    const ext    = String(a.extension || a.ext || "");
+    const name   = String(a.name || a.agent_name || "Agent");
+    const status = String(a.status || "offline");
+    const task   = String(a.current_task || a.task || "");
+    const online = status === "online";
+
+    const card = document.createElement("div");
+    card.className = "phone-card";
+    card.innerHTML =
+      '<div style="display:flex;align-items:center;gap:8px">' +
+        '<span class="phone-card-title">' + escHtml(name) + '</span>' +
+        '<span class="phone-card-badge ' + (online ? "ok" : "") + '">' + escHtml(status) + '</span>' +
+        '<span class="phone-card-meta" style="margin-left:auto">' + escHtml(ext) + '</span>' +
+      '</div>' +
+      '<div class="phone-card-meta">' + escHtml(truncate(task || "No current task", 58)) + '</div>';
+    const actions = document.createElement("div");
+    actions.style.cssText = "display:flex;gap:6px;margin-top:6px";
+    const callBtn = document.createElement("button");
+    callBtn.className = "phone-sm-btn" + (online ? " ok" : "");
+    callBtn.textContent = "☎ Call";
+    callBtn.addEventListener("click", () => {
+      dialPad_setFull(ext);
+      setPhoneTab("calls");
+    });
+    const cfgBtn = document.createElement("button");
+    cfgBtn.className = "phone-sm-btn";
+    cfgBtn.textContent = "⚙ Config";
+    cfgBtn.addEventListener("click", () => openAgentConfig(ext, name));
+    actions.appendChild(callBtn); actions.appendChild(cfgBtn);
+    card.appendChild(actions);
+    box.appendChild(card);
+  });
+}
+
+async function openAgentConfig(ext, name) {
+  agentConfigState = { ext, name, voiceId: null, speed: 1.0, model: null, reasoning: null, voices: [] };
+
+  const listView = $("agentListView"); if (listView) listView.classList.add("hidden");
+  const cfgView  = $("agentConfigView"); if (cfgView) cfgView.classList.remove("hidden");
+  const nameEl   = $("agentConfigName"); if (nameEl) nameEl.textContent = name;
+  const extEl    = $("agentConfigExt");  if (extEl)  extEl.textContent  = "ext " + ext;
+  const resultEl = $("agentConfigResult"); if (resultEl) resultEl.textContent = "";
+
+  // Load voice profile for this extension.
+  const voiceCurrent = $("agentVoiceCurrent");
+  if (voiceCurrent) voiceCurrent.textContent = "Loading voice profile…";
+  try {
+    const vp = await phoneMcp("get_voice_profile", { extension: _extArg(ext) });
+    agentConfigState.voiceId = vp.voice_id || null;
+    agentConfigState.speed   = typeof vp.speed === "number" ? vp.speed : 1.0;
+    if (voiceCurrent) voiceCurrent.textContent = "Current: " + (vp.voice_id || "Default");
+    const slider = $("agentSpeedSlider"); if (slider) slider.value = agentConfigState.speed;
+    const sv     = $("agentSpeedValue");  if (sv)     sv.textContent = agentConfigState.speed.toFixed(2) + "×";
+  } catch (e) {
+    if (voiceCurrent) voiceCurrent.textContent = "Voice unavailable: " + (e.message || e);
+  }
+
+  // Load available voices — try MCP first, fall back to known list.
+  const knownVoices = [
+    { id: null,               name: "Default" },
+    { id: "local:jarvis",     name: "Jarvis (on-device)" },
+    { id: "paul-cheerful",    name: "Paul - Cheerful" },
+    { id: "paul-neutral",     name: "Paul - Neutral" },
+    { id: "paul-sad",         name: "Paul - Sad" },
+    { id: "oliver-cheerful",  name: "Oliver - Cheerful" },
+    { id: "oliver-neutral",   name: "Oliver - Neutral" },
+    { id: "jane-cheerful",    name: "Jane - Cheerful" },
+    { id: "jane-neutral",     name: "Jane - Neutral" },
+    { id: "marie-cheerful",   name: "Marie - Cheerful" },
+    { id: "marie-neutral",    name: "Marie - Neutral" }
+  ];
+  let voices = knownVoices;
+  try {
+    const vd = await phoneMcp("list_voices");
+    const arr = Array.isArray(vd) ? vd : (vd && Array.isArray(vd.voices) ? vd.voices : null);
+    if (arr && arr.length) voices = arr;
+  } catch (_) { /* use known list */ }
+  agentConfigState.voices = voices;
+
+  const voiceGroupsEl = $("agentVoiceGroups");
+  if (voiceGroupsEl) renderVoiceGroups(voiceGroupsEl, voices, agentConfigState.voiceId);
+
+  // Load model / reasoning config (graceful: tool may not exist yet).
+  try {
+    const mc = await phoneMcp("get_model_config", { extension: _extArg(ext) });
+    agentConfigState.model     = mc.model     || null;
+    agentConfigState.reasoning = mc.reasoning || null;
+  } catch (_) { /* no model config tool yet — use defaults */ }
+  renderAgentModelSection(name);
+}
+
+function closeAgentConfig() {
+  const listView = $("agentListView"); if (listView) listView.classList.remove("hidden");
+  const cfgView  = $("agentConfigView"); if (cfgView) cfgView.classList.add("hidden");
+}
+
+function renderVoiceGroups(container, voices, selectedId) {
+  container.innerHTML = "";
+  // Group voices by speaker name (everything before " - " or " (").
+  const groups = {};
+  voices.forEach((v) => {
+    const id   = v.id !== undefined ? v.id : v.voice_id;
+    const name = v.name || (id ? String(id) : "Default");
+    const key  = id === null
+      ? "Default"
+      : (name.includes(" - ")
+          ? name.split(" - ")[0].trim()
+          : name.split(" (")[0].trim());
+    if (!groups[key]) groups[key] = [];
+    groups[key].push({ id, name });
+  });
+  Object.entries(groups).forEach(([speaker, opts]) => {
+    const groupEl = document.createElement("div");
+    groupEl.className = "voice-group";
+    const labelEl = document.createElement("div");
+    labelEl.className = "voice-group-label";
+    labelEl.textContent = speaker;
+    const chipsEl = document.createElement("div");
+    chipsEl.style.cssText = "display:flex;flex-wrap:wrap;gap:5px";
+    opts.forEach((o) => {
+      const chipLabel = o.name.includes(" - ")
+        ? o.name.split(" - ").slice(1).join(" - ").trim()
+        : (o.name.includes(" (") ? o.name.split(" (")[0].trim() : o.name);
+      const chip = document.createElement("button");
+      chip.className = "config-chip" + (o.id === selectedId ? " selected" : "");
+      chip.textContent = chipLabel;
+      chip.addEventListener("click", () => {
+        agentConfigState.voiceId = o.id;
+        container.querySelectorAll(".config-chip").forEach((c) => c.classList.remove("selected"));
+        chip.classList.add("selected");
+        const vc = $("agentVoiceCurrent");
+        if (vc) vc.textContent = "Current: " + (o.id || "Default");
+        if (!agentConfigState.ext) return;
+        const args = { extension: _extArg(agentConfigState.ext) };
+        if (o.id) args.voice_id = o.id;
+        phoneMcp("set_voice_profile", args).catch((e) => {
+          const r = $("agentConfigResult");
+          if (r) { r.textContent = "Voice error: " + (e.message || e); r.className = "phone-result bad"; }
+        });
+      });
+      chipsEl.appendChild(chip);
+    });
+    groupEl.appendChild(labelEl);
+    groupEl.appendChild(chipsEl);
+    container.appendChild(groupEl);
+  });
+}
+
+function renderAgentModelSection(agentName) {
+  const section = $("agentModelSection"); if (!section) return;
+  const lc = (agentName || "").toLowerCase();
+  const hasClaude = lc.includes("claude");
+  const hasCodex  = lc.includes("codex") || lc.includes("gpt");
+
+  let modelOptions = [];
+  let defaultModelId = null;
+  if (hasClaude) {
+    modelOptions = [
+      { label: "Sonnet 4.6", id: "claude-sonnet-4-6" },
+      { label: "Opus 4.8",   id: "claude-opus-4-8"   },
+      { label: "Haiku 4.5",  id: "claude-haiku-4-5"  }
+    ];
+    defaultModelId = "claude-sonnet-4-6";
+  } else if (hasCodex) {
+    modelOptions = [
+      { label: "5.5", id: "gpt-5.5" },
+      { label: "5.4", id: "gpt-5.4" }
+    ];
+    defaultModelId = "gpt-5.5";
+  }
+
+  if (!modelOptions.length) { section.classList.add("hidden"); return; }
+  section.classList.remove("hidden");
+
+  const modelChipsEl = $("agentModelChips"); if (!modelChipsEl) return;
+  modelChipsEl.innerHTML = "";
+  const currentModel = agentConfigState.model || defaultModelId;
+  modelOptions.forEach((opt) => {
+    const chip = document.createElement("button");
+    chip.className = "config-chip" + (opt.id === currentModel ? " selected" : "");
+    chip.textContent = opt.label;
+    chip.addEventListener("click", () => {
+      agentConfigState.model = opt.id;
+      modelChipsEl.querySelectorAll(".config-chip").forEach((c) => c.classList.remove("selected"));
+      chip.classList.add("selected");
+      saveAgentModelConfig();
+    });
+    modelChipsEl.appendChild(chip);
+  });
+
+  const thinkChipsEl = $("agentThinkingChips"); if (!thinkChipsEl) return;
+  thinkChipsEl.innerHTML = "";
+  const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh"];
+  const currentReasoning = agentConfigState.reasoning || "low";
+  THINKING_LEVELS.forEach((level) => {
+    const chip = document.createElement("button");
+    chip.className = "config-chip" + (level === currentReasoning ? " selected" : "");
+    chip.textContent = level;
+    chip.addEventListener("click", () => {
+      agentConfigState.reasoning = level;
+      thinkChipsEl.querySelectorAll(".config-chip").forEach((c) => c.classList.remove("selected"));
+      chip.classList.add("selected");
+      saveAgentModelConfig();
+    });
+    thinkChipsEl.appendChild(chip);
+  });
+}
+
+async function saveAgentModelConfig() {
+  if (!agentConfigState.ext) return;
+  const resultEl = $("agentConfigResult");
+  try {
+    const args = { extension: _extArg(agentConfigState.ext) };
+    if (agentConfigState.model)     args.model     = agentConfigState.model;
+    if (agentConfigState.reasoning) args.reasoning = agentConfigState.reasoning;
+    // TODO: set_model_config not yet in MCP tool list — will error gracefully.
+    await phoneMcp("set_model_config", args);
+    if (resultEl) { resultEl.textContent = "✓ Model config saved"; resultEl.className = "phone-result ok"; }
+  } catch (e) {
+    // Surface as TODO so the UI still shows what was selected.
+    if (resultEl) {
+      resultEl.textContent = "TODO set_model_config: " + (e.message || e);
+      resultEl.className = "phone-result bad";
+    }
+  }
+}
+
+async function doPreviewVoice() {
+  if (!agentConfigState.ext) return;
+  const resultEl = $("agentConfigResult");
+  try {
+    const args = { extension: _extArg(agentConfigState.ext) };
+    if (agentConfigState.voiceId) args.voice_id = agentConfigState.voiceId;
+    // TODO: preview_voice not yet in MCP tool list.
+    await phoneMcp("preview_voice", args);
+    if (resultEl) { resultEl.textContent = "▶ Playing preview…"; resultEl.className = "phone-result ok"; }
+  } catch (e) {
+    if (resultEl) {
+      resultEl.textContent = "TODO preview_voice: " + (e.message || e);
+      resultEl.className = "phone-result bad";
+    }
+  }
+}
+
+// ================================================================= HUD TAB
+
+async function loadHud() {
+  const frame       = $("phoneHudFrame");
+  const placeholder = $("phoneHudPlaceholder");
+  if (!frame || !placeholder) return;
+  const cfg = await chrome.storage.local.get({ phoneServerUrl: "" });
+  const url = (cfg.phoneServerUrl || "").trim().replace(/\/$/, "");
+  if (!url || url.includes("your-server") || url.length < 8) {
+    placeholder.textContent = "Set Server URL in Settings → Connection to load the ops HUD.";
+    placeholder.classList.remove("hidden");
+    frame.classList.add("hidden");
+    return;
+  }
+  const dashUrl = url + "/dashboard";
+  placeholder.classList.add("hidden");
+  frame.classList.remove("hidden");
+  if (frame.src !== dashUrl) frame.src = dashUrl;
+}
+
+// ================================================================= SETTINGS EXPANSIONS
+
+// ---- Connection section ----
+async function loadConnectionSettings() {
+  const cfg = await chrome.storage.local.get({
+    phoneServerUrl:    "",
+    phoneServerToken:  "",
+    phoneExtension:    "101",
+    phoneAudioFormat:  "pcm_16000"
+  });
+  const u = $("connServerUrl");   if (u) u.value = cfg.phoneServerUrl;
+  const t = $("connToken");       if (t) t.value = cfg.phoneServerToken;
+  const e = $("connExtension");   if (e) e.value = cfg.phoneExtension;
+  const f = $("connAudioFormat"); if (f) f.value = cfg.phoneAudioFormat;
+}
+
+async function saveConnectionSettings() {
+  const url  = (($("connServerUrl")   && $("connServerUrl").value)   || "").trim();
+  const tok  = (($("connToken")       && $("connToken").value)       || "").trim();
+  const ext  = (($("connExtension")   && $("connExtension").value)   || "").trim();
+  const fmt  = (($("connAudioFormat") && $("connAudioFormat").value) || "").trim();
+  await chrome.storage.local.set({
+    phoneServerUrl:   url,
+    phoneServerToken: tok,
+    phoneExtension:   ext,
+    phoneAudioFormat: fmt
+  });
+  phoneResult("connResult", "✓ Saved", "ok");
+}
+
+async function testConnectionSettings() {
+  await saveConnectionSettings();
+  phoneResult("connResult", "Testing…", "");
+  try {
+    const d = await phoneMcp("twilio_status");
+    phoneResult("connResult", "✓ Connected — from: " + (d.from_number || "OK"), "ok");
+  } catch (e) {
+    phoneResult("connResult", "✗ " + (e.message || e), "bad");
+  }
+}
+
+// ---- Call History ----
+async function loadCallHistory() {
+  const box = $("phoneHistoryList"); if (!box) return;
+  box.innerHTML = '<div class="phone-card"><div class="phone-card-meta">Loading…</div></div>';
+  try {
+    // Try several possible tool names (MCP tool not yet finalised).
+    let calls = [];
+    for (const tool of ["get_call_history", "list_calls", "list_recent_calls"]) {
+      try {
+        const d = await phoneMcp(tool, { limit: 30 });
+        const arr = Array.isArray(d) ? d : (d.calls || d.history || []);
+        if (arr.length) { calls = arr; break; }
+      } catch (_) { /* try next */ }
+    }
+    box.innerHTML = "";
+    if (!calls.length) {
+      const d = document.createElement("div"); d.className = "phone-card";
+      d.innerHTML = '<div class="phone-card-meta">No call history (TODO: get_call_history MCP tool).</div>';
+      box.appendChild(d); return;
+    }
+    calls.slice(0, 30).forEach((c) => {
+      const d = document.createElement("div"); d.className = "phone-card";
+      const missed    = c.missed || c.state === "missed";
+      const stateClass = missed ? "bad" : (c.state === "ended" ? "ok" : "");
+      d.innerHTML =
+        '<div style="display:flex;align-items:center;gap:6px">' +
+          '<span class="phone-card-title" style="font-family:var(--mono);font-size:11px">' +
+            escHtml((c.from_extension || c.from || "?") + " → " + (c.to_extension || c.to || "?")) +
+          '</span>' +
+          '<span class="phone-card-badge ' + stateClass + '">' +
+            escHtml(c.state || (missed ? "missed" : "")) +
+          '</span>' +
+          '<span class="phone-card-meta" style="margin-left:auto">' +
+            escHtml((c.created_at || c.time || "").slice(11, 16)) +
+          '</span>' +
+        '</div>' +
+        '<div class="phone-card-meta">' +
+          escHtml(truncate([c.reason, (c.created_at || "").slice(0, 10)].filter(Boolean).join(" · "), 55)) +
+        '</div>';
+      box.appendChild(d);
+    });
+  } catch (e) {
+    box.innerHTML =
+      '<div class="phone-card"><div class="phone-card-meta" style="color:var(--bad)">' +
+      escHtml(e.message || String(e)) + '</div></div>';
+  }
+}
+
+// ---- SMS Agent ----
+const smsAgentState = { enabled: null, extension: "", agents: [] };
+
+async function loadSmsAgentConfig() {
+  const resultEl = $("smsAgentResult");
+  try {
+    const d = await phoneMcp("get_sms_config");
+    smsAgentState.enabled   = d.enabled;
+    smsAgentState.extension = d.extension || "";
+    smsAgentState.agents    = d.agents    || [];
+    const tog = $("smsAgentToggle"); if (tog) tog.checked = !!d.enabled;
+    renderSmsAgentPicker();
+  } catch (_) {
+    // TODO: get_sms_config MCP tool — fall back to loading agents for the picker.
+    if (resultEl) { resultEl.textContent = "TODO: get_sms_config MCP tool pending"; resultEl.className = "phone-result"; }
+    try {
+      const ad = await phoneMcp("list_agents");
+      smsAgentState.agents = Array.isArray(ad) ? ad : (ad.agents || []);
+      renderSmsAgentPicker();
+    } catch (__) { /* no agents */ }
+  }
+}
+
+function renderSmsAgentPicker() {
+  const box = $("smsAgentPicker"); if (!box) return;
+  box.innerHTML = "";
+  if (!smsAgentState.agents.length) return;
+  smsAgentState.agents.forEach((a) => {
+    const ext  = typeof a === "string" ? a : String(a.extension || a.ext || a[0] || "");
+    const name = typeof a === "string" ? a : String(a.name || a[1] || ext);
+    const btn  = document.createElement("button");
+    btn.className = "config-chip" + (ext === smsAgentState.extension ? " selected" : "");
+    btn.textContent = name;
+    btn.addEventListener("click", () => {
+      smsAgentState.extension = ext;
+      box.querySelectorAll(".config-chip").forEach((c) => c.classList.remove("selected"));
+      btn.classList.add("selected");
+      phoneMcp("set_sms_agent", { extension: _extArg(ext) })
+        .then(() => {
+          const r = $("smsAgentResult");
+          if (r) { r.textContent = "✓ SMS agent set to " + name; r.className = "phone-result ok"; }
+        })
+        .catch((e) => {
+          const r = $("smsAgentResult");
+          if (r) { r.textContent = "TODO set_sms_agent: " + (e.message || e); r.className = "phone-result bad"; }
+        });
+    });
+    box.appendChild(btn);
+  });
+}
+
+async function toggleSmsAgent(on) {
+  smsAgentState.enabled = on;
+  const r = $("smsAgentResult");
+  try {
+    await phoneMcp(on ? "enable_sms_agent" : "disable_sms_agent");
+    if (r) { r.textContent = "✓ SMS agent " + (on ? "enabled" : "disabled"); r.className = "phone-result ok"; }
+  } catch (e) {
+    if (r) { r.textContent = "TODO enable/disable_sms_agent: " + (e.message || e); r.className = "phone-result bad"; }
+  }
+}
+
+// ---- Call Screening (expanded) ----
+const screeningState = { enabled: null, transport: "twilio", inboundExt: "", screeningExt: "", agents: [] };
+
+async function loadScreeningConfig() {
+  // First do a quick status check with the existing tool.
+  try {
+    const d = await phoneMcp("twilio_status");
+    screeningState.enabled = d.screening_enabled;
+    const tog = $("screeningAutoToggle"); if (tog) tog.checked = !!d.screening_enabled;
+    const badge = $("phoneScreeningBadge");
+    if (badge) { badge.textContent = d.screening_enabled ? "enabled" : "disabled"; badge.className = "phone-badge " + (d.screening_enabled ? "ok" : "bad"); }
+  } catch (_) { /* ignore — will show old badge */ }
+
+  // Try full config; populate transport + agent pickers.
+  try {
+    const cfg = await phoneMcp("get_screening_config");
+    screeningState.enabled       = cfg.enabled;
+    screeningState.transport     = cfg.transport      || "twilio";
+    screeningState.inboundExt    = cfg.inbound_extension   || "";
+    screeningState.screeningExt  = cfg.screening_extension || "";
+    screeningState.agents        = cfg.agents || [];
+    const tog = $("screeningAutoToggle"); if (tog) tog.checked = !!cfg.enabled;
+    renderScreeningTransport();
+    renderScreeningAgentPickers();
+    const cfSection = $("carrierForwardingSection");
+    if (cfSection) cfSection.style.display = screeningState.transport === "twilio" ? "" : "none";
+  } catch (_) {
+    // TODO: get_screening_config not yet exposed — load agents for pickers anyway.
+    try {
+      const ad = await phoneMcp("list_agents");
+      screeningState.agents = Array.isArray(ad) ? ad : (ad.agents || []);
+      renderScreeningAgentPickers();
+    } catch (__) { /* no agents */ }
+  }
+}
+
+function renderScreeningTransport() {
+  const twEl = $("screeningTransportTwilio");
+  const rlEl = $("screeningTransportRelay");
+  if (twEl) twEl.classList.toggle("selected", screeningState.transport === "twilio");
+  if (rlEl) rlEl.classList.toggle("selected", screeningState.transport === "relay");
+}
+
+function renderScreeningAgentPickers() {
+  const inboundBox  = $("screeningInboundPicker");
+  const screenerBox = $("screeningScreenerPicker");
+  if (!inboundBox || !screenerBox) return;
+
+  [inboundBox, screenerBox].forEach((box, idx) => {
+    box.innerHTML = "";
+    const isInbound = idx === 0;
+    screeningState.agents.forEach((a) => {
+      const ext  = typeof a === "string" ? a : String(a.extension || a.ext || (Array.isArray(a) ? a[0] : "") || "");
+      const name = typeof a === "string" ? a : String(a.name || (Array.isArray(a) ? a[1] : "") || ext);
+      const selected = isInbound
+        ? ext === screeningState.inboundExt
+        : ext === screeningState.screeningExt;
+      const btn = document.createElement("button");
+      btn.className = "config-chip" + (selected ? " selected" : "");
+      btn.textContent = name;
+      btn.addEventListener("click", () => {
+        box.querySelectorAll(".config-chip").forEach((c) => c.classList.remove("selected"));
+        btn.classList.add("selected");
+        const tool = isInbound ? "set_inbound_agent" : "set_screening_agent";
+        if (isInbound) screeningState.inboundExt = ext;
+        else screeningState.screeningExt = ext;
+        phoneMcp(tool, { extension: _extArg(ext) })
+          .then(() => {
+            const r = $("screeningResult");
+            if (r) { r.textContent = "✓ " + (isInbound ? "Inbound" : "Screener") + " set to " + name; r.className = "phone-result ok"; }
+          })
+          .catch((e) => {
+            const r = $("screeningResult");
+            if (r) { r.textContent = "TODO " + tool + ": " + (e.message || e); r.className = "phone-result bad"; }
+          });
+      });
+      box.appendChild(btn);
+    });
+  });
+}
+
+async function setScreeningTransport(t) {
+  screeningState.transport = t;
+  renderScreeningTransport();
+  const cfSection = $("carrierForwardingSection");
+  if (cfSection) cfSection.style.display = t === "twilio" ? "" : "none";
+  try {
+    await phoneMcp("set_screening_transport", { transport: t });
+    const r = $("screeningResult");
+    if (r) { r.textContent = "✓ Transport: " + t; r.className = "phone-result ok"; }
+  } catch (e) {
+    const r = $("screeningResult");
+    if (r) { r.textContent = "TODO set_screening_transport: " + (e.message || e); r.className = "phone-result bad"; }
+  }
+}
+
+async function toggleAutoScreening(on) {
+  screeningState.enabled = on;
+  const tog = $("screeningAutoToggle"); if (tog) tog.checked = on;
+  try {
+    await phoneMcp(on ? "twilio_screening_enable" : "twilio_screening_disable");
+    const badge = $("phoneScreeningBadge");
+    if (badge) { badge.textContent = on ? "enabled" : "disabled"; badge.className = "phone-badge " + (on ? "ok" : "bad"); }
+    const r = $("screeningResult");
+    if (r) { r.textContent = "✓ Screening " + (on ? "enabled" : "disabled"); r.className = "phone-result ok"; }
+  } catch (e) {
+    const r = $("screeningResult");
+    if (r) { r.textContent = "✗ " + (e.message || e); r.className = "phone-result bad"; }
+  }
+}
+
 // ---- wire up all phone panel events once DOM is ready ----
 function initPhonePanel() {
-  // close
+  // ---- close ----
   const cl = $("phoneClose"); if (cl) cl.addEventListener("click", closePhone);
 
-  // tabs
+  // ---- tabs ----
   document.querySelectorAll(".phone-tab").forEach((btn) =>
     btn.addEventListener("click", () => setPhoneTab(btn.getAttribute("data-ptab")))
   );
 
-  // call banner
+  // ---- call banner ----
   const bAccept = $("phoneBannerAccept");
   if (bAccept) bAccept.addEventListener("click", () => {
-    // accept requires a WS call_accept frame — not wired in the extension.
-    // Surface the call id so the user knows which call to act on from the phone.
-    const cid = ($("phoneBanner") || {}).dataset && $("phoneBanner").dataset.callId;
+    const cid = $("phoneBanner") && $("phoneBanner").dataset.callId;
     addSys("Call accept must be done on the phone app (call id: " + (cid || "?") + ").");
   });
   const bEnd = $("phoneBannerEnd");
@@ -1772,20 +2407,61 @@ function initPhonePanel() {
     if (cid) endPhoneCall(cid);
   });
 
-  // calls tab
+  // ---- CALLS TAB ----
   const rc = $("phoneRefreshCalls"); if (rc) rc.addEventListener("click", loadActiveCalls);
-  const db = $("phoneDialBtn");     if (db) db.addEventListener("click", doPhoneDial);
+  const db = $("phoneDialBtn");      if (db) db.addEventListener("click", doPhoneDial);
+
+  // keypad digits
+  document.querySelectorAll(".dialpad-key").forEach((key) => {
+    key.addEventListener("click", () => dialPad_append(key.getAttribute("data-key") || ""));
+  });
+  // extension chips → replace display
+  document.querySelectorAll(".dial-ext-chip").forEach((chip) => {
+    chip.addEventListener("click", () => dialPad_setFull(chip.getAttribute("data-ext") || ""));
+  });
+  // backspace
+  const bsp = $("phoneDialBackspace"); if (bsp) bsp.addEventListener("click", dialPad_backspace);
+
+  // mode select → show/hide To Number field + update hint
   const dm = $("phoneDialMode");
   if (dm) dm.addEventListener("change", () => {
     const row = $("phoneToNumberRow");
-    if (row) row.style.display = dm.value === "twilio" ? "" : "none";
+    if (row) row.classList.toggle("hidden", dm.value !== "twilio" && dm.value !== "inapp");
+    const hint = $("dialHint");
+    if (hint) {
+      if (dm.value === "extension")  hint.textContent = "tap a key or ext chip";
+      else if (dm.value === "twilio") hint.textContent = "PSTN call via Twilio";
+      else                            hint.textContent = "in-app call";
+    }
   });
   const txBack = $("phoneTranscriptBack");
   if (txBack) txBack.addEventListener("click", () => {
     const w = $("phoneTranscriptWrap"); if (w) w.classList.add("hidden");
   });
 
-  // inbox tab
+  // ---- AGENTS TAB ----
+  const ra = $("phoneRefreshAgents"); if (ra) ra.addEventListener("click", loadAgents);
+  const agBack = $("agentConfigBack"); if (agBack) agBack.addEventListener("click", closeAgentConfig);
+  const agPreview = $("agentVoicePreview");
+  if (agPreview) agPreview.addEventListener("click", doPreviewVoice);
+  const speedSlider = $("agentSpeedSlider");
+  if (speedSlider) {
+    speedSlider.addEventListener("input", () => {
+      const val = parseFloat(speedSlider.value).toFixed(2);
+      const sv = $("agentSpeedValue"); if (sv) sv.textContent = val + "×";
+    });
+    speedSlider.addEventListener("change", () => {
+      if (!agentConfigState.ext) return;
+      agentConfigState.speed = parseFloat(speedSlider.value);
+      const args = { extension: _extArg(agentConfigState.ext), speed: agentConfigState.speed };
+      phoneMcp("set_voice_profile", args).catch((e) => {
+        const r = $("agentConfigResult");
+        if (r) { r.textContent = "Speed: " + (e.message || e); r.className = "phone-result bad"; }
+      });
+    });
+  }
+
+  // ---- INBOX TAB ----
   const ri = $("phoneRefreshInbox"); if (ri) ri.addEventListener("click", loadInbox);
   const cb = $("phoneComposeBtn");   if (cb) cb.addEventListener("click", doCompose);
   const thBack = $("phoneThreadBack");
@@ -1793,18 +2469,82 @@ function initPhonePanel() {
     const w = $("phoneThreadWrap"); if (w) w.classList.add("hidden");
   });
 
-  // settings tab
+  // ---- HUD TAB ----
+  const hudRefresh = $("phoneHudRefresh"); if (hudRefresh) hudRefresh.addEventListener("click", loadHud);
+  const hudOpen = $("phoneHudOpen");
+  if (hudOpen) hudOpen.addEventListener("click", async () => {
+    const cfg = await chrome.storage.local.get({ phoneServerUrl: "" });
+    const url = (cfg.phoneServerUrl || "").trim().replace(/\/$/, "");
+    if (url) {
+      try { chrome.tabs.create({ url: url + "/dashboard" }); } catch (_) { /* sandboxed */ }
+    } else {
+      addSys("Set Server URL in Settings → Connection first.");
+    }
+  });
+
+  // ---- SETTINGS TAB ----
+  // connection
+  const connSave = $("connSave"); if (connSave) connSave.addEventListener("click", saveConnectionSettings);
+  const connTest = $("connTest"); if (connTest) connTest.addEventListener("click", testConnectionSettings);
+
+  // twilio status
   const rs = $("phoneRefreshStatus");
   if (rs) rs.addEventListener("click", () => { loadTwilioStatus(); loadAllowlist(); });
-  const son  = $("phoneScreeningOn");      if (son)  son.addEventListener("click",  () => doToggleScreening(true));
-  const soff = $("phoneScreeningOff");     if (soff) soff.addEventListener("click", () => doToggleScreening(false));
-  const ral  = $("phoneRefreshAllowlist"); if (ral)  ral.addEventListener("click",  loadAllowlist);
-  const aa   = $("phoneAllowlistAdd");     if (aa)   aa.addEventListener("click",   doAllowlistAdd);
-  const ar   = $("phoneAllowlistRemove");  if (ar)   ar.addEventListener("click",   doAllowlistRemove);
-  const sun  = $("phoneSetUserNum");       if (sun)  sun.addEventListener("click",  doSetUserNumber);
-  const vs   = $("phoneVoiceSet");         if (vs)   vs.addEventListener("click",   doSetVoice);
-  const vg   = $("phoneVoiceGet");         if (vg)   vg.addEventListener("click",   doGetVoice);
-  const red  = $("phoneRedAlert");         if (red)  red.addEventListener("click",  doRedAlert);
+
+  // call history
+  const rh = $("phoneRefreshHistory"); if (rh) rh.addEventListener("click", loadCallHistory);
+
+  // call screening (expanded)
+  const stTwilio = $("screeningTransportTwilio");
+  if (stTwilio) stTwilio.addEventListener("click", () => setScreeningTransport("twilio"));
+  const stRelay  = $("screeningTransportRelay");
+  if (stRelay)  stRelay.addEventListener("click",  () => setScreeningTransport("relay"));
+  const scToggle = $("screeningAutoToggle");
+  if (scToggle) scToggle.addEventListener("change", () => toggleAutoScreening(scToggle.checked));
+  const son  = $("phoneScreeningOn");  if (son)  son.addEventListener("click",  () => doToggleScreening(true));
+  const soff = $("phoneScreeningOff"); if (soff) soff.addEventListener("click", () => doToggleScreening(false));
+
+  // carrier forwarding — copy codes to clipboard
+  const AGENT_NUMBER = "+18449040251";
+  const CF_CODES = {
+    cfAll:       "**004*" + AGENT_NUMBER + "#",
+    cfBusy:      "**67*"  + AGENT_NUMBER + "#",
+    cfNoAns:     "**61*"  + AGENT_NUMBER + "#",
+    cfUnreach:   "**62*"  + AGENT_NUMBER + "#",
+    cfUndo:      "##002#",
+    vzBusyNoAns: "*718449040251",
+    vzAll:       "*728449040251",
+    vzOff:       "*73"
+  };
+  Object.entries(CF_CODES).forEach(([id, code]) => {
+    const btn = $(id);
+    if (btn) btn.addEventListener("click", () => {
+      navigator.clipboard.writeText(code).then(() => {
+        const orig = btn.textContent;
+        btn.textContent = "✓ copied";
+        setTimeout(() => { btn.textContent = orig; }, 1500);
+      }).catch(() => { addSys("Copy: " + code); });
+    });
+  });
+
+  // allowlist
+  const ral = $("phoneRefreshAllowlist"); if (ral) ral.addEventListener("click", loadAllowlist);
+  const aa  = $("phoneAllowlistAdd");     if (aa)  aa.addEventListener("click",  doAllowlistAdd);
+  const ar  = $("phoneAllowlistRemove");  if (ar)  ar.addEventListener("click",  doAllowlistRemove);
+
+  // user number
+  const sun = $("phoneSetUserNum"); if (sun) sun.addEventListener("click", doSetUserNumber);
+
+  // voice profile (manual / per-ext fallback)
+  const vs  = $("phoneVoiceSet");   if (vs)  vs.addEventListener("click",  doSetVoice);
+  const vg  = $("phoneVoiceGet");   if (vg)  vg.addEventListener("click",  doGetVoice);
+
+  // sms agent
+  const smsToggle = $("smsAgentToggle");
+  if (smsToggle) smsToggle.addEventListener("change", () => toggleSmsAgent(smsToggle.checked));
+
+  // war room
+  const red = $("phoneRedAlert"); if (red) red.addEventListener("click", doRedAlert);
 }
 
 // ----------------------------------------------------------------- boot

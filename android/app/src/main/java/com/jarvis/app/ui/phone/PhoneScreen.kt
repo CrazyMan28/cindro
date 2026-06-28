@@ -1,110 +1,192 @@
 package com.jarvis.app.ui.phone
 
+import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.CallEnd
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Message
-import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.Inbox
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.jarvis.app.ui.theme.GlowCard
+import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
 import com.jarvis.app.ui.theme.JarvisPalette
 import com.jarvis.app.ui.theme.StatusPill
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal routes
+// ─────────────────────────────────────────────────────────────────────────────
+
+internal object PhoneRoutes {
+    const val CALLS     = "calls"
+    const val INBOX     = "inbox"
+    const val AGENTS    = "agents"
+    const val HUD       = "hud"
+    const val SETTINGS  = "settings"
+    const val THREAD    = "thread/{threadId}"
+    const val AGENT_CONFIG = "agent-config/{ext}/{agentName}"
+    const val DIAGNOSTICS = "diagnostics"
+    const val HISTORY   = "history"
+    const val ENROLL    = "enroll"
+    const val SETUP     = "setup"
+
+    fun thread(id: String) = "thread/$id"
+    fun agentConfig(ext: String, name: String) = "agent-config/$ext/${Uri.encode(name)}"
+}
+
+private val TAB_ROUTES = setOf(
+    PhoneRoutes.CALLS,
+    PhoneRoutes.INBOX,
+    PhoneRoutes.AGENTS,
+    PhoneRoutes.HUD,
+    PhoneRoutes.SETTINGS,
+)
+
+private data class PhoneTabItem(val tab: PhoneTab, val route: String, val icon: ImageVector, val label: String)
+
+private val PHONE_TABS = listOf(
+    PhoneTabItem(PhoneTab.CALLS,    PhoneRoutes.CALLS,    Icons.Filled.Phone,    "Calls"),
+    PhoneTabItem(PhoneTab.INBOX,    PhoneRoutes.INBOX,    Icons.Filled.Inbox,    "Inbox"),
+    PhoneTabItem(PhoneTab.AGENTS,   PhoneRoutes.AGENTS,   Icons.Filled.SmartToy, "Agents"),
+    PhoneTabItem(PhoneTab.HUD,      PhoneRoutes.HUD,      Icons.Filled.Dashboard,"HUD"),
+    PhoneTabItem(PhoneTab.SETTINGS, PhoneRoutes.SETTINGS, Icons.Filled.Settings, "Settings"),
+)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PhoneScreen — full-screen phone section host
+// ─────────────────────────────────────────────────────────────────────────────
+
 /**
- * Top-level Phone screen. Tab-based: CALLS | INBOX | SETTINGS.
- * Overlays IncomingCallScreen when a ringing call is present.
+ * Full-screen phone section.  The Jarvis shell hides its main bottom nav when
+ * this composable is on screen, so Phone owns the entire content area.
+ *
+ * @param onBack  Called when the user taps the "back to Jarvis" arrow in the
+ *                top-bar.  Wired by Shell to `switchTab(Routes.HOME)`.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PhoneScreen(viewModel: PhoneViewModel) {
+fun PhoneScreen(viewModel: PhoneViewModel, onBack: () -> Unit = {}) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val phoneNav = rememberNavController()
+    val backStack by phoneNav.currentBackStackEntryAsState()
+    val currentRoute = backStack?.destination?.route
 
-    // Full-screen incoming call overlay — takes precedence over everything
+    LaunchedEffect(Unit) { viewModel.refresh() }
+
+    // ── Full-screen incoming call overlay ─────────────────────────────────
     AnimatedVisibility(
         visible = state.incomingCall != null,
-        enter = fadeIn(tween(200)),
-        exit = fadeOut(tween(200)),
+        enter = fadeIn(tween(180)),
+        exit  = fadeOut(tween(180)),
     ) {
         state.incomingCall?.let { call ->
             IncomingCallScreen(
-                call = call,
-                onAccept = { viewModel.acceptCall(call.id) },
+                call      = call,
+                onAccept  = { viewModel.acceptCall(call.id) },
                 onDecline = { viewModel.declineCall(call.id) },
             )
         }
     }
-
     if (state.incomingCall != null) return
+
+    // ── Route → top-bar title ─────────────────────────────────────────────
+    val title = when {
+        currentRoute == PhoneRoutes.CALLS      -> "Calls"
+        currentRoute == PhoneRoutes.INBOX      -> "Inbox"
+        currentRoute == PhoneRoutes.AGENTS     -> "Agents"
+        currentRoute == PhoneRoutes.HUD        -> "HUD"
+        currentRoute == PhoneRoutes.SETTINGS   -> "Settings"
+        currentRoute == PhoneRoutes.THREAD     -> "Thread"
+        currentRoute == PhoneRoutes.AGENT_CONFIG -> "Agent Config"
+        currentRoute == PhoneRoutes.DIAGNOSTICS -> "Diagnostics"
+        currentRoute == PhoneRoutes.HISTORY    -> "Call History"
+        currentRoute == PhoneRoutes.ENROLL     -> "Enroll Agent"
+        currentRoute == PhoneRoutes.SETUP      -> "Phone Setup"
+        else -> "Phone"
+    }
+    val isTabScreen = currentRoute in TAB_ROUTES
+
+    fun switchPhoneTab(route: String) {
+        phoneNav.navigate(route) {
+            popUpTo(phoneNav.graph.findStartDestination().id) { saveState = true }
+            launchSingleTop = true
+            restoreState    = true
+        }
+    }
 
     Scaffold(
         containerColor = JarvisPalette.Background,
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    if (isTabScreen) {
+                        // Back arrow exits Phone section → rest of Jarvis
+                        IconButton(onClick = onBack) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back to Jarvis",
+                                tint = JarvisPalette.TextSecondary,
+                            )
+                        }
+                    } else {
+                        // Back arrow pops the sub-screen
+                        IconButton(onClick = { phoneNav.popBackStack() }) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = JarvisPalette.Accent,
+                            )
+                        }
+                    }
+                },
                 title = {
-                    Text(
-                        "Phone",
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                        color = JarvisPalette.TextPrimary,
-                    )
+                    Column {
+                        Text(
+                            title,
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                            color = JarvisPalette.TextPrimary,
+                        )
+                        if (state.statusLine.isNotBlank()) {
+                            StatusPill(
+                                text  = state.statusLine.uppercase(),
+                                color = if (state.statusLine == "connected") JarvisPalette.Success
+                                        else JarvisPalette.TextFaint,
+                            )
+                        }
+                    }
                 },
                 actions = {
                     IconButton(onClick = { viewModel.refresh() }) {
@@ -114,37 +196,41 @@ fun PhoneScreen(viewModel: PhoneViewModel) {
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = JarvisPalette.Background),
             )
         },
-    ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
-
-            // ── Tab row ───────────────────────────────────────────────────
-            TabRow(
-                selectedTabIndex = state.tab.ordinal,
-                containerColor = JarvisPalette.Surface,
-                contentColor = JarvisPalette.Accent,
-            ) {
-                PhoneTab.entries.forEach { tab ->
-                    Tab(
-                        selected = state.tab == tab,
-                        onClick = { viewModel.setTab(tab) },
-                        text = {
-                            Text(
-                                tab.name,
-                                color = if (state.tab == tab) JarvisPalette.Accent else JarvisPalette.TextSecondary,
-                                style = MaterialTheme.typography.labelLarge,
-                            )
-                        },
-                    )
+        bottomBar = {
+            if (isTabScreen) {
+                NavigationBar(containerColor = JarvisPalette.Surface) {
+                    PHONE_TABS.forEach { item ->
+                        val selected = currentRoute == item.route
+                        NavigationBarItem(
+                            selected = selected,
+                            onClick  = { switchPhoneTab(item.route) },
+                            icon     = { Icon(item.icon, contentDescription = item.label) },
+                            label    = { Text(item.label) },
+                            colors   = NavigationBarItemDefaults.colors(
+                                selectedIconColor   = JarvisPalette.OnAccent,
+                                selectedTextColor   = JarvisPalette.Accent,
+                                indicatorColor      = JarvisPalette.Accent,
+                                unselectedIconColor = JarvisPalette.TextSecondary,
+                                unselectedTextColor = JarvisPalette.TextSecondary,
+                            ),
+                        )
+                    }
                 }
             }
-
-            // ── Status banners ────────────────────────────────────────────
+        },
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding),
+        ) {
+            // ── Global error / toast banners ──────────────────────────────
             AnimatedVisibility(visible = state.error != null) {
                 state.error?.let { err ->
                     Text(
                         err,
-                        color = JarvisPalette.Error,
-                        style = MaterialTheme.typography.bodySmall,
+                        color  = JarvisPalette.Error,
+                        style  = MaterialTheme.typography.bodySmall,
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(JarvisPalette.Error.copy(alpha = 0.08f))
@@ -156,8 +242,8 @@ fun PhoneScreen(viewModel: PhoneViewModel) {
                 state.toast?.let { msg ->
                     Text(
                         msg,
-                        color = JarvisPalette.Success,
-                        style = MaterialTheme.typography.bodySmall,
+                        color  = JarvisPalette.Success,
+                        style  = MaterialTheme.typography.bodySmall,
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(JarvisPalette.Success.copy(alpha = 0.08f))
@@ -166,634 +252,84 @@ fun PhoneScreen(viewModel: PhoneViewModel) {
                 }
             }
 
-            // ── Tab content ───────────────────────────────────────────────
-            when (state.tab) {
-                PhoneTab.CALLS -> CallsTab(state, viewModel)
-                PhoneTab.INBOX -> InboxTab(state, viewModel)
-                PhoneTab.SETTINGS -> SettingsTab(state, viewModel)
-            }
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CALLS tab
-// ─────────────────────────────────────────────────────────────────────────────
-
-@Composable
-private fun CallsTab(state: PhoneUiState, viewModel: PhoneViewModel) {
-    var dialTo by remember { mutableStateOf("") }
-    var dialReason by remember { mutableStateOf("") }
-    var dialSay by remember { mutableStateOf("") }
-    var expandedCallId by remember { mutableStateOf<String?>(null) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-    ) {
-
-        // Active calls section header
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "Active Calls",
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                color = JarvisPalette.TextPrimary,
-            )
-            StatusPill(
-                text = if (state.activeCalls.isEmpty()) "IDLE" else "${state.activeCalls.size} ACTIVE",
-                color = if (state.activeCalls.isEmpty()) JarvisPalette.TextFaint else JarvisPalette.Success,
-            )
-        }
-
-        if (state.activeCalls.isEmpty()) {
-            GlowCard(modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    "No active calls",
-                    color = JarvisPalette.TextSecondary,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-        } else {
-            state.activeCalls.forEach { call ->
-                CallCard(
-                    call = call,
-                    isExpanded = expandedCallId == call.id,
-                    transcript = if (expandedCallId == call.id) state.callTranscript else "",
-                    onExpand = {
-                        if (expandedCallId == call.id) {
-                            expandedCallId = null
-                        } else {
-                            expandedCallId = call.id
-                            viewModel.loadCallTranscript(call.id)
-                        }
-                    },
-                    onEnd = { viewModel.endCall(call.id) },
-                )
-            }
-        }
-
-        // Dialer
-        GlowCard(modifier = Modifier.fillMaxWidth(), accent = true) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Filled.Phone,
-                        contentDescription = null,
-                        tint = JarvisPalette.Accent,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        "Place Call",
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = JarvisPalette.Accent,
+            // ── Internal NavHost ──────────────────────────────────────────
+            NavHost(
+                navController   = phoneNav,
+                startDestination = PhoneRoutes.CALLS,
+                modifier         = Modifier.weight(1f),
+            ) {
+                composable(PhoneRoutes.CALLS) {
+                    PhoneCallsScreen(state = state, viewModel = viewModel)
+                }
+                composable(PhoneRoutes.INBOX) {
+                    PhoneInboxScreen(
+                        state    = state,
+                        viewModel = viewModel,
+                        onOpenThread = { phoneNav.navigate(PhoneRoutes.thread(it)) },
                     )
                 }
-                OutlinedTextField(
-                    value = dialTo,
-                    onValueChange = { dialTo = it },
-                    label = { Text("Extension (e.g. 101) or Phone Number (+1…)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = dialReason,
-                    onValueChange = { dialReason = it },
-                    label = { Text("Reason") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = dialSay,
-                    onValueChange = { dialSay = it },
-                    label = { Text("Opening message (TTS prompt)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    maxLines = 3,
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    Button(
-                        onClick = {
-                            viewModel.placeCall(dialTo.trim(), dialReason.trim(), dialSay.trim())
-                            dialTo = ""; dialReason = ""; dialSay = ""
+                composable(PhoneRoutes.AGENTS) {
+                    PhoneAgentsScreen(
+                        state    = state,
+                        viewModel = viewModel,
+                        onConfig = { ext, name ->
+                            phoneNav.navigate(PhoneRoutes.agentConfig(ext, name))
                         },
-                        enabled = dialTo.isNotBlank() && dialReason.isNotBlank() && dialSay.isNotBlank(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = JarvisPalette.Accent,
-                            contentColor = JarvisPalette.OnAccent,
-                        ),
-                    ) {
-                        Icon(Icons.Filled.Call, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Call")
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun CallCard(
-    call: PhoneCall,
-    isExpanded: Boolean,
-    transcript: String,
-    onExpand: () -> Unit,
-    onEnd: () -> Unit,
-) {
-    val stateColor by animateColorAsState(
-        targetValue = callStateColor(call.state),
-        animationSpec = tween(300),
-        label = "callStateColor",
-    )
-
-    GlowCard(modifier = Modifier.fillMaxWidth()) {
-        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        "Call ${call.id.take(8)}…",
-                        style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace),
-                        color = JarvisPalette.TextPrimary,
-                    )
-                    Text(
-                        "Ext ${call.fromExtension ?: "?"} → Ext ${call.toExtension ?: "?"}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = JarvisPalette.TextSecondary,
                     )
                 }
-                StatusPill(text = call.state.uppercase(), color = stateColor)
-            }
-
-            call.reason?.takeIf { it.isNotBlank() }?.let { reason ->
-                Text(
-                    "Reason: $reason",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = JarvisPalette.TextSecondary,
-                )
-            }
-
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                TextButton(onClick = onExpand) {
-                    Icon(
-                        imageVector = if (isExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = JarvisPalette.Accent,
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        if (isExpanded) "Hide" else "Transcript",
-                        color = JarvisPalette.Accent,
-                        style = MaterialTheme.typography.labelMedium,
-                    )
+                composable(PhoneRoutes.HUD) {
+                    PhoneHudScreen(state = state, viewModel = viewModel)
                 }
-                Button(
-                    onClick = onEnd,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = JarvisPalette.Error,
-                        contentColor = Color.White,
-                    ),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                ) {
-                    Icon(Icons.Filled.CallEnd, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("End", style = MaterialTheme.typography.labelMedium)
-                }
-            }
-
-            AnimatedVisibility(visible = isExpanded) {
-                Column {
-                    Box(
-                        Modifier.fillMaxWidth().height(1.dp)
-                            .background(JarvisPalette.Outline),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = if (transcript.isBlank()) "No transcript yet…" else transcript,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        color = JarvisPalette.TextSecondary,
-                    )
-                }
-            }
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// INBOX tab
-// ─────────────────────────────────────────────────────────────────────────────
-
-@Composable
-private fun InboxTab(state: PhoneUiState, viewModel: PhoneViewModel) {
-    var composeTitle by remember { mutableStateOf("") }
-    var composeBody by remember { mutableStateOf("") }
-
-    Column(Modifier.fillMaxSize()) {
-        // Compose area
-        GlowCard(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            accent = true,
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Filled.Message,
-                        contentDescription = null,
-                        tint = JarvisPalette.Accent,
-                        modifier = Modifier.size(17.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        "Send Message",
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = JarvisPalette.Accent,
-                    )
-                }
-                OutlinedTextField(
-                    value = composeTitle,
-                    onValueChange = { composeTitle = it },
-                    label = { Text("Subject") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = composeBody,
-                    onValueChange = { composeBody = it },
-                    label = { Text("Message") },
-                    modifier = Modifier.fillMaxWidth(),
-                    maxLines = 3,
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    Button(
-                        onClick = {
-                            viewModel.sendText(composeTitle.trim(), composeBody.trim())
-                            composeTitle = ""; composeBody = ""
+                composable(PhoneRoutes.SETTINGS) {
+                    PhoneSettingsScreen(
+                        state    = state,
+                        viewModel = viewModel,
+                        onDiagnostics = { phoneNav.navigate(PhoneRoutes.DIAGNOSTICS) },
+                        onHistory     = { phoneNav.navigate(PhoneRoutes.HISTORY) },
+                        onEnroll      = { phoneNav.navigate(PhoneRoutes.ENROLL) },
+                        onSetup       = { phoneNav.navigate(PhoneRoutes.SETUP) },
+                        onAgentConfig = { ext: String, name: String ->
+                            phoneNav.navigate(PhoneRoutes.agentConfig(ext, name))
                         },
-                        enabled = composeTitle.isNotBlank() && composeBody.isNotBlank(),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = JarvisPalette.Accent,
-                            contentColor = JarvisPalette.OnAccent,
-                        ),
-                    ) {
-                        Icon(Icons.Filled.Send, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Send")
-                    }
+                    )
                 }
-            }
-        }
 
-        // Messages
-        if (state.inboxMessages.isEmpty()) {
-            Box(
-                Modifier.fillMaxWidth().padding(32.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("Inbox empty", color = JarvisPalette.TextSecondary, style = MaterialTheme.typography.bodyMedium)
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                items(state.inboxMessages, key = { it.id }) { msg ->
-                    InboxMessageCard(msg = msg)
+                // Sub-screens
+                composable(PhoneRoutes.THREAD) { entry ->
+                    val threadId = entry.arguments?.getString("threadId").orEmpty()
+                    LaunchedEffect(threadId) { viewModel.loadThread(threadId) }
+                    PhoneThreadScreen(state = state, viewModel = viewModel, threadId = threadId)
+                }
+                composable(PhoneRoutes.AGENT_CONFIG) { entry ->
+                    val ext  = entry.arguments?.getString("ext").orEmpty()
+                    val name = Uri.decode(entry.arguments?.getString("agentName").orEmpty())
+                    LaunchedEffect(ext) {
+                        viewModel.listVoices()
+                        viewModel.getVoiceProfile(ext)
+                        viewModel.getModelConfig(ext)
+                    }
+                    PhoneAgentConfigScreen(
+                        state     = state,
+                        viewModel = viewModel,
+                        extension = ext,
+                        agentName = name,
+                    )
+                }
+                composable(PhoneRoutes.DIAGNOSTICS) {
+                    LaunchedEffect(Unit) { viewModel.runDiagnostics() }
+                    PhoneDiagnosticsScreen(state = state, viewModel = viewModel)
+                }
+                composable(PhoneRoutes.HISTORY) {
+                    LaunchedEffect(Unit) { viewModel.loadHistory() }
+                    PhoneHistoryScreen(state = state, viewModel = viewModel)
+                }
+                composable(PhoneRoutes.ENROLL) {
+                    PhoneEnrollScreen(state = state, viewModel = viewModel)
+                }
+                composable(PhoneRoutes.SETUP) {
+                    PhoneSetupScreen(state = state, viewModel = viewModel)
                 }
             }
         }
     }
-}
-
-@Composable
-private fun InboxMessageCard(msg: InboxMessage) {
-    val priorityColor = when (msg.priority) {
-        "critical" -> JarvisPalette.Error
-        "urgent" -> JarvisPalette.Warning
-        "normal" -> JarvisPalette.Accent
-        else -> JarvisPalette.TextSecondary
-    }
-
-    GlowCard(modifier = Modifier.fillMaxWidth()) {
-        Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    msg.title.ifBlank { "(no subject)" },
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                    color = JarvisPalette.TextPrimary,
-                    modifier = Modifier.weight(1f),
-                )
-                StatusPill(text = msg.status.uppercase(), color = priorityColor)
-            }
-            Text(
-                msg.message,
-                style = MaterialTheme.typography.bodyMedium,
-                color = JarvisPalette.TextSecondary,
-                maxLines = 5,
-            )
-            msg.fromExtension?.let {
-                Text(
-                    "From ext $it",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = JarvisPalette.TextFaint,
-                )
-            }
-            if (msg.responseOptions.isNotEmpty()) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(top = 2.dp),
-                ) {
-                    msg.responseOptions.take(4).forEach { opt ->
-                        AssistChip(
-                            onClick = { /* TODO: reply with selected option */ },
-                            label = { Text(opt, style = MaterialTheme.typography.labelSmall) },
-                            colors = AssistChipDefaults.assistChipColors(
-                                labelColor = JarvisPalette.Accent,
-                                containerColor = JarvisPalette.Accent.copy(alpha = 0.10f),
-                            ),
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SETTINGS tab
-// ─────────────────────────────────────────────────────────────────────────────
-
-@Composable
-private fun SettingsTab(state: PhoneUiState, viewModel: PhoneViewModel) {
-    var newUserNumber by remember { mutableStateOf("") }
-    var allowNumber by remember { mutableStateOf("") }
-    var allowLabel by remember { mutableStateOf("") }
-    var redAlertMsg by remember { mutableStateOf("") }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-
-        // ── Twilio status ─────────────────────────────────────────────────
-        GlowCard(modifier = Modifier.fillMaxWidth()) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Filled.Phone,
-                        contentDescription = null,
-                        tint = JarvisPalette.Accent,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        "Twilio Status",
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = JarvisPalette.TextPrimary,
-                    )
-                }
-                state.twilioStatus?.let { ts ->
-                    StatusPill(
-                        text = if (ts.configured) "CONFIGURED" else "NOT CONFIGURED",
-                        color = if (ts.configured) JarvisPalette.Success else JarvisPalette.Error,
-                    )
-                    ts.fromNumber?.let { num ->
-                        Text("From: $num", style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary)
-                    }
-                    Box(Modifier.fillMaxWidth().height(1.dp).background(JarvisPalette.Outline))
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column {
-                            Text("Call Screening", style = MaterialTheme.typography.bodyMedium, color = JarvisPalette.TextPrimary)
-                            Text("Screen unknown callers automatically", style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary)
-                        }
-                        Switch(
-                            checked = ts.screeningEnabled,
-                            onCheckedChange = { viewModel.toggleScreening(it) },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = JarvisPalette.OnAccent,
-                                checkedTrackColor = JarvisPalette.Accent,
-                                uncheckedThumbColor = JarvisPalette.TextSecondary,
-                                uncheckedTrackColor = JarvisPalette.Surface,
-                            ),
-                        )
-                    }
-                } ?: Text("Loading Twilio status…", color = JarvisPalette.TextSecondary, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-
-        // ── User number ───────────────────────────────────────────────────
-        GlowCard(modifier = Modifier.fillMaxWidth()) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    "Your Phone Number",
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                    color = JarvisPalette.TextPrimary,
-                )
-                if (state.defaultUserNumber.isNotBlank()) {
-                    Text(
-                        "Current: ${state.defaultUserNumber}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = JarvisPalette.Accent,
-                    )
-                }
-                OutlinedTextField(
-                    value = newUserNumber,
-                    onValueChange = { newUserNumber = it },
-                    label = { Text("E.164 format, e.g. +12125551234") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-                Button(
-                    onClick = { viewModel.setUserNumber(newUserNumber.trim()); newUserNumber = "" },
-                    enabled = newUserNumber.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = JarvisPalette.Accent,
-                        contentColor = JarvisPalette.OnAccent,
-                    ),
-                ) {
-                    Text("Set Number")
-                }
-            }
-        }
-
-        // ── Allowlist ─────────────────────────────────────────────────────
-        GlowCard(modifier = Modifier.fillMaxWidth()) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    "Phone Allowlist",
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                    color = JarvisPalette.TextPrimary,
-                )
-                if (state.allowlist.isEmpty()) {
-                    Text(
-                        "No allowlisted numbers",
-                        color = JarvisPalette.TextSecondary,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                } else {
-                    state.allowlist.forEach { entry ->
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                Icons.Filled.CheckCircle,
-                                contentDescription = null,
-                                tint = JarvisPalette.Success,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    entry.phoneNumber,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = JarvisPalette.TextPrimary,
-                                )
-                                entry.label?.let {
-                                    Text(it, style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary)
-                                }
-                            }
-                        }
-                    }
-                    Box(Modifier.fillMaxWidth().height(1.dp).background(JarvisPalette.Outline))
-                }
-                Text("Add Number", style = MaterialTheme.typography.labelMedium, color = JarvisPalette.TextSecondary)
-                OutlinedTextField(
-                    value = allowNumber,
-                    onValueChange = { allowNumber = it },
-                    label = { Text("Phone number") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    value = allowLabel,
-                    onValueChange = { allowLabel = it },
-                    label = { Text("Label (optional)") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                )
-                Button(
-                    onClick = {
-                        viewModel.addToAllowlist(allowNumber.trim(), allowLabel.trim())
-                        allowNumber = ""; allowLabel = ""
-                    },
-                    enabled = allowNumber.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = JarvisPalette.Accent,
-                        contentColor = JarvisPalette.OnAccent,
-                    ),
-                ) {
-                    Text("Add to Allowlist")
-                }
-            }
-        }
-
-        // ── Voice profile ─────────────────────────────────────────────────
-        GlowCard(modifier = Modifier.fillMaxWidth()) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Filled.Mic,
-                        contentDescription = null,
-                        tint = JarvisPalette.Violet,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        "Voice Profile",
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = JarvisPalette.TextPrimary,
-                    )
-                }
-                Text(
-                    "Voice profiles (Mistral voice UUID or local:jarvis) are managed via the desktop ops dashboard or the set_voice_profile MCP tool.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = JarvisPalette.TextSecondary,
-                )
-            }
-        }
-
-        // ── War Room / Red Alert ──────────────────────────────────────────
-        GlowCard(modifier = Modifier.fillMaxWidth()) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Filled.Warning,
-                        contentDescription = null,
-                        tint = JarvisPalette.Error,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        "War Room / Red Alert",
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        color = JarvisPalette.Error,
-                    )
-                }
-                Text(
-                    "Broadcasts an emergency alert to every agent, creates a group war-room thread, and spawns offline agents.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = JarvisPalette.TextSecondary,
-                )
-                OutlinedTextField(
-                    value = redAlertMsg,
-                    onValueChange = { redAlertMsg = it },
-                    label = { Text("Alert message") },
-                    modifier = Modifier.fillMaxWidth(),
-                    maxLines = 3,
-                )
-                Button(
-                    onClick = { viewModel.triggerRedAlert(redAlertMsg.trim()); redAlertMsg = "" },
-                    enabled = redAlertMsg.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = JarvisPalette.Error,
-                        contentColor = Color.White,
-                    ),
-                ) {
-                    Icon(Icons.Filled.Warning, contentDescription = null, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Send Red Alert", style = MaterialTheme.typography.labelLarge)
-                }
-            }
-        }
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-private fun callStateColor(state: String): Color = when (state) {
-    "ringing" -> JarvisPalette.Warning
-    "accepted", "active" -> JarvisPalette.Success
-    "listening" -> JarvisPalette.Accent
-    "transcribing", "agent_thinking" -> JarvisPalette.Violet
-    "speaking", "waiting_for_user" -> JarvisPalette.Accent2
-    "ended" -> JarvisPalette.TextFaint
-    "failed", "rejected", "missed", "timeout" -> JarvisPalette.Error
-    else -> JarvisPalette.TextSecondary
 }
