@@ -270,10 +270,17 @@ fun ChatScreen(
 
                 InputRow(
                     draft = draft,
-                    onDraftChange = { draft = it },
+                    onDraftChange = {
+                        draft = it
+                        // Lazily fetch agents+skills the moment a "/" menu opens.
+                        if (it.startsWith("/") && !it.contains(" ")) viewModel.loadSlashCatalog()
+                    },
                     sending = state.sending,
                     busy = state.busy,
                     voicePhase = voicePhase,
+                    slashAgents = state.slashAgents,
+                    slashSkills = state.slashSkills,
+                    onSlashPick = { draft = it },
                     onAttach = { pickImage.launch("image/*") },
                     onSend = {
                         viewModel.send(draft)
@@ -360,6 +367,9 @@ private fun InputRow(
     sending: Boolean,
     busy: Boolean,
     voicePhase: com.jarvis.app.voice.VoiceController.Phase,
+    slashAgents: List<com.jarvis.app.protocol.Agent>,
+    slashSkills: List<com.jarvis.app.protocol.Skill>,
+    onSlashPick: (String) -> Unit,
     onAttach: () -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
@@ -399,6 +409,14 @@ private fun InputRow(
                 }
             }
         }
+
+        // "/" command palette — rises above the composer when typing a /command.
+        SlashPalette(
+            draft = draft,
+            agents = slashAgents,
+            skills = slashSkills,
+            onPick = onSlashPick,
+        )
 
         Row(
             modifier = Modifier.fillMaxWidth().padding(10.dp),

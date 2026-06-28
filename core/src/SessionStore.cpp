@@ -19,6 +19,8 @@ QJsonObject SessionRow::toJson() const
     obj.insert(QStringLiteral("model"), model);
     obj.insert(QStringLiteral("thread_id"), threadId);
     obj.insert(QStringLiteral("state"), state);
+    obj.insert(QStringLiteral("parent_session_id"), parentSessionId);
+    obj.insert(QStringLiteral("agent"), agent);
     obj.insert(QStringLiteral("created"), created);
     obj.insert(QStringLiteral("updated"), updated);
     return obj;
@@ -108,6 +110,11 @@ bool SessionStore::migrate()
             " created INTEGER,"
             " updated INTEGER)")))
         return false;
+    // Subagent support migration: link a child session to its parent + record
+    // the custom-agent name it runs as. SQLite has no "ADD COLUMN IF NOT EXISTS";
+    // a duplicate-column error on an already-migrated DB is expected and ignored.
+    exec(QStringLiteral("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT DEFAULT ''"));
+    exec(QStringLiteral("ALTER TABLE sessions ADD COLUMN agent TEXT DEFAULT ''"));
 
     if (!exec(QStringLiteral(
             "CREATE TABLE IF NOT EXISTS events ("
@@ -212,8 +219,8 @@ bool SessionStore::create(const SessionRow &row)
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
         "INSERT INTO sessions"
-        " (id,title,profile,brain,model,thread_id,state,created,updated)"
-        " VALUES (?,?,?,?,?,?,?,?,?)"));
+        " (id,title,profile,brain,model,thread_id,state,parent_session_id,agent,created,updated)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?)"));
     q.addBindValue(row.id);
     q.addBindValue(row.title);
     q.addBindValue(row.profile);
@@ -221,6 +228,8 @@ bool SessionStore::create(const SessionRow &row)
     q.addBindValue(row.model);
     q.addBindValue(row.threadId);
     q.addBindValue(row.state);
+    q.addBindValue(row.parentSessionId);
+    q.addBindValue(row.agent);
     q.addBindValue(row.created != 0 ? row.created : now);
     q.addBindValue(row.updated != 0 ? row.updated : now);
     if (!q.exec()) {
@@ -234,7 +243,7 @@ std::optional<SessionRow> SessionStore::get(const QString &id)
 {
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "SELECT id,title,profile,brain,model,thread_id,state,created,updated"
+        "SELECT id,title,profile,brain,model,thread_id,state,parent_session_id,agent,created,updated"
         " FROM sessions WHERE id=?"));
     q.addBindValue(id);
     if (!q.exec()) {
@@ -252,8 +261,10 @@ std::optional<SessionRow> SessionStore::get(const QString &id)
     row.model = q.value(4).toString();
     row.threadId = q.value(5).toString();
     row.state = q.value(6).toString();
-    row.created = q.value(7).toLongLong();
-    row.updated = q.value(8).toLongLong();
+    row.parentSessionId = q.value(7).toString();
+    row.agent = q.value(8).toString();
+    row.created = q.value(9).toLongLong();
+    row.updated = q.value(10).toLongLong();
     return row;
 }
 
@@ -262,7 +273,7 @@ QVector<SessionRow> SessionStore::list()
     QVector<SessionRow> out;
     QSqlQuery q(m_db);
     if (!q.exec(QStringLiteral(
-            "SELECT id,title,profile,brain,model,thread_id,state,created,updated"
+            "SELECT id,title,profile,brain,model,thread_id,state,parent_session_id,agent,created,updated"
             " FROM sessions ORDER BY created DESC"))) {
         m_lastError = q.lastError().text();
         return out;
@@ -276,8 +287,10 @@ QVector<SessionRow> SessionStore::list()
         row.model = q.value(4).toString();
         row.threadId = q.value(5).toString();
         row.state = q.value(6).toString();
-        row.created = q.value(7).toLongLong();
-        row.updated = q.value(8).toLongLong();
+        row.parentSessionId = q.value(7).toString();
+        row.agent = q.value(8).toString();
+        row.created = q.value(9).toLongLong();
+        row.updated = q.value(10).toLongLong();
         out.push_back(row);
     }
     return out;

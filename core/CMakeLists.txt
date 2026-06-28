@@ -39,6 +39,7 @@ add_library(jarvis-core STATIC
     src/ApiBrain.cpp
     src/MemoryStore.cpp
     src/SkillStore.cpp
+    src/AgentStore.cpp
     src/DeviceRegistry.cpp
     src/PairingManager.cpp
     src/AuthChallengeStore.cpp
@@ -75,6 +76,7 @@ add_library(jarvis-core STATIC
     include/jarvis/ApiBrain.h
     include/jarvis/MemoryStore.h
     include/jarvis/SkillStore.h
+    include/jarvis/AgentStore.h
     include/jarvis/DeviceRegistry.h
     include/jarvis/PairingManager.h
     include/jarvis/AuthChallengeStore.h
@@ -178,6 +180,12 @@ add_test(NAME memory_store_test COMMAND memory_store_test)
 add_executable(skill_store_test tests/skill_store_test.cpp)
 target_link_libraries(skill_store_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME skill_store_test COMMAND skill_store_test)
+
+# AgentStore: frontmatter parse + create (self-authoring) + list/get/read +
+# overwrite-in-place + claude-format serialize + remove (temp agents root).
+add_executable(agent_store_test tests/agent_store_test.cpp)
+target_link_libraries(agent_store_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME agent_store_test COMMAND agent_store_test)
 
 # VoiceProvider: provider enumeration always includes voxtral(available); a local
 # provider with no binary/model gracefully falls back to voxtral (no crash); and

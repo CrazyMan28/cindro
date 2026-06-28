@@ -421,6 +421,9 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("skills.list") ||
         method == QStringLiteral("skills.get") ||
         method == QStringLiteral("skills.today") ||
+        method == QStringLiteral("agents.list") ||
+        method == QStringLiteral("agents.get") ||
+        method == QStringLiteral("agents.running") ||
         // Wave 8 ops reads.
         method == QStringLiteral("schedule.list") ||
         method == QStringLiteral("ssh.allow_list") ||
@@ -481,6 +484,11 @@ QString DeviceServer::tierFor(const QString &method)
         // command — both are biometric-tier on the phone.
         method == QStringLiteral("schedule.create") ||
         method == QStringLiteral("ssh.exec") ||
+        // Custom agents: creating/removing a definition and dispatching one to
+        // run unattended are biometric-tier on the phone.
+        method == QStringLiteral("agents.create") ||
+        method == QStringLiteral("agents.remove") ||
+        method == QStringLiteral("agents.dispatch") ||
         // 2FA unlock: approving (or denying) a desktop sign-in REQUIRES a fresh
         // BiometricPrompt on the phone (the second factor) before it reaches here.
         method == QStringLiteral("auth.approve") ||
@@ -505,6 +513,10 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("skills.list"),     QStringLiteral("skills.get"),
         QStringLiteral("skills.create"),   QStringLiteral("skills.invoke"),
         QStringLiteral("skills.remove"),   QStringLiteral("skills.today"),
+        // Custom agents (subagents) mirrored to the phone.
+        QStringLiteral("agents.list"),     QStringLiteral("agents.get"),
+        QStringLiteral("agents.create"),   QStringLiteral("agents.remove"),
+        QStringLiteral("agents.dispatch"), QStringLiteral("agents.running"),
         // Wave 8 co-worker ops mirrored to the phone: scheduler, ssh allow-list
         // + gated exec, and the audit log. schedule.create + ssh.exec biometric.
         QStringLiteral("schedule.create"), QStringLiteral("schedule.list"),

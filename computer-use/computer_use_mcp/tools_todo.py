@@ -240,6 +240,9 @@ def todo_widget_spec(items: list[dict], title: str = "") -> dict:
                 {"type": "text", "text": it.get("text", ""), "size": 13, "grow": True,
                  "color": _TEXT_COLOR.get(status, "#AEC2D0"),
                  "weight": (700 if status == "in_progress" else 400),
+                 # A done step is struck through (a line over it) so finished work
+                 # reads at a glance — the renderer honors the `strike` text prop.
+                 "strike": (status == "done"),
                  "line": 1.25},
             ],
         })

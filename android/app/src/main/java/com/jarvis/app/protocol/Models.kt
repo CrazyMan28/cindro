@@ -233,6 +233,49 @@ data class Skill(
     }
 }
 
+/** A custom agent / subagent (from agents.list / agents.get). */
+data class Agent(
+    val name: String,
+    val description: String?,
+    val whenToUse: String?,
+    val brain: String?,
+    val model: String?,
+    val profile: String?,
+    val color: String?,
+    val systemPrompt: String?,
+) {
+    companion object {
+        private fun JsonObject.s(key: String): String? =
+            get(key)?.takeIf { !it.isJsonNull }?.asString
+
+        fun from(o: JsonObject): Agent = Agent(
+            name = o.s("name").orEmpty(),
+            description = o.s("description"),
+            whenToUse = o.s("when_to_use"),
+            brain = o.s("brain"),
+            model = o.s("model"),
+            profile = o.s("profile"),
+            color = o.s("color"),
+            systemPrompt = o.s("system_prompt"),
+        )
+
+        /** Build from agents.get: `{frontmatter:{…}, system_prompt, path}`. */
+        fun fromGet(result: JsonObject): Agent {
+            val fm = result.getAsJsonObject("frontmatter") ?: JsonObject()
+            return Agent(
+                name = fm.s("name").orEmpty(),
+                description = fm.s("description"),
+                whenToUse = fm.s("when_to_use"),
+                brain = fm.s("brain"),
+                model = fm.s("model"),
+                profile = fm.s("profile"),
+                color = fm.s("color"),
+                systemPrompt = result.s("system_prompt"),
+            )
+        }
+    }
+}
+
 /** A "today" agenda item (from skills.today). */
 data class TodayItem(val title: String, val detail: String?) {
     companion object {

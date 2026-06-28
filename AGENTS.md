@@ -123,6 +123,35 @@ Design pillars:
     NOT grant grace.
 - Brain output schemas drift between CLI versions — parsers are defensive; prefer adding a case over
   tightening existing ones.
+- **Custom agents (subagents)** live as `AGENT.md` files in
+  `~/.local/share/jarvis/agents/<slug>/` via `core/AgentStore` (mirrors `SkillStore`;
+  also mirrors to `~/.claude/agents`). A dispatched agent runs as a CHILD session:
+  `session.create` takes `parent_session_id` + `agent` (sets the two new `sessions`
+  columns and injects the agent's system prompt on turn 1). Contract A
+  `agents.list/get/create/remove/dispatch/running`; model MCP tools `agent_*`
+  (`tools_jarvis_ops.py`). The SubAgentTree only renders because `parent_session_id`
+  is now real — don't drop it. See `docs/AGENTS_AND_COMMANDS.md`.
+- **The "/" palette** is per-surface (`SlashPalette.qml` / `ui/chat/SlashPalette.kt`
+  / the extension dropdown). It lists commands + agents + skills. The desktop
+  `CommandPalette.qml` (Ctrl+K page jumper) is SEPARATE — keep both.
+- **TTS is one strict FIFO.** Voice mode AND the chat "Speak replies" path BOTH go
+  through `Bridge::playTtsAudio` (single shared `QMediaPlayer` + `m_ttsQueue`) with
+  requests serialized one-in-flight (`pumpTtsRequests`); Android `TtsPlayer` mirrors
+  this (a shared player + queue). NEVER reintroduce a per-clip player / second
+  playback path — that's what made replies talk over each other.
+- **The right-side peek panel opens ONLY** on a new TODO or a real agent-desktop
+  spin-up (`driving`/coworker), NOT on `hasAgentDesktop` (which fires on the first
+  message via auto computer-use). The PLAN card lives INSIDE that panel, on top of
+  the agent-desktop view (`JarvisPanel.qml`).
+- **Skills:** the model MUST create skills via the `create_skill` MCP tool, not its
+  CLI's own skill files (the SKILLS preamble says so). The Skills list uses
+  `SkillStore::listAll()` (root + `~/.codex/skills` + `~/.claude/skills`, dedup by
+  name) so a skill always shows up; keep `list()` (root-only) for the unit test.
+- **Chrome extension widgets:** the side panel subscribes via control-WS
+  `widget.subscribe` and the daemon tails `widgets.jsonl` → broadcasts
+  `widget.render/remove/clear` to opted-in control clients ONLY. The desktop tails
+  the file itself and never subscribes, so it doesn't double-render. Don't broadcast
+  widgets to all control clients.
 
 ## Conventions
 

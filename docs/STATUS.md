@@ -8,6 +8,47 @@ _Last updated: 2026-06-27._
 
 ---
 
+## 🆕 "/" command palette + custom agents (subagents) + polish (2026-06-27)
+
+A cross-surface pass — desktop, phone, AND the Chrome extension.
+
+- **"/" command palette** — type `/` in the chat composer → an animated, scrollable,
+  filterable menu of **Commands + Agents + Skills** (Claude-Code style). Up/Down +
+  Enter/Tab/Esc; picking runs a command or fills the input. On **desktop**
+  (`SlashPalette.qml`), **phone** (`ui/chat/SlashPalette.kt`), and the **extension**
+  side panel (dropdown + quick-flow chips). The Ctrl+K page jumper is unchanged.
+- **Custom agents / subagents (NEW)** — define an agent (name · what it does · when
+  to call it · brain/model/profile · system prompt) stored as `AGENT.md`
+  (`core/AgentStore`, mirrored to `~/.claude/agents`). Dispatch a task → it runs as a
+  **child session** (`parent_session_id` added to sessions; SubAgentTree now real)
+  and reports back. Contract A `agents.list/get/create/remove/dispatch/running`
+  (mirrored to the phone, biometric tier); model-driven MCP tools `agent_create /
+  agent_list / agent_start / agent_status / agent_stop / …`. New **Agents** page on
+  desktop + screen on phone. See [`AGENTS_AND_COMMANDS.md`](AGENTS_AND_COMMANDS.md).
+- **Right-side panel unified (desktop)** — the model's **PLAN** card now sits ON TOP
+  of the live agent-desktop view in one panel, and it opens **only** when a TODO is
+  created or an agent desktop is actually in use (no longer pops on the first message).
+- **Plan strikethrough** — done TODO items render with a line through them (new
+  `strike` text prop in both widget renderers; `tools_todo` sets it on done items).
+- **TTS no longer talks over itself** — both voice mode AND the chat "Speak replies"
+  path now share ONE strict FIFO queue (single player; requests serialized one at a
+  time), so message 1 finishes before message 2 starts. Desktop (`Bridge` TTS) +
+  phone (`TtsPlayer` rewritten from new-player-per-clip to a shared queue).
+- **Skill creation fixed** — the model is steered to use the `create_skill` MCP tool
+  (not its CLI's own skill files), and the Skills list now also surfaces skills found
+  in `~/.codex/skills` + `~/.claude/skills` (`SkillStore::listAll`), so a created
+  skill always shows in the tab.
+- **Chrome extension caught up** — renders the generative widget DSL + the PLAN
+  checklist (control-WS `widget.subscribe` broadcast), dispatches/sees agents, the
+  "/" palette + quick chips, and a UI/flow polish. (Deep config — MCP/plugins/
+  schedules/voice management — stays on desktop/phone by design.)
+- **200 thinking phrases** that cycle at a **random** cadence (not a fixed beat) on
+  all four surfaces. Android **0.10.0** (vc32).
+- Verified: **19/19 ctest** (incl. new `agent_store_test`), **65/65 engine pytest**
+  (incl. todo-strike), QML `--selftest` clean, Android `assembleDebug`.
+
+---
+
 ## 🆕 Battery idle-teardown + unlock hardening + phone orb (2026-06-28)
 
 - **Battery: idle agent desktops are now torn down — safely.** The blocker was that
