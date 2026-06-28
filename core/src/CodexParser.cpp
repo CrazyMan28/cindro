@@ -20,6 +20,18 @@ QString firstString(const QJsonObject &obj, std::initializer_list<const char *> 
     return QString();
 }
 
+// codex marks a not-yet-finished item with an in_progress-style status. Such an
+// item can still carry placeholder fields (exit_code:null, aggregated_output:"")
+// that must NOT be mistaken for completion — so the `finished` heuristics below
+// are gated on this.
+bool isInProgress(const QJsonObject &item)
+{
+    const QString s = item.value(QStringLiteral("status")).toString();
+    return s == QStringLiteral("in_progress") || s == QStringLiteral("running") ||
+           s == QStringLiteral("started") || s == QStringLiteral("pending") ||
+           s == QStringLiteral("queued");
+}
+
 // Stringify a JSON value into a flat output string (for tool_result.output).
 QString flatten(const QJsonValue &v)
 {
@@ -70,11 +82,12 @@ std::optional<NormalizedBrainEvent> mapItem(const QJsonObject &item)
         // A completed command carries its output -> tool_result; otherwise it
         // is the invocation -> tool_call. Either way carry the command as the input
         // (name "shell") so the chat card shows what ran, not just the output.
-        const bool finished = status == QStringLiteral("completed") ||
-                              status == QStringLiteral("failed") ||
-                              item.contains(QStringLiteral("exit_code")) ||
-                              item.contains(QStringLiteral("aggregated_output")) ||
-                              item.contains(QStringLiteral("output"));
+        const bool finished = !isInProgress(item) &&
+                              (status == QStringLiteral("completed") ||
+                               status == QStringLiteral("failed") ||
+                               item.contains(QStringLiteral("exit_code")) ||
+                               item.contains(QStringLiteral("aggregated_output")) ||
+                               item.contains(QStringLiteral("output")));
         if (finished) {
             const int exitCode = item.value(QStringLiteral("exit_code")).toInt(0);
             const bool ok = status != QStringLiteral("failed") && exitCode == 0;
@@ -93,10 +106,11 @@ std::optional<NormalizedBrainEvent> mapItem(const QJsonObject &item)
         if (name.isEmpty())
             name = server;
         const QString status = item.value(QStringLiteral("status")).toString();
-        const bool finished = status == QStringLiteral("completed") ||
-                              status == QStringLiteral("failed") ||
-                              item.contains(QStringLiteral("result")) ||
-                              item.contains(QStringLiteral("output"));
+        const bool finished = !isInProgress(item) &&
+                              (status == QStringLiteral("completed") ||
+                               status == QStringLiteral("failed") ||
+                               item.contains(QStringLiteral("result")) ||
+                               item.contains(QStringLiteral("output")));
         QJsonObject args = item.value(QStringLiteral("arguments")).toObject();
         if (args.isEmpty())
             args = item.value(QStringLiteral("args")).toObject();
@@ -133,6 +147,50 @@ std::optional<NormalizedBrainEvent> mapItem(const QJsonObject &item)
     }
 
     // todo_list and other informational items: no normalized equivalent.
+    return std::nullopt;
+}
+
+// For codex `item.started`: surface an IN-PROGRESS tool_call the instant a tool
+// is invoked. codex emits item.started (status:"in_progress") when a tool begins
+// and only later item.completed with the output — so without this a long-running
+// tool (e.g. a blocking agent_wait MCP call) would show NOTHING in the chat until
+// it finishes or times out. Only tool-invocation item types get an in-progress
+// card here; messages / reasoning / diffs are intentionally left to
+// item.completed to avoid duplicate or partial transcript rows. The matching
+// item.completed later carries the same id, so the UI merges the output in and
+// flips the card to "done".
+std::optional<NormalizedBrainEvent> mapStartedItem(const QJsonObject &item)
+{
+    const QString type = item.value(QStringLiteral("type")).toString();
+    const QString itemId = firstString(item, {"id", "call_id", "item_id"});
+
+    if (type == QStringLiteral("command_execution") ||
+        type == QStringLiteral("local_shell_call") ||
+        type == QStringLiteral("exec_command")) {
+        QJsonObject args;
+        args.insert(QStringLiteral("command"), firstString(item, {"command", "cmd"}));
+        return NormalizedBrainEvent::toolCall(itemId, QStringLiteral("shell"), args);
+    }
+
+    if (type == QStringLiteral("mcp_tool_call") ||
+        type == QStringLiteral("tool_call") ||
+        type == QStringLiteral("function_call")) {
+        const QString server = item.value(QStringLiteral("server")).toString();
+        QString name = firstString(item, {"name", "tool"});
+        if (name.isEmpty())
+            name = server;
+        QJsonObject args = item.value(QStringLiteral("arguments")).toObject();
+        if (args.isEmpty())
+            args = item.value(QStringLiteral("args")).toObject();
+        return NormalizedBrainEvent::toolCall(itemId, name, args, server);
+    }
+
+    if (type == QStringLiteral("web_search")) {
+        QJsonObject args;
+        args.insert(QStringLiteral("query"), firstString(item, {"query", "text"}));
+        return NormalizedBrainEvent::toolCall(itemId, QStringLiteral("web_search"), args);
+    }
+
     return std::nullopt;
 }
 
@@ -178,11 +236,19 @@ std::optional<NormalizedBrainEvent> parseCodexLine(const QByteArray &line)
         const QJsonObject item = obj.value(QStringLiteral("item")).toObject();
         if (item.isEmpty())
             return std::nullopt;
-        // Only completed items become terminal events; started/updated for
-        // streamable items are skipped to avoid duplicate normalized events.
-        if (type != QStringLiteral("item.completed"))
-            return std::nullopt;
-        return mapItem(item);
+        // item.completed -> the terminal event (tool_result / message / diff …).
+        if (type == QStringLiteral("item.completed"))
+            return mapItem(item);
+        // item.started -> an in-progress tool_call card shown IMMEDIATELY, so a
+        // long-running tool appears the moment it is called (not only when it
+        // returns). Returns nullopt for non-tool items (message/reasoning), which
+        // wait for item.completed to avoid duplicate/partial rows.
+        if (type == QStringLiteral("item.started"))
+            return mapStartedItem(item);
+        // item.updated -> ignored: the started card already shows and the
+        // completed event will carry the final output + mark it done. (Re-emitting
+        // would just churn the same row.)
+        return std::nullopt;
     }
 
     if (type == QStringLiteral("error")) {

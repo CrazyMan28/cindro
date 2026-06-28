@@ -1652,6 +1652,29 @@ Item {
                                     font.family: Theme.fontSans; font.pixelSize: 12
                                     elide: Text.ElideRight
                                 }
+                                // Status badge: RUNNING (pulsing) while the turn is in
+                                // flight, DONE once it posts its summary (state→idle),
+                                // ERROR on failure. This is what "shows as done" means.
+                                Rectangle {
+                                    readonly property bool isRunning: modelData.status === "running" || modelData.status === "starting"
+                                    readonly property bool isError: modelData.status === "error"
+                                    Layout.alignment: Qt.AlignVCenter
+                                    radius: 4
+                                    implicitWidth: badge.implicitWidth + 12
+                                    implicitHeight: 16
+                                    color: isError ? Qt.rgba(1.0, 0.30, 0.30, 0.16)
+                                           : isRunning ? Qt.rgba(0.694, 0.294, 1.0, 0.16)
+                                           : Qt.rgba(0.30, 0.85, 0.45, 0.16)
+                                    Text {
+                                        id: badge
+                                        anchors.centerIn: parent
+                                        text: parent.isError ? "ERROR" : parent.isRunning ? "RUNNING" : "DONE"
+                                        color: parent.isError ? Theme.danger
+                                               : parent.isRunning ? Theme.violet : Theme.success
+                                        font.family: Theme.fontDisplay; font.pixelSize: 8
+                                        font.letterSpacing: 1.0; font.weight: Font.DemiBold
+                                    }
+                                }
                                 Text { text: "↗"; color: Theme.accent; font.pixelSize: 12 }
                             }
                             MouseArea {
