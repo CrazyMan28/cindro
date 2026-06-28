@@ -152,6 +152,10 @@ bool ControlServer::start()
     // Contract A v2 stores/registries. SettingsStore loads config.toml prefs +
     // secrets.json; the registries wrap the (now-open) SessionStore tables.
     m_settings.load();
+    // Claude-Code-style lifecycle hooks (~/.config/jarvis/hooks.json). run() is a
+    // no-op fast-path when an event has no hooks, so fire points cost ~nothing by
+    // default.
+    m_hooks.load();
     // MISTRAL key bootstrap: if ~/.config/jarvis/mistral_api_key exists and the
     // SettingsStore doesn't already carry a "mistral" secret, load it in-memory
     // so settings.get reports api_keys_set.mistral=true and the api brain can use
@@ -326,6 +330,14 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionList(req);
     else if (m == QStringLiteral("session.history"))
         resp = handleSessionHistory(req);
+    else if (m == QStringLiteral("hooks.list"))
+        resp = handleHooksList(req);
+    else if (m == QStringLiteral("hooks.add"))
+        resp = handleHooksAdd(req);
+    else if (m == QStringLiteral("hooks.remove"))
+        resp = handleHooksRemove(req);
+    else if (m == QStringLiteral("hooks.test"))
+        resp = handleHooksTest(req);
     else if (m == QStringLiteral("session.subscribe"))
         resp = handleSessionSubscribe(client, req);
     else if (m == QStringLiteral("widget.viewing"))
@@ -608,6 +620,53 @@ Response ControlServer::handleSettingsSet(const Request &req)
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleHooksList(const Request &req)
+{
+    QJsonObject result = m_hooks.toJson(); // { "hooks": {...} }
+    result.insert(QStringLiteral("events"),
+                  QJsonArray::fromStringList(HookStore::events()));
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleHooksAdd(const Request &req)
+{
+    const QString event = req.params.value(QStringLiteral("event")).toString();
+    const QString matcher = req.params.value(QStringLiteral("matcher")).toString();
+    const QString command = req.params.value(QStringLiteral("command")).toString();
+    const int timeout = req.params.value(QStringLiteral("timeout")).toInt(60);
+    if (!m_hooks.addHook(event, matcher, command, timeout))
+        return Response::failure(req.id, QStringLiteral("bad_request"), m_hooks.lastError());
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleHooksRemove(const Request &req)
+{
+    const QString event = req.params.value(QStringLiteral("event")).toString();
+    const int index = req.params.value(QStringLiteral("index")).toInt(-1);
+    if (!m_hooks.removeHook(event, index))
+        return Response::failure(req.id, QStringLiteral("bad_request"), m_hooks.lastError());
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleHooksTest(const Request &req)
+{
+    const QString event = req.params.value(QStringLiteral("event")).toString();
+    const QString matchKey = req.params.value(QStringLiteral("match_key")).toString();
+    const QJsonObject input = req.params.value(QStringLiteral("input")).toObject();
+    const HookOutcome o = m_hooks.run(event, input, matchKey);
+    QJsonObject result;
+    result.insert(QStringLiteral("ran_any"), o.ranAny);
+    result.insert(QStringLiteral("blocked"), o.blocked);
+    result.insert(QStringLiteral("block_reason"), o.blockReason);
+    result.insert(QStringLiteral("injected_context"), o.injectedContext);
+    result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(o.notes));
+    return Response::success(req.id, result);
 }
 
 Response ControlServer::handleModelList(const Request &req)
@@ -1298,6 +1357,19 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     // scheduler path; all early-error returns are above this point.
     broadcastSessionOpened(row.id, row.title);  // control-WS fan-out (desktop)
     emit sessionOpened(row.id, row.title);      // device-WS + FCM fan-out (phone)
+
+    // SessionStart hook — top-level sessions only (a child session = a subagent).
+    // Any additionalContext is stashed and prepended to the session's FIRST turn
+    // (drained in sendToSession). No-op unless a SessionStart hook is configured.
+    if (parentSessionId.isEmpty()) {
+        QJsonObject hin;
+        hin.insert(QStringLiteral("session_id"), row.id);
+        hin.insert(QStringLiteral("source"), QStringLiteral("startup"));
+        const HookOutcome ho = m_hooks.run(QStringLiteral("SessionStart"), hin,
+                                           QStringLiteral("startup"));
+        if (!ho.injectedContext.isEmpty())
+            m_hookSessionContext.insert(row.id, ho.injectedContext);
+    }
     return row.id;
 }
 
@@ -1333,6 +1405,18 @@ void ControlServer::wakeParentForSubagent(const QString &childSid)
     const QString label = (row && !row->agent.isEmpty()) ? row->agent
                                                           : QStringLiteral("subagent");
     const QString state = row ? row->state : QStringLiteral("done");
+
+    // SubagentStop hook (observational): matchKey = the agent type. No-op unless
+    // configured.
+    {
+        QJsonObject hin;
+        hin.insert(QStringLiteral("session_id"), childSid);
+        hin.insert(QStringLiteral("parent_session_id"), parentSid);
+        hin.insert(QStringLiteral("agent_type"), label);
+        hin.insert(QStringLiteral("stop_reason"), state);
+        m_hooks.run(QStringLiteral("SubagentStop"), hin, label);
+    }
+
     QString summary = subagentSummary(childSid);
     if (summary.trimmed().isEmpty())
         summary = QStringLiteral("(the subagent returned no text — check its session)");
@@ -1352,6 +1436,14 @@ void ControlServer::onTurnFinished(const QString &sessionId)
 {
     // Backup wake trigger (the primary is the `final` event in onBrainEvent).
     wakeParentForSubagent(sessionId);
+
+    // Stop hook (observational): the agent finished responding. Fire for the main
+    // agent only (a child's completion is a SubagentStop). No-op unless configured.
+    if (auto r = m_store.get(sessionId); r && r->parentSessionId.isEmpty()) {
+        QJsonObject hin;
+        hin.insert(QStringLiteral("session_id"), sessionId);
+        m_hooks.run(QStringLiteral("Stop"), hin);
+    }
 
     if (!m_pendingTurns.contains(sessionId))
         return;
@@ -1485,6 +1577,33 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         return true;
     }
 
+    // Claude-Code-style UserPromptSubmit hook — can BLOCK the turn (exit 2 /
+    // decision:block) or inject additionalContext. Skipped for subagents (their
+    // isolated task is not a user prompt). Also drains any SessionStart context
+    // captured at session creation, once, on this first turn.
+    QString hookContext;
+    if (!isSubagent) {
+        QJsonObject hin;
+        hin.insert(QStringLiteral("session_id"), sessionId);
+        hin.insert(QStringLiteral("user_prompt"), text);
+        const HookOutcome ho = m_hooks.run(QStringLiteral("UserPromptSubmit"), hin);
+        if (ho.blocked) {
+            m_store.updateState(sessionId, QStringLiteral("idle"));
+            if (err)
+                *err = ho.blockReason.isEmpty()
+                           ? QStringLiteral("blocked by a UserPromptSubmit hook")
+                           : ho.blockReason;
+            return false;
+        }
+        hookContext = ho.injectedContext;
+        if (m_hookSessionContext.contains(sessionId)) {
+            const QString sc = m_hookSessionContext.take(sessionId);
+            if (!sc.isEmpty())
+                hookContext = sc + (hookContext.isEmpty() ? QString()
+                                                          : QStringLiteral("\n")) + hookContext;
+        }
+    }
+
     m_store.updateState(sessionId, QStringLiteral("running"));
 
     // Auto-title an untitled session from its FIRST user message so the Sessions
@@ -1516,6 +1635,11 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         if (!memBlock.isEmpty())
             effectiveText = memBlock + QStringLiteral("\n---\n") + text;
     }
+    // Hook-injected context (UserPromptSubmit + SessionStart additionalContext)
+    // rides at the very front so the model sees it as a system reminder.
+    if (!hookContext.isEmpty())
+        effectiveText = QStringLiteral("[HOOK CONTEXT]\n") + hookContext +
+                        QStringLiteral("\n---\n") + effectiveText;
 
     // ONE-TIME co-work guidance: the first turn a session has computer-use, teach
     // the model the screen-targeting contract + the ASK-WHEN-AMBIGUOUS rule the
@@ -4211,6 +4335,11 @@ void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrain
                        ev.fields.value(QStringLiteral("summary")).toString(), sessionId);
     } else if (ev.kind == NormalizedBrainEvent::Kind::Final) {
         m_notify.taskDone(QStringLiteral("Session ") + sessionId + QStringLiteral(" finished a turn."));
+        // Notification hook (observational).
+        QJsonObject nh;
+        nh.insert(QStringLiteral("session_id"), sessionId);
+        nh.insert(QStringLiteral("message"), QStringLiteral("turn finished"));
+        m_hooks.run(QStringLiteral("Notification"), nh, QStringLiteral("turn_complete"));
     } else if (ev.kind == NormalizedBrainEvent::Kind::ToolCall) {
         // Audit every brain tool call with an injection-scanned risk tier.
         const QString name = ev.fields.value(QStringLiteral("name")).toString();
@@ -4221,6 +4350,20 @@ void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrain
         m_audit.record(QStringLiteral("tool:") + name, true,
                        scan.risky ? scan.risk : QStringLiteral("low"),
                        scan.risky ? scan.summary() : name, sessionId);
+        // PreToolUse hook (observational: the brain's CLI executes MCP tools
+        // itself, so this is a side-effect callback, not an abort point). The
+        // matcher routes on the tool name. No-op unless configured.
+        QJsonObject ptu;
+        ptu.insert(QStringLiteral("session_id"), sessionId);
+        ptu.insert(QStringLiteral("tool_name"), name);
+        ptu.insert(QStringLiteral("tool_input"), args);
+        m_hooks.run(QStringLiteral("PreToolUse"), ptu, name);
+    } else if (ev.kind == NormalizedBrainEvent::Kind::ToolResult) {
+        // PostToolUse hook (observational).
+        QJsonObject po;
+        po.insert(QStringLiteral("session_id"), sessionId);
+        po.insert(QStringLiteral("tool_result"), ev.fields.value(QStringLiteral("output")));
+        m_hooks.run(QStringLiteral("PostToolUse"), po);
     }
 
     broadcastSessionEvent(sessionId, ev);

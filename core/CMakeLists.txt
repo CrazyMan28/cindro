@@ -39,6 +39,7 @@ add_library(jarvis-core STATIC
     src/ApiBrain.cpp
     src/MemoryStore.cpp
     src/SkillStore.cpp
+    src/HookStore.cpp
     src/AgentStore.cpp
     src/DeviceRegistry.cpp
     src/PairingManager.cpp
@@ -76,6 +77,7 @@ add_library(jarvis-core STATIC
     include/jarvis/ApiBrain.h
     include/jarvis/MemoryStore.h
     include/jarvis/SkillStore.h
+    include/jarvis/HookStore.h
     include/jarvis/AgentStore.h
     include/jarvis/DeviceRegistry.h
     include/jarvis/PairingManager.h
@@ -201,6 +203,13 @@ add_test(NAME voice_provider_test COMMAND voice_provider_test)
 add_executable(settings_store_test tests/settings_store_test.cpp)
 target_link_libraries(settings_store_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME settings_store_test COMMAND settings_store_test)
+
+# HookStore: Claude-Code-style lifecycle hooks — matcher routing, the
+# exit-code/stdout block+inject protocol, and CRUD round-trip through
+# hooks.json against a QTemporaryDir HOME (real hook scripts, hermetic).
+add_executable(hook_store_test tests/hook_store_test.cpp)
+target_link_libraries(hook_store_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME hook_store_test COMMAND hook_store_test)
 
 # Wave 8 co-worker ops backend tests.
 # Scheduler: cron / "every Nm" / "at HH:MM" next-run calculation + a temp-DB
