@@ -1587,18 +1587,34 @@ Item {
         }
     }
 
-    // The palette emitted pick(item): a command runs; an agent/skill fills the input.
+    // The palette emitted pick(item): a command runs; a skill RUNS now; an agent
+    // fills the input (it needs a task typed after it).
     function onSlashPick(item) {
         if (!item) return
         if (item.kind === "command") {
             panel.runSlashCommand(item.value)
+        } else if (item.kind === "skill") {
+            // Run the skill immediately (no args). Its rendered text is injected
+            // into the chat by the onSkillInvoked handler below. To pass args,
+            // type "/<name> args" and press Enter instead.
+            inputArea.text = ""
+            slashPalette.open = false
+            bridge.skillInvoke(item.name, "")
         } else {
-            // agent -> "/dispatch <name> "; skill -> "/<name> " (user types args/task)
+            // agent -> "/dispatch <name> " — the user types the task, then Enter.
             inputArea.text = item.value
             inputArea.cursorPosition = inputArea.text.length
             inputArea.forceActiveFocus()
             slashPalette.open = false
         }
+    }
+
+    // Invoking a skill (from the "/" palette OR a typed "/name") renders its text on
+    // the daemon and fires skillInvoked — inject it into THIS chat. The chat page is
+    // always loaded, so this works even when the Skills page was never opened.
+    Connections {
+        target: bridge
+        function onSkillInvoked(name, message) { panel.injectSkill(name, message) }
     }
 
     // A built-in command picked from the palette: immediate ones run now; ones that
