@@ -193,3 +193,92 @@ def register(mcp: FastMCP) -> None:
             return json.dumps(daemon_client.call("skills.remove", {"name": name}))
         except Exception as exc:  # noqa: BLE001
             return _err(exc)
+
+    # ---- AGENTS (subagents — define + dispatch your own helpers) -------------
+    @mcp.tool()
+    def agent_create(name: str, description: str, when_to_use: str,
+                     system_prompt: str, brain: str = "", model: str = "",
+                     profile: str = "", tools: list[str] | None = None,
+                     color: str = "") -> str:
+        """Define a NEW custom agent (a reusable specialist you can dispatch tasks
+        to). Give it a `name`, a `description` of what it does, a `when_to_use`
+        line describing WHEN to call it, and a `system_prompt` (its role/behavior).
+        Optionally pin a `brain` (codex|claude|api), `model`, `profile`
+        (coder|coworker), an allowed-`tools` hint, and a UI `color`. Re-creating
+        with the same name OVERWRITES (= edit). Returns the created agent.
+
+        Build agents proactively: when you find yourself doing a distinct kind of
+        sub-task repeatedly (research, code review, summarizing), make an agent for
+        it, then dispatch to it with agent_start."""
+        try:
+            return json.dumps(daemon_client.call("agents.create", {
+                "name": name, "description": description,
+                "when_to_use": when_to_use, "system_prompt": system_prompt,
+                "brain": brain, "model": model, "profile": profile,
+                "tools": tools or [], "color": color,
+            }))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def agent_list() -> str:
+        """List your custom agents WITH each one's `when_to_use` — read this to
+        decide which agent (if any) fits the sub-task at hand before dispatching."""
+        try:
+            return json.dumps(daemon_client.call("agents.list"))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def agent_get(name: str) -> str:
+        """Read one agent's full definition (system prompt + metadata) by name."""
+        try:
+            return json.dumps(daemon_client.call("agents.get", {"name": name}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def agent_remove(name: str) -> str:
+        """Delete a custom agent definition by name."""
+        try:
+            return json.dumps(daemon_client.call("agents.remove", {"name": name}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def agent_start(name: str, task: str) -> str:
+        """DISPATCH a sub-task to one of your custom agents. Spawns a child session
+        that runs AS that agent (using its system prompt + brain) on `task`; it
+        reports back as its own session and shows under this session in the
+        sub-agent tree. Returns {session_id} — pass it to agent_stop to cancel.
+
+        Consult agent_list first to pick the right agent for the work (match the
+        task to each agent's when_to_use)."""
+        try:
+            params = {"agent": name, "task": task}
+            parent = os.environ.get("JARVIS_AGENT_SESSION")
+            if parent:
+                params["parent_session_id"] = parent
+            return json.dumps(daemon_client.call("agents.dispatch", params,
+                                                 timeout=30))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def agent_status() -> str:
+        """List the agent (child) sessions and whether each is still running — use
+        this to see what you've dispatched and what has finished."""
+        try:
+            return json.dumps(daemon_client.call("agents.running"))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def agent_stop(session_id: str) -> str:
+        """Stop a running agent (child session) by its session_id (from
+        agent_start / agent_status)."""
+        try:
+            return json.dumps(daemon_client.call("session.cancel",
+                                                 {"session_id": session_id}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)

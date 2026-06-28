@@ -30,6 +30,8 @@ const els = {
   sessionsPanel: $("sessionsPanel"),
   sessionsList: $("sessionsList"),
   sessionsClose: $("sessionsClose"),
+  slashPalette: $("slashPalette"),
+  quickbar: $("quickbar"),
 };
 
 // ----------------------------------------------------------------- state
@@ -110,6 +112,10 @@ async function connect() {
       startAuthGate();
     }
     loadModels(els.brain.value || "codex");  // fill the model picker once connected
+    // Subscribe to the widget bus over the control WS so render_widget output
+    // (charts, cards, the PLAN checklist) appears in the panel — same DSL the
+    // desktop/phone render. The desktop tails the file itself and never subscribes.
+    rpc("widget.subscribe", { on: true }).catch(() => {});
     // Refresh the (shared) conversation list whenever we (re)connect so a chat
     // started on the desktop/phone shows up here immediately.
     loadSessions().catch(() => {});
@@ -281,6 +287,16 @@ function onFrame(raw) {
     onAuthState(msg.data.challenge_id || "", msg.data.state || "");
     return;
   }
+
+  // Widget bus (render_widget / todo plan / charts) over the control WS.
+  if (msg.event === "widget.render" && msg.data) {
+    // Only show widgets scoped to the current session (or session-less/global).
+    const wsid = msg.data.session_id || "";
+    if (!wsid || !sessionId || wsid === sessionId) renderWidget(msg.data);
+    return;
+  }
+  if (msg.event === "widget.remove" && msg.data) { removeWidget(msg.data.id || ""); return; }
+  if (msg.event === "widget.clear") { clearWidgets(); return; }
 
   // RPC reply.
   if (typeof msg.id === "number" && pending.has(msg.id)) {
@@ -552,18 +568,220 @@ function endLiveBubble() {
 
 function truncate(s, n) { return s.length > n ? s.slice(0, n) + "…" : s; }
 
+// ----------------------------------------------------------- widget rendering
+// Renders the generative-widget DSL (the same JSON the desktop/phone render) to
+// DOM. A compact subset: column/row/grid containers; text (color/size/bold/
+// italic/strike/weight/align), badge, divider, spacer, rect, progress, list,
+// link, image, button (action {send|skill}), and svg. Stable id -> replace.
+const widgetEls = new Map(); // id -> row element
+
+function asArray(v) { return Array.isArray(v) ? v : (v && typeof v === "object" && v.length !== undefined ? Array.from(v) : []); }
+
+function renderWidgetNode(node) {
+  if (!node || typeof node !== "object") {
+    const t = document.createElement("span"); t.textContent = node == null ? "" : String(node); return t;
+  }
+  const type = node.type || "text";
+  const px = (v, d) => (v == null || isNaN(Number(v)) ? d : Number(v) + "px");
+  if (type === "column" || type === "row" || type === "grid") {
+    const el = document.createElement("div");
+    el.style.display = type === "grid" ? "grid" : "flex";
+    if (type === "row") el.style.flexDirection = "row";
+    else if (type === "column") el.style.flexDirection = "column";
+    if (type === "grid") el.style.gridTemplateColumns = `repeat(${Math.max(1, Number(node.cols) || 2)}, 1fr)`;
+    el.style.gap = px(node.gap, "6px");
+    if (node.pad != null) el.style.padding = px(node.pad, "0");
+    if (node.bg) el.style.background = node.bg;
+    if (node.radius != null) el.style.borderRadius = px(node.radius, "0");
+    if (node.border) el.style.border = `${px(node.borderW, "1px")} solid ${node.border}`;
+    if (node.fill) el.style.width = "100%";
+    if (node.w != null) el.style.width = px(node.w, "auto");
+    if (node.h != null) el.style.height = px(node.h, "auto");
+    asArray(node.children).forEach((c) => {
+      const child = renderWidgetNode(c);
+      if (c && c.grow) child.style.flex = "1";
+      if (c && c.align) child.style.textAlign = c.align;
+      el.appendChild(child);
+    });
+    return el;
+  }
+  if (type === "text") {
+    const el = document.createElement("div");
+    el.textContent = node.text == null ? "" : String(node.text);
+    if (node.color) el.style.color = node.color;
+    el.style.fontSize = px(node.size, "13px");
+    if (node.weight) el.style.fontWeight = String(node.weight);
+    else if (node.bold) el.style.fontWeight = "600";
+    if (node.italic) el.style.fontStyle = "italic";
+    if (node.strike) el.style.textDecoration = "line-through";
+    if (node.mono) el.style.fontFamily = "ui-monospace, monospace";
+    if (node.align) el.style.textAlign = node.align;
+    return el;
+  }
+  if (type === "badge") {
+    const el = document.createElement("span");
+    el.textContent = node.text || "";
+    el.style.cssText = `display:inline-block;padding:1px 8px;border-radius:6px;font-size:11px;background:rgba(61,214,255,.15);color:${node.color || "#3DD6FF"}`;
+    return el;
+  }
+  if (type === "divider") {
+    const el = document.createElement("div");
+    el.style.cssText = `height:1px;width:100%;background:${node.color || "#1E2C3B"};margin:2px 0`;
+    return el;
+  }
+  if (type === "spacer") {
+    const el = document.createElement("div");
+    if (node.grow) el.style.flex = "1"; else el.style.height = px(node.size, "8px");
+    return el;
+  }
+  if (type === "rect") {
+    const el = document.createElement("div");
+    el.style.cssText = `width:${px(node.w, "40px")};height:${px(node.h, "40px")};border-radius:${px(node.radius, "0")};background:${node.color || "#3DD6FF"}`;
+    return el;
+  }
+  if (type === "progress") {
+    let v = Number(node.value) || 0; if (v > 1) v = v / 100; v = Math.max(0, Math.min(1, v));
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "width:100%;height:8px;border-radius:50px;background:#142233;overflow:hidden";
+    const bar = document.createElement("div");
+    bar.style.cssText = `height:100%;width:${(v * 100).toFixed(0)}%;background:${node.color || "#3DD6FF"}`;
+    wrap.appendChild(bar); return wrap;
+  }
+  if (type === "list") {
+    const el = document.createElement("div");
+    el.style.cssText = "display:flex;flex-direction:column;gap:6px";
+    asArray(node.rows).forEach((r) => {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;justify-content:space-between;gap:8px;font-size:12px";
+      const left = document.createElement("span"); left.textContent = (r && r.text) || "";
+      const right = document.createElement("span"); right.textContent = (r && (r.badge || r.sub)) || "";
+      right.style.color = (r && r.color) || "#93A7B8";
+      row.appendChild(left); row.appendChild(right); el.appendChild(row);
+    });
+    return el;
+  }
+  if (type === "link") {
+    const el = document.createElement("a");
+    el.textContent = node.text || node.url || "link"; el.href = node.url || "#"; el.target = "_blank";
+    el.style.color = "#5B8CFF"; return el;
+  }
+  if (type === "image") {
+    const el = document.createElement("img");
+    el.src = node.url || ""; if (node.w) el.style.width = px(node.w, "auto"); if (node.h) el.style.height = px(node.h, "auto");
+    el.style.maxWidth = "100%"; return el;
+  }
+  if (type === "button") {
+    const el = document.createElement("button");
+    el.textContent = node.text || "Button";
+    el.style.cssText = "padding:5px 12px;border-radius:8px;border:1px solid rgba(61,214,255,.4);background:rgba(61,214,255,.12);color:#3DD6FF;cursor:pointer;font-size:12px";
+    el.addEventListener("click", () => {
+      const a = node.action || {};
+      if (a.send) { els.input.value = String(a.send); doSend(); }
+      else if (a.skill) { els.input.value = "/" + a.skill + (a.args ? " " + a.args : ""); doSend(); }
+    });
+    return el;
+  }
+  if (type === "svg") {
+    const el = document.createElement("div");
+    el.innerHTML = String(node.svg || ""); // engine-produced, local trusted source
+    return el;
+  }
+  // pager/canvas and unknown -> render children if any, else a small label.
+  if (node.children) { const el = document.createElement("div"); asArray(node.children).forEach((c) => el.appendChild(renderWidgetNode(c))); return el; }
+  const el = document.createElement("div"); el.textContent = node.type || ""; return el;
+}
+
+function renderWidget(data) {
+  let spec = data.spec;
+  if (typeof spec === "string") { try { spec = JSON.parse(spec); } catch (e) { return; } }
+  if (!spec) return;
+  const id = data.id || ("w" + Date.now());
+  // Replace in place if this id already rendered.
+  const existing = widgetEls.get(id);
+  const card = document.createElement("div");
+  card.className = "widget-card";
+  card.style.cssText = "margin:6px 0;padding:10px;border:1px solid #16232E;border-radius:12px;background:#0C141C";
+  if (data.title) {
+    const h = document.createElement("div");
+    h.textContent = data.title;
+    h.style.cssText = "font-size:10px;letter-spacing:1.4px;color:#7FF4FF;margin-bottom:6px;text-transform:uppercase";
+    card.appendChild(h);
+  }
+  card.appendChild(renderWidgetNode(spec));
+  if (existing && existing.parentElement) {
+    existing.replaceWith(card);
+  } else {
+    const row = document.createElement("div");
+    row.className = "row left";
+    row.appendChild(card);
+    els.transcript.appendChild(row);
+  }
+  widgetEls.set(id, card);
+  scrollDown();
+}
+
+function removeWidget(id) {
+  const el = widgetEls.get(id);
+  if (el) { const row = el.closest(".row") || el; row.remove(); widgetEls.delete(id); }
+}
+
+function clearWidgets() {
+  for (const [, el] of widgetEls) { const row = el.closest(".row") || el; row.remove(); }
+  widgetEls.clear();
+}
+
 // ----------------------------------------------------------------- turn state
 const WORK_PHRASES = [
-  "Conquering the world", "Just chillin", "Pondering the universe", "Cooking",
-  "Summoning electrons", "Reticulating splines", "Bending spacetime",
-  "Consulting the oracle", "Vibing", "Untangling the matrix", "Herding photons",
-  "Caffeinating neurons", "Manifesting", "Hacking the mainframe",
-  "Plotting world domination", "Overthinking it", "Galaxy-braining", "Locking in"
+  "Conquering the world", "Just chillin", "Pondering the universe", "Cooking", "Summoning electrons",
+  "Reticulating splines", "Bending spacetime", "Consulting the oracle", "Doing crimes (legal ones)", "Vibing",
+  "Untangling the matrix", "Herding photons", "Caffeinating neurons", "Computing the meaning of life", "Manifesting",
+  "Hacking the mainframe", "Plotting world domination", "Aligning the stars", "Overthinking it", "Galaxy-braining",
+  "Locking in", "Spinning up the hamster wheel", "Bribing the compiler", "Negotiating with the GPU", "Untangling spaghetti code",
+  "Counting to infinity (twice)", "Dividing by almost-zero", "Asking the rubber duck", "Polishing the pixels", "Warming up the flux capacitor",
+  "Rerouting the neutrinos", "Feeding the neural net", "Petting the algorithm", "Convincing the linter", "Wrangling tensors",
+  "Buffering enthusiasm", "Defragmenting thoughts", "Compiling brilliance", "Loading the vibes", "Tuning the antennae",
+  "Charging the arc reactor", "Greasing the gears", "Whispering to the kernel", "Consulting ancient scrolls", "Brewing more coffee",
+  "Sharpening the pencils", "Rolling for initiative", "Aligning the chakras", "Untwisting the logic", "Counting electrons",
+  "Stretching before the sprint", "Booting the brain cells", "Summoning the muse", "Crunching the numbers", "Cross-referencing the cosmos",
+  "Tickling the transistors", "Asking nicely", "Reading the fine print", "Triangulating the answer", "Synthesizing wisdom",
+  "Doing the math (carrying the one)", "Politely arguing with physics", "Folding the proteins", "Dusting off the manual", "Calibrating the vibes",
+  "Reverse-engineering reality", "Threading the needle", "Untangling the headphones", "Chasing the bug", "Following the breadcrumbs",
+  "Connecting the dots", "Spinning plates", "Juggling chainsaws (safely)", "Pondering orbs", "Decrypting the universe",
+  "Loading the enthusiasm", "Looking busy", "Pretending to think", "Actually thinking", "Thinking very hard",
+  "Doing a little dance", "Consulting the spreadsheet", "Counting sheep (the smart ones)", "Rebooting the imagination", "Stacking the bytes",
+  "Optimizing the optimizer", "Refactoring the cosmos", "Untangling causality", "Negotiating with entropy", "Bargaining with the deadline",
+  "Warming the tubes", "Spooling up", "Engaging warp drive", "Plotting a course", "Scanning the horizon",
+  "Reading the room", "Doing recon", "Gathering intel", "Assembling the squad", "Sharpening the axe",
+  "Filing the paperwork", "Stamping the forms", "Convincing myself", "Double-checking twice", "Triple-checking once",
+  "Measuring twice, cutting once", "Untying the Gordian knot", "Solving for x", "Carrying the remainder", "Rounding up the usual suspects",
+  "Herding cats", "Counting the cats", "Naming the cats", "Befriending the firewall", "Sweet-talking the database",
+  "Coaxing the cache", "Flattering the framework", "Whittling the wood", "Sketching the blueprint", "Drafting the masterplan",
+  "Consulting my notes", "Remembering where I put it", "Finding the thing", "Locating the other thing", "Cross-stitching the logic",
+  "Knitting the threads", "Weaving the tapestry", "Tightening the bolts", "Oiling the joints", "Spinning the dials",
+  "Flipping the switches", "Pulling the levers", "Pressing the big red button (carefully)", "Reading the tea leaves", "Shaking the magic 8-ball",
+  "Rolling the dice", "Drawing the cards", "Casting the runes", "Channeling the energy", "Focusing the beam",
+  "Adjusting the dials", "Fine-tuning the model", "Annealing the network", "Backpropagating vibes", "Gradient-descending",
+  "Climbing the loss landscape", "Escaping a local minimum", "Avoiding the saddle point", "Embedding the meaning", "Tokenizing the thoughts",
+  "Attention is all I need", "Sampling the distribution", "Lowering the temperature", "Raising the stakes", "Doubling down",
+  "Hedging my bets", "Reading ahead", "Skipping to the good part", "Saving the best for last", "Connecting to the hive mind",
+  "Pinging the satellites", "Bouncing off the moon", "Phoning a friend", "Asking the audience", "Going with my gut",
+  "Trusting the process", "Embracing the chaos", "Taming the chaos", "Befriending the chaos", "Surfing the data stream",
+  "Riding the wave", "Catching the current", "Sailing the seven C's", "Charting the unknown", "Mapping the territory",
+  "Drawing the map", "Folding the map", "Reading the compass", "Finding true north", "Recalculating the route",
+  "Taking the scenic path", "Avoiding the traffic", "Beating the rush", "Catching the train of thought", "Boarding the idea express",
+  "Connecting the flights", "Packing light", "Checking the luggage", "Going through customs", "Stamping the passport",
+  "Touching grass (virtually)", "Stretching the legs", "Taking a deep breath", "Centering myself", "Finding my zen",
+  "Channeling my inner genius", "Unleashing the kraken", "Releasing the hounds", "Wrapping it up", "Sprinkling in some magic"
 ];
 let workTimer = null;
 function rollPhrase() {
   const work = $("workTxt");
   if (work) work.textContent = WORK_PHRASES[Math.floor(Math.random() * WORK_PHRASES.length)];
+}
+// Reschedule the NEXT phrase at a RANDOM time (not a fixed beat) — organic drift.
+function scheduleRoll() {
+  if (workTimer) clearTimeout(workTimer);
+  workTimer = setTimeout(() => { rollPhrase(); scheduleRoll(); }, 5000 + Math.floor(Math.random() * 9000));
 }
 // Tell the content script (via sw.js) that a turn is driving the browser, so
 // the "Jarvis is controlling Chrome" chip + blue cursor stay up for the WHOLE
@@ -582,8 +800,7 @@ function startTurn() {
   const w = $("working");
   if (w) w.classList.remove("hidden");
   rollPhrase();
-  if (workTimer) clearInterval(workTimer);
-  workTimer = setInterval(rollPhrase, 2400);
+  scheduleRoll();   // random-interval reschedule (organic drift, not a fixed beat)
   signalDriving(true);
 }
 function endTurn() {
@@ -594,7 +811,7 @@ function endTurn() {
   els.input.focus();
   const w = $("working");
   if (w) w.classList.add("hidden");
-  if (workTimer) { clearInterval(workTimer); workTimer = null; }
+  if (workTimer) { clearTimeout(workTimer); workTimer = null; }
   flushReveals();   // snap any still-printing message to its full text
   lastToolEl = null;
   signalDriving(false);
@@ -820,11 +1037,75 @@ function newSession() {
   addSys("New conversation — your next message starts a fresh session.");
 }
 
+// Slash commands in the side panel: /dispatch a subagent, /agents + /skills +
+// /running to see them, and /<skill> args to invoke a skill. Returns true if the
+// text was a slash command (so doSend stops). Mirrors desktop/phone.
+async function handleSlash(text) {
+  const parts = text.split(/\s+/);
+  const cmd = parts[0];
+  const rest = text.slice(cmd.length).trim();
+  try {
+    if (cmd === "/agents") {
+      const r = await rpc("agents.list", {});
+      const list = r.agents || [];
+      addSys(list.length
+        ? "Agents:\n" + list.map((a) => `  /${a.name} — ${a.when_to_use || a.description || ""}`).join("\n")
+        : "No agents yet — create one in the Agents tab on desktop/phone.");
+      return true;
+    }
+    if (cmd === "/skills") {
+      const r = await rpc("skills.list", {});
+      const list = r.skills || [];
+      addSys(list.length
+        ? "Skills:\n" + list.map((s) => `  /${s.name} — ${s.description || ""}`).join("\n")
+        : "No skills yet.");
+      return true;
+    }
+    if (cmd === "/running") {
+      const r = await rpc("agents.running", {});
+      const list = (r.agents || []).filter((a) => a.running);
+      addSys(list.length
+        ? "Running agents:\n" + list.map((a) => `  ${a.agent} · ${short8(a.id)}`).join("\n")
+        : "No agents running.");
+      return true;
+    }
+    if (cmd === "/dispatch") {
+      const agent = parts[1] || "";
+      const task = rest.slice(agent.length).trim();
+      if (!agent || !task) { addSys("Usage: /dispatch <agent> <task>"); return true; }
+      addUser(text);
+      const r = await rpc("agents.dispatch", { agent, task, parent_session_id: sessionId || undefined });
+      addSys(`Dispatched ${agent} → session ${short8(r.session_id || "")}. It runs as a subagent and reports back.`);
+      return true;
+    }
+    // /<skill> args -> invoke a skill; its rendered text becomes the next turn.
+    const name = cmd.slice(1);
+    if (name) {
+      const r = await rpc("skills.invoke", { name, args: rest });
+      const msg = r.message || "";
+      if (msg) { els.input.value = msg; autosize(); await doSend(); }
+      else addSys(`Invoked /${name}`);
+      return true;
+    }
+  } catch (e) {
+    addError(String((e && e.message) || e));
+    return true;
+  }
+  return false;
+}
+
 async function doSend() {
   if (turnInFlight) return;
   const text = els.input.value.trim();
   if (!text) return;
   if (!connected) { addError("Not connected to the Jarvis daemon — check the control token in Options."); return; }
+
+  // Slash command? Consume it (dispatch a subagent / list agents / invoke skill).
+  if (text.startsWith("/")) {
+    els.input.value = "";
+    autosize();
+    if (await handleSlash(text)) return;
+  }
 
   els.input.value = "";
   autosize();
@@ -868,14 +1149,115 @@ async function onBrainChange() {
   addSys("brain set to " + els.brain.value + " — a new session starts on your next message");
 }
 
+// --------------------------------------------------- "/" command palette (UI)
+// The Claude-Code-style menu: type "/" → a scrollable, filterable, animated list
+// of COMMANDS + AGENTS + SKILLS rises above the composer. Mirrors desktop/phone.
+const slashCatalog = { agents: [], skills: [], loaded: false };
+let slashOpen = false;
+let slashIndex = 0;
+let slashResults = [];
+
+const SLASH_COMMANDS = [
+  { kind: "command", label: "/dispatch", sub: "Dispatch an agent: /dispatch <agent> <task>", insert: "/dispatch " },
+  { kind: "command", label: "/agents", sub: "List your agents", insert: "/agents" },
+  { kind: "command", label: "/skills", sub: "List your skills", insert: "/skills" },
+  { kind: "command", label: "/running", sub: "See running agents", insert: "/running" },
+  { kind: "command", label: "/new", sub: "Start a new conversation", insert: "/new" },
+];
+
+async function ensureSlashCatalog() {
+  if (slashCatalog.loaded || !connected) return;
+  slashCatalog.loaded = true;
+  try { slashCatalog.agents = (await rpc("agents.list", {})).agents || []; } catch (e) { /* ignore */ }
+  try { slashCatalog.skills = (await rpc("skills.list", {})).skills || []; } catch (e) { /* ignore */ }
+}
+
+function buildSlashResults(query) {
+  const q = (query || "").toLowerCase();
+  const match = (...h) => q === "" || h.some((x) => (x || "").toLowerCase().includes(q));
+  const out = [];
+  SLASH_COMMANDS.forEach((c) => { if (match(c.label)) out.push(c); });
+  (slashCatalog.agents || []).forEach((a) => {
+    if (match(a.name, a.when_to_use))
+      out.push({ kind: "agent", label: "/dispatch " + a.name, sub: a.when_to_use || a.description || "", insert: "/dispatch " + a.name + " " });
+  });
+  (slashCatalog.skills || []).forEach((s) => {
+    if (match(s.name)) out.push({ kind: "skill", label: "/" + s.name, sub: s.description || "", insert: "/" + s.name + " " });
+  });
+  return out;
+}
+
+function renderSlash() {
+  const box = els.slashPalette;
+  box.innerHTML = "";
+  slashResults.forEach((r, i) => {
+    const row = document.createElement("div");
+    row.className = "slash-row" + (i === slashIndex ? " sel" : "");
+    const ic = document.createElement("div");
+    ic.className = "slash-ic " + (r.kind === "agent" ? "agent" : r.kind === "skill" ? "skill" : "");
+    ic.textContent = r.kind === "agent" ? "✦" : r.kind === "skill" ? "⚡" : "›";
+    const main = document.createElement("div"); main.className = "slash-main";
+    const lab = document.createElement("div"); lab.className = "slash-label"; lab.textContent = r.label;
+    const sub = document.createElement("div"); sub.className = "slash-sub"; sub.textContent = r.sub;
+    main.appendChild(lab); if (r.sub) main.appendChild(sub);
+    const grp = document.createElement("div"); grp.className = "slash-grp";
+    grp.textContent = r.kind.toUpperCase();
+    row.appendChild(ic); row.appendChild(main); row.appendChild(grp);
+    row.addEventListener("mouseenter", () => { slashIndex = i; renderSlash(); });
+    row.addEventListener("click", () => { slashIndex = i; slashAccept(); });
+    box.appendChild(row);
+  });
+}
+
+function openSlash(query) {
+  slashResults = buildSlashResults(query);
+  if (!slashResults.length) { closeSlash(); return; }
+  if (slashIndex >= slashResults.length) slashIndex = 0;
+  slashOpen = true;
+  els.slashPalette.classList.remove("hidden");
+  renderSlash();
+}
+function closeSlash() { slashOpen = false; els.slashPalette.classList.add("hidden"); }
+function slashMove(d) { if (!slashResults.length) return; slashIndex = (slashIndex + d + slashResults.length) % slashResults.length; renderSlash(); }
+function slashAccept() {
+  const r = slashResults[slashIndex];
+  if (!r) return;
+  if (r.kind === "command" && !r.insert.endsWith(" ")) {
+    // immediate command (/agents,/skills,/running,/new)
+    closeSlash();
+    if (r.insert === "/new") { newSession(); els.input.value = ""; }
+    else { els.input.value = ""; handleSlash(r.insert); }
+    autosize();
+    return;
+  }
+  els.input.value = r.insert;   // "/dispatch name ", "/name ", "/dispatch "
+  closeSlash();
+  els.input.focus();
+  autosize();
+}
+
 // ----------------------------------------------------------------- composer UX
 function autosize() {
   els.input.style.height = "auto";
   els.input.style.height = Math.min(els.input.scrollHeight, 120) + "px";
 }
 
-els.input.addEventListener("input", autosize);
+function onInputChanged() {
+  autosize();
+  const t = els.input.value;
+  if (t.startsWith("/") && !t.includes(" ")) { ensureSlashCatalog().then(() => { if (els.input.value.startsWith("/") && !els.input.value.includes(" ")) openSlash(els.input.value.slice(1)); }); }
+  else closeSlash();
+}
+
+els.input.addEventListener("input", onInputChanged);
 els.input.addEventListener("keydown", (e) => {
+  if (slashOpen) {
+    if (e.key === "ArrowDown") { e.preventDefault(); slashMove(1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); slashMove(-1); return; }
+    if (e.key === "Tab") { e.preventDefault(); slashAccept(); return; }
+    if (e.key === "Escape") { e.preventDefault(); closeSlash(); return; }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); slashAccept(); return; }
+  }
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     doSend();
@@ -888,6 +1270,20 @@ els.brain.addEventListener("change", onBrainChange);
 els.sessionsBtn.addEventListener("click", toggleSessions);
 els.sessionsClose.addEventListener("click", closeSessions);
 els.newBtn.addEventListener("click", newSession);
+
+// Quick-flow chips (Agents / Skills / Running / Commands).
+if (els.quickbar) {
+  els.quickbar.querySelectorAll(".chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const cmd = chip.getAttribute("data-cmd");
+      if (cmd === "slash") {
+        els.input.value = "/"; els.input.focus(); onInputChanged();
+      } else if (cmd) {
+        handleSlash(cmd);
+      }
+    });
+  });
+}
 
 // ----------------------------------------------------------------- boot
 async function init() {

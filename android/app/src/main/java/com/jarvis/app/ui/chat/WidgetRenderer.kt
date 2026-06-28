@@ -46,8 +46,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -190,6 +192,9 @@ private fun TextNode(node: JsonObject, mod: Modifier) {
         color = node.color("color") ?: TEXT,
         fontSize = node.num("size", 14f).sp,
         fontWeight = weight,
+        fontStyle = if (node.bool("italic")) FontStyle.Italic else FontStyle.Normal,
+        // strike: a line THROUGH the text (used for done plan/TODO items).
+        textDecoration = if (node.bool("strike")) TextDecoration.LineThrough else null,
         textAlign = align,
         letterSpacing = node.num("spacing", 0f).sp,
         maxLines = node.optNum("maxLines")?.toInt() ?: Int.MAX_VALUE,

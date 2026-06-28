@@ -22,6 +22,11 @@ struct SessionRow {
     QString model;
     QString threadId;  // brain thread id (may be empty until thread_started)
     QString state;     // "starting" | "running" | "idle" | "done" | "error" | ...
+    // Subagent support: when this session was dispatched as a child of another
+    // (agents.dispatch / session.create{parent_session_id}), this links it to
+    // its parent so the desktop SubAgentTree can group it. Empty for top-level.
+    QString parentSessionId;
+    QString agent;     // custom-agent name this session runs as (empty = none)
     qint64 created = 0; // unix ms
     qint64 updated = 0; // unix ms
 

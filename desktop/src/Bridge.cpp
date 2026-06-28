@@ -392,6 +392,18 @@ void Bridge::createSession(const QString &profile, const QString &brain, const Q
     request(QStringLiteral("session.create"), params);
 }
 
+void Bridge::startAgentChat(const QString &agent)
+{
+    if (agent.trimmed().isEmpty())
+        return;
+    QVariantMap params;
+    // The daemon resolves the agent's brain/model/profile from its AGENT.md and
+    // injects its system prompt; we pass only the agent name.
+    params.insert(QStringLiteral("agent"), agent.trimmed());
+    m_creatingSession = true;
+    request(QStringLiteral("session.create"), params);
+}
+
 void Bridge::sendMessage(const QString &text)
 {
     if (m_sessionId.isEmpty()) {
@@ -765,6 +777,67 @@ void Bridge::skillsToday()
     request(QStringLiteral("skills.today"), {});
 }
 
+// ---- Agents (custom subagents) ---------------------------------------------
+
+void Bridge::agentsList()
+{
+    request(QStringLiteral("agents.list"), {});
+}
+
+void Bridge::agentGet(const QString &name)
+{
+    if (name.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), name);
+    request(QStringLiteral("agents.get"), params, name);
+}
+
+void Bridge::agentCreate(const QString &name, const QString &description,
+                         const QString &whenToUse, const QString &systemPrompt,
+                         const QString &brain, const QString &model,
+                         const QString &profile)
+{
+    const QString n = name.trimmed();
+    if (n.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), n);
+    params.insert(QStringLiteral("description"), description.trimmed());
+    params.insert(QStringLiteral("when_to_use"), whenToUse.trimmed());
+    params.insert(QStringLiteral("system_prompt"), systemPrompt);
+    if (!brain.trimmed().isEmpty())
+        params.insert(QStringLiteral("brain"), brain.trimmed());
+    if (!model.trimmed().isEmpty())
+        params.insert(QStringLiteral("model"), model.trimmed());
+    if (!profile.trimmed().isEmpty())
+        params.insert(QStringLiteral("profile"), profile.trimmed());
+    request(QStringLiteral("agents.create"), params);
+}
+
+void Bridge::agentRemove(const QString &name)
+{
+    if (name.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), name);
+    request(QStringLiteral("agents.remove"), params);
+}
+
+void Bridge::agentDispatch(const QString &name, const QString &task)
+{
+    if (name.trimmed().isEmpty() || task.trimmed().isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("agent"), name.trimmed());
+    params.insert(QStringLiteral("task"), task.trimmed());
+    // Link the child to the session the user is currently viewing (if any), so
+    // the SubAgentTree groups it under the right parent.
+    if (!m_sessionId.isEmpty())
+        params.insert(QStringLiteral("parent_session_id"), m_sessionId);
+    request(QStringLiteral("agents.dispatch"), params);
+}
+
 // ---- Schedules (Contract A additions) --------------------------------------
 
 void Bridge::scheduleList()
@@ -1046,15 +1119,12 @@ void Bridge::finishDictation()
 
 void Bridge::voiceSpeak(const QString &text)
 {
+    // Chat "Speak replies" path: enqueue and let pumpTtsRequests serialize so
+    // replies never overlap or jump order (one request in flight at a time).
     if (text.trimmed().isEmpty())
         return;
-    m_ttsRequested = true;
-    QVariantMap params;
-    params.insert(QStringLiteral("text"), text.trimmed());
-    params.insert(QStringLiteral("format"), QStringLiteral("mp3"));
-    if (!m_ttsProvider.isEmpty())
-        params.insert(QStringLiteral("provider"), m_ttsProvider);
-    request(QStringLiteral("voice.tts"), params);
+    m_ttsReqQueue.append(TtsReq{text.trimmed(), /*voiceMode=*/false});
+    pumpTtsRequests();
 }
 
 // ---- Voice MODE (QtMultimedia capture + playback, orb state) ----------------
@@ -1283,8 +1353,11 @@ void Bridge::stopConversation()
         m_voiceProc = nullptr;
     }
     // Ending the conversation (Space / leaving the page) is a barge-in: drop any
-    // queued utterances and silence the player so Jarvis doesn't keep talking.
+    // queued utterances AND pending requests, and silence the player so Jarvis
+    // doesn't keep talking.
     m_ttsQueue.clear();
+    m_ttsReqQueue.clear();
+    m_ttsReqInFlight = false;
     m_ttsPlaying = false;
     if (m_ttsPlayer)
         m_ttsPlayer->stop();
@@ -1390,18 +1463,36 @@ void Bridge::handsFreeFeed(const QByteArray &chunk)
 
 void Bridge::speak(const QString &text)
 {
+    // Voice-mode path: enqueue and serialize. One assistant turn arrives as
+    // several `message` events; queuing the REQUESTS (one in flight at a time)
+    // guarantees their audio is appended — and so played — in strict order, and
+    // the single shared player guarantees no two clips ever overlap.
     if (text.trimmed().isEmpty())
         return;
+    m_ttsReqQueue.append(TtsReq{text.trimmed(), /*voiceMode=*/true});
+    pumpTtsRequests();
+}
+
+void Bridge::pumpTtsRequests()
+{
+    // Send the next queued TTS request only when none is in flight, so responses
+    // (and thus the appended audio clips) arrive in strict request order.
+    if (m_ttsReqInFlight || m_ttsReqQueue.isEmpty())
+        return;
+    const TtsReq req = m_ttsReqQueue.takeFirst();
+    m_ttsReqInFlight = true;
     m_ttsRequested = true;
     QVariantMap params;
-    params.insert(QStringLiteral("text"), text.trimmed());
-    if (!m_ttsVoice.isEmpty())
+    params.insert(QStringLiteral("text"), req.text);
+    if (req.voiceMode && !m_ttsVoice.isEmpty())
         params.insert(QStringLiteral("voice"), m_ttsVoice);
     if (!m_ttsProvider.isEmpty())
         params.insert(QStringLiteral("provider"), m_ttsProvider);
     params.insert(QStringLiteral("format"), QStringLiteral("mp3"));
-    // Tag voice-mode TTS so the reply drives the orb state (speaking -> idle).
-    request(QStringLiteral("voice.tts"), params, QStringLiteral("__voicemode__"));
+    // Voice mode tags __voicemode__ so the reply drives the orb + hands-free
+    // resume; the chat "Speak replies" path uses no ctx.
+    request(QStringLiteral("voice.tts"), params,
+            req.voiceMode ? QStringLiteral("__voicemode__") : QString());
 }
 
 // Resolve a stored output-sink id to a QAudioDevice (empty/unknown => default).
@@ -2877,9 +2968,15 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         }
         if (method == QStringLiteral("voice.tts")) {
             m_ttsRequested = false;
+            // A failed request still frees the in-flight slot; send the next so one
+            // bad segment doesn't stall the rest of the queued replies.
+            m_ttsReqInFlight = false;
+            pumpTtsRequests();
             // Don't drop the orb to idle if an earlier clip is still speaking or
-            // queued — one failed segment shouldn't interrupt the rest of the reply.
-            if (ctx == QStringLiteral("__voicemode__") && !m_ttsPlaying && m_ttsQueue.isEmpty())
+            // queued, or more requests are pending — one failed segment shouldn't
+            // interrupt the rest of the reply.
+            if (ctx == QStringLiteral("__voicemode__") && !m_ttsPlaying &&
+                m_ttsQueue.isEmpty() && m_ttsReqQueue.isEmpty() && !m_ttsReqInFlight)
                 setVoiceState(QStringLiteral("idle"));
         }
         // If creating the session failed, drop any queued first message so it can't
@@ -3093,6 +3190,20 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         emit skillInvoked(ctx, result.value(QStringLiteral("message")).toString());
     } else if (method == QStringLiteral("skills.today")) {
         emit todayDigest(result.value(QStringLiteral("digest")).toString());
+    } else if (method == QStringLiteral("agents.list")) {
+        emit agentsListed(result.value(QStringLiteral("agents")).toList());
+    } else if (method == QStringLiteral("agents.get")) {
+        emit agentLoaded(ctx,
+                         result.value(QStringLiteral("frontmatter")).toMap(),
+                         result.value(QStringLiteral("system_prompt")).toString(),
+                         result.value(QStringLiteral("path")).toString());
+    } else if (method == QStringLiteral("agents.create")
+               || method == QStringLiteral("agents.remove")) {
+        emit agentsChanged();
+        agentsList(); // re-index after a write / removal
+    } else if (method == QStringLiteral("agents.dispatch")) {
+        emit agentDispatched(result.value(QStringLiteral("session_id")).toString(),
+                             result.value(QStringLiteral("agent")).toString());
     } else if (method == QStringLiteral("schedule.list")) {
         emit schedulesListed(result.value(QStringLiteral("schedules")).toList());
     } else if (method == QStringLiteral("schedule.create")
@@ -3155,60 +3266,36 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         emit voiceTranscribed(text);
     } else if (method == QStringLiteral("voice.tts")) {
         m_ttsRequested = false;
+        // This request is done — free the slot and send the next queued TTS so the
+        // audio keeps arriving in strict request order.
+        m_ttsReqInFlight = false;
         const QByteArray audio = QByteArray::fromBase64(
             result.value(QStringLiteral("audio_b64")).toString().toLatin1());
+        if (!audio.isEmpty()) {
+            // BOTH voice mode AND the chat "Speak replies" toggle now play through
+            // the SAME single shared QMediaPlayer + FIFO queue (playTtsAudio). This
+            // is the fix for clips talking over each other ACROSS messages: the old
+            // chat path wrote one fixed temp file and spawned a NEW external player
+            // per reply with no queue, so a second reply overwrote the file mid-read
+            // and a second player ran at once. Now every clip — every segment AND
+            // every separate message — is appended to one queue and drained one at a
+            // time, so message 1 finishes completely before message 2 begins.
+            playTtsAudio(audio, result.value(QStringLiteral("mime")).toString());
+        }
+        pumpTtsRequests();   // kick off the next queued request, if any
         if (audio.isEmpty()) {
             // Empty audio for one segment must NOT cut the conversation back to
-            // listening while an earlier clip is still speaking or queued — only the
-            // queue draining (playNextTtsClip) ends the turn. Resume/idle solely when
-            // nothing is in flight.
-            if (ctx == QStringLiteral("__voicemode__") && !m_ttsPlaying && m_ttsQueue.isEmpty()) {
+            // listening while an earlier clip is still speaking or queued, or while
+            // more requests are pending — only the queue draining ends the turn.
+            if (ctx == QStringLiteral("__voicemode__") && !m_ttsPlaying &&
+                m_ttsQueue.isEmpty() && m_ttsReqQueue.isEmpty() && !m_ttsReqInFlight) {
                 if (m_handsFree)
                     resumeListening();
                 else
                     setVoiceState(QStringLiteral("idle"));
             }
-            return;
         }
-        if (ctx == QStringLiteral("__voicemode__")) {
-            // Voice MODE playback via QtMultimedia (drives the speaking orb state).
-            playTtsAudio(audio, result.value(QStringLiteral("mime")).toString());
-            return;
-        }
-        QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-        if (base.isEmpty())
-            base = QDir::tempPath();
-        const QString mime = result.value(QStringLiteral("mime")).toString();
-        const QString ext = mime.contains(QStringLiteral("mpeg")) || mime.contains(QStringLiteral("mp3"))
-                                ? QStringLiteral(".mp3") : QStringLiteral(".wav");
-        const QString outPath = base + QStringLiteral("/jarvis_tts") + ext;
-        QFile out(outPath);
-        if (out.open(QIODevice::WriteOnly)) {
-            out.write(audio);
-            out.close();
-            // Prefer a player that handles mp3; fall back through common ones.
-            QString player;
-            for (const QString &cand : { QStringLiteral("mpv"), QStringLiteral("ffplay"),
-                                         QStringLiteral("paplay"), QStringLiteral("pw-play") }) {
-                if (hasExecutable(cand)) { player = cand; break; }
-            }
-            if (!player.isEmpty()) {
-                emit voiceSpeaking(true);
-                auto *p = new QProcess(this);
-                QStringList args;
-                if (player == QStringLiteral("ffplay"))
-                    args << QStringLiteral("-nodisp") << QStringLiteral("-autoexit");
-                else if (player == QStringLiteral("mpv"))
-                    args << QStringLiteral("--no-video") << QStringLiteral("--really-quiet");
-                args << outPath;
-                connect(p, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-                        this, [this, p](int, QProcess::ExitStatus) {
-                    emit voiceSpeaking(false);
-                    p->deleteLater();
-                });
-                p->start(player, args);
-            }
-        }
+        return;
     } else if (method == QStringLiteral("devices.pair_start")) {
         // { code, payload, qr_svg, expires_at }
         const QString qrSvg = result.value(QStringLiteral("qr_svg")).toString();

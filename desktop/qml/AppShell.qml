@@ -124,7 +124,7 @@ Item {
             // Each page is wrapped so we can animate opacity + a small x-slide.
             // Only the active page is interactive; the rest fade out behind it.
             Repeater {
-                model: 15
+                model: 16
                 delegate: Item {
                     id: pageWrap
                     required property int index
@@ -166,12 +166,13 @@ Item {
                             case 6: return sessionsComp
                             case 7: return memoryComp
                             case 8: return skillsComp
-                            case 9: return schedulesComp
-                            case 10: return activityComp
-                            case 11: return mcpComp
-                            case 12: return pluginsComp
-                            case 13: return sshComp
-                            case 14: return settingsComp
+                            case 9: return agentsComp
+                            case 10: return schedulesComp
+                            case 11: return activityComp
+                            case 12: return mcpComp
+                            case 13: return pluginsComp
+                            case 14: return sshComp
+                            case 15: return settingsComp
                             }
                         }
                     }
@@ -228,6 +229,10 @@ Item {
             Component.onCompleted: shell.chatPanel = this
             // The peek panel's "⛶ Full" jumps to the Computer page (index 3).
             onRequestComputerPage: shell.currentIndex = 3
+            // Slash-command navigation: /voice, /agents, /skills jump to their pages.
+            onRequestVoice: shell.currentIndex = 2
+            onRequestAgents: shell.currentIndex = 9
+            onRequestSkills: shell.currentIndex = 8
         }
     }
     Component { id: voiceComp;    VoiceMode {} }
@@ -260,6 +265,18 @@ Item {
             onRunSkill: function(name, message) {
                 if (shell.chatPanel)
                     shell.chatPanel.injectSkill(name, message)
+                shell.currentIndex = 1
+            }
+        }
+    }
+    Component {
+        id: agentsComp
+        AgentsPage {
+            // Dispatching an agent spawns a child session that reports back in Chat;
+            // open the chat (the child opens via session.opened too) so the user sees it.
+            onRunAgent: function(sessionId, agent) {
+                if (sessionId.length > 0)
+                    bridge.openSession(sessionId)
                 shell.currentIndex = 1
             }
         }
