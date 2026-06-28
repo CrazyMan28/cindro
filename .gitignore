@@ -11,6 +11,13 @@ CMakeFiles/
 __pycache__/
 *.pyc
 
+# --- Voice clone source/output (copyrighted source clips; generated audio) ---
+# Reference clips live in ~/.config/jarvis/voices/, never in the repo. Keep any
+# stray source recordings / generated samples out of git.
+Screen_Recording_*.mp3
+jarvice_*.wav
+jarvice_*.mp3
+
 # --- Node / web ---
 node_modules/
 

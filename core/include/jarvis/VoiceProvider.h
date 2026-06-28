@@ -59,10 +59,14 @@ VoiceResult sttWithProvider(const QString &provider, const QString &mistralKey,
                             const QString &lang = QString(),
                             const QString &model = QString(), int timeoutMs = 30000);
 
+// `refAudioB64`, when set, requests zero-shot voice cloning (Mistral ref_audio).
+// Cloning is cloud-only, so a clone request never routes through a local piper
+// voice — it always goes to VoiceService.
 VoiceResult ttsWithProvider(const QString &provider, const QString &mistralKey,
                             const QString &text, const QString &voice = QString(),
                             const QString &format = QString(),
-                            const QString &model = QString(), int timeoutMs = 30000);
+                            const QString &model = QString(), int timeoutMs = 30000,
+                            const QString &refAudioB64 = QString());
 
 } // namespace VoiceProvider
 

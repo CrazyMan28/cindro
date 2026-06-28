@@ -354,15 +354,18 @@ VoiceResult sttWithProvider(const QString &provider, const QString &mistralKey,
 
 VoiceResult ttsWithProvider(const QString &provider, const QString &mistralKey,
                             const QString &text, const QString &voice,
-                            const QString &format, const QString &model, int timeoutMs)
+                            const QString &format, const QString &model, int timeoutMs,
+                            const QString &refAudioB64)
 {
-    if (provider == QStringLiteral("piper") && piperAvailable()) {
+    // Voice cloning (ref_audio) is a Mistral capability; a local piper voice can't
+    // clone, so a clone request always goes straight to the cloud VoiceService.
+    if (refAudioB64.isEmpty() && provider == QStringLiteral("piper") && piperAvailable()) {
         const VoiceResult local = runPiper(text, voice, timeoutMs);
         if (local.ok)
             return local; // local succeeded
         // else: binary/model missing or run failed -> fall through to voxtral
     }
-    return VoiceService(mistralKey).tts(text, voice, format, model, timeoutMs);
+    return VoiceService(mistralKey).tts(text, voice, format, model, timeoutMs, refAudioB64);
 }
 
 } // namespace VoiceProvider

@@ -50,10 +50,12 @@ public:
                const QString &model = QString(), int timeoutMs = 30000);
 
     // Text -> speech. `voice` is a Mistral voice slug (default en_paul_neutral);
-    // `format` ∈ pcm|wav|mp3|flac|opus (default mp3).
+    // `format` ∈ pcm|wav|mp3|flac|opus (default mp3). `refAudioB64` is a base64
+    // reference clip for ZERO-SHOT voice cloning — when non-empty it is sent as
+    // `ref_audio` and REPLACES the named voice (Mistral clones the clip on the fly).
     Result tts(const QString &text, const QString &voice = QString(),
                const QString &format = QString(), const QString &model = QString(),
-               int timeoutMs = 30000);
+               int timeoutMs = 30000, const QString &refAudioB64 = QString());
 
     bool hasKey() const { return !m_apiKey.isEmpty(); }
 
