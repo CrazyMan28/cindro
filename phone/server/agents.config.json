@@ -2,6 +2,64 @@
   "version": 1,
   "agents": [
     {
+      "extension": "101",
+      "agentId": "jarvis-agent",
+      "name": "Jarvis",
+      "adapterType": "codex-cli",
+      "mode": "stdio",
+      "command": "node",
+      "args": [
+        "/home/kihi2024/projects/computer_use/phone/server/src/adapters/codex-bridge.mjs"
+      ],
+      "cwd": null,
+      "enabled": true,
+      "timeoutSeconds": 30,
+      "memoryTags": [
+        "agent-phone",
+        "jarvis"
+      ],
+      "systemPrompt": "You are Jarvis, the user's primary AI co-worker, reachable by phone on extension 101. The caller (extension 100) is usually talking to you by voice, so keep replies brief and conversational; avoid code blocks unless asked. You have a full shell and tools. You can also text the caller or call their phone to deliver results. On a live call default to speaking; text/call only when asked or for urgent updates.",
+      "capabilities": [
+        "calls",
+        "terminal",
+        "repo-work"
+      ],
+      "env": {
+        "CODEX_CWD": "/home/kihi2024",
+        "CODEX_SANDBOX": "danger-full-access",
+        "CODEX_MODEL": "gpt-5.5"
+      }
+    },
+    {
+      "extension": "102",
+      "agentId": "codex-agent",
+      "name": "Codex",
+      "adapterType": "codex-cli",
+      "mode": "stdio",
+      "command": "node",
+      "args": [
+        "/home/kihi2024/projects/computer_use/phone/server/src/adapters/codex-bridge.mjs"
+      ],
+      "cwd": null,
+      "enabled": true,
+      "timeoutSeconds": 30,
+      "memoryTags": [
+        "agent-phone",
+        "codex"
+      ],
+      "systemPrompt": "You are Codex, the caller's primary phone agent on extension 101. The caller is usually talking to you by voice, so keep replies brief and conversational and avoid code blocks unless asked. The primary user is extension 100. You have a full shell.\n\nYou can reach the caller two extra ways:\n- Text them: node /home/kihi2024/projects/computer_use/phone/server/src/adapters/phone-text.mjs \"your message\"\n- Call them (rings their phone, speaks the message, returns their spoken answer): node /home/kihi2024/projects/computer_use/phone/server/src/adapters/phone-call.mjs \"what to say\" --reason \"why\"\n\nWhen to use them: on a live call, default to just speaking \u2014 only text or call when the caller asks (e.g. 'text me that'), then speak a one-line confirmation. When doing background work, you may text updates or results on your own, or call if it's urgent or needs a decision; for long tasks, run them in the background and text or call when done. If the caller reaches you by text instead of a call, just reply normally \u2014 your answer is delivered to them as a text automatically.",
+      "capabilities": [
+        "calls",
+        "terminal",
+        "repo-work"
+      ],
+      "env": {
+        "CODEX_CWD": "/home/kihi2024",
+        "CODEX_SANDBOX": "danger-full-access",
+        "CODEX_MODEL": "gpt-5.5"
+      }
+    },
+    {
       "extension": "103",
       "agentId": "copilot-agent",
       "name": "Copilot",
@@ -9,7 +67,7 @@
       "mode": "stdio",
       "command": "node",
       "args": [
-        "/home/kihi2024/projects/mcp/agent_tts-stt/agent-phone/server/src/adapters/copilot-bridge.mjs"
+        "/home/kihi2024/projects/computer_use/phone/server/src/adapters/copilot-bridge.mjs"
       ],
       "cwd": null,
       "enabled": true,
@@ -27,35 +85,6 @@
       "env": {
         "COPILOT_BIN": "/home/kihi2024/.local/bin/copilot",
         "COPILOT_CWD": "/home/kihi2024"
-      }
-    },
-    {
-      "extension": "101",
-      "agentId": "codex-agent",
-      "name": "Codex",
-      "adapterType": "codex-cli",
-      "mode": "stdio",
-      "command": "node",
-      "args": [
-        "/home/kihi2024/projects/mcp/agent_tts-stt/agent-phone/server/src/adapters/codex-bridge.mjs"
-      ],
-      "cwd": null,
-      "enabled": true,
-      "timeoutSeconds": 30,
-      "memoryTags": [
-        "agent-phone",
-        "codex"
-      ],
-      "systemPrompt": "You are Codex, the caller's primary phone agent on extension 101. The caller is usually talking to you by voice, so keep replies brief and conversational and avoid code blocks unless asked. The primary user is extension 100. You have a full shell.\n\nYou can reach the caller two extra ways:\n- Text them: node /home/kihi2024/projects/mcp/agent_tts-stt/agent-phone/server/src/adapters/phone-text.mjs \"your message\"\n- Call them (rings their phone, speaks the message, returns their spoken answer): node /home/kihi2024/projects/mcp/agent_tts-stt/agent-phone/server/src/adapters/phone-call.mjs \"what to say\" --reason \"why\"\n\nWhen to use them: on a live call, default to just speaking \u2014 only text or call when the caller asks (e.g. 'text me that'), then speak a one-line confirmation. When doing background work, you may text updates or results on your own, or call if it's urgent or needs a decision; for long tasks, run them in the background and text or call when done. If the caller reaches you by text instead of a call, just reply normally \u2014 your answer is delivered to them as a text automatically.",
-      "capabilities": [
-        "calls",
-        "terminal",
-        "repo-work"
-      ],
-      "env": {
-        "CODEX_CWD": "/home/kihi2024",
-        "CODEX_SANDBOX": "danger-full-access",
-        "CODEX_MODEL": "gpt-5.5"
       }
     },
     {
@@ -110,7 +139,7 @@
       "mode": "stdio",
       "command": "node",
       "args": [
-        "/home/kihi2024/projects/mcp/agent_tts-stt/agent-phone/server/src/adapters/claude-bridge.mjs"
+        "/home/kihi2024/projects/computer_use/phone/server/src/adapters/claude-bridge.mjs"
       ],
       "cwd": null,
       "enabled": true,
@@ -142,7 +171,7 @@
       "mode": "stdio",
       "command": "node",
       "args": [
-        "/home/kihi2024/projects/mcp/agent_tts-stt/agent-phone/server/src/adapters/mistral-bridge.mjs"
+        "/home/kihi2024/projects/computer_use/phone/server/src/adapters/mistral-bridge.mjs"
       ],
       "cwd": null,
       "enabled": true,
