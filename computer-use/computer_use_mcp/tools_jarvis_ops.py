@@ -290,6 +290,18 @@ def register(mcp: FastMCP) -> None:
             return _err(exc)
 
     @mcp.tool()
+    def agent_result(session_id: str) -> str:
+        """Get a finished subagent's RESULT — its summary, status, and whether it's
+        still running — by the session_id agent_start returned. You're also woken
+        automatically with this summary the moment a subagent finishes, but call this
+        any time to (re)check what a subagent produced before continuing."""
+        try:
+            return json.dumps(daemon_client.call("agents.result",
+                                                 {"session_id": session_id}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
     def agent_stop(session_id: str) -> str:
         """Stop a running agent (child session) by its session_id (from
         agent_start / agent_status)."""

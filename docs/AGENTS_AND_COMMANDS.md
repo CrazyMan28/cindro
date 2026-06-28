@@ -60,9 +60,19 @@ format) so the claude CLI brain can use them too. Backed by
 
 ### Contract A (daemon)
 - `agents.list` / `agents.get` / `agents.create` / `agents.remove` — definition CRUD.
-- `agents.dispatch {agent, task, parent_session_id?}` → `{session_id}` — spawns a
-  child session that runs as the agent and sends it `task`.
+- `agents.dispatch {agent?, task, parent_session_id?, brain?, model?, system_prompt?}`
+  → `{session_id}` — spawns a child session and sends it `task`. The agent name is
+  OPTIONAL (omit / unknown name = an **ad-hoc subagent**); the model can choose the
+  child's `brain`/`model` and give a one-off `system_prompt`. The dispatched task is
+  appended with a "**end with a SUMMARY**" instruction so the result flows back.
 - `agents.running` — agent (child) sessions + whether each is live.
+- `agents.result {session_id}` → `{agent,status,running,summary}` — a subagent's
+  last-assistant-message summary + status.
+
+**Auto-wake:** when a dispatched subagent's turn finishes, the daemon sends its
+**parent** a `[SUBAGENT DONE] … summary … status` turn (queued if the parent is
+busy), so the main agent reviews the result and continues instead of redoing the
+work. `ControlServer::onTurnFinished` → `m_subagentPendingWake` → `subagentSummary`.
 - Sessions gained `parent_session_id` + `agent` columns (`SessionStore` migration);
   `session.create` accepts `parent_session_id` + `agent` (resolves the def,
   injects its system prompt on turn 1).
@@ -73,10 +83,12 @@ format) so the claude CLI brain can use them too. Backed by
 The model drives its own agents through MCP (engine `tools_jarvis_ops.py`,
 re-exported by `jarvis-mcp`), so it decides *when* to delegate:
 `agent_create`, `agent_list` (each with its `when_to_use`), `agent_get`,
-`agent_remove`, `agent_start(name, task)` → child session id, `agent_status`,
-`agent_stop(session_id)`. The co-work preamble tells the model to consult each
-agent's `when_to_use` and prefer dispatching the right agent over doing every
-sub-task inline.
+`agent_remove`, `agent_start(name, task, brain?, model?, system_prompt?)` → child
+session id (ad-hoc OK), `agent_status`, `agent_result(session_id)` → the child's
+summary, `agent_stop(session_id)`. The model is **auto-woken** with a subagent's
+summary the moment it finishes (no polling). The co-work preamble tells the model to
+actually CALL `agent_start` (not narrate delegation), consult each agent's
+`when_to_use`, and review the `[SUBAGENT DONE]` summary it gets back.
 
 ### UIs
 - Desktop **Agents** page (`desktop/qml/AgentsPage.qml`, NavRail → MIND): list,

@@ -153,11 +153,15 @@ Item {
         }
     }
     // Poll the sub-agent tree while the right panel is open so dispatched subagents
-    // (and their status) stay live in the pop-out. Cheap (session.list).
+    // (and their status) stay live in the pop-out. Cheap (session.list). Runs while
+    // a turn is in flight too, so a subagent the MODEL dispatches (agent_start, via
+    // MCP — the desktop never sees that call) is detected and auto-opens the panel.
     Timer {
-        interval: 3000; repeat: true
-        running: panel.peekOpen && bridge.connected
+        interval: 2500; repeat: true
+        running: bridge.connected && (panel.busy || panel.peekOpen || panel.hasSubagents)
         onTriggered: panel.refreshSubagents()
+        // Kick an immediate refresh whenever it starts (e.g. a turn begins).
+        onRunningChanged: if (running) panel.refreshSubagents()
     }
     // Default model is gpt-5.5 (gpt-5-codex is rejected HTTP 400 by this codex login).
     property var modelOptions: ["gpt-5.5", "gpt-5", "o4-mini", "claude-sonnet-4.5", "claude-opus-4.5"]
@@ -384,6 +388,9 @@ Item {
         // fixes kept missing. onSessionHistory/onSessionEvent re-stamp chatSessionId
         // when they legitimately (re)populate the transcript.
         function onSessionIdChanged() {
+            // Drop the old session's subagents + reload this session's children.
+            panel.subagents = []
+            panel.refreshSubagents()
             if (bridge.sessionId === panel.chatSessionId)
                 return
             // Our own fresh chat just got its daemon id: the transcript already holds
