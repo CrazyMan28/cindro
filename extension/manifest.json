@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Computer Use Bridge",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "action": {
     "default_title": "JARVIS — Chrome co-worker"
   },

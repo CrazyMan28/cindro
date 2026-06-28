@@ -8,6 +8,31 @@ _Last updated: 2026-06-28._
 
 ---
 
+## 🆕 Phone + Background jobs + Hooks + Modes (2026-06-28)
+
+A multi-surface capability drop. **Backend done + tested; full UI parity across desktop/
+Android/Chrome is in progress.**
+
+- **Native phone subsystem** — the entire agent-phone server (55 MCP tools, ~16k lines)
+  vendored verbatim into `phone/server` (its 168 tests pass), runs on `:8801` from a
+  Jarvis-managed env (`~/.config/jarvis/phone.env`), wired to the brain via
+  `seedPhoneMcp()` and to every UI via the `phone.mcp` Contract A proxy. **Verified live:
+  a real Twilio voice call (Mistral TTS) was placed and answered.** Toll-free SMS is gated
+  by A2P (the 2019 law) → use the voice path or verify the number. ([PHONE.md](PHONE.md))
+- **Background jobs / monitor / sleep-wake** — `bg_start` / `monitor` / `wake_me_in` (+
+  status/logs/stop/list/wait) MCP tools; detached jobs auto-**wake** the session on
+  completion via the new `session.wake`. Tests pass. ([BACKGROUND_JOBS.md](BACKGROUND_JOBS.md))
+- **Hooks** — Claude-Code-style lifecycle hooks (`HookStore`, `~/.config/jarvis/hooks.json`):
+  UserPromptSubmit can block/inject; tool/Stop/Notification observational. MCP `hooks_*` +
+  Contract A. Tests pass. ([HOOKS.md](HOOKS.md))
+- **Modes** — plan / build / co-worker soft profiles + a HUD chip + Settings; wake-notify
+  setting. Tests pass. ([MODES.md](MODES.md))
+- **Phone UI parity** (Calls/Inbox/dialer/screening/war-room/voice-profiles) is being added
+  to the existing desktop, Android, and Chrome apps (no new app) — **in progress**.
+- **Windows port** — planned phase 2, after Linux ships. ([WINDOWS.md](WINDOWS.md))
+
+---
+
 ## 🆕 Live tool cards + reliable subagent wake/timeout (2026-06-28)
 
 Fixes for "tool calls don't show until they finish/time out" and "the subagent never

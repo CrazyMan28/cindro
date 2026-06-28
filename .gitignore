@@ -21,6 +21,13 @@ jarvice_*.mp3
 # --- Node / web ---
 node_modules/
 
+# --- Phone subsystem (vendored agent-phone server): build + runtime state ---
+phone/server/dist/
+phone/server/*.sqlite
+phone/server/*.sqlite-*
+phone/server/data/local-voices/
+phone/**/.env
+
 # --- Android / Gradle ---
 *.apk
 *.aab
