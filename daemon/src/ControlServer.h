@@ -27,6 +27,7 @@
 #include "jarvis/SessionStore.h"
 #include "jarvis/SettingsStore.h"
 #include "jarvis/SkillStore.h"
+#include "jarvis/HookStore.h"
 #include "jarvis/SshAllowList.h"
 #include "jarvis/VoiceProvider.h"
 #include "jarvis/VoiceService.h"
@@ -238,6 +239,11 @@ private:
     Response handleSessionDelete(const Request &req);
     Response handleSessionList(const Request &req);
     Response handleSessionHistory(const Request &req);
+    // Claude-Code-style hooks (hooks.* Contract A): list/add/remove/test.
+    Response handleHooksList(const Request &req);
+    Response handleHooksAdd(const Request &req);
+    Response handleHooksRemove(const Request &req);
+    Response handleHooksTest(const Request &req);
     // Session manager (Contract A): a client declares which session ids it is
     // currently viewing; the daemon then fans session.event frames ONLY for those
     // ids to it. Needs the socket, so it is dispatched with `client` (unlike the
@@ -469,6 +475,12 @@ private:
     // Custom agents (subagents): user/model-defined AGENT.md files. A dispatched
     // agent runs as a child session; its system prompt is injected on turn 1.
     AgentStore m_agents;
+    // Claude-Code-style lifecycle hooks. HookStore loads ~/.config/jarvis/hooks.json
+    // and fires per event (UserPromptSubmit can block/inject; tool/Stop/Notification
+    // are observational). m_hookSessionContext holds SessionStart additionalContext
+    // until the session's first turn drains it.
+    HookStore m_hooks;
+    QHash<QString, QString> m_hookSessionContext;
     // Seed the built-in "internal_docs" capability-catalog skill (once).
     void seedInternalDocsSkill();
 
