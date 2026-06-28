@@ -155,6 +155,13 @@ Design pillars:
   requests serialized one-in-flight (`pumpTtsRequests`); Android `TtsPlayer` mirrors
   this (a shared player + queue). NEVER reintroduce a per-clip player / second
   playback path — that's what made replies talk over each other.
+- **Page index gotcha:** Home is index 0, **Chat is index 1** (Home was added after
+  Chat). `Main.qml::onSessionOpened` navigates to **1** — anything that opens a session
+  (incl. clicking a subagent → `bridge.openSession` → `sessionOpened`) must land on Chat,
+  not Home. Don't reintroduce a `currentIndex = 0` "= Chat" assumption.
+- **Desktop Home is full CRUD for the model:** `home_list` / `home_pin` / `home_unpin` /
+  `home_move` / `home_clear` (`tools_widgets.py`, Contract A `home.*`). A child session
+  viewing shows a "← Main agent" pill (`JarvisPanel.currentParentId` from the tree).
 - **The right-side peek panel opens ONLY** on a new TODO or a real agent-desktop
   spin-up (`driving`/coworker), NOT on `hasAgentDesktop` (which fires on the first
   message via auto computer-use). The PLAN card lives INSIDE that panel, on top of
