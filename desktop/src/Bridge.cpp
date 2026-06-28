@@ -1762,7 +1762,10 @@ QVariantList Bridge::buildSubAgentTree(const QVariantList &sessions) const
         row.insert(QStringLiteral("title"), s.value(QStringLiteral("title")));
         row.insert(QStringLiteral("brain"), s.value(QStringLiteral("brain")));
         row.insert(QStringLiteral("profile"), s.value(QStringLiteral("profile")));
-        row.insert(QStringLiteral("status"), s.value(QStringLiteral("status")));
+        row.insert(QStringLiteral("agent"), s.value(QStringLiteral("agent")));
+        // Session JSON carries "state" (starting/running/idle/done/error) — expose
+        // it as "status" for the tree + the subagents pop-out.
+        row.insert(QStringLiteral("status"), s.value(QStringLiteral("state")));
         row.insert(QStringLiteral("depth"), depth);
         row.insert(QStringLiteral("parent"), s.value(QStringLiteral("parent_session_id")));
         rows << row;

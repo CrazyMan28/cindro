@@ -246,16 +246,29 @@ def register(mcp: FastMCP) -> None:
             return _err(exc)
 
     @mcp.tool()
-    def agent_start(name: str, task: str) -> str:
-        """DISPATCH a sub-task to one of your custom agents. Spawns a child session
-        that runs AS that agent (using its system prompt + brain) on `task`; it
-        reports back as its own session and shows under this session in the
-        sub-agent tree. Returns {session_id} — pass it to agent_stop to cancel.
+    def agent_start(name: str, task: str, brain: str = "", model: str = "",
+                    system_prompt: str = "") -> str:
+        """DISPATCH a sub-task to a SUBAGENT — spawns a child session that runs the
+        `task` on its own and reports back (shows under this session in the
+        sub-agent tree). Returns {session_id} — pass it to agent_stop to cancel.
 
-        Consult agent_list first to pick the right agent for the work (match the
-        task to each agent's when_to_use)."""
+        `name` can be one of your DEFINED agents (see agent_list) OR any new label
+        for an AD-HOC subagent (you do NOT need to pre-create an agent to delegate).
+        You may choose the `brain` (codex|claude|api) and `model` it runs on, and
+        give it a one-off `system_prompt` (its role/instructions for the task).
+        A stored agent's def fills any of these you leave blank.
+
+        Use this to actually OFFLOAD work — e.g. agent_start("file-writer", "write
+        /tmp/x.py as hello world", model="gpt-5.5"). Don't just narrate that you
+        delegated; call this tool."""
         try:
             params = {"agent": name, "task": task}
+            if brain:
+                params["brain"] = brain
+            if model:
+                params["model"] = model
+            if system_prompt:
+                params["system_prompt"] = system_prompt
             parent = os.environ.get("JARVIS_AGENT_SESSION")
             if parent:
                 params["parent_session_id"] = parent

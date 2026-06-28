@@ -144,7 +144,8 @@ public:
                           const QString &title, QString *err,
                           const QString &target = QString(),
                           const QString &parentSessionId = QString(),
-                          const QString &agent = QString());
+                          const QString &agent = QString(),
+                          const QString &agentPromptOverride = QString());
 
     // target="real" take-over: after a biometric approval the agent drives the
     // user's ACTIVE real session via the global :8794 engine. requestTakeOver
