@@ -53,13 +53,24 @@ Item {
         }
     }
 
-    // Poll auth.status as a fallback to the unsolicited auth.event push.
+    // Poll auth.status as a fallback to the unsolicited auth.event push. Fast (1s)
+    // so a missed broadcast still clears the gate within a second of approval.
     Timer {
         id: pollTimer
-        interval: 2000
+        interval: 1000
         repeat: true
         running: gate.phase === "waiting" && gate.challengeId.length > 0
         onTriggered: bridge.authStatus(gate.challengeId)
+    }
+
+    // If the control connection drops + comes back while we're waiting, the
+    // challenge/broadcast may have been lost — re-request so we never hang.
+    Connections {
+        target: bridge
+        function onConnectedChanged() {
+            if (bridge.connected && (gate.phase === "waiting" || gate.phase === "starting"))
+                gate.startRequest()
+        }
     }
 
     // Hard timeout: stop waiting after ~130s and offer Retry.

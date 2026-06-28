@@ -53,6 +53,10 @@ Item {
             return
         if (currentIndex === 1) {                                    // Chat
             bridge.setPageViewing(bridge.sessionId, "chat")
+        } else if (currentIndex === 3) {                             // Computer (Full)
+            // Watching the agent desktop = a viewer of this session, so the daemon's
+            // idle-teardown keeps the nested desktop alive while it's on screen.
+            bridge.setPageViewing(bridge.sessionId, "mirror")
         } else if (currentIndex === 0 || currentIndex === 4 || currentIndex === 5) { // Home / Canvas / Widgets
             bridge.setPageViewing("all", "canvas")
             bridge.replayAllWidgets()

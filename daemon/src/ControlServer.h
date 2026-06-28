@@ -473,6 +473,13 @@ private:
     // plain chat doesn't leak a compositor per turn; an EXPLICIT coworker+agent
     // desktop is NOT in this set and stays up for live-view/take-over.
     QSet<QString> m_autoComputerSessions;
+    // sessionId -> last turn time (ms). Drives the idle-teardown sweep below.
+    QHash<QString, qint64> m_deskLastActive;
+    // Idle-teardown sweep: tears an AUTO desktop down when its session hasn't been
+    // viewed (no widget lease) and hasn't run a turn for a while — battery. The
+    // port/bearer reservation is kept so the next turn re-provisions it identically.
+    QTimer *m_deskIdleTimer = nullptr;
+    void sweepIdleDesktops();
 
     // Authenticated client sockets.
     QSet<QWebSocket *> m_clients;

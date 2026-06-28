@@ -99,6 +99,9 @@ int AgentDesktop::nextPort() const
         for (const auto &[id, desk] : m_desks)
             if (desk->info.port == port)
                 return true;
+        for (const auto &[id, res] : m_reserved)   // don't collide with a reservation
+            if (res.first == port)
+                return true;
         return false;
     };
     while (used(p))
@@ -320,8 +323,17 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
     d.info.sessionId = sessionId;
     d.info.width = m_opts.width;
     d.info.height = m_opts.height;
-    d.info.port = nextPort();
-    d.info.bearer = genBearer();
+    // Reuse this session's reserved (port, bearer) if it has one, so a re-provision
+    // after an idle teardown is identical to what the brain was told at spawn. Else
+    // allocate fresh and reserve it.
+    if (auto r = m_reserved.find(sessionId); r != m_reserved.end()) {
+        d.info.port = r->second.first;
+        d.info.bearer = r->second.second;
+    } else {
+        d.info.port = nextPort();
+        d.info.bearer = genBearer();
+        m_reserved.emplace(sessionId, std::make_pair(d.info.port, d.info.bearer));
+    }
     d.info.mcpUrl = QStringLiteral("http://127.0.0.1:%1/mcp").arg(d.info.port);
 
     // Per-session XDG_RUNTIME_DIR for the nested stack so its wayland-N +
@@ -573,6 +585,14 @@ void AgentDesktop::teardown(const QString &sessionId)
     if (!d.confPath.isEmpty())
         QFile::remove(d.confPath);
     m_desks.erase(it);
+    // NB: the (port, bearer) reservation is intentionally KEPT so a later ensure()
+    // re-provisions an identical engine. releaseSession() drops it for good.
+}
+
+void AgentDesktop::releaseSession(const QString &sessionId)
+{
+    teardown(sessionId);
+    m_reserved.erase(sessionId);
 }
 
 void AgentDesktop::teardownAll()
