@@ -48,3 +48,8 @@ plugins/**/*.tar.gz
 
 # --- Logs ---
 *.log
+
+# --- CTest run artifacts + scratch test venvs ---
+Testing/
+.venv_test/
+computer-use/.venv_test/
