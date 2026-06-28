@@ -30,9 +30,11 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -123,13 +125,31 @@ fun HomeContent(
             contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 96.dp),
         ) {
             item {
-                Text(greeting, style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.ExtraBold, color = JarvisPalette.TextPrimary)
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    if (online) "Jarvis is on your laptop & ready." else "Connecting to Jarvis…",
-                    style = MaterialTheme.typography.bodyMedium, color = JarvisPalette.TextSecondary,
-                )
+                // Header: spinning reactor + greeting (fades/slides in on entry).
+                val appear = remember { androidx.compose.animation.core.Animatable(0f) }
+                LaunchedEffect(Unit) {
+                    appear.animateTo(1f, androidx.compose.animation.core.tween(420))
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .graphicsLayer {
+                            alpha = appear.value
+                            translationY = (1f - appear.value) * 18f
+                        },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    com.jarvis.app.ui.util.JarvisOrb(size = 40.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text(greeting, style = MaterialTheme.typography.headlineMedium,
+                            fontWeight = FontWeight.ExtraBold, color = JarvisPalette.TextPrimary)
+                        Text(
+                            if (online) "Jarvis is on your laptop & ready." else "Connecting to Jarvis…",
+                            style = MaterialTheme.typography.bodyMedium, color = JarvisPalette.TextSecondary,
+                        )
+                    }
+                }
                 Spacer(Modifier.height(12.dp))
                 StatusPill(
                     text = if (online) "ONLINE" else "OFFLINE",

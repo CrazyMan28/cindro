@@ -8,6 +8,23 @@ _Last updated: 2026-06-27._
 
 ---
 
+## 🆕 Battery idle-teardown + unlock hardening + phone orb (2026-06-28)
+
+- **Battery: idle agent desktops are now torn down — safely.** The blocker was that
+  a brain bakes its computer-use engine address+token at spawn, so a torn-down desktop
+  used to come back unreachable. Fixed by **reserving each session's (port, bearer)**
+  (`AgentDesktop`): a re-provision is byte-identical. A 2-min sweep (`ControlServer::
+  sweepIdleDesktops`) tears an AUTO desktop down when its session is **not viewed**
+  (no chat/Computer-page lease) **and** hasn't run a turn for **8 min** **and** isn't
+  busy; the next turn lazily re-provisions it. The chat + Computer pages hold a viewer
+  lease so watching keeps it alive. `releaseSession()` drops the reservation on delete.
+- **Unlock hardening (#24).** The phone-unlock root cause still needs a live repro, but
+  the LockGate now polls `auth.status` every **1 s** and **re-requests on reconnect**,
+  so a missed broadcast clears within a second — on top of the PIN that already lets you
+  unlock without waiting on the phone.
+- **Phone:** the Home header now shows the spinning **arc-reactor orb** + a fade/slide-in
+  entrance (shared component with the chat empty-state). Android 0.9.2.
+
 ## 🆕 Home-screen widget: DYNAMIC pin size (2026-06-28)
 
 - **The pin size now adapts to the widget's content.** Android has no per-pin size

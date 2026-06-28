@@ -74,6 +74,7 @@ import com.jarvis.app.ui.util.HapticButton
 import com.jarvis.app.ui.util.HapticIconButton
 import com.jarvis.app.ui.util.HapticOutlinedButton
 import com.jarvis.app.ui.util.ImageEncoding
+import com.jarvis.app.ui.util.JarvisOrb
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -492,67 +493,5 @@ private fun ChatEmptyState(modifier: Modifier = Modifier) {
             fontSize = 13.sp,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
-    }
-}
-
-// A glowing arc-reactor orb: two counter-rotating rings + a breathing core.
-@androidx.compose.runtime.Composable
-private fun JarvisOrb(size: androidx.compose.ui.unit.Dp) {
-    val t = androidx.compose.animation.core.rememberInfiniteTransition(label = "orb")
-    val spin by t.animateFloat(
-        0f, 360f,
-        androidx.compose.animation.core.infiniteRepeatable(
-            androidx.compose.animation.core.tween(9000, easing = androidx.compose.animation.core.LinearEasing),
-        ),
-        label = "spin",
-    )
-    val spin2 by t.animateFloat(
-        360f, 0f,
-        androidx.compose.animation.core.infiniteRepeatable(
-            androidx.compose.animation.core.tween(6000, easing = androidx.compose.animation.core.LinearEasing),
-        ),
-        label = "spin2",
-    )
-    val pulse by t.animateFloat(
-        0.85f, 1.12f,
-        androidx.compose.animation.core.infiniteRepeatable(
-            androidx.compose.animation.core.tween(1600, easing = androidx.compose.animation.core.FastOutSlowInEasing),
-            androidx.compose.animation.core.RepeatMode.Reverse,
-        ),
-        label = "pulse",
-    )
-    androidx.compose.foundation.Canvas(modifier = Modifier.size(size)) {
-        val c = androidx.compose.ui.geometry.Offset(this.size.width / 2f, this.size.height / 2f)
-        val r = this.size.minDimension / 2f
-        val accent = JarvisPalette.Accent
-        // outer halo
-        drawCircle(accent.copy(alpha = 0.10f), radius = r * 0.95f * pulse, center = c)
-        // outer ring (dashed via arcs)
-        rotate(spin, pivot = c) {
-            for (i in 0 until 8) {
-                drawArc(
-                    color = accent.copy(alpha = 0.8f),
-                    startAngle = i * 45f + 6f, sweepAngle = 28f, useCenter = false,
-                    topLeft = androidx.compose.ui.geometry.Offset(c.x - r * 0.88f, c.y - r * 0.88f),
-                    size = androidx.compose.ui.geometry.Size(r * 1.76f, r * 1.76f),
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3f),
-                )
-            }
-        }
-        // inner ring
-        rotate(spin2, pivot = c) {
-            for (i in 0 until 3) {
-                drawArc(
-                    color = JarvisPalette.Accent2.copy(alpha = 0.85f),
-                    startAngle = i * 120f, sweepAngle = 70f, useCenter = false,
-                    topLeft = androidx.compose.ui.geometry.Offset(c.x - r * 0.55f, c.y - r * 0.55f),
-                    size = androidx.compose.ui.geometry.Size(r * 1.10f, r * 1.10f),
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f),
-                )
-            }
-        }
-        // breathing core
-        drawCircle(accent.copy(alpha = 0.25f), radius = r * 0.30f * pulse, center = c)
-        drawCircle(accent, radius = r * 0.13f * pulse, center = c)
     }
 }

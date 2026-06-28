@@ -156,6 +156,14 @@ bool ControlServer::start()
                   reaped);
     }
 
+    // BATTERY: periodically tear down AUTO agent desktops for sessions you're not
+    // viewing and that haven't run a turn for a while (the reservation is kept so
+    // the next turn revives them identically).
+    m_deskIdleTimer = new QTimer(this);
+    m_deskIdleTimer->setInterval(120000);   // sweep every 2 min
+    connect(m_deskIdleTimer, &QTimer::timeout, this, &ControlServer::sweepIdleDesktops);
+    m_deskIdleTimer->start();
+
     m_wsServer = new QWebSocketServer(QStringLiteral("jarvisd-control"),
                                       QWebSocketServer::NonSecureMode, this);
     connect(m_wsServer, &QWebSocketServer::newConnection,
@@ -895,6 +903,36 @@ QString ControlServer::prefetchMemoryBlock(const QString &query)
     return MemoryStore::renderPromptBlock(hits);
 }
 
+void ControlServer::sweepIdleDesktops()
+{
+    // Idle threshold: 8 minutes of no turn AND not currently viewed. Conservative
+    // so we never tear a desktop out from under an active/watched session; if we
+    // get it wrong the next turn revives it transparently (reserved port+bearer).
+    constexpr qint64 kIdleMs = 8 * 60 * 1000;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // Scopes a viewer (chat open, peek/Computer mirroring) is holding right now.
+    const QStringList viewed = m_widgetLeases.activeScopes();
+    const bool anyAllViewer = viewed.contains(QStringLiteral("all"));
+
+    const QList<QString> autos = m_autoComputerSessions.values();
+    for (const QString &sid : autos) {
+        if (!m_agentDesktops.has(sid))
+            continue;                         // already down
+        if (Brain *b = m_brains.value(sid, nullptr); b && b->isBusy())
+            continue;                         // mid-turn — never tear down
+        if (viewed.contains(sid) || anyAllViewer)
+            continue;                         // being watched (chat/peek/canvas)
+        const qint64 last = m_deskLastActive.value(sid, 0);
+        if (last > 0 && now - last < kIdleMs)
+            continue;                         // ran a turn recently
+        // Idle + unviewed + not busy → free the compositor + engine (keep the
+        // reservation so the next turn re-provisions an identical desktop).
+        m_agentDesktops.teardown(sid);
+        qInfo("jarvisd: idle-teardown agent desktop for unviewed session %s (battery)",
+              qPrintable(sid));
+    }
+}
+
 QString ControlServer::permissionPolicyClause() const
 {
     // Auto-ranked tool risk tiers (by capability, not by individual tool name):
@@ -1235,6 +1273,16 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         return false;
     }
 
+    // BATTERY (re-provision): if this session's auto agent-desktop was idle-torn-
+    // down while you weren't watching, bring it back NOW — at its RESERVED port +
+    // bearer, so the brain's baked MCP config still resolves and computer-use just
+    // works again. ensure() is a no-op if the desktop is already up.
+    if (m_autoComputerSessions.contains(sessionId) && !m_agentDesktops.has(sessionId)) {
+        QString deskErr;
+        m_agentDesktops.ensure(sessionId, &deskErr);
+    }
+    m_deskLastActive.insert(sessionId, QDateTime::currentMSecsSinceEpoch());
+
     // If the brain is mid-turn (or winding down after the `final` event), QUEUE
     // this turn and flush it on turnFinished — never reject the user's message.
     // Only the newest queued turn is kept (a rapid double-send coalesces).
@@ -1436,9 +1484,9 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     // (Contract A has no separate session.close): tear down the nested desktop +
     // its bound engine so we don't leak a compositor/engine per session. A fresh
     // desktop is spun up if the session is recreated.
-    if (m_agentDesktops.has(sessionId))
-        m_agentDesktops.teardown(sessionId);
+    m_agentDesktops.releaseSession(sessionId);   // drop the desktop + its reservation
     m_autoComputerSessions.remove(sessionId);
+    m_deskLastActive.remove(sessionId);
     return true;
 }
 
@@ -1454,10 +1502,11 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     if (m_takeOverActive.contains(sessionId))
         setTakeOverActive(sessionId, false);
     m_injectionHeld.remove(sessionId);
-    // 3) Tear down the nested agent desktop (compositor + per-session engine).
-    if (m_agentDesktops.has(sessionId))
-        m_agentDesktops.teardown(sessionId);
+    // 3) Tear down the nested agent desktop (compositor + per-session engine) and
+    //    drop its port/bearer reservation — the session is gone for good.
+    m_agentDesktops.releaseSession(sessionId);
     m_autoComputerSessions.remove(sessionId);
+    m_deskLastActive.remove(sessionId);
     // 4) Drop the row + its event stream from the store.
     if (!m_store.deleteSession(sessionId)) {
         if (err)

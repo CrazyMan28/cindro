@@ -93,9 +93,16 @@ public:
         return m_desks.find(sessionId) != m_desks.end();
     }
 
-    // Kill the engine + nested sway and forget the session. Idempotent.
+    // Kill the engine + nested sway. Idempotent. The session's port + bearer
+    // RESERVATION is KEPT, so a later ensure() re-provisions an IDENTICAL engine
+    // (same URL + token) — a brain that baked the MCP config at spawn keeps working.
+    // This is what makes idle-teardown-for-battery safe.
     void teardown(const QString &sessionId);
     void teardownAll();
+
+    // Fully forget a session: teardown AND drop its port/bearer reservation. Call
+    // this on session delete/cancel (not on idle teardown).
+    void releaseSession(const QString &sessionId);
 
     // ORPHAN SWEEP (teardown-leak guard). Reap nested agent compositors (+ their
     // swaybg + per-session engines) that survived a previous daemon (crash,
@@ -149,6 +156,9 @@ private:
     // sessionId -> running desk. std::map (not QHash) because Desk is held by
     // unique_ptr (non-copyable) and QHash is copy-on-write.
     std::map<QString, std::unique_ptr<Desk>> m_desks;
+    // sessionId -> reserved (port, bearer). Survives teardown so a re-provisioned
+    // desktop is identical to the one the brain was told about at spawn.
+    std::map<QString, std::pair<int, QString>> m_reserved;
 };
 
 } // namespace jarvis
