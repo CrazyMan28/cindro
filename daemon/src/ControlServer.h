@@ -230,6 +230,10 @@ private:
     Response handleModelList(const Request &req);
     Response handleSessionCreate(const Request &req);
     Response handleSessionSend(const Request &req);
+    // session.wake — inject a turn into a session (queued if mid-turn) to resume
+    // it: used by background jobs / monitors / sleep-timers to wake the agent when
+    // their work finishes. Also drives the wake_notify phone behavior.
+    Response handleSessionWake(const Request &req);
     Response handleSessionCancel(const Request &req);
     Response handleSessionDelete(const Request &req);
     Response handleSessionList(const Request &req);

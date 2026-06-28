@@ -316,6 +316,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionCreate(req);
     else if (m == QStringLiteral("session.send"))
         resp = handleSessionSend(req);
+    else if (m == QStringLiteral("session.wake"))
+        resp = handleSessionWake(req);
     else if (m == QStringLiteral("session.cancel"))
         resp = handleSessionCancel(req);
     else if (m == QStringLiteral("session.delete"))
@@ -1893,6 +1895,29 @@ Response ControlServer::handleSessionSend(const Request &req)
 
     QJsonObject result;
     result.insert(QStringLiteral("accepted"), true);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleSessionWake(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    const QString message = req.params.value(QStringLiteral("message")).toString();
+    if (sessionId.isEmpty() || message.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("session_id and message are required"));
+    // Inject the wake as a turn into the session — QUEUED if the session is
+    // mid-turn — exactly like the subagent-done wake, so the brain picks the work
+    // back up on its own. (wake_notify -> phone ping is layered on in the phone
+    // subsystem; the boolean `critical` flag is forwarded for that.)
+    QString err;
+    if (!sendToSession(sessionId, message, {}, &err))
+        return Response::failure(req.id, QStringLiteral("no_session"), err);
+    qInfo("jarvisd: session.wake -> %s (%lld chars, notify=%s)",
+          qPrintable(sessionId), static_cast<long long>(message.size()),
+          qPrintable(m_settings.wakeNotify()));
+    QJsonObject result;
+    result.insert(QStringLiteral("accepted"), true);
+    result.insert(QStringLiteral("wake_notify"), m_settings.wakeNotify());
     return Response::success(req.id, result);
 }
 
