@@ -342,6 +342,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleHooksTest(req);
     else if (m == QStringLiteral("phone.mcp"))
         resp = handlePhoneMcp(req);
+    else if (m == QStringLiteral("phone.http"))
+        resp = handlePhoneHttp(req);
     else if (m == QStringLiteral("session.subscribe"))
         resp = handleSessionSubscribe(client, req);
     else if (m == QStringLiteral("widget.viewing"))
@@ -750,6 +752,90 @@ Response ControlServer::handlePhoneMcp(const Request &req)
     }
     if (obj.contains(QStringLiteral("error")))
         out.insert(QStringLiteral("error"), obj.value(QStringLiteral("error")));
+    return Response::success(req.id, out);
+}
+
+Response ControlServer::handlePhoneHttp(const Request &req)
+{
+    const QString method = req.params.value(QStringLiteral("method")).toString(QStringLiteral("GET")).toUpper();
+    const QString path = req.params.value(QStringLiteral("path")).toString();
+    if (path.isEmpty() || !path.startsWith(QLatin1Char('/')))
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("path (e.g. /api/...) is required"));
+    const QJsonObject body = req.params.value(QStringLiteral("body")).toObject();
+
+    QString token;
+    QString port = QStringLiteral("8801");
+    QFile f(Config::configDir() + QStringLiteral("/phone.env"));
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QList<QByteArray> lines = f.readAll().split('\n');
+        f.close();
+        QString adminTok, deviceTok, agentTok;
+        for (const QByteArray &raw : lines) {
+            const QString line = QString::fromUtf8(raw).trimmed();
+            if (line.startsWith(QStringLiteral("ADMIN_TOKEN=")))
+                adminTok = line.mid(QStringLiteral("ADMIN_TOKEN=").size()).trimmed();
+            else if (line.startsWith(QStringLiteral("DEVICE_TOKEN=")))
+                deviceTok = line.mid(QStringLiteral("DEVICE_TOKEN=").size()).trimmed();
+            else if (line.startsWith(QStringLiteral("AGENT_TOKEN=")))
+                agentTok = line.mid(QStringLiteral("AGENT_TOKEN=").size()).trimmed();
+            else if (line.startsWith(QStringLiteral("SERVER_PORT=")))
+                port = line.mid(QStringLiteral("SERVER_PORT=").size()).trimmed();
+        }
+        // Prefer admin > device > agent so the FULL REST surface is reachable —
+        // the config setters (PUT /voice, /model; POST /screening, /sms-agent)
+        // require device auth, and enroll requires admin; reads accept any.
+        token = !adminTok.isEmpty() ? adminTok
+                                    : (!deviceTok.isEmpty() ? deviceTok : agentTok);
+    }
+    if (token.isEmpty())
+        return Response::failure(req.id, QStringLiteral("phone_not_configured"),
+                                 QStringLiteral("phone subsystem is not set up (no phone.env)"));
+
+    QNetworkAccessManager nam;
+    QNetworkRequest rq(QUrl(QStringLiteral("http://127.0.0.1:%1%2").arg(port, path)));
+    rq.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    rq.setRawHeader("Authorization", QByteArray("Bearer ") + token.toUtf8());
+    const QByteArray data = QJsonDocument(body).toJson(QJsonDocument::Compact);
+    QNetworkReply *reply = nullptr;
+    if (method == QStringLiteral("GET"))
+        reply = nam.get(rq);
+    else if (method == QStringLiteral("DELETE"))
+        reply = nam.deleteResource(rq);
+    else if (method == QStringLiteral("PUT"))
+        reply = nam.put(rq, data);
+    else if (method == QStringLiteral("POST"))
+        reply = nam.post(rq, data);
+    else
+        reply = nam.sendCustomRequest(rq, method.toUtf8(), data);
+
+    QEventLoop loop;
+    QTimer::singleShot(30000, &loop, &QEventLoop::quit);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    if (!reply->isFinished()) {
+        reply->abort();
+        reply->deleteLater();
+        return Response::failure(req.id, QStringLiteral("phone_unreachable"),
+                                 QStringLiteral("phone server: timeout"));
+    }
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray respBody = reply->readAll();
+    const QNetworkReply::NetworkError nerr = reply->error();
+    reply->deleteLater();
+    // A non-2xx HTTP status still returns the body (with status) so the UI can show it.
+    if (status == 0 && nerr != QNetworkReply::NoError)
+        return Response::failure(req.id, QStringLiteral("phone_unreachable"),
+                                 QStringLiteral("phone server unreachable"));
+    QJsonObject out;
+    out.insert(QStringLiteral("status"), status);
+    const QJsonDocument d = QJsonDocument::fromJson(respBody);
+    if (d.isObject())
+        out.insert(QStringLiteral("data"), d.object());
+    else if (d.isArray())
+        out.insert(QStringLiteral("data"), d.array());
+    else if (!respBody.isEmpty())
+        out.insert(QStringLiteral("text"), QString::fromUtf8(respBody));
     return Response::success(req.id, out);
 }
 
@@ -4212,7 +4298,7 @@ bool ControlServer::isConfigMethod(const QString &method)
         QStringLiteral("auth.deny"),
         // Native phone subsystem proxy + lifecycle hooks (the phone app drives
         // calls/inbox via phone.mcp; the daemon holds the phone bearer).
-        QStringLiteral("phone.mcp"),
+        QStringLiteral("phone.mcp"),         QStringLiteral("phone.http"),
         QStringLiteral("hooks.list"),        QStringLiteral("hooks.add"),
         QStringLiteral("hooks.remove"),      QStringLiteral("hooks.test"),
     };
@@ -4225,6 +4311,7 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
     if (m == QStringLiteral("settings.get"))    return handleSettingsGet(req);
     if (m == QStringLiteral("settings.set"))    return handleSettingsSet(req);
     if (m == QStringLiteral("phone.mcp"))       return handlePhoneMcp(req);
+    if (m == QStringLiteral("phone.http"))      return handlePhoneHttp(req);
     if (m == QStringLiteral("hooks.list"))      return handleHooksList(req);
     if (m == QStringLiteral("hooks.add"))       return handleHooksAdd(req);
     if (m == QStringLiteral("hooks.remove"))    return handleHooksRemove(req);

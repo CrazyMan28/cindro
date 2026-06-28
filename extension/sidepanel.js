@@ -1298,6 +1298,13 @@ async function phoneMcp(name, args) {
   return (res && res.data != null) ? res.data : res;
 }
 
+async function phoneHttp(method, path, body) {
+  const res = await rpc("phone.http", { method, path, body });
+  if (res && res.error) throw new Error(res.error);
+  if (res && res.status != null && res.status >= 400) throw new Error(res.text || ("HTTP " + res.status));
+  return (res && res.data != null) ? res.data : res;
+}
+
 // ---- panel / tab state ----
 let phoneOpen = false;
 let phoneTab = "calls"; // "calls" | "inbox" | "settings"
@@ -1906,7 +1913,7 @@ async function openAgentConfig(ext, name) {
   const voiceCurrent = $("agentVoiceCurrent");
   if (voiceCurrent) voiceCurrent.textContent = "Loading voice profile…";
   try {
-    const vp = await phoneMcp("get_voice_profile", { extension: _extArg(ext) });
+    const vp = await phoneHttp("GET", "/api/extensions/" + ext + "/voice");
     agentConfigState.voiceId = vp.voice_id || null;
     agentConfigState.speed   = typeof vp.speed === "number" ? vp.speed : 1.0;
     if (voiceCurrent) voiceCurrent.textContent = "Current: " + (vp.voice_id || "Default");
@@ -1932,7 +1939,7 @@ async function openAgentConfig(ext, name) {
   ];
   let voices = knownVoices;
   try {
-    const vd = await phoneMcp("list_voices");
+    const vd = await phoneHttp("GET", "/api/voices");
     const arr = Array.isArray(vd) ? vd : (vd && Array.isArray(vd.voices) ? vd.voices : null);
     if (arr && arr.length) voices = arr;
   } catch (_) { /* use known list */ }
@@ -1941,12 +1948,12 @@ async function openAgentConfig(ext, name) {
   const voiceGroupsEl = $("agentVoiceGroups");
   if (voiceGroupsEl) renderVoiceGroups(voiceGroupsEl, voices, agentConfigState.voiceId);
 
-  // Load model / reasoning config (graceful: tool may not exist yet).
+  // Load model / reasoning config.
   try {
-    const mc = await phoneMcp("get_model_config", { extension: _extArg(ext) });
+    const mc = await phoneHttp("GET", "/api/extensions/" + ext + "/model");
     agentConfigState.model     = mc.model     || null;
     agentConfigState.reasoning = mc.reasoning || null;
-  } catch (_) { /* no model config tool yet — use defaults */ }
+  } catch (_) { /* no model config yet — use defaults */ }
   renderAgentModelSection(name);
 }
 
@@ -1992,9 +1999,9 @@ function renderVoiceGroups(container, voices, selectedId) {
         const vc = $("agentVoiceCurrent");
         if (vc) vc.textContent = "Current: " + (o.id || "Default");
         if (!agentConfigState.ext) return;
-        const args = { extension: _extArg(agentConfigState.ext) };
-        if (o.id) args.voice_id = o.id;
-        phoneMcp("set_voice_profile", args).catch((e) => {
+        const body = {};
+        if (o.id) body.voice_id = o.id;
+        phoneHttp("PUT", "/api/extensions/" + agentConfigState.ext + "/voice", body).catch((e) => {
           const r = $("agentConfigResult");
           if (r) { r.textContent = "Voice error: " + (e.message || e); r.className = "phone-result bad"; }
         });
@@ -2071,16 +2078,14 @@ async function saveAgentModelConfig() {
   if (!agentConfigState.ext) return;
   const resultEl = $("agentConfigResult");
   try {
-    const args = { extension: _extArg(agentConfigState.ext) };
-    if (agentConfigState.model)     args.model     = agentConfigState.model;
-    if (agentConfigState.reasoning) args.reasoning = agentConfigState.reasoning;
-    // TODO: set_model_config not yet in MCP tool list — will error gracefully.
-    await phoneMcp("set_model_config", args);
+    const body = {};
+    if (agentConfigState.model)     body.model     = agentConfigState.model;
+    if (agentConfigState.reasoning) body.reasoning = agentConfigState.reasoning;
+    await phoneHttp("PUT", "/api/extensions/" + agentConfigState.ext + "/model", body);
     if (resultEl) { resultEl.textContent = "✓ Model config saved"; resultEl.className = "phone-result ok"; }
   } catch (e) {
-    // Surface as TODO so the UI still shows what was selected.
     if (resultEl) {
-      resultEl.textContent = "TODO set_model_config: " + (e.message || e);
+      resultEl.textContent = "✗ " + (e.message || e);
       resultEl.className = "phone-result bad";
     }
   }
@@ -2089,15 +2094,17 @@ async function saveAgentModelConfig() {
 async function doPreviewVoice() {
   if (!agentConfigState.ext) return;
   const resultEl = $("agentConfigResult");
+  const vid = agentConfigState.voiceId || "default";
   try {
-    const args = { extension: _extArg(agentConfigState.ext) };
-    if (agentConfigState.voiceId) args.voice_id = agentConfigState.voiceId;
-    // TODO: preview_voice not yet in MCP tool list.
-    await phoneMcp("preview_voice", args);
+    const data = await phoneHttp("GET", "/api/voices/" + encodeURIComponent(vid) + "/sample");
+    const url = (data && (typeof data === "string" ? data : data.url)) || "";
+    if (url) {
+      try { new Audio(url).play(); } catch (_) { /* sandboxed */ }
+    }
     if (resultEl) { resultEl.textContent = "▶ Playing preview…"; resultEl.className = "phone-result ok"; }
   } catch (e) {
     if (resultEl) {
-      resultEl.textContent = "TODO preview_voice: " + (e.message || e);
+      resultEl.textContent = "✗ " + (e.message || e);
       resultEl.className = "phone-result bad";
     }
   }
@@ -2169,19 +2176,23 @@ async function loadCallHistory() {
   const box = $("phoneHistoryList"); if (!box) return;
   box.innerHTML = '<div class="phone-card"><div class="phone-card-meta">Loading…</div></div>';
   try {
-    // Try several possible tool names (MCP tool not yet finalised).
     let calls = [];
-    for (const tool of ["get_call_history", "list_calls", "list_recent_calls"]) {
+    try {
+      const d = await phoneHttp("GET", "/api/calls");
+      const arr = Array.isArray(d) ? d : (d && (d.calls || d.history) ? (d.calls || d.history) : []);
+      calls = arr;
+    } catch (_) { /* no call history */ }
+    if (!calls.length) {
       try {
-        const d = await phoneMcp(tool, { limit: 30 });
-        const arr = Array.isArray(d) ? d : (d.calls || d.history || []);
-        if (arr.length) { calls = arr; break; }
-      } catch (_) { /* try next */ }
+        const dm = await phoneHttp("GET", "/api/missed-calls");
+        const arr = Array.isArray(dm) ? dm : (dm && (dm.calls || dm.history) ? (dm.calls || dm.history) : []);
+        calls = arr;
+      } catch (__) { /* no missed calls either */ }
     }
     box.innerHTML = "";
     if (!calls.length) {
       const d = document.createElement("div"); d.className = "phone-card";
-      d.innerHTML = '<div class="phone-card-meta">No call history (TODO: get_call_history MCP tool).</div>';
+      d.innerHTML = '<div class="phone-card-meta">No call history.</div>';
       box.appendChild(d); return;
     }
     calls.slice(0, 30).forEach((c) => {
@@ -2216,17 +2227,15 @@ async function loadCallHistory() {
 const smsAgentState = { enabled: null, extension: "", agents: [] };
 
 async function loadSmsAgentConfig() {
-  const resultEl = $("smsAgentResult");
   try {
-    const d = await phoneMcp("get_sms_config");
+    const d = await phoneHttp("GET", "/api/sms-agent");
     smsAgentState.enabled   = d.enabled;
     smsAgentState.extension = d.extension || "";
     smsAgentState.agents    = d.agents    || [];
     const tog = $("smsAgentToggle"); if (tog) tog.checked = !!d.enabled;
     renderSmsAgentPicker();
   } catch (_) {
-    // TODO: get_sms_config MCP tool — fall back to loading agents for the picker.
-    if (resultEl) { resultEl.textContent = "TODO: get_sms_config MCP tool pending"; resultEl.className = "phone-result"; }
+    // Fall back to loading agents for the picker via phoneMcp.
     try {
       const ad = await phoneMcp("list_agents");
       smsAgentState.agents = Array.isArray(ad) ? ad : (ad.agents || []);
@@ -2249,14 +2258,14 @@ function renderSmsAgentPicker() {
       smsAgentState.extension = ext;
       box.querySelectorAll(".config-chip").forEach((c) => c.classList.remove("selected"));
       btn.classList.add("selected");
-      phoneMcp("set_sms_agent", { extension: _extArg(ext) })
+      phoneHttp("POST", "/api/sms-agent", { extension: _extArg(ext) })
         .then(() => {
           const r = $("smsAgentResult");
           if (r) { r.textContent = "✓ SMS agent set to " + name; r.className = "phone-result ok"; }
         })
         .catch((e) => {
           const r = $("smsAgentResult");
-          if (r) { r.textContent = "TODO set_sms_agent: " + (e.message || e); r.className = "phone-result bad"; }
+          if (r) { r.textContent = "✗ " + (e.message || e); r.className = "phone-result bad"; }
         });
     });
     box.appendChild(btn);
@@ -2267,10 +2276,10 @@ async function toggleSmsAgent(on) {
   smsAgentState.enabled = on;
   const r = $("smsAgentResult");
   try {
-    await phoneMcp(on ? "enable_sms_agent" : "disable_sms_agent");
+    await phoneHttp("POST", "/api/sms-agent", { enabled: on });
     if (r) { r.textContent = "✓ SMS agent " + (on ? "enabled" : "disabled"); r.className = "phone-result ok"; }
   } catch (e) {
-    if (r) { r.textContent = "TODO enable/disable_sms_agent: " + (e.message || e); r.className = "phone-result bad"; }
+    if (r) { r.textContent = "✗ " + (e.message || e); r.className = "phone-result bad"; }
   }
 }
 
@@ -2287,9 +2296,9 @@ async function loadScreeningConfig() {
     if (badge) { badge.textContent = d.screening_enabled ? "enabled" : "disabled"; badge.className = "phone-badge " + (d.screening_enabled ? "ok" : "bad"); }
   } catch (_) { /* ignore — will show old badge */ }
 
-  // Try full config; populate transport + agent pickers.
+  // Load full config; populate transport + agent pickers.
   try {
-    const cfg = await phoneMcp("get_screening_config");
+    const cfg = await phoneHttp("GET", "/api/screening");
     screeningState.enabled       = cfg.enabled;
     screeningState.transport     = cfg.transport      || "twilio";
     screeningState.inboundExt    = cfg.inbound_extension   || "";
@@ -2301,7 +2310,7 @@ async function loadScreeningConfig() {
     const cfSection = $("carrierForwardingSection");
     if (cfSection) cfSection.style.display = screeningState.transport === "twilio" ? "" : "none";
   } catch (_) {
-    // TODO: get_screening_config not yet exposed — load agents for pickers anyway.
+    // Fall back to loading agents for pickers via phoneMcp.
     try {
       const ad = await phoneMcp("list_agents");
       screeningState.agents = Array.isArray(ad) ? ad : (ad.agents || []);
@@ -2337,17 +2346,19 @@ function renderScreeningAgentPickers() {
       btn.addEventListener("click", () => {
         box.querySelectorAll(".config-chip").forEach((c) => c.classList.remove("selected"));
         btn.classList.add("selected");
-        const tool = isInbound ? "set_inbound_agent" : "set_screening_agent";
         if (isInbound) screeningState.inboundExt = ext;
         else screeningState.screeningExt = ext;
-        phoneMcp(tool, { extension: _extArg(ext) })
+        const body = isInbound
+          ? { inbound_extension: _extArg(ext) }
+          : { screening_extension: _extArg(ext) };
+        phoneHttp("POST", "/api/screening", body)
           .then(() => {
             const r = $("screeningResult");
             if (r) { r.textContent = "✓ " + (isInbound ? "Inbound" : "Screener") + " set to " + name; r.className = "phone-result ok"; }
           })
           .catch((e) => {
             const r = $("screeningResult");
-            if (r) { r.textContent = "TODO " + tool + ": " + (e.message || e); r.className = "phone-result bad"; }
+            if (r) { r.textContent = "✗ " + (e.message || e); r.className = "phone-result bad"; }
           });
       });
       box.appendChild(btn);
@@ -2361,12 +2372,12 @@ async function setScreeningTransport(t) {
   const cfSection = $("carrierForwardingSection");
   if (cfSection) cfSection.style.display = t === "twilio" ? "" : "none";
   try {
-    await phoneMcp("set_screening_transport", { transport: t });
+    await phoneHttp("POST", "/api/screening", { transport: t });
     const r = $("screeningResult");
     if (r) { r.textContent = "✓ Transport: " + t; r.className = "phone-result ok"; }
   } catch (e) {
     const r = $("screeningResult");
-    if (r) { r.textContent = "TODO set_screening_transport: " + (e.message || e); r.className = "phone-result bad"; }
+    if (r) { r.textContent = "✗ " + (e.message || e); r.className = "phone-result bad"; }
   }
 }
 
@@ -2374,7 +2385,7 @@ async function toggleAutoScreening(on) {
   screeningState.enabled = on;
   const tog = $("screeningAutoToggle"); if (tog) tog.checked = on;
   try {
-    await phoneMcp(on ? "twilio_screening_enable" : "twilio_screening_disable");
+    await phoneHttp("POST", "/api/screening", { enabled: on });
     const badge = $("phoneScreeningBadge");
     if (badge) { badge.textContent = on ? "enabled" : "disabled"; badge.className = "phone-badge " + (on ? "ok" : "bad"); }
     const r = $("screeningResult");
@@ -2453,8 +2464,9 @@ function initPhonePanel() {
     speedSlider.addEventListener("change", () => {
       if (!agentConfigState.ext) return;
       agentConfigState.speed = parseFloat(speedSlider.value);
-      const args = { extension: _extArg(agentConfigState.ext), speed: agentConfigState.speed };
-      phoneMcp("set_voice_profile", args).catch((e) => {
+      const body = { speed: agentConfigState.speed };
+      if (agentConfigState.voiceId) body.voice_id = agentConfigState.voiceId;
+      phoneHttp("PUT", "/api/extensions/" + agentConfigState.ext + "/voice", body).catch((e) => {
         const r = $("agentConfigResult");
         if (r) { r.textContent = "Speed: " + (e.message || e); r.className = "phone-result bad"; }
       });
