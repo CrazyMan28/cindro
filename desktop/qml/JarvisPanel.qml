@@ -1657,29 +1657,32 @@ Item {
         if (typeof action.send === "string" && action.send.length > 0)
             panel.injectUser(action.send)
         else if (typeof action.skill === "string" && action.skill.length > 0)
-            bridge.skillInvoke(action.skill,
-                               (typeof action.args === "string") ? action.args : "")
+            // Send "/skill" into chat; the model loads it via skill_load.
+            panel.sendSkillCommand(action.skill +
+                ((typeof action.args === "string" && action.args.length > 0) ? " " + action.args : ""))
     }
 
     // Inject a rendered skill (from the Skills page /invoke) into the transcript
     // as a user turn and send it. Creates a session first if none is active, just
     // like submit(). The skill text becomes the next model input.
-    function injectSkill(name, message) {
-        var t = ("" + message).trim()
-        if (t.length === 0 || !bridge.connected)
+    // Invoking a skill = sending the user turn "/skill-name" (that's all that shows
+    // in chat). The MODEL then calls the skill_load tool itself (per the system
+    // prompt) to load + apply it — we do NOT dump the skill body or fake a tool call.
+    function sendSkillCommand(name) {
+        if (!bridge.connected)
             return
+        var cmd = "/" + ("" + name).replace(/^\/+/, "")
         if (bridge.sessionId.length === 0) {
             panel.pendingNewSession = true
             bridge.createSession("coder", panel.selectedBrain, panel.selectedModel)
         }
         chatModel.append({
-            "kind": "message", "role": "user",
-            "text": "/" + name + (t.length ? "\n\n" + t : ""),
+            "kind": "message", "role": "user", "text": cmd,
             "callId": "", "toolName": "", "approvalId": "", "risk": "", "ok": true,
             "streaming": false
         })
         panel.busy = true
-        bridge.sendMessage(t)
+        bridge.sendMessage(cmd)
         chatView.positionViewAtEnd()
     }
 
@@ -1705,12 +1708,11 @@ Item {
         if (item.kind === "command") {
             panel.runSlashCommand(item.value)
         } else if (item.kind === "skill") {
-            // Run the skill immediately (no args). Its rendered text is injected
-            // into the chat by the onSkillInvoked handler below. To pass args,
-            // type "/<name> args" and press Enter instead.
+            // Send "/skill-name" as the user turn — the model loads it via the
+            // skill_load tool. To pass args, type "/<name> args" and press Enter.
             inputArea.text = ""
             slashPalette.open = false
-            bridge.skillInvoke(item.name, "")
+            panel.sendSkillCommand(item.name)
         } else {
             // agent -> "/dispatch <name> " — the user types the task, then Enter.
             inputArea.text = item.value
@@ -1718,14 +1720,6 @@ Item {
             inputArea.forceActiveFocus()
             slashPalette.open = false
         }
-    }
-
-    // Invoking a skill (from the "/" palette OR a typed "/name") renders its text on
-    // the daemon and fires skillInvoked — inject it into THIS chat. The chat page is
-    // always loaded, so this works even when the Skills page was never opened.
-    Connections {
-        target: bridge
-        function onSkillInvoked(name, message) { panel.injectSkill(name, message) }
     }
 
     // A built-in command picked from the palette: immediate ones run now; ones that
@@ -1774,9 +1768,9 @@ Item {
             return true
         }
         default:
-            // Not a builtin -> treat "/name args" as a skill invocation.
-            var name = cmd.substring(1)
-            if (name.length > 0) { bridge.skillInvoke(name, rest); return true }
+            // Not a builtin -> a skill invocation. Let it go through as a NORMAL
+            // user message ("/skill-name args"): the model loads it via skill_load.
+            // (return false so submit() sends the text as-is, showing just "/name".)
             return false
         }
     }

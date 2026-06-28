@@ -218,16 +218,10 @@ class ChatViewModel(
                 return true
             }
             else -> {
-                val name = cmd.removePrefix("/")
-                if (name.isBlank()) return false
-                // Treat "/name args" as a skill invocation: render it, then send the
-                // rendered text as the turn so the model acts on it.
-                viewModelScope.launch {
-                    runCatching { withContext(Dispatchers.IO) { repo.invokeSkillText(name, rest) } }
-                        .onSuccess { msg -> if (msg.isNotBlank()) send(msg) }
-                        .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
-                }
-                return true
+                // A skill invocation ("/name args"): let it through as a NORMAL user
+                // message — the model loads it via the skill_load tool (per the system
+                // prompt). So just "/name" shows; we don't dump the skill body.
+                return false
             }
         }
     }
