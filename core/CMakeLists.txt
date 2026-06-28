@@ -250,3 +250,26 @@ add_executable(plugin_sign_verify tests/plugin_sign_verify_test.cpp)
 target_link_libraries(plugin_sign_verify
     PRIVATE jarvis-core Qt6::Core PkgConfig::SODIUM)
 add_test(NAME plugin_sign_verify COMMAND plugin_sign_verify)
+
+# Comprehensive HookStore test: all events, every matcher variant (exact/list/
+# regex/star/empty), every block/inject protocol path (exit 2, decision:block,
+# continue:false, permissionDecision:deny), multiple hooks/groups, timeout kill,
+# non-fatal errors, CRUD round-trips, matchKey routing (tool/source/agent-type).
+add_executable(hook_store_comprehensive_test
+    tests/hook_store_comprehensive_test.cpp)
+target_link_libraries(hook_store_comprehensive_test
+    PRIVATE jarvis-core Qt6::Core)
+add_test(NAME hook_store_comprehensive_test
+         COMMAND hook_store_comprehensive_test)
+
+# Comprehensive SettingsStore test: agent_mode/wake_notify/permission_level
+# (plan/build/coworker, silent/ping/always, high/medium/low) + invalid->default
+# normalisation, all persist via saveConfig+reload, UNRELATED config.toml keys
+# preserved, defaults-when-absent, desktop PIN hashing not plaintext, API key
+# set/clear + apiKeysSet().
+add_executable(settings_modes_comprehensive_test
+    tests/settings_modes_comprehensive_test.cpp)
+target_link_libraries(settings_modes_comprehensive_test
+    PRIVATE jarvis-core Qt6::Core)
+add_test(NAME settings_modes_comprehensive_test
+         COMMAND settings_modes_comprehensive_test)

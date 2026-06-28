@@ -27,9 +27,8 @@ Android/Chrome is in progress.**
   Contract A. Tests pass. ([HOOKS.md](HOOKS.md))
 - **Modes** — plan / build / co-worker soft profiles + a HUD chip + Settings; wake-notify
   setting. Tests pass. ([MODES.md](MODES.md))
-- **Phone UI parity** (Calls/Inbox/dialer/screening/war-room/voice-profiles) is being added
-  to the existing desktop, Android, and Chrome apps (no new app) — **in progress**.
-- **Windows port** — planned phase 2, after Linux ships. ([WINDOWS.md](WINDOWS.md))
+- **Phone UI parity** (Calls/Inbox/dialer/screening/war-room/voice-profiles) added to the
+  existing desktop, Android, and Chrome apps (no new app).
 
 ---
 
