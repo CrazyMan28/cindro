@@ -140,6 +140,11 @@ Design pillars:
   a skill invoked from the "/" palette OR a typed `/name` lands in chat even when the
   Skills page was never opened. The Skills page's `onRunSkill` only switches to chat —
   it must NOT also inject (that double-rendered).
+- **`SkillStore::invoke()` returns a DIRECTIVE, not an FYI** (Claude-Code style): a
+  `[SKILL INVOKED] … read it IN FULL and APPLY it now` header + the WHOLE rendered
+  body delimited by `BEGIN SKILL` / `END SKILL`, so the model executes the skill
+  instead of just acknowledging the co-work preamble. Don't water this back down to a
+  `# Skill:` label — that read as background and the model ignored it.
 - **TTS is one strict FIFO.** Voice mode AND the chat "Speak replies" path BOTH go
   through `Bridge::playTtsAudio` (single shared `QMediaPlayer` + `m_ttsQueue`) with
   requests serialized one-in-flight (`pumpTtsRequests`); Android `TtsPlayer` mirrors
