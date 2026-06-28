@@ -93,6 +93,34 @@
                 android:resource="@xml/jarvis_appwidget_info" />
         </receiver>
 
+        <!-- Size-tier siblings: same provider behavior, different default cell, so a
+             widget can be pinned at a size that fits its content (Android has no
+             per-pin size API). WidgetPinHelper picks one by the content's height. -->
+        <receiver android:name=".widget.JarvisWidgetCompactProvider" android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.jarvis.app.WIDGET_PINNED" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider"
+                android:resource="@xml/jarvis_appwidget_info_compact" />
+        </receiver>
+        <receiver android:name=".widget.JarvisWidgetTallProvider" android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.jarvis.app.WIDGET_PINNED" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider"
+                android:resource="@xml/jarvis_appwidget_info_tall" />
+        </receiver>
+        <receiver android:name=".widget.JarvisWidgetXTallProvider" android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.jarvis.app.WIDGET_PINNED" />
+            </intent-filter>
+            <meta-data android:name="android.appwidget.provider"
+                android:resource="@xml/jarvis_appwidget_info_xtall" />
+        </receiver>
+
         <!-- Config screen shown when the widget is added from the OS picker (the
              in-app 1-click pin skips it). Launched by the launcher, so exported. -->
         <activity

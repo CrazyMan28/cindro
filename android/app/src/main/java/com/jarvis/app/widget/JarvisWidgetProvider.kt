@@ -18,7 +18,7 @@ import com.jarvis.app.R
  * service calls [refreshForWidgetId] when the daemon forwards a render for a pinned
  * id. Tapping the widget opens the app.
  */
-class JarvisWidgetProvider : AppWidgetProvider() {
+open class JarvisWidgetProvider : AppWidgetProvider() {
 
     override fun onUpdate(context: Context, mgr: AppWidgetManager, appWidgetIds: IntArray) {
         for (id in appWidgetIds) {
