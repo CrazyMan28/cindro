@@ -130,7 +130,12 @@ Design pillars:
   columns and injects the agent's system prompt on turn 1). Contract A
   `agents.list/get/create/remove/dispatch/running`; model MCP tools `agent_*`
   (`tools_jarvis_ops.py`). The SubAgentTree only renders because `parent_session_id`
-  is now real — don't drop it. See `docs/AGENTS_AND_COMMANDS.md`.
+  is now real — don't drop it. A dispatched subagent's task is appended with a
+  "end with a SUMMARY" instruction, and when its turn finishes `onTurnFinished`
+  WAKES the parent (`m_subagentPendingWake` → `subagentSummary` → `sendToSession`)
+  with a `[SUBAGENT DONE]` summary+status turn, so the parent acts on the result
+  instead of redoing it. `agents.result` / `agent_result` fetch a summary on demand.
+  See `docs/AGENTS_AND_COMMANDS.md`.
 - **The "/" palette** is per-surface (`SlashPalette.qml` / `ui/chat/SlashPalette.kt`
   / the extension dropdown). It lists commands + agents + skills. The desktop
   `CommandPalette.qml` (Ctrl+K page jumper) is SEPARATE — keep both. Picking a SKILL
