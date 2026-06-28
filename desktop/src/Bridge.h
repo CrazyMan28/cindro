@@ -40,6 +40,8 @@ class Bridge : public QObject
     Q_PROPERTY(bool connected READ isConnected NOTIFY connectedChanged)
     Q_PROPERTY(QString sessionId READ sessionId NOTIFY sessionIdChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
+    // Agent mode (plan|build|coworker) — live for the HUD chip; WRITE persists it.
+    Q_PROPERTY(QString agentMode READ agentMode WRITE setAgentMode NOTIFY agentModeChanged)
 
     // ---- COMPUTER page (Wave 5 co-worker / take-over) ----------------------
     // The active co-worker (target="agent") session driving the nested desktop.
@@ -96,6 +98,7 @@ public:
     bool isConnected() const { return m_connected; }
     QString sessionId() const { return m_sessionId; }
     QString status() const { return m_status; }
+    QString agentMode() const { return m_agentMode; }
     QString coworkerSessionId() const { return m_coworkerSessionId; }
     bool driving() const { return m_driving; }
     bool mirroring() const { return m_mirroring; }
@@ -168,6 +171,9 @@ public:
     Q_INVOKABLE void loadSettings();
     // settings.set { patch } -> settingsSaved(); api key values are write-only.
     Q_INVOKABLE void saveSettings(const QVariantMap &patch);
+    // Persist + locally apply the agent mode (plan|build|coworker). Doubles as the
+    // agentMode property WRITE so QML can two-way bind or call it directly.
+    Q_INVOKABLE void setAgentMode(const QString &mode);
 
     // mcp.* registry.
     Q_INVOKABLE void listMcp();
@@ -382,6 +388,14 @@ public:
     // Reuses session.list; the page builds the indented tree from parent_session_id.
     Q_INVOKABLE void loadSubAgentTree();
 
+    // ---- Phone (Contract A phone.mcp proxy) ---------------------------------
+    // Forward a phone-server MCP tool call through the daemon's phone.mcp method.
+    // callId is a QML-supplied correlation tag echoed back in phoneResult() so the
+    // caller can match async replies to their request.  arguments may be empty {}.
+    Q_INVOKABLE void phoneMcp(const QString &callId,
+                              const QString &name,
+                              const QVariantMap &arguments);
+
     // ---- Notifications ------------------------------------------------------
     // Toggle desktop notify-send on attention events. Persisted via settings.set so
     // the daemon's NotifyService honors it too.
@@ -492,6 +506,7 @@ signals:
     void connectedChanged();
     void sessionIdChanged();
     void statusChanged();
+    void agentModeChanged();
 
     // A NormalizedBrainEvent (Contract B) for a session, with session_id folded in.
     void sessionEvent(const QVariantMap &event);
@@ -630,6 +645,12 @@ signals:
     // ---- Sub-agent tree -----------------------------------------------------
     // Flattened, ordered tree rows: {id,title,brain,status,depth,parent}.
     void subAgentTree(const QVariantList &rows);
+
+    // ---- Phone results ------------------------------------------------------
+    // Emitted when a phone.mcp reply arrives; callId matches what was passed to
+    // phoneMcp().  result contains the parsed tool response
+    // {tool, data, text, error?} or {error: {...}} on failure.
+    void phoneResult(const QString &callId, const QVariantMap &result);
 
     // ---- Notifications ------------------------------------------------------
     void notificationsChanged();
@@ -894,6 +915,7 @@ private:
 
     // ---- Voice MODE (QtMultimedia capture + playback, orb state) ------------
     QString m_voiceState = QStringLiteral("idle");
+    QString m_agentMode = QStringLiteral("coworker"); // plan|build|coworker (settings.get)
     QString m_ttsVoice;                 // preferred TTS slug (from settings.get)
     QString m_sttProvider = QStringLiteral("voxtral"); // STT provider (settings.get)
     QString m_ttsProvider = QStringLiteral("voxtral"); // TTS provider (settings.get)
