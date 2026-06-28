@@ -157,8 +157,11 @@ def register(mcp: FastMCP) -> None:
             return _err(exc)
 
     @mcp.tool()
-    def invoke_skill(name: str, args: str = "") -> str:
-        """Invoke a saved skill by name (loads its procedure for the next step)."""
+    def skill_load(name: str, args: str = "") -> str:
+        """LOAD a saved skill by name and get its full content to follow. Call this
+        whenever the user invokes a skill (a message like "/skill-name") or asks you
+        to use one — it returns the skill's instructions; then read them in full and
+        actually apply/do what they say. `args` passes any arguments the skill uses."""
         try:
             return json.dumps(daemon_client.call("skills.invoke",
                                                  {"name": name, "args": args}))
