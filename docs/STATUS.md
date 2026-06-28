@@ -30,6 +30,13 @@ Follow-ups on the agents/skills pass (all promoted dev → qa → main via PR):
   loads (`skill_load("internal_docs")`) when asked what it can do / when unsure.
 - **Full desktop-Home CRUD for the model:** `home_list` / `home_pin` / `home_unpin` /
   `home_move` / **`home_clear`**.
+- **Subagents are isolated** — a child session gets ONLY its agent prompt + the task
+  (no main-agent memory prefetch, no co-work preamble, no memory write-back).
+- **Fixed the "random bright text" glitch** — dropped the always-on per-bubble
+  MultiEffect brightness glow (it intermittently flooded a bubble bright cyan + cost a
+  GPU layer per message); the edge bar is a solid color now.
+- **Animated session switch** — the chat transcript fades + slides in when you open a
+  subagent (or jump back), and the auto-wake now logs (`jarvisd` journal) for diagnosis.
 - **TTS strict FIFO**, plan strikethrough, 200 random-cadence thinking phrases, Chrome
   extension widgets+agents+`/` palette — all in. Branch flow: `dev → qa → main`
   (main protected, PR-only).
