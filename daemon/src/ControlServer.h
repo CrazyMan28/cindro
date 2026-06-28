@@ -333,6 +333,7 @@ private:
     Response handleAgentsRemove(const Request &req);
     Response handleAgentsDispatch(const Request &req, bool remote = false);
     Response handleAgentsRunning(const Request &req);
+    Response handleAgentsResult(const Request &req);
 
     // Wave 8: scheduler (cron/at) — schedule.create/list/set_enabled/remove.
     Response handleScheduleCreate(const Request &req);
@@ -485,6 +486,12 @@ private:
     // and the set of sessions that have already had it injected (turn 1 only).
     QHash<QString, QString> m_sessionAgentPrompt;
     QSet<QString> m_agentGuided;
+    // Dispatched subagents awaiting completion: child session id -> parent session
+    // id. When the child's turn finishes we WAKE the parent with the child's summary
+    // + status (so the main agent reviews the result instead of redoing the work).
+    QHash<QString, QString> m_subagentPendingWake;
+    // The child's last assistant message (its summary), for the wake + agents.result.
+    QString subagentSummary(const QString &sessionId);
 
     // Wave 5: per-coworker(agent) nested desktops + their bound engines.
     AgentDesktop m_agentDesktops{AgentDesktop::Options{}};

@@ -424,6 +424,7 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("agents.list") ||
         method == QStringLiteral("agents.get") ||
         method == QStringLiteral("agents.running") ||
+        method == QStringLiteral("agents.result") ||
         // Wave 8 ops reads.
         method == QStringLiteral("schedule.list") ||
         method == QStringLiteral("ssh.allow_list") ||
@@ -517,6 +518,7 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("agents.list"),     QStringLiteral("agents.get"),
         QStringLiteral("agents.create"),   QStringLiteral("agents.remove"),
         QStringLiteral("agents.dispatch"), QStringLiteral("agents.running"),
+        QStringLiteral("agents.result"),
         // Wave 8 co-worker ops mirrored to the phone: scheduler, ssh allow-list
         // + gated exec, and the audit log. schedule.create + ssh.exec biometric.
         QStringLiteral("schedule.create"), QStringLiteral("schedule.list"),
