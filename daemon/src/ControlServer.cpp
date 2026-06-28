@@ -340,6 +340,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleHooksRemove(req);
     else if (m == QStringLiteral("hooks.test"))
         resp = handleHooksTest(req);
+    else if (m == QStringLiteral("phone.mcp"))
+        resp = handlePhoneMcp(req);
     else if (m == QStringLiteral("session.subscribe"))
         resp = handleSessionSubscribe(client, req);
     else if (m == QStringLiteral("widget.viewing"))
@@ -669,6 +671,86 @@ Response ControlServer::handleHooksTest(const Request &req)
     result.insert(QStringLiteral("injected_context"), o.injectedContext);
     result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(o.notes));
     return Response::success(req.id, result);
+}
+
+Response ControlServer::handlePhoneMcp(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    if (name.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("name (a phone MCP tool) is required"));
+    const QJsonObject args = req.params.value(QStringLiteral("arguments")).toObject();
+
+    // Read the phone subsystem's bearer + port (Jarvis-managed env). The token
+    // never leaves the daemon — clients call phone.mcp and we forward.
+    QString token;
+    QString port = QStringLiteral("8801");
+    QFile f(Config::configDir() + QStringLiteral("/phone.env"));
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QList<QByteArray> lines = f.readAll().split('\n');
+        f.close();
+        for (const QByteArray &raw : lines) {
+            const QString line = QString::fromUtf8(raw).trimmed();
+            if (line.startsWith(QStringLiteral("AGENT_TOKEN=")))
+                token = line.mid(QStringLiteral("AGENT_TOKEN=").size()).trimmed();
+            else if (line.startsWith(QStringLiteral("SERVER_PORT=")))
+                port = line.mid(QStringLiteral("SERVER_PORT=").size()).trimmed();
+        }
+    }
+    if (token.isEmpty())
+        return Response::failure(req.id, QStringLiteral("phone_not_configured"),
+                                 QStringLiteral("phone subsystem is not set up (no phone.env)"));
+
+    QJsonObject params;
+    params.insert(QStringLiteral("name"), name);
+    params.insert(QStringLiteral("arguments"), args);
+    QJsonObject rpc;
+    rpc.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
+    rpc.insert(QStringLiteral("id"), 1);
+    rpc.insert(QStringLiteral("method"), QStringLiteral("tools/call"));
+    rpc.insert(QStringLiteral("params"), params);
+
+    QNetworkAccessManager nam;
+    QNetworkRequest rq(QUrl(QStringLiteral("http://127.0.0.1:%1/mcp").arg(port)));
+    rq.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    rq.setRawHeader("Authorization", QByteArray("Bearer ") + token.toUtf8());
+    QNetworkReply *reply = nam.post(rq, QJsonDocument(rpc).toJson(QJsonDocument::Compact));
+    QEventLoop loop;
+    QTimer::singleShot(35000, &loop, &QEventLoop::quit);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    if (!reply->isFinished() || reply->error() != QNetworkReply::NoError) {
+        const QString e = reply->isFinished() ? reply->errorString()
+                                              : QStringLiteral("timeout");
+        reply->deleteLater();
+        return Response::failure(req.id, QStringLiteral("phone_unreachable"),
+                                 QStringLiteral("phone server: ") + e);
+    }
+    const QByteArray body = reply->readAll();
+    reply->deleteLater();
+    const QJsonObject obj = QJsonDocument::fromJson(body).object();
+    const QJsonObject mcpResult = obj.value(QStringLiteral("result")).toObject();
+
+    // Unwrap the MCP text content and, when it parses as JSON, hand back structured
+    // data so QML / Compose / JS can bind to it directly.
+    QString text;
+    const QJsonArray content = mcpResult.value(QStringLiteral("content")).toArray();
+    if (!content.isEmpty())
+        text = content.first().toObject().value(QStringLiteral("text")).toString();
+    QJsonObject out;
+    out.insert(QStringLiteral("tool"), name);
+    if (!text.isEmpty()) {
+        const QJsonDocument td = QJsonDocument::fromJson(text.toUtf8());
+        if (td.isObject())
+            out.insert(QStringLiteral("data"), td.object());
+        else if (td.isArray())
+            out.insert(QStringLiteral("data"), td.array());
+        else
+            out.insert(QStringLiteral("text"), text);
+    }
+    if (obj.contains(QStringLiteral("error")))
+        out.insert(QStringLiteral("error"), obj.value(QStringLiteral("error")));
+    return Response::success(req.id, out);
 }
 
 Response ControlServer::handleModelList(const Request &req)
@@ -4069,6 +4151,11 @@ bool ControlServer::isConfigMethod(const QString &method)
         // 2FA unlock gate (read/action tier; harmless over the device channel).
         QStringLiteral("auth.request"),      QStringLiteral("auth.status"),
         QStringLiteral("auth.deny"),
+        // Native phone subsystem proxy + lifecycle hooks (the phone app drives
+        // calls/inbox via phone.mcp; the daemon holds the phone bearer).
+        QStringLiteral("phone.mcp"),
+        QStringLiteral("hooks.list"),        QStringLiteral("hooks.add"),
+        QStringLiteral("hooks.remove"),      QStringLiteral("hooks.test"),
     };
     return methods.contains(method);
 }
@@ -4078,6 +4165,11 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
     const QString &m = req.method;
     if (m == QStringLiteral("settings.get"))    return handleSettingsGet(req);
     if (m == QStringLiteral("settings.set"))    return handleSettingsSet(req);
+    if (m == QStringLiteral("phone.mcp"))       return handlePhoneMcp(req);
+    if (m == QStringLiteral("hooks.list"))      return handleHooksList(req);
+    if (m == QStringLiteral("hooks.add"))       return handleHooksAdd(req);
+    if (m == QStringLiteral("hooks.remove"))    return handleHooksRemove(req);
+    if (m == QStringLiteral("hooks.test"))      return handleHooksTest(req);
     if (m == QStringLiteral("model.list"))      return handleModelList(req);
     if (m == QStringLiteral("mcp.list"))        return handleMcpList(req);
     if (m == QStringLiteral("mcp.add"))         return handleMcpAdd(req);

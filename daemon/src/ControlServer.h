@@ -244,6 +244,11 @@ private:
     Response handleHooksAdd(const Request &req);
     Response handleHooksRemove(const Request &req);
     Response handleHooksTest(const Request &req);
+    // phone.mcp — proxy a phone-subsystem MCP tool call ({name, arguments}) to the
+    // native phone server, keeping its bearer inside the daemon. Lets every surface
+    // (desktop/Android/Chrome) drive all 55 phone tools over its existing Contract A
+    // connection. Returns {data|text, tool, error?}.
+    Response handlePhoneMcp(const Request &req);
     // Session manager (Contract A): a client declares which session ids it is
     // currently viewing; the daemon then fans session.event frames ONLY for those
     // ids to it. Needs the socket, so it is dispatched with `client` (unlike the
