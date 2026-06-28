@@ -113,7 +113,9 @@ int main(int argc, char **argv)
                                          QStringLiteral("postgres://prod"),
                                          QJsonObject(), &err);
         check(!msg.isEmpty() && err.isEmpty(), "invoke renders a message");
-        check(msg.contains(QStringLiteral("# Skill: Backup Postgres")), "invoke has skill header");
+        check(msg.contains(QStringLiteral("SKILL INVOKED")) &&
+              msg.contains(QStringLiteral("Backup Postgres")), "invoke is a directive naming the skill");
+        check(msg.contains(QStringLiteral("BEGIN SKILL")), "invoke delimits the full skill body");
         check(msg.contains(QStringLiteral("postgres://prod")), "invoke substituted ARGS");
         check(msg.contains(QStringLiteral("/ops/backup-postgres")), "invoke substituted SKILL_DIR");
         check(!msg.contains(QStringLiteral("{{SKILL_DIR}}")), "no unresolved SKILL_DIR token");

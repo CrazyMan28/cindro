@@ -498,14 +498,24 @@ QString SkillStore::invoke(const QString &name, const QString &args,
 
     const QString rendered = renderTemplate(body, allVars);
 
-    QString out = QStringLiteral("# Skill: %1\n").arg(fm.name);
-    if (!fm.description.isEmpty())
-        out += QStringLiteral("_%1_\n").arg(fm.description);
-    out += QStringLiteral("(skill dir: %1").arg(skillDir);
+    // Frame the invocation as a DIRECTIVE (like Claude Code): load the WHOLE skill
+    // and apply/execute it NOW — not as background FYI. The full rendered body is
+    // delimited so the model treats it as its operating instructions for this task.
+    QString out = QStringLiteral(
+        "[SKILL INVOKED] The user ran the \"%1\" skill. Read it IN FULL below and "
+        "FOLLOW / APPLY it now as your instructions for this task — actually do what "
+        "it says (don't just acknowledge it)").arg(fm.name);
     if (!args.trimmed().isEmpty())
-        out += QStringLiteral("  args: %1").arg(args.trimmed());
-    out += QStringLiteral(")\n\n");
+        out += QStringLiteral(" with args: %1").arg(args.trimmed());
+    out += QStringLiteral(".\n");
+    if (!fm.description.isEmpty())
+        out += QStringLiteral("Purpose: %1\n").arg(fm.description);
+    out += QStringLiteral("Skill directory (you may read/run files in it): %1\n\n").arg(skillDir);
+    out += QStringLiteral("───── BEGIN SKILL: %1 ─────\n").arg(fm.name);
     out += rendered;
+    if (!rendered.endsWith(QLatin1Char('\n')))
+        out += QLatin1Char('\n');
+    out += QStringLiteral("───── END SKILL ─────");
     return out;
 }
 
