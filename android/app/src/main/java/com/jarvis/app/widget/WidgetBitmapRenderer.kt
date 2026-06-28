@@ -3,9 +3,11 @@ package com.jarvis.app.widget
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.graphics.Shader
 import android.graphics.Typeface
 import com.google.gson.JsonArray
 import com.google.gson.JsonElement
@@ -62,21 +64,40 @@ object WidgetBitmapRenderer {
         val innerW = w - pad * 2
         val contentH = measure(ctx, spec, innerW, 0)
         val availH = targetH - pad * 2
-        // Shrink the whole thing to fit the cell height (and never grow it).
-        val scale = if (contentH > availH && contentH > 0f) availH / contentH else 1f
 
         val bmp = Bitmap.createBitmap(w, targetH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = SURFACE }
         val r = 20 * density
         canvas.drawRoundRect(RectF(0f, 0f, w.toFloat(), targetH.toFloat()), r, r, bg)
+
+        // Render the content at its NATURAL, readable size using the FULL width —
+        // NOT shrunk uniformly to fit (that produced a tiny, side-margined blob for
+        // tall widgets on a fixed cell). If the content is taller than the cell we
+        // clip the bottom and draw a soft fade hinting "more — tap to open". Only a
+        // mild shrink kicks in for content slightly too tall, so it stays legible.
+        val fit = if (contentH > availH && contentH > 0f) availH / contentH else 1f
+        val scale = max(fit, 0.82f)   // never below 82% (keeps text readable)
+
         canvas.save()
-        // Centre horizontally when scaled (so it isn't left-hugging), top-align vertically.
-        val dx = pad + if (scale < 1f) innerW * (1f - scale) / 2f else 0f
-        canvas.translate(dx, pad)
+        canvas.translate(pad, pad)
+        canvas.clipRect(0f, 0f, innerW, availH)
         if (scale < 1f) canvas.scale(scale, scale)
-        draw(ctx, canvas, spec, 0f, 0f, innerW, contentH + 1f, 0)
+        // Draw at innerW/scale so that AFTER the scale it still spans the full width
+        // (no right-hand margin); content lays out wider, then shrinks to fill.
+        draw(ctx, canvas, spec, 0f, 0f, innerW / scale, contentH / scale + 1f, 0)
         canvas.restore()
+
+        // Bottom fade when the content is taller than the cell (clipped).
+        if (contentH * scale > availH + 2f) {
+            val fadeH = 22 * density
+            val fp = Paint().apply {
+                shader = LinearGradient(
+                    0f, targetH - fadeH, 0f, targetH.toFloat(),
+                    SURFACE and 0x00FFFFFF, SURFACE, Shader.TileMode.CLAMP)
+            }
+            canvas.drawRect(0f, targetH - fadeH, w.toFloat(), targetH.toFloat(), fp)
+        }
         return bmp
     }
 

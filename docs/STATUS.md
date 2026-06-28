@@ -8,6 +8,19 @@ _Last updated: 2026-06-27._
 
 ---
 
+## 🆕 Home-screen widget: full-width readable render (2026-06-28)
+
+- **Tall widgets no longer render as a tiny, side-margined blob.** The bitmap
+  renderer was *uniformly* shrinking content to fit a fixed cell, so a tall widget
+  (e.g. a process table) became a microscopic centered dot. It now renders at
+  **natural, readable size using the FULL width**, and clips overflow with a **soft
+  bottom fade** ("more — tap to open") instead of shrinking everything. Default pin
+  bumped to a roomier **3×3**. (0.9.0)
+- *Android limit, stated plainly:* the OS gives no per-widget pin size — every pin
+  uses the provider's default cell (`requestPinAppWidget` shows "3×3"); an app can
+  only *request* a resize afterward (best-effort, launcher-dependent). The renderer
+  now looks right at whatever size the launcher gives, and drag-resize fills cleanly.
+
 ## 🆕 Home-screen widget: pager render + size-to-content (2026-06-27)
 
 - **Pager widgets render on the Android home screen.** The home-widget bitmap
