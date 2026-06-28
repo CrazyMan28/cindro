@@ -414,12 +414,13 @@ Item {
                                 var sel   = parent.parent.parent.parent._selected
                                 var msg   = _ncMsg.text.trim()
                                 if (sel.length === 0 || !msg) return
-                                var tool  = sel.length > 1 ? "start_group_chat" : "start_chat"
-                                var args  = sel.length > 1
-                                    ? { members: sel, message: msg }
-                                    : { extension: sel[0], message: msg }
-                                // TODO: start_chat / start_group_chat not yet in phoneMcp proxy
-                                tab.callTool(tool, args, function(r) { tab.refresh() })
+                                // Text the selected agent(s): notify_user_and_wait
+                                // routes a message to an extension's inbox + awaits a reply.
+                                for (var i = 0; i < sel.length; i++) {
+                                    tab.callTool("notify_user_and_wait",
+                                        { to_extension: sel[i], message: msg, title: "Message" },
+                                        function(r) { tab.refresh() })
+                                }
                                 tab.showNewChat = false
                             }
                         }
