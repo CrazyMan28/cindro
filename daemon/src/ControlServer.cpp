@@ -14,6 +14,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QStandardPaths>
 #include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -195,6 +196,10 @@ bool ControlServer::start()
     connect(m_deskIdleTimer, &QTimer::timeout, this, &ControlServer::sweepIdleDesktops);
     m_deskIdleTimer->start();
 
+    // Widget bus tail -> control-WS broadcast for opted-in clients (the Chrome
+    // extension). The desktop tails the file itself, so it never subscribes here.
+    startWidgetWatch();
+
     m_wsServer = new QWebSocketServer(QStringLiteral("jarvisd-control"),
                                       QWebSocketServer::NonSecureMode, this);
     connect(m_wsServer, &QWebSocketServer::newConnection,
@@ -252,6 +257,7 @@ void ControlServer::onSocketDisconnected()
     m_clients.remove(client);
     m_scopedClients.remove(client);
     m_subscriptions.remove(client);
+    m_widgetClients.remove(client);
     // Drop this desktop client's live-widget viewer leases so unwatched widgets idle.
     m_widgetLeases.clearSource(
         QStringLiteral("desktop:") + QString::number(reinterpret_cast<quintptr>(client), 16));
@@ -318,6 +324,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionSubscribe(client, req);
     else if (m == QStringLiteral("widget.viewing"))
         resp = handleWidgetViewing(client, req);
+    else if (m == QStringLiteral("widget.subscribe"))
+        resp = handleWidgetSubscribe(client, req);
     else if (m == QStringLiteral("approval.respond"))
         resp = handleApprovalRespond(req);
     else if (m == QStringLiteral("mcp.list"))
@@ -1077,19 +1085,44 @@ void ControlServer::syncTurnMemory(const QString &sessionId, const QString &user
 QString ControlServer::createSession(const QString &profile, const QString &brainName,
                                      const QString &model, const QString &cwd,
                                      const QString &title, QString *err,
-                                     const QString &target)
+                                     const QString &target, const QString &parentSessionId,
+                                     const QString &agent)
 {
+    // Custom-agent (subagent) resolution: when this session runs AS an agent,
+    // the agent definition supplies its brain/model/profile (unless the caller
+    // explicitly overrode them) and its system prompt is injected on turn 1.
+    QString effProfile = profile, effBrain = brainName, effModel = model;
+    QString agentName, agentPrompt;
+    if (!agent.trimmed().isEmpty()) {
+        auto adef = m_agents.get(agent.trimmed());
+        if (!adef) {
+            if (err)
+                *err = QStringLiteral("no such agent: ") + agent.trimmed();
+            return QString();
+        }
+        agentName = adef->fm.name;
+        agentPrompt = adef->systemPrompt;
+        if (effBrain.isEmpty() && !adef->fm.brain.isEmpty())
+            effBrain = adef->fm.brain;
+        if (effModel.isEmpty() && !adef->fm.model.isEmpty())
+            effModel = adef->fm.model;
+        if (effProfile.isEmpty() && !adef->fm.profile.isEmpty())
+            effProfile = adef->fm.profile;
+    }
+
     SessionRow row;
     row.id = genSessionId();
-    row.profile = profile.isEmpty() ? QStringLiteral("coder") : profile;
-    row.brain = brainName.isEmpty() ? m_config.defaultBrain : brainName;
+    row.parentSessionId = parentSessionId;
+    row.agent = agentName;
+    row.profile = effProfile.isEmpty() ? QStringLiteral("coder") : effProfile;
+    row.brain = effBrain.isEmpty() ? m_config.defaultBrain : effBrain;
     // BRAIN DEFAULT FIX: when the caller gives no model, pick the per-brain
     // default (the FIRST entry of modelsForBrain) — a claude brain gets a claude
     // model, an api brain a configured-provider model — NOT the global default
     // (gpt-5.5), which is only the right default for codex. Only fall back to the
     // global default_model when it actually belongs to this brain (i.e. codex).
-    if (!model.isEmpty()) {
-        row.model = model;
+    if (!effModel.isEmpty()) {
+        row.model = effModel;
     } else if (row.brain == QStringLiteral("codex") && !m_config.defaultModel.isEmpty()) {
         row.model = m_config.defaultModel;
     } else {
@@ -1105,6 +1138,10 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
             *err = m_store.lastError();
         return QString();
     }
+
+    // Stash the agent's system prompt so sendToSession injects it on turn 1.
+    if (!agentPrompt.trimmed().isEmpty())
+        m_sessionAgentPrompt.insert(row.id, agentPrompt.trimmed());
 
     // For a coworker session whose target is "agent" (the DEFAULT for coworker
     // mode), bring up an isolated nested desktop + a per-session computer-use
@@ -1426,9 +1463,22 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "it — and edit_memory / forget to keep it current. Use recall / list_memories "
             "to check what you already know before asking again.\n"
             "SKILLS: when you work out a repeatable procedure the user may want again, "
-            "CALL create_skill to save it as a reusable skill (and edit_skill to refine "
-            "it); list_skills / invoke_skill to reuse them. Build skills proactively when "
-            "it helps — don't wait to be told.\n"
+            "save it as a Jarvis skill — but you MUST use the create_skill MCP TOOL "
+            "(NOT your own CLI's skill files / not by writing to ~/.codex/skills or "
+            "~/.claude/skills yourself). Only create_skill registers it in Jarvis so it "
+            "shows in the Skills tab and is invokable everywhere; a file you write "
+            "directly will NOT appear. Use create_skill(name, description, body), "
+            "edit_skill to refine, list_skills / get_skill to inspect, remove_skill to "
+            "delete, invoke_skill(name, args) to run. Build skills proactively when it "
+            "helps — don't wait to be told.\n"
+            "AGENTS (subagents): you can DELEGATE a distinct sub-task to a specialized "
+            "agent. CALL agent_list to see your agents (each has a when_to_use telling you "
+            "WHEN to use it); agent_start(name, task) dispatches one (it runs as its own "
+            "child session and reports back), agent_status shows what's running, agent_stop "
+            "cancels one. CALL agent_create(name, description, when_to_use, system_prompt, …) "
+            "to define a new agent for a kind of work you keep doing (research, code review, "
+            "summarizing). Prefer dispatching the RIGHT agent over doing every sub-task "
+            "inline; build agents proactively.\n"
             "PLAN / TODO: for any task with 3+ steps (or when the user asks your plan), "
             "CALL todo_write with your step list up front — [{\"text\":\"…\",\"status\":"
             "\"pending|in_progress|done\"}] — then keep it current as you go (keep exactly "
@@ -1490,6 +1540,17 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
                         QStringLiteral("\n---\n") + effectiveText;
     }
 
+    // ONE-TIME agent role injection: if this session runs AS a custom agent, put
+    // its system prompt at the very FRONT of the first turn so it dominates.
+    if (m_sessionAgentPrompt.contains(sessionId) && !m_agentGuided.contains(sessionId)) {
+        m_agentGuided.insert(sessionId);
+        const QString ap = m_sessionAgentPrompt.value(sessionId);
+        if (!ap.trimmed().isEmpty())
+            effectiveText = QStringLiteral("[You are acting as a specialized agent. "
+                                           "Follow this role:]\n") +
+                            ap + QStringLiteral("\n---\n") + effectiveText;
+    }
+
     brain->send(effectiveText, images);
 
     // Memory SYNC (post-turn write of salient user facts). Cheap + synchronous;
@@ -1538,6 +1599,9 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_agentDesktops.releaseSession(sessionId);
     m_autoComputerSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
+    m_coworkGuided.remove(sessionId);
+    m_sessionAgentPrompt.remove(sessionId);
+    m_agentGuided.remove(sessionId);
     // 4) Drop the row + its event stream from the store.
     if (!m_store.deleteSession(sessionId)) {
         if (err)
@@ -1609,7 +1673,9 @@ Response ControlServer::handleSessionCreate(const Request &req)
         p.value(QStringLiteral("cwd")).toString(),
         p.value(QStringLiteral("title")).toString(),
         &err,
-        p.value(QStringLiteral("target")).toString());
+        p.value(QStringLiteral("target")).toString(),
+        p.value(QStringLiteral("parent_session_id")).toString(),
+        p.value(QStringLiteral("agent")).toString());
     if (sessionId.isEmpty())
         return Response::failure(req.id, QStringLiteral("session_create_failed"), err);
 
@@ -2763,12 +2829,100 @@ void ControlServer::broadcastSessionOpened(const QString &sessionId, const QStri
         client->sendTextMessage(payload);
 }
 
+// --- widget bus -> control-WS broadcast (Chrome extension) ------------------
+
+QString ControlServer::widgetsBusPath() const
+{
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    return (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share") : base)
+           + QStringLiteral("/jarvis/widgets.jsonl");
+}
+
+void ControlServer::startWidgetWatch()
+{
+    if (m_widgetTimer)
+        return;
+    // Start from EOF so old widgets from a previous run don't replay.
+    const QFileInfo fi(widgetsBusPath());
+    m_widgetOffset = fi.exists() ? fi.size() : 0;
+    m_widgetTimer = new QTimer(this);
+    m_widgetTimer->setInterval(500);
+    connect(m_widgetTimer, &QTimer::timeout, this, &ControlServer::readWidgetTail);
+    m_widgetTimer->start();
+}
+
+void ControlServer::readWidgetTail()
+{
+    if (m_widgetClients.isEmpty())   // nobody listening on the control WS -> skip
+        return;
+    QFile f(widgetsBusPath());
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    if (f.size() < m_widgetOffset)   // truncated/rotated -> restart
+        m_widgetOffset = 0;
+    if (!f.seek(m_widgetOffset))
+        return;
+    const QByteArray chunk = f.readAll();
+    m_widgetOffset = f.pos();
+
+    for (const QByteArray &lineRaw : chunk.split('\n')) {
+        const QByteArray line = lineRaw.trimmed();
+        if (line.isEmpty())
+            continue;
+        QJsonParseError perr;
+        const QJsonDocument d = QJsonDocument::fromJson(line, &perr);
+        if (perr.error != QJsonParseError::NoError || !d.isObject())
+            continue;
+        const QJsonObject o = d.object();
+        const QString op = o.value(QStringLiteral("op")).toString();
+        QJsonObject data;
+        QString eventName;
+        if (op == QStringLiteral("remove")) {
+            eventName = QStringLiteral("widget.remove");
+            data.insert(QStringLiteral("id"), o.value(QStringLiteral("id")).toString());
+        } else if (op == QStringLiteral("clear")) {
+            eventName = QStringLiteral("widget.clear");
+        } else {
+            if (!o.contains(QStringLiteral("spec")))
+                continue;
+            eventName = QStringLiteral("widget.render");
+            data.insert(QStringLiteral("id"), o.value(QStringLiteral("id")).toString());
+            data.insert(QStringLiteral("title"), o.value(QStringLiteral("title")).toString());
+            data.insert(QStringLiteral("spec"), o.value(QStringLiteral("spec")));
+            data.insert(QStringLiteral("target"), o.value(QStringLiteral("target")).toString());
+            data.insert(QStringLiteral("session_id"), o.value(QStringLiteral("session_id")).toString());
+        }
+        QJsonObject frame;
+        frame.insert(QStringLiteral("v"), 1);
+        frame.insert(QStringLiteral("event"), eventName);
+        frame.insert(QStringLiteral("data"), data);
+        const QString payload =
+            QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+        for (QWebSocket *client : std::as_const(m_widgetClients))
+            client->sendTextMessage(payload);
+    }
+}
+
+Response ControlServer::handleWidgetSubscribe(QWebSocket *client, const Request &req)
+{
+    const bool on = req.params.value(QStringLiteral("on")).toBool(true);
+    if (on)
+        m_widgetClients.insert(client);
+    else
+        m_widgetClients.remove(client);
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("subscribed"), on);
+    return Response::success(req.id, result);
+}
+
 // --- Contract A v3: memory + self-authored skills ---------------------------
 
 bool ControlServer::isMemoryOrSkillMethod(const QString &method)
 {
     return method.startsWith(QStringLiteral("memory.")) ||
-           method.startsWith(QStringLiteral("skills."));
+           method.startsWith(QStringLiteral("skills.")) ||
+           method.startsWith(QStringLiteral("agents."));
 }
 
 Response ControlServer::dispatchMemoryOrSkill(const Request &req)
@@ -2796,6 +2950,18 @@ Response ControlServer::dispatchMemoryOrSkill(const Request &req)
         return handleSkillsRemove(req);
     if (m == QStringLiteral("skills.today"))
         return handleSkillsToday(req);
+    if (m == QStringLiteral("agents.list"))
+        return handleAgentsList(req);
+    if (m == QStringLiteral("agents.get"))
+        return handleAgentsGet(req);
+    if (m == QStringLiteral("agents.create"))
+        return handleAgentsCreate(req);
+    if (m == QStringLiteral("agents.remove"))
+        return handleAgentsRemove(req);
+    if (m == QStringLiteral("agents.dispatch"))
+        return handleAgentsDispatch(req, /*remote=*/false);
+    if (m == QStringLiteral("agents.running"))
+        return handleAgentsRunning(req);
     return Response::failure(req.id, QStringLiteral("unknown_method"),
                              QStringLiteral("unknown method: ") + m);
 }
@@ -2891,7 +3057,9 @@ Response ControlServer::handleMemoryRemove(const Request &req)
 Response ControlServer::handleSkillsList(const Request &req)
 {
     QJsonArray arr;
-    for (const SkillRow &s : m_skills.list())
+    // listAll() also surfaces skills the model created via its CLI dirs, so a
+    // skill always shows up even if it wasn't made through create_skill.
+    for (const SkillRow &s : m_skills.listAll())
         arr.append(s.toListJson());
     QJsonObject result;
     result.insert(QStringLiteral("skills"), arr);
@@ -2970,6 +3138,134 @@ Response ControlServer::handleSkillsToday(const Request &req)
 {
     QJsonObject result;
     result.insert(QStringLiteral("digest"), buildTodayDigest());
+    return Response::success(req.id, result);
+}
+
+// --- custom agents (subagents) ---------------------------------------------
+
+Response ControlServer::handleAgentsList(const Request &req)
+{
+    QJsonArray arr;
+    for (const AgentRow &a : m_agents.list())
+        arr.append(a.toListJson());
+    QJsonObject result;
+    result.insert(QStringLiteral("agents"), arr);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleAgentsGet(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    AgentFrontmatter fm;
+    QString body, path;
+    if (!m_agents.read(name, &fm, &body, &path))
+        return Response::failure(req.id, QStringLiteral("no_agent"), m_agents.lastError());
+    QJsonObject result;
+    result.insert(QStringLiteral("frontmatter"), fm.toJson());
+    result.insert(QStringLiteral("system_prompt"), body);
+    result.insert(QStringLiteral("path"), path);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleAgentsCreate(const Request &req)
+{
+    const QJsonObject p = req.params;
+    const QString name = p.value(QStringLiteral("name")).toString();
+    if (name.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("name is required"));
+    // tools may be a JSON array or a comma-separated string.
+    QStringList tools;
+    for (const QJsonValue &t : p.value(QStringLiteral("tools")).toArray())
+        tools << t.toString();
+    if (tools.isEmpty() && p.value(QStringLiteral("tools")).isString()) {
+        for (const QString &t : p.value(QStringLiteral("tools")).toString()
+                                    .split(QLatin1Char(','), Qt::SkipEmptyParts))
+            tools << t.trimmed();
+    }
+    // The system prompt is `system_prompt` (preferred) or `body` (alias).
+    const QString systemPrompt = p.contains(QStringLiteral("system_prompt"))
+                                     ? p.value(QStringLiteral("system_prompt")).toString()
+                                     : p.value(QStringLiteral("body")).toString();
+    const QString path = m_agents.create(
+        name,
+        p.value(QStringLiteral("description")).toString(),
+        p.value(QStringLiteral("when_to_use")).toString(),
+        systemPrompt,
+        p.value(QStringLiteral("brain")).toString(),
+        p.value(QStringLiteral("model")).toString(),
+        p.value(QStringLiteral("profile")).toString(),
+        tools,
+        p.value(QStringLiteral("color")).toString());
+    if (path.isEmpty())
+        return Response::failure(req.id, QStringLiteral("write_error"), m_agents.lastError());
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("path"), path);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleAgentsRemove(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    if (!m_agents.remove(name))
+        return Response::failure(req.id, QStringLiteral("no_agent"), m_agents.lastError());
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleAgentsDispatch(const Request &req, bool remote)
+{
+    const QJsonObject p = req.params;
+    const QString agent = p.value(QStringLiteral("agent")).toString().trimmed();
+    const QString task = p.value(QStringLiteral("task")).toString();
+    const QString parent = p.value(QStringLiteral("parent_session_id")).toString();
+    if (agent.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("agent is required"));
+    if (task.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("task is required"));
+    // Spawn a CHILD session that runs AS the agent (its def supplies brain/model/
+    // profile + system prompt; parent_session_id links it for the SubAgentTree).
+    QString err;
+    const QString sid = createSession(
+        /*profile=*/QString(), /*brain=*/QString(), /*model=*/QString(),
+        /*cwd=*/p.value(QStringLiteral("cwd")).toString(),
+        /*title=*/agent, &err, /*target=*/QString(),
+        /*parentSessionId=*/parent, /*agent=*/agent);
+    if (sid.isEmpty())
+        return Response::failure(req.id, QStringLiteral("dispatch_failed"), err);
+    if (!sendToSession(sid, task, {}, &err))
+        return Response::failure(req.id, QStringLiteral("dispatch_send_failed"), err);
+    m_audit.record(QStringLiteral("agents.dispatch"), true, QStringLiteral("medium"),
+                   QStringLiteral("dispatched agent '%1'%2").arg(
+                       agent, remote ? QStringLiteral(" (remote)") : QString()));
+    QJsonObject result;
+    result.insert(QStringLiteral("session_id"), sid);
+    result.insert(QStringLiteral("agent"), agent);
+    if (!parent.isEmpty())
+        result.insert(QStringLiteral("parent_session_id"), parent);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleAgentsRunning(const Request &req)
+{
+    QJsonArray arr;
+    for (const SessionRow &s : m_store.list()) {
+        if (s.agent.isEmpty())
+            continue;
+        const bool live = m_brains.contains(s.id);
+        QJsonObject o = s.toJson();
+        o.insert(QStringLiteral("live"), live);
+        o.insert(QStringLiteral("running"),
+                 live && (s.state == QStringLiteral("running") ||
+                          s.state == QStringLiteral("starting")));
+        arr.append(o);
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("agents"), arr);
     return Response::success(req.id, result);
 }
 

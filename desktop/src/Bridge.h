@@ -126,6 +126,11 @@ public:
                                    const QString &brain,
                                    const QString &model);
 
+    // Start a fresh chat session that runs AS a custom agent: the daemon resolves
+    // the agent's brain/model/profile and injects its system prompt. Backs the
+    // "/agent <name>" slash command.
+    Q_INVOKABLE void startAgentChat(const QString &agent);
+
     // session.send for the current session.
     Q_INVOKABLE void sendMessage(const QString &text);
 
@@ -249,6 +254,23 @@ public:
     // skills.today -> todayDigest(digest). A short "what I'm working on today"
     // summary built from project-tracker + recent sessions/memories.
     Q_INVOKABLE void skillsToday();
+
+    // ---- Agents (custom subagents) -----------------------------------------
+    // agents.list -> agentsListed(QVariantList) — each {name,description,
+    // when_to_use,brain,model,profile,tools,color,path}.
+    Q_INVOKABLE void agentsList();
+    // agents.get { name } -> agentLoaded(name, frontmatter, systemPrompt, path).
+    Q_INVOKABLE void agentGet(const QString &name);
+    // agents.create — writes an AGENT.md; on success refreshes the list.
+    Q_INVOKABLE void agentCreate(const QString &name, const QString &description,
+                                 const QString &whenToUse, const QString &systemPrompt,
+                                 const QString &brain, const QString &model,
+                                 const QString &profile);
+    // agents.remove { name } -> on success refreshes the list.
+    Q_INVOKABLE void agentRemove(const QString &name);
+    // agents.dispatch { agent, task, parent_session_id? } -> agentDispatched(sid,agent).
+    // Spawns a child session that runs as the agent; opens to it on success.
+    Q_INVOKABLE void agentDispatch(const QString &name, const QString &task);
 
     // ---- Schedules (Contract A additions) ----------------------------------
     // schedule.list -> schedulesListed(QVariantList). Rows:
@@ -555,6 +577,17 @@ signals:
     // skills.today result.
     void todayDigest(const QString &digest);
 
+    // ---- Agents results (custom subagents) ---------------------------------
+    // Rows: {name,description,when_to_use,brain,model,profile,tools,color,path}.
+    void agentsListed(const QVariantList &agents);
+    // agents.get result.
+    void agentLoaded(const QString &name, const QVariantMap &frontmatter,
+                     const QString &systemPrompt, const QString &path);
+    // Emitted after create/remove so the page can re-query.
+    void agentsChanged();
+    // agents.dispatch result — the spawned child session id + agent name.
+    void agentDispatched(const QString &sessionId, const QString &agent);
+
     // ---- Schedules results --------------------------------------------------
     void schedulesListed(const QVariantList &schedules);
     void schedulesChanged();   // emitted after create/remove/set_enabled
@@ -739,6 +772,10 @@ private:
     void playTtsAudio(const QByteArray &audio, const QString &mime);
     void playNextTtsClip();
     void ensureTtsPlayer();
+    // Serialize voice.tts REQUESTS: only one is in flight at a time, so the audio
+    // is appended to m_ttsQueue in strict request order even if the daemon ever
+    // returned them out of order. pumpTtsRequests sends the next queued request.
+    void pumpTtsRequests();
 
     // ---- Sub-agent tree builder --------------------------------------------
     // Build an indented tree (depth + parent) from a flat session.list result.
@@ -875,6 +912,12 @@ private:
     // the single shared player used to interrupt itself, cutting sentences off.
     struct TtsClip { QByteArray audio; QString mime; };
     QList<TtsClip> m_ttsQueue;
+    // Pending TTS REQUESTS (text not yet sent), drained one at a time so the
+    // generated audio is appended to m_ttsQueue in strict order. `voiceMode`
+    // tags the voice-mode path (drives orb + hands-free resume).
+    struct TtsReq { QString text; bool voiceMode; };
+    QList<TtsReq> m_ttsReqQueue;
+    bool m_ttsReqInFlight = false;     // a voice.tts request is awaiting its reply
     bool m_ttsPlaying = false;         // a clip is currently on the player
     int m_ttsTmpSeq = 0;               // ping-pong temp-file index (avoid rewriting in-use path)
     // The dedicated voice session id (coworker/coder), so "what's on my screen"

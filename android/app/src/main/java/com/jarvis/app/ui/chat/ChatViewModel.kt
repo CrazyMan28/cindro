@@ -31,6 +31,9 @@ data class ChatUiState(
     /** Multi-select mode in the message list (long-press a bubble to enter). */
     val selecting: Boolean = false,
     val selected: Set<String> = emptySet(),
+    /** "/" command palette catalog (loaded lazily when the user types "/"). */
+    val slashAgents: List<com.jarvis.app.protocol.Agent> = emptyList(),
+    val slashSkills: List<com.jarvis.app.protocol.Skill> = emptyList(),
 )
 
 /**
@@ -179,10 +182,66 @@ class ChatViewModel(
     fun removeAttachment(previewUri: String) =
         _uiState.update { it.copy(pending = it.pending.filterNot { p -> p.previewUri == previewUri }) }
 
+    /** Lazily load the "/" palette catalog (agents + skills) the first time the
+     *  user opens it, so the dropdown has live data to filter. */
+    fun loadSlashCatalog() {
+        if (_uiState.value.slashAgents.isNotEmpty() || _uiState.value.slashSkills.isNotEmpty()) return
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.listAgents() } }
+                .onSuccess { a -> _uiState.update { it.copy(slashAgents = a) } }
+        }
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.listSkills() } }
+                .onSuccess { s -> _uiState.update { it.copy(slashSkills = s) } }
+        }
+    }
+
+    /** Handle a "/"-prefixed message. Returns true if it was a slash command (so
+     *  send() shouldn't also forward it as plain chat text). "/dispatch <agent>
+     *  <task>" spawns a subagent; "/<skill> <args>" invokes a skill and sends its
+     *  rendered text; "/clear" just drops the draft. */
+    private fun handleSlash(t: String): Boolean {
+        val parts = t.split(Regex("\\s+"))
+        val cmd = parts.firstOrNull().orEmpty()
+        val rest = t.removePrefix(cmd).trim()
+        when (cmd) {
+            "/clear" -> return true
+            "/dispatch" -> {
+                val agent = parts.getOrNull(1).orEmpty()
+                val task = rest.removePrefix(agent).trim()
+                if (agent.isNotBlank() && task.isNotBlank()) {
+                    viewModelScope.launch {
+                        runCatching { withContext(Dispatchers.IO) { repo.dispatchAgent(agent, task, _uiState.value.sessionId) } }
+                            .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+                    }
+                }
+                return true
+            }
+            else -> {
+                val name = cmd.removePrefix("/")
+                if (name.isBlank()) return false
+                // Treat "/name args" as a skill invocation: render it, then send the
+                // rendered text as the turn so the model acts on it.
+                viewModelScope.launch {
+                    runCatching { withContext(Dispatchers.IO) { repo.invokeSkillText(name, rest) } }
+                        .onSuccess { msg -> if (msg.isNotBlank()) send(msg) }
+                        .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+                }
+                return true
+            }
+        }
+    }
+
     fun send(text: String) {
         val trimmed = text.trim()
         val images = _uiState.value.pending
         if (trimmed.isEmpty() && images.isEmpty()) return
+
+        // Slash command? Consume it (dispatch a subagent / invoke a skill / clear).
+        if (trimmed.startsWith("/") && handleSlash(trimmed)) {
+            _uiState.update { it.copy(pending = emptyList()) }
+            return
+        }
 
         // Light tick on send (ChatGPT-style).
         haptics.send(appPrefs.hapticsEnabled)

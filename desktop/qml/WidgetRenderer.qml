@@ -306,6 +306,8 @@ Item {
             font.pixelSize: root.numOr(root.node ? root.node.size : undefined, 14)
             font.bold: root.node ? root.node.bold === true : false
             font.italic: root.node ? root.node.italic === true : false
+            // strike: a line THROUGH the text (used for done plan/TODO items).
+            font.strikeout: root.node ? root.node.strike === true : false
             font.weight: (root.node && root.node.weight !== undefined && !isNaN(Number(root.node.weight)))
                          ? Number(root.node.weight)
                          : (root.node && root.node.bold === true ? Font.DemiBold : Font.Normal)

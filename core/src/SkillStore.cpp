@@ -251,6 +251,56 @@ QVector<SkillRow> SkillStore::list()
     return out;
 }
 
+QVector<SkillRow> SkillStore::listAll()
+{
+    QVector<SkillRow> out = list();   // the Jarvis library (root())
+    QSet<QString> seen;
+    for (const SkillRow &r : out)
+        seen.insert(r.fm.name.toLower());
+
+    // Also scan the CLI brains' skill dirs so a skill the model created there
+    // (instead of via create_skill) still appears. Jarvis copies win (dedup).
+    const QStringList cliRoots = {codexSkillsRoot(), claudeSkillsRoot()};
+    for (const QString &cliRoot : cliRoots) {
+        QDir dir(cliRoot);
+        if (!dir.exists())
+            continue;
+        QDirIterator it(cliRoot, QStringList{QStringLiteral("SKILL.md")}, QDir::Files,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            const QString path = it.next();
+            QFile f(path);
+            if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+                continue;
+            const QString text = QString::fromUtf8(f.readAll());
+            f.close();
+            SkillFrontmatter fm;
+            QString body;
+            parse(text, &fm, &body);
+            const QDir skillDir = QFileInfo(path).absoluteDir();
+            if (fm.name.isEmpty())
+                fm.name = skillDir.dirName();
+            if (seen.contains(fm.name.toLower()))
+                continue;   // already in the Jarvis library
+            seen.insert(fm.name.toLower());
+            if (fm.group.isEmpty()) {
+                const QString parent = QFileInfo(skillDir.absolutePath()).absoluteDir().dirName();
+                fm.group = parent;
+            }
+            SkillRow row;
+            row.fm = fm;
+            row.path = path;
+            out.push_back(row);
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const SkillRow &a, const SkillRow &b) {
+        if (a.fm.group != b.fm.group)
+            return a.fm.group < b.fm.group;
+        return a.fm.name < b.fm.name;
+    });
+    return out;
+}
+
 std::optional<SkillRow> SkillStore::get(const QString &name)
 {
     const QString want = name.trimmed();

@@ -22,21 +22,34 @@ Item {
     // event and the turn's "final"/"error"). Drives the composer's Stop button.
     property bool busy: false
 
-    // In-chat agent peek (a live view of the nested desktop / chrome tab, right) +
-    // transcript search (top). The peek auto-opens when Jarvis starts driving its
-    // desktop / a co-worker spins up — replaces the old Browser tab.
-    readonly property bool agentActive: bridge.driving || bridge.coworkerSessionId.length > 0
-                                        || bridge.hasAgentDesktop
+    // In-chat right-side panel: the model's PLAN/checklist (top) stacked ON TOP of
+    // a live view of the nested agent desktop / chrome tab (below). It auto-opens
+    // ONLY when there's something to show — a TODO/plan was created, OR an agent
+    // desktop is actually in use (real-screen take-over / an explicit co-work) —
+    // NOT merely because a session lazily provisioned a desktop (that fired on the
+    // first message, which the user found too eager). The manual "▣ Watch" button
+    // still opens it anytime to watch the desktop.
+    readonly property bool agentDeskActive: bridge.driving || bridge.coworkerSessionId.length > 0
+    // Whether the live agent-desktop view should render at all (a desktop exists).
+    readonly property bool showDesktop: bridge.hasAgentDesktop || bridge.driving
+                                        || bridge.coworkerSessionId.length > 0
     property bool peekOpen: false
     property real peekWidth: 320      // user-resizable (drag the left edge)
     property bool peekResizing: false
     property bool chatSearchOpen: false
-    // The model's live plan/checklist (todo_write). Routed to a dedicated
-    // animated PLAN panel instead of cluttering the transcript.
+    // The model's live plan/checklist (todo_write). Routed to the right-side panel
+    // (PLAN card on top of the desktop view) instead of cluttering the transcript.
     property string todoSpec: ""
     property bool todoOpen: true
-    onAgentActiveChanged: if (agentActive) peekOpen = true
+    readonly property bool hasPlan: panel.todoSpec.length > 0
+    // Auto-open the panel on a new plan OR when an agent desktop becomes active.
+    onHasPlanChanged: if (hasPlan) peekOpen = true
+    onAgentDeskActiveChanged: if (agentDeskActive) peekOpen = true
     signal requestComputerPage()   // peek "Full" -> Computer page (AppShell wires it)
+    // Slash-command navigation requests (AppShell wires these to page switches).
+    signal requestVoice()
+    signal requestAgents()
+    signal requestSkills()
 
     property var searchMatches: []
     property int searchIndex: 0
@@ -78,21 +91,60 @@ Item {
     // Whimsical "working" status — a spinning mark + a rotating funny phrase shown
     // while busy (Claude-Code flavored). Pure cosmetics.
     property var thinkingPhrases: [
-        "Conquering the world", "Just chillin", "Pondering the universe",
-        "Cooking", "Summoning electrons", "Reticulating splines",
-        "Bending spacetime", "Consulting the oracle", "Doing crimes (legal ones)",
-        "Vibing", "Untangling the matrix", "Herding photons",
-        "Caffeinating neurons", "Computing the meaning of life", "Manifesting",
-        "Hacking the mainframe", "Plotting world domination", "Aligning the stars",
-        "Overthinking it", "Galaxy-braining", "Locking in"
+        "Conquering the world", "Just chillin", "Pondering the universe", "Cooking", "Summoning electrons",
+        "Reticulating splines", "Bending spacetime", "Consulting the oracle", "Doing crimes (legal ones)", "Vibing",
+        "Untangling the matrix", "Herding photons", "Caffeinating neurons", "Computing the meaning of life", "Manifesting",
+        "Hacking the mainframe", "Plotting world domination", "Aligning the stars", "Overthinking it", "Galaxy-braining",
+        "Locking in", "Spinning up the hamster wheel", "Bribing the compiler", "Negotiating with the GPU", "Untangling spaghetti code",
+        "Counting to infinity (twice)", "Dividing by almost-zero", "Asking the rubber duck", "Polishing the pixels", "Warming up the flux capacitor",
+        "Rerouting the neutrinos", "Feeding the neural net", "Petting the algorithm", "Convincing the linter", "Wrangling tensors",
+        "Buffering enthusiasm", "Defragmenting thoughts", "Compiling brilliance", "Loading the vibes", "Tuning the antennae",
+        "Charging the arc reactor", "Greasing the gears", "Whispering to the kernel", "Consulting ancient scrolls", "Brewing more coffee",
+        "Sharpening the pencils", "Rolling for initiative", "Aligning the chakras", "Untwisting the logic", "Counting electrons",
+        "Stretching before the sprint", "Booting the brain cells", "Summoning the muse", "Crunching the numbers", "Cross-referencing the cosmos",
+        "Tickling the transistors", "Asking nicely", "Reading the fine print", "Triangulating the answer", "Synthesizing wisdom",
+        "Doing the math (carrying the one)", "Politely arguing with physics", "Folding the proteins", "Dusting off the manual", "Calibrating the vibes",
+        "Reverse-engineering reality", "Threading the needle", "Untangling the headphones", "Chasing the bug", "Following the breadcrumbs",
+        "Connecting the dots", "Spinning plates", "Juggling chainsaws (safely)", "Pondering orbs", "Decrypting the universe",
+        "Loading the enthusiasm", "Looking busy", "Pretending to think", "Actually thinking", "Thinking very hard",
+        "Doing a little dance", "Consulting the spreadsheet", "Counting sheep (the smart ones)", "Rebooting the imagination", "Stacking the bytes",
+        "Optimizing the optimizer", "Refactoring the cosmos", "Untangling causality", "Negotiating with entropy", "Bargaining with the deadline",
+        "Warming the tubes", "Spooling up", "Engaging warp drive", "Plotting a course", "Scanning the horizon",
+        "Reading the room", "Doing recon", "Gathering intel", "Assembling the squad", "Sharpening the axe",
+        "Filing the paperwork", "Stamping the forms", "Convincing myself", "Double-checking twice", "Triple-checking once",
+        "Measuring twice, cutting once", "Untying the Gordian knot", "Solving for x", "Carrying the remainder", "Rounding up the usual suspects",
+        "Herding cats", "Counting the cats", "Naming the cats", "Befriending the firewall", "Sweet-talking the database",
+        "Coaxing the cache", "Flattering the framework", "Whittling the wood", "Sketching the blueprint", "Drafting the masterplan",
+        "Consulting my notes", "Remembering where I put it", "Finding the thing", "Locating the other thing", "Cross-stitching the logic",
+        "Knitting the threads", "Weaving the tapestry", "Tightening the bolts", "Oiling the joints", "Spinning the dials",
+        "Flipping the switches", "Pulling the levers", "Pressing the big red button (carefully)", "Reading the tea leaves", "Shaking the magic 8-ball",
+        "Rolling the dice", "Drawing the cards", "Casting the runes", "Channeling the energy", "Focusing the beam",
+        "Adjusting the dials", "Fine-tuning the model", "Annealing the network", "Backpropagating vibes", "Gradient-descending",
+        "Climbing the loss landscape", "Escaping a local minimum", "Avoiding the saddle point", "Embedding the meaning", "Tokenizing the thoughts",
+        "Attention is all I need", "Sampling the distribution", "Lowering the temperature", "Raising the stakes", "Doubling down",
+        "Hedging my bets", "Reading ahead", "Skipping to the good part", "Saving the best for last", "Connecting to the hive mind",
+        "Pinging the satellites", "Bouncing off the moon", "Phoning a friend", "Asking the audience", "Going with my gut",
+        "Trusting the process", "Embracing the chaos", "Taming the chaos", "Befriending the chaos", "Surfing the data stream",
+        "Riding the wave", "Catching the current", "Sailing the seven C's", "Charting the unknown", "Mapping the territory",
+        "Drawing the map", "Folding the map", "Reading the compass", "Finding true north", "Recalculating the route",
+        "Taking the scenic path", "Avoiding the traffic", "Beating the rush", "Catching the train of thought", "Boarding the idea express",
+        "Connecting the flights", "Packing light", "Checking the luggage", "Going through customs", "Stamping the passport",
+        "Touching grass (virtually)", "Stretching the legs", "Taking a deep breath", "Centering myself", "Finding my zen",
+        "Channeling my inner genius", "Unleashing the kraken", "Releasing the hounds", "Wrapping it up", "Sprinkling in some magic"
     ]
     property string thinkingPhrase: thinkingPhrases[0]
+    // A RANDOM interval each time (not a fixed beat) so the quips drift in
+    // organically — feels alive, like Claude Code / Codex.
+    function randPhraseMs() { return 5000 + Math.floor(Math.random() * 9000) }
     Timer {
-        interval: 2400; repeat: true; running: panel.busy
-        onRunningChanged: if (running) thinkRoll.triggered()
         id: thinkRoll
-        onTriggered: panel.thinkingPhrase =
-            panel.thinkingPhrases[Math.floor(Math.random() * panel.thinkingPhrases.length)]
+        interval: 7000; repeat: true; running: panel.busy
+        onRunningChanged: if (running) { interval = panel.randPhraseMs(); thinkRoll.triggered() }
+        onTriggered: {
+            panel.thinkingPhrase =
+                panel.thinkingPhrases[Math.floor(Math.random() * panel.thinkingPhrases.length)]
+            interval = panel.randPhraseMs()   // reschedule the NEXT change at a random time
+        }
     }
     // Default model is gpt-5.5 (gpt-5-codex is rejected HTTP 400 by this codex login).
     property var modelOptions: ["gpt-5.5", "gpt-5", "o4-mini", "claude-sonnet-4.5", "claude-opus-4.5"]
@@ -1085,6 +1137,18 @@ Item {
                 Behavior on opacity { NumberAnimation { duration: 140 } }
             }
 
+            // ---- "/" command palette (rises above the composer) -------------
+            SlashPalette {
+                id: slashPalette
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.top
+                anchors.bottomMargin: 8
+                height: Math.min(340, panel.height - 120)
+                cardWidth: width
+                onPick: function(item) { panel.onSlashPick(item) }
+            }
+
             RowLayout {
                 anchors.fill: parent
                 anchors.leftMargin: 16
@@ -1113,9 +1177,28 @@ Item {
                         background: null
                         verticalAlignment: TextArea.AlignVCenter
 
+                        onTextChanged: panel.updateSlash()
+
+                        // While the "/" palette is open, Up/Down move the selection,
+                        // Tab/Enter accept it, Esc closes it — handled here so the
+                        // TextArea keeps focus (and keeps filtering as you type). We
+                        // only accept the keys we use, so normal editing is intact
+                        // when the palette is closed.
+                        Keys.onPressed: function(event) {
+                            if (!slashPalette.open)
+                                return
+                            if (event.key === Qt.Key_Down) { slashPalette.moveDown(); event.accepted = true }
+                            else if (event.key === Qt.Key_Up) { slashPalette.moveUp(); event.accepted = true }
+                            else if (event.key === Qt.Key_Tab) { slashPalette.accept(); event.accepted = true }
+                            else if (event.key === Qt.Key_Escape) { slashPalette.hide(); event.accepted = true }
+                        }
+
                         Keys.onReturnPressed: function(event) {
                             if (event.modifiers & Qt.ShiftModifier) {
                                 event.accepted = false  // newline
+                            } else if (slashPalette.open && slashPalette.resultList.length > 0) {
+                                event.accepted = true
+                                slashPalette.accept()   // pick the highlighted entry
                             } else {
                                 event.accepted = true
                                 panel.submit()
@@ -1362,17 +1445,67 @@ Item {
                 Layout.fillWidth: true
                 spacing: 7
                 Rectangle { Layout.alignment: Qt.AlignVCenter; width: 6; height: 6; radius: 3
-                    color: bridge.driving ? Theme.danger : Theme.success }
-                Text { text: bridge.driving ? "Jarvis is driving" : "Agent desktop"
+                    color: bridge.driving ? Theme.danger
+                           : (panel.showDesktop ? Theme.success : Theme.accent) }
+                Text { text: bridge.driving ? "Jarvis is driving"
+                             : (panel.showDesktop ? "Agent desktop" : "Plan")
                     color: Theme.text; font.family: Theme.fontDisplay; font.pixelSize: 11; font.weight: Font.DemiBold }
                 Item { Layout.fillWidth: true }
                 Text { text: "✕"; color: Theme.textMuted; font.pixelSize: 13
                     MouseArea { anchors.fill: parent; anchors.margins: -6
                         cursorShape: Qt.PointingHandCursor; onClicked: panel.peekOpen = false } }
             }
-            AgentPeek { Layout.fillWidth: true; Layout.fillHeight: true }
+
+            // ---- PLAN card (the model's live todo/checklist) — ON TOP --------
+            Rectangle {
+                id: planCard
+                Layout.fillWidth: true
+                visible: panel.hasPlan
+                implicitHeight: panel.todoOpen ? (planCol.implicitHeight + 18) : 32
+                radius: Theme.radius
+                color: Theme.surface
+                border.width: 1; border.color: Theme.accentDim
+                clip: true
+                Behavior on implicitHeight { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                ColumnLayout {
+                    id: planCol
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    anchors.margins: 9
+                    spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text { text: "📋  PLAN"; color: Theme.accentBright; font.family: Theme.fontDisplay
+                            font.pixelSize: 10; font.letterSpacing: 1.4; font.weight: Font.DemiBold }
+                        Item { Layout.fillWidth: true }
+                        // collapse / expand the checklist (keeps the card header)
+                        Text { text: "▸"; color: Theme.textMuted; font.pixelSize: 13
+                            rotation: panel.todoOpen ? 90 : 0
+                            Behavior on rotation { NumberAnimation { duration: 150 } }
+                            MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor
+                                onClicked: panel.todoOpen = !panel.todoOpen } }
+                        Text { text: "✕"; color: Theme.textMuted; font.pixelSize: 12; Layout.leftMargin: 8
+                            MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor
+                                onClicked: panel.todoSpec = "" } }       // dismiss the plan
+                    }
+                    WidgetRenderer {
+                        Layout.fillWidth: true
+                        visible: panel.todoOpen
+                        node: { try { return JSON.parse(panel.todoSpec) } catch (e) { return ({}) } }
+                    }
+                }
+            }
+
+            // ---- live agent-desktop view (BELOW the plan) -------------------
+            AgentPeek {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                visible: panel.showDesktop
+            }
+            // When there's no desktop (plan-only), keep the plan pinned to the top.
+            Item { Layout.fillWidth: true; Layout.fillHeight: true; visible: !panel.showDesktop }
+
             RowLayout {
                 spacing: 8
+                visible: panel.showDesktop
                 Widgets.PillButton { label: "⛶ Full"; onClicked: panel.requestComputerPage() }
                 Widgets.PillButton { visible: bridge.driving; label: "■ Stop"
                     onClicked: bridge.takeOverCancel() }
@@ -1380,89 +1513,8 @@ Item {
         }
     }
 
-    // ---- PLAN panel (the model's live todo/checklist) ----------------------
-    // A floating, animated card at the top-right of the chat (left of the peek
-    // when that's open). Pops out when Jarvis updates its plan; collapses to a
-    // small "PLAN" pill. Not "watch" — this is the agent's plan.
-    Item {
-        id: planPanel
-        visible: panel.todoSpec.length > 0
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.topMargin: 10
-        anchors.rightMargin: 16 + (panel.peekOpen ? panel.peekWidth + 22 : 0)
-        width: panel.todoOpen ? 300 : planPill.implicitWidth
-        height: panel.todoOpen ? planCard.implicitHeight : 30
-        z: 50
-
-        Behavior on width { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
-        Behavior on height { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
-        // pop-in
-        opacity: 0
-        transform: Translate { id: planRise; y: -8 }
-        onVisibleChanged: if (visible) planIn.restart()
-        ParallelAnimation {
-            id: planIn
-            NumberAnimation { target: planPanel; property: "opacity"; from: 0; to: 1; duration: 240 }
-            NumberAnimation { target: planRise; property: "y"; from: -8; to: 0; duration: 260; easing.type: Easing.OutCubic }
-        }
-
-        // collapsed pill
-        Rectangle {
-            id: planPill
-            visible: !panel.todoOpen
-            anchors.right: parent.right; anchors.top: parent.top
-            implicitWidth: pillRow.implicitWidth + 22
-            height: 30; radius: 15
-            color: pillMa.containsMouse ? Theme.surfaceStrong : Theme.surface
-            border.width: 1; border.color: Theme.accentDim
-            Row {
-                id: pillRow; anchors.centerIn: parent; spacing: 7
-                Text { anchors.verticalCenter: parent.verticalCenter; text: "📋"; font.pixelSize: 12 }
-                Text { anchors.verticalCenter: parent.verticalCenter; text: "PLAN"
-                    color: Theme.accentBright; font.family: Theme.fontDisplay; font.pixelSize: 10
-                    font.letterSpacing: 1.4; font.weight: Font.DemiBold }
-            }
-            MouseArea { id: pillMa; anchors.fill: parent; hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor; onClicked: panel.todoOpen = true }
-        }
-
-        // expanded card
-        Rectangle {
-            id: planCard
-            visible: panel.todoOpen
-            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-            implicitHeight: planCol.implicitHeight + 18
-            radius: Theme.radius
-            color: Theme.surface
-            border.width: 1; border.color: Theme.accentDim
-            clip: true
-            layer.enabled: true
-            layer.effect: MultiEffect { shadowEnabled: true; shadowColor: "#000000"; shadowBlur: 0.8; shadowVerticalOffset: 10 }
-            ColumnLayout {
-                id: planCol
-                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                anchors.margins: 9
-                spacing: 6
-                RowLayout {
-                    Layout.fillWidth: true
-                    Text { text: "📋  PLAN"; color: Theme.accentBright; font.family: Theme.fontDisplay
-                        font.pixelSize: 10; font.letterSpacing: 1.4; font.weight: Font.DemiBold }
-                    Item { Layout.fillWidth: true }
-                    Text { text: "▸"; color: Theme.textMuted; font.pixelSize: 13; rotation: 90
-                        MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor
-                            onClicked: panel.todoOpen = false } }   // collapse
-                    Text { text: "✕"; color: Theme.textMuted; font.pixelSize: 12; Layout.leftMargin: 8
-                        MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor
-                            onClicked: panel.todoSpec = "" } }       // dismiss
-                }
-                WidgetRenderer {
-                    Layout.fillWidth: true
-                    node: { try { return JSON.parse(panel.todoSpec) } catch (e) { return ({}) } }
-                }
-            }
-        }
-    }
+    // (The PLAN card now lives INSIDE the right-side peek panel, stacked on top of
+    // the agent-desktop view — see peekPanel above.)
 
     // Inject a plain user message into the transcript and send it (e.g. a CANVAS
     // widget `button` whose action is {"send":"…"}). Creates a session first if
@@ -1520,11 +1572,100 @@ Item {
         chatView.positionViewAtEnd()
     }
 
+    // ---- Slash commands ("/" palette) --------------------------------------
+    // Recompute the palette state as the user types. Open it only while typing a
+    // command WORD (text starts with "/" and has no space yet); a space means the
+    // user moved on to args, so close it.
+    function updateSlash() {
+        var t = inputArea.text
+        if (t.length > 0 && t.charAt(0) === "/" && t.indexOf(" ") === -1) {
+            if (!slashPalette.open) slashPalette.refresh()
+            slashPalette.query = t.substring(1)
+            slashPalette.open = true
+        } else {
+            slashPalette.open = false
+        }
+    }
+
+    // The palette emitted pick(item): a command runs; an agent/skill fills the input.
+    function onSlashPick(item) {
+        if (!item) return
+        if (item.kind === "command") {
+            panel.runSlashCommand(item.value)
+        } else {
+            // agent -> "/dispatch <name> "; skill -> "/<name> " (user types args/task)
+            inputArea.text = item.value
+            inputArea.cursorPosition = inputArea.text.length
+            inputArea.forceActiveFocus()
+            slashPalette.open = false
+        }
+    }
+
+    // A built-in command picked from the palette: immediate ones run now; ones that
+    // take an argument get their prefix dropped into the input for the user.
+    function runSlashCommand(value) {
+        var v = ("" + value).trim()
+        var cmd = v.split(/\s+/)[0]
+        if (cmd === "/new" || cmd === "/clear") { panel.startNewChat(); slashPalette.open = false; return }
+        if (cmd === "/voice")  { panel.requestVoice();  inputArea.text = ""; slashPalette.open = false; return }
+        if (cmd === "/agents") { panel.requestAgents(); inputArea.text = ""; slashPalette.open = false; return }
+        if (cmd === "/skills") { panel.requestSkills(); inputArea.text = ""; slashPalette.open = false; return }
+        if (cmd === "/help")   { inputArea.text = "/"; inputArea.cursorPosition = 1; slashPalette.refresh(); slashPalette.query = ""; slashPalette.open = true; return }
+        // /model /brain /dispatch /agent /resume — need an argument: prefill prefix.
+        inputArea.text = cmd + " "
+        inputArea.cursorPosition = inputArea.text.length
+        inputArea.forceActiveFocus()
+        slashPalette.open = false
+    }
+
+    // Handle a submitted "/..." line. Returns true if it was a slash command (so
+    // submit() doesn't also send it as chat text). Unknown "/word" => invoke a skill.
+    function handleSlashSubmit(t) {
+        var parts = t.split(/\s+/)
+        var cmd = parts[0]
+        var rest = t.substring(cmd.length).trim()
+        switch (cmd) {
+        case "/new": case "/clear": panel.startNewChat(); return true
+        case "/voice":  panel.requestVoice();  return true
+        case "/agents": panel.requestAgents(); return true
+        case "/skills": panel.requestSkills(); return true
+        case "/help":   inputArea.text = "/"; slashPalette.refresh(); slashPalette.query = ""; slashPalette.open = true; return true
+        case "/model":  if (rest.length > 0) panel.selectedModel = rest; return true
+        case "/brain":  if (rest.length > 0) panel.selectBrain(rest); return true
+        case "/resume": if (rest.length > 0) bridge.openSession(rest); return true
+        case "/agent":
+            if (parts.length > 1 && parts[1].length > 0) {
+                panel.pendingNewSession = true
+                bridge.startAgentChat(parts[1])
+            }
+            return true
+        case "/dispatch": {
+            var a = parts.length > 1 ? parts[1] : ""
+            var task = rest.substring(a.length).trim()
+            if (a.length > 0 && task.length > 0)
+                bridge.agentDispatch(a, task)
+            return true
+        }
+        default:
+            // Not a builtin -> treat "/name args" as a skill invocation.
+            var name = cmd.substring(1)
+            if (name.length > 0) { bridge.skillInvoke(name, rest); return true }
+            return false
+        }
+    }
+
     // ---- Actions -----------------------------------------------------------
     function submit() {
         var t = inputArea.text.trim()
         if (t.length === 0 || !bridge.connected)
             return
+
+        // Slash command? Consume it (run / navigate / invoke skill) and stop.
+        if (t.charAt(0) === "/" && panel.handleSlashSubmit(t)) {
+            inputArea.text = ""
+            slashPalette.open = false
+            return
+        }
 
         // First message creates a session (coder profile, selected brain + model).
         // Flag the create so the reconciler ADOPTS the new id instead of wiping the

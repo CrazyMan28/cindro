@@ -71,6 +71,31 @@ def test_widget_spec_has_row_per_item_and_progress(todo_env):
     assert "1/3" in flat
 
 
+def test_done_items_are_struck_through(todo_env):
+    items = tools_todo.normalize_items([
+        {"text": "finished", "status": "done"},
+        {"text": "ongoing", "status": "in_progress"},
+        {"text": "later", "status": "pending"},
+    ])
+    spec = tools_todo.todo_widget_spec(items)
+
+    # Walk the spec and collect the text node for each item label.
+    def text_nodes(node):
+        out = []
+        if isinstance(node, dict):
+            if node.get("type") == "text":
+                out.append(node)
+            for ch in node.get("children", []) or []:
+                out.extend(text_nodes(ch))
+        return out
+
+    by_text = {n.get("text"): n for n in text_nodes(spec)}
+    # Done -> struck through; non-done -> not struck.
+    assert by_text["finished"].get("strike") is True
+    assert by_text["ongoing"].get("strike") is False
+    assert by_text["later"].get("strike") is False
+
+
 def test_write_emits_checklist_to_widget_bus(todo_env):
     tools_todo.write_todos([
         {"text": "alpha", "status": "done"},

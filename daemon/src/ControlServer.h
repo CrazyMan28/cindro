@@ -21,6 +21,7 @@
 #include "jarvis/PairingManager.h"
 #include "jarvis/PluginRegistry.h"
 #include "jarvis/PluginSandbox.h"
+#include "jarvis/AgentStore.h"
 #include "jarvis/Protocol.h"
 #include "jarvis/Scheduler.h"
 #include "jarvis/SessionStore.h"
@@ -78,6 +79,7 @@ public:
     AgentDesktop &agentDesktops() { return m_agentDesktops; }
     MemoryStore &memory() { return m_memory; }
     SkillStore &skills() { return m_skills; }
+    AgentStore &agents() { return m_agents; }
     Scheduler &scheduler() { return m_scheduler; }
     SshAllowList &sshAllow() { return m_sshAllow; }
     AuditLog &audit() { return m_audit; }
@@ -140,7 +142,9 @@ public:
     QString createSession(const QString &profile, const QString &brain,
                           const QString &model, const QString &cwd,
                           const QString &title, QString *err,
-                          const QString &target = QString());
+                          const QString &target = QString(),
+                          const QString &parentSessionId = QString(),
+                          const QString &agent = QString());
 
     // target="real" take-over: after a biometric approval the agent drives the
     // user's ACTIVE real session via the global :8794 engine. requestTakeOver
@@ -319,6 +323,16 @@ private:
     Response handleSkillsRemove(const Request &req);
     Response handleSkillsToday(const Request &req);
 
+    // Custom agents (subagents): definitions CRUD + dispatch a task to a child
+    // session that runs as the agent (parent_session_id links it). agents.running
+    // lists active child sessions; stop reuses session.cancel.
+    Response handleAgentsList(const Request &req);
+    Response handleAgentsGet(const Request &req);
+    Response handleAgentsCreate(const Request &req);
+    Response handleAgentsRemove(const Request &req);
+    Response handleAgentsDispatch(const Request &req, bool remote = false);
+    Response handleAgentsRunning(const Request &req);
+
     // Wave 8: scheduler (cron/at) — schedule.create/list/set_enabled/remove.
     Response handleScheduleCreate(const Request &req);
     Response handleScheduleList(const Request &req);
@@ -442,6 +456,9 @@ private:
     // turn and synced after; skills are invokable + self-authoring.
     MemoryStore m_memory;
     SkillStore m_skills;
+    // Custom agents (subagents): user/model-defined AGENT.md files. A dispatched
+    // agent runs as a child session; its system prompt is injected on turn 1.
+    AgentStore m_agents;
 
     // Wave 8 co-worker ops backend: cron/at scheduler (fires session.create+send
     // via a QTimer tick), the SSH allow-list (gated ssh.exec), the audit log
@@ -463,6 +480,10 @@ private:
     QHash<QString, HeldTurn> m_pendingTurns;
     // Sessions that have already received the one-time co-work guidance preamble.
     QSet<QString> m_coworkGuided;
+    // Per-session custom-agent system prompt (set when a session runs AS an agent)
+    // and the set of sessions that have already had it injected (turn 1 only).
+    QHash<QString, QString> m_sessionAgentPrompt;
+    QSet<QString> m_agentGuided;
 
     // Wave 5: per-coworker(agent) nested desktops + their bound engines.
     AgentDesktop m_agentDesktops{AgentDesktop::Options{}};
@@ -490,6 +511,16 @@ private:
     // This is the fix for "a Chrome co-work session shows up in the desktop chat".
     QSet<QWebSocket *> m_scopedClients;
     QHash<QWebSocket *, QSet<QString>> m_subscriptions;
+    // Control clients that OPT IN to widget.render/remove/clear over the control
+    // WS (the Chrome extension). The desktop NEVER subscribes — it tails the
+    // widgets.jsonl file directly — so it never double-renders. Empty by default.
+    QSet<QWebSocket *> m_widgetClients;
+    QTimer *m_widgetTimer = nullptr;
+    qint64 m_widgetOffset = 0;
+    void startWidgetWatch();
+    void readWidgetTail();
+    QString widgetsBusPath() const;
+    Response handleWidgetSubscribe(QWebSocket *client, const Request &req);
     // sessionId -> live brain.
     QHash<QString, Brain *> m_brains;
 };

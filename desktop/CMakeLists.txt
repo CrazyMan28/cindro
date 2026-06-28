@@ -48,6 +48,8 @@ qt_add_qml_module(jarvis-sidebar
         qml/PluginsPage.qml
         qml/MemoryPage.qml
         qml/SkillsPage.qml
+        qml/AgentsPage.qml
+        qml/SlashPalette.qml
         qml/TodayBriefing.qml
         qml/ComputerPage.qml
         qml/CanvasPage.qml

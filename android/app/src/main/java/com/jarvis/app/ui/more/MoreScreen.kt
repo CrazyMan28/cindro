@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -42,6 +43,7 @@ data class MoreEntry(val route: String, val label: String, val subtitle: String,
 fun MoreScreen(onBack: () -> Unit, onOpen: (String) -> Unit) {
     val entries = listOf(
         MoreEntry("skills", "Skills", "Browse + invoke Jarvis skills", Icons.Filled.AutoAwesome),
+        MoreEntry("agents", "Agents", "Define + dispatch custom subagents", Icons.Filled.SmartToy),
         MoreEntry("queue", "Queue", "Schedule tasks for Jarvis", Icons.Filled.Schedule),
         MoreEntry("mcp", "MCP servers", "Add, test, enable MCP tools", Icons.Filled.Hub),
         MoreEntry("plugins", "Plugins", "Install from the catalog", Icons.Filled.Extension),
