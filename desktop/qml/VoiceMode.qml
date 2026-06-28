@@ -37,20 +37,60 @@ Item {
 
     // Whimsical "thinking" phrases (mirrors JarvisPanel WORK_PHRASES idea).
     property var thinkingPhrases: [
-        "Pondering the universe", "Summoning electrons", "Reticulating splines",
-        "Consulting the oracle", "Bending spacetime", "Herding photons",
-        "Untangling the matrix", "Caffeinating neurons", "Galaxy-braining",
-        "Manifesting", "Locking in", "Computing the meaning of life",
-        "Aligning the stars", "Overthinking it", "Vibing"
+        "Conquering the world", "Just chillin", "Pondering the universe", "Cooking", "Summoning electrons",
+        "Reticulating splines", "Bending spacetime", "Consulting the oracle", "Doing crimes (legal ones)", "Vibing",
+        "Untangling the matrix", "Herding photons", "Caffeinating neurons", "Computing the meaning of life", "Manifesting",
+        "Hacking the mainframe", "Plotting world domination", "Aligning the stars", "Overthinking it", "Galaxy-braining",
+        "Locking in", "Spinning up the hamster wheel", "Bribing the compiler", "Negotiating with the GPU", "Untangling spaghetti code",
+        "Counting to infinity (twice)", "Dividing by almost-zero", "Asking the rubber duck", "Polishing the pixels", "Warming up the flux capacitor",
+        "Rerouting the neutrinos", "Feeding the neural net", "Petting the algorithm", "Convincing the linter", "Wrangling tensors",
+        "Buffering enthusiasm", "Defragmenting thoughts", "Compiling brilliance", "Loading the vibes", "Tuning the antennae",
+        "Charging the arc reactor", "Greasing the gears", "Whispering to the kernel", "Consulting ancient scrolls", "Brewing more coffee",
+        "Sharpening the pencils", "Rolling for initiative", "Aligning the chakras", "Untwisting the logic", "Counting electrons",
+        "Stretching before the sprint", "Booting the brain cells", "Summoning the muse", "Crunching the numbers", "Cross-referencing the cosmos",
+        "Tickling the transistors", "Asking nicely", "Reading the fine print", "Triangulating the answer", "Synthesizing wisdom",
+        "Doing the math (carrying the one)", "Politely arguing with physics", "Folding the proteins", "Dusting off the manual", "Calibrating the vibes",
+        "Reverse-engineering reality", "Threading the needle", "Untangling the headphones", "Chasing the bug", "Following the breadcrumbs",
+        "Connecting the dots", "Spinning plates", "Juggling chainsaws (safely)", "Pondering orbs", "Decrypting the universe",
+        "Loading the enthusiasm", "Looking busy", "Pretending to think", "Actually thinking", "Thinking very hard",
+        "Doing a little dance", "Consulting the spreadsheet", "Counting sheep (the smart ones)", "Rebooting the imagination", "Stacking the bytes",
+        "Optimizing the optimizer", "Refactoring the cosmos", "Untangling causality", "Negotiating with entropy", "Bargaining with the deadline",
+        "Warming the tubes", "Spooling up", "Engaging warp drive", "Plotting a course", "Scanning the horizon",
+        "Reading the room", "Doing recon", "Gathering intel", "Assembling the squad", "Sharpening the axe",
+        "Filing the paperwork", "Stamping the forms", "Convincing myself", "Double-checking twice", "Triple-checking once",
+        "Measuring twice, cutting once", "Untying the Gordian knot", "Solving for x", "Carrying the remainder", "Rounding up the usual suspects",
+        "Herding cats", "Counting the cats", "Naming the cats", "Befriending the firewall", "Sweet-talking the database",
+        "Coaxing the cache", "Flattering the framework", "Whittling the wood", "Sketching the blueprint", "Drafting the masterplan",
+        "Consulting my notes", "Remembering where I put it", "Finding the thing", "Locating the other thing", "Cross-stitching the logic",
+        "Knitting the threads", "Weaving the tapestry", "Tightening the bolts", "Oiling the joints", "Spinning the dials",
+        "Flipping the switches", "Pulling the levers", "Pressing the big red button (carefully)", "Reading the tea leaves", "Shaking the magic 8-ball",
+        "Rolling the dice", "Drawing the cards", "Casting the runes", "Channeling the energy", "Focusing the beam",
+        "Adjusting the dials", "Fine-tuning the model", "Annealing the network", "Backpropagating vibes", "Gradient-descending",
+        "Climbing the loss landscape", "Escaping a local minimum", "Avoiding the saddle point", "Embedding the meaning", "Tokenizing the thoughts",
+        "Attention is all I need", "Sampling the distribution", "Lowering the temperature", "Raising the stakes", "Doubling down",
+        "Hedging my bets", "Reading ahead", "Skipping to the good part", "Saving the best for last", "Connecting to the hive mind",
+        "Pinging the satellites", "Bouncing off the moon", "Phoning a friend", "Asking the audience", "Going with my gut",
+        "Trusting the process", "Embracing the chaos", "Taming the chaos", "Befriending the chaos", "Surfing the data stream",
+        "Riding the wave", "Catching the current", "Sailing the seven C's", "Charting the unknown", "Mapping the territory",
+        "Drawing the map", "Folding the map", "Reading the compass", "Finding true north", "Recalculating the route",
+        "Taking the scenic path", "Avoiding the traffic", "Beating the rush", "Catching the train of thought", "Boarding the idea express",
+        "Connecting the flights", "Packing light", "Checking the luggage", "Going through customs", "Stamping the passport",
+        "Touching grass (virtually)", "Stretching the legs", "Taking a deep breath", "Centering myself", "Finding my zen",
+        "Channeling my inner genius", "Unleashing the kraken", "Releasing the hounds", "Wrapping it up", "Sprinkling in some magic"
     ]
     property string thinkingPhrase: thinkingPhrases[0]
+    // Random interval each change (not a fixed beat) — organic drift.
+    function randPhraseMs() { return 5000 + Math.floor(Math.random() * 9000) }
     Timer {
-        interval: 2200; repeat: true
-        running: page.vstate === "thinking"
-        onRunningChanged: if (running) phraseRoll.triggered()
         id: phraseRoll
-        onTriggered: page.thinkingPhrase =
-            page.thinkingPhrases[Math.floor(Math.random() * page.thinkingPhrases.length)]
+        interval: 7000; repeat: true
+        running: page.vstate === "thinking"
+        onRunningChanged: if (running) { interval = page.randPhraseMs(); phraseRoll.triggered() }
+        onTriggered: {
+            page.thinkingPhrase =
+                page.thinkingPhrases[Math.floor(Math.random() * page.thinkingPhrases.length)]
+            interval = page.randPhraseMs()
+        }
     }
 
     // Latest model-rendered widget node, shown beside the orb.

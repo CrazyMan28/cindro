@@ -6,6 +6,7 @@ import com.jarvis.app.crypto.DeviceIdentity
 import com.jarvis.app.data.HostPort
 import com.jarvis.app.data.PairingStore
 import com.jarvis.app.data.SecretStore
+import com.jarvis.app.protocol.Agent
 import com.jarvis.app.protocol.BrainEvent
 import com.jarvis.app.protocol.CliMcp
 import com.jarvis.app.protocol.FileOffer
@@ -358,8 +359,59 @@ class JarvisRepository(
         ).orThrow()
     }
 
+    /** Invoke a skill and return its rendered message (to send as the next turn). */
+    suspend fun invokeSkillText(name: String, args: String): String {
+        val r = client.request("skills.invoke", Params.of("name" to name, "args" to args)).orThrow()
+        return r.get("message")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+    }
+
     suspend fun removeSkill(name: String) {
         client.request("skills.remove", Params.of("name" to name)).orThrow()
+    }
+
+    // --- agents (custom subagents) -----------------------------------------
+
+    suspend fun listAgents(): List<Agent> {
+        val r = client.request("agents.list").orThrow()
+        return r.getAsJsonArray("agents")?.toObjects()?.map(Agent::from) ?: emptyList()
+    }
+
+    suspend fun getAgent(name: String): Agent? {
+        val r = client.request("agents.get", Params.of("name" to name)).orThrow()
+        if (!r.has("frontmatter") && !r.has("system_prompt")) return null
+        return Agent.fromGet(r)
+    }
+
+    suspend fun createAgent(
+        name: String,
+        description: String,
+        whenToUse: String,
+        systemPrompt: String,
+        brain: String = "",
+        model: String = "",
+        profile: String = "",
+    ) {
+        client.request(
+            "agents.create",
+            Params.of(
+                "name" to name, "description" to description, "when_to_use" to whenToUse,
+                "system_prompt" to systemPrompt, "brain" to brain, "model" to model,
+                "profile" to profile,
+            ),
+        ).orThrow()
+    }
+
+    suspend fun removeAgent(name: String) {
+        client.request("agents.remove", Params.of("name" to name)).orThrow()
+    }
+
+    /** Dispatch a task to an agent; returns the spawned child session id. */
+    suspend fun dispatchAgent(agent: String, task: String, parentSessionId: String? = null): String {
+        val r = client.request(
+            "agents.dispatch",
+            Params.of("agent" to agent, "task" to task, "parent_session_id" to parentSessionId),
+        ).orThrow()
+        return r.get("session_id")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
     }
 
     suspend fun today(): List<TodayItem> {

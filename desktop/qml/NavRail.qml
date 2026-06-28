@@ -29,6 +29,7 @@ Item {
         { key: "sessions",  label: "SESSIONS",  section: "WORKSPACE" },
         { key: "memory",    label: "MEMORY",    section: "MIND" },
         { key: "skills",    label: "SKILLS",    section: "MIND" },
+        { key: "agents",    label: "AGENTS",    section: "MIND" },
         { key: "schedules", label: "SCHEDULES", section: "MIND" },
         { key: "activity",  label: "ACTIVITY",  section: "MIND" },
         { key: "mcp",       label: "MCP",       section: "SYSTEM" },
@@ -397,6 +398,14 @@ Item {
                     ctx.moveTo(10, 1.5); ctx.lineTo(4, 9.5); ctx.lineTo(8.5, 9.5)
                     ctx.lineTo(7.5, 16.5); ctx.lineTo(14, 8); ctx.lineTo(9.5, 8)
                     ctx.closePath(); ctx.stroke()
+                    break
+                case "agents":
+                    // a head/bot with a spark: a circle (head) + shoulders + antenna
+                    ctx.beginPath(); ctx.arc(9, 7, 3.4, 0, Math.PI * 2); ctx.stroke()
+                    ctx.beginPath()
+                    ctx.moveTo(3.5, 16); ctx.quadraticCurveTo(9, 10, 14.5, 16); ctx.stroke()
+                    ctx.beginPath(); ctx.moveTo(9, 3.6); ctx.lineTo(9, 1.5); ctx.stroke()
+                    ctx.beginPath(); ctx.arc(9, 1.2, 0.9, 0, Math.PI * 2); ctx.fill()
                     break
                 case "browser":
                     // globe: circle + meridian curves + latitude lines

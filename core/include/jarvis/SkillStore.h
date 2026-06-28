@@ -69,6 +69,11 @@ public:
     // --- index / read ------------------------------------------------------
     // Re-scan the skills dir. Returns all indexed skills (group asc, name asc).
     QVector<SkillRow> list();
+    // Like list(), but ALSO surfaces skills found in the CLI brains' dirs
+    // (~/.codex/skills, ~/.claude/skills), de-duplicated by name (the Jarvis copy
+    // wins). So a skill the model created via its CLI — not the create_skill tool —
+    // still shows in the Jarvis Skills list. Used by the daemon's skills.list.
+    QVector<SkillRow> listAll();
     // Look up a single skill by name (matches frontmatter name OR dir name).
     std::optional<SkillRow> get(const QString &name);
     // Read the raw frontmatter + body of a skill (for skills.get).

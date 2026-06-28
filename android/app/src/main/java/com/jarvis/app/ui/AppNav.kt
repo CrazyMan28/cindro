@@ -69,6 +69,8 @@ import com.jarvis.app.ui.sessions.SessionsScreen
 import com.jarvis.app.ui.sessions.SessionsViewModel
 import com.jarvis.app.ui.settings.SettingsScreen
 import com.jarvis.app.ui.settings.SettingsViewModel
+import com.jarvis.app.ui.agents.AgentsScreen
+import com.jarvis.app.ui.agents.AgentsViewModel
 import com.jarvis.app.ui.skills.SkillsScreen
 import com.jarvis.app.ui.skills.SkillsViewModel
 import com.jarvis.app.ui.theme.JarvisPalette
@@ -84,6 +86,7 @@ private object Routes {
     const val CANVAS = "canvas"
     const val COMPUTER = "computer"
     const val SKILLS = "skills"
+    const val AGENTS = "agents"
     const val SETTINGS = "settings"
     const val MORE = "more"
     const val QUEUE = "queue"
@@ -250,6 +253,14 @@ fun AppNav(
         composable(Routes.SKILLS) {
             val vm: SkillsViewModel = viewModel(factory = SkillsViewModel.factory(app))
             SkillsScreen(viewModel = vm)
+        }
+        composable(Routes.AGENTS) {
+            val vm: AgentsViewModel = viewModel(factory = AgentsViewModel.factory(app))
+            AgentsScreen(
+                viewModel = vm,
+                // Dispatching opens the spawned child session's chat.
+                onOpenChat = { sid -> nav.navigate(Routes.chat(sid)) },
+            )
         }
 
         composable(Routes.CHAT) { entry ->
