@@ -461,6 +461,8 @@ private:
     // Custom agents (subagents): user/model-defined AGENT.md files. A dispatched
     // agent runs as a child session; its system prompt is injected on turn 1.
     AgentStore m_agents;
+    // Seed the built-in "internal_docs" capability-catalog skill (once).
+    void seedInternalDocsSkill();
 
     // Wave 8 co-worker ops backend: cron/at scheduler (fires session.create+send
     // via a QTimer tick), the SSH allow-list (gated ssh.exec), the audit log

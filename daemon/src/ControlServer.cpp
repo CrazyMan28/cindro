@@ -120,6 +120,10 @@ bool ControlServer::start()
         qWarning("jarvisd: memory store unavailable: %s",
                  qPrintable(m_memory.lastError()));
 
+    // Seed the built-in "internal_docs" skill (a capability/feature catalog the
+    // model loads when asked what it can do). Idempotent — only writes if missing.
+    seedInternalDocsSkill();
+
     // Wave 8 co-worker ops backend. All share jarvis.db via distinct connection
     // names; each failure is non-fatal (that feature degrades, daemon survives).
     if (!m_audit.open())
@@ -1525,12 +1529,18 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "predefined agent: `name` can be any label and you spawn an AD-HOC subagent "
             "(optionally picking its brain/model and giving a one-off system_prompt). It "
             "runs as its own child session and reports back. Do NOT just SAY you delegated "
-            "and then do the work yourself — call agent_start. The subagent ALWAYS ends with "
-            "a summary, and the MOMENT it finishes you are AUTOMATICALLY woken with a "
-            "[SUBAGENT DONE] message containing its summary + status — review that result "
-            "and continue (you don't need to poll). You can also call agent_result(session_id) "
-            "any time for a subagent's summary, or agent_status to list running ones; "
-            "agent_stop cancels one; agent_create saves a reusable agent for recurring work.\n"
+            "and then do the work yourself — call agent_start. SIMPLEST PATTERN: "
+            "agent_start(name, task) returns a session_id; then call agent_wait(session_id) "
+            "— it BLOCKS until the subagent finishes and returns its summary, so you act on "
+            "the result right away. Do NOT poll agent_status in a loop. The subagent always "
+            "ends with a summary, and you are ALSO auto-woken with a [SUBAGENT DONE] message "
+            "the moment it finishes. agent_result(session_id) re-fetches a summary; "
+            "agent_status lists running ones; agent_stop cancels; agent_create saves a "
+            "reusable agent for recurring work.\n"
+            "CAPABILITIES: if the user asks what you can do / your features / how to do "
+            "something with you, OR you're unsure what you're capable of, CALL "
+            "skill_load(\"internal_docs\") — it returns the full list of your features + docs. "
+            "Use it before saying you can't do something.\n"
             "PLAN / TODO: for any task with 3+ steps (or when the user asks your plan), "
             "CALL todo_write with your step list up front — [{\"text\":\"…\",\"status\":"
             "\"pending|in_progress|done\"}] — then keep it current as you go (keep exactly "
@@ -3107,6 +3117,51 @@ Response ControlServer::handleMemoryRemove(const Request &req)
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
+}
+
+void ControlServer::seedInternalDocsSkill()
+{
+    // Only seed once — don't clobber a user's edits.
+    if (m_skills.get(QStringLiteral("internal_docs")).has_value())
+        return;
+    const QString body = QStringLiteral(
+        "When the user asks what you can do, your features, how to do something with "
+        "you, or you're unsure you're capable of something, use THIS as the source of "
+        "truth for Jarvis's capabilities. Tell them what fits + offer to do it.\n\n"
+        "# Jarvis — what you can do\n\n"
+        "**Computer use** — drive mouse/keyboard/screen on KDE & Sway. You work on your "
+        "OWN nested agent desktop by default (the user watches it live in chat / on the "
+        "Computer page), or take over the user's REAL screen on request (consent-gated, "
+        "glowing cursor + banner). Tools: app_launch, desktop_screenshot, mouse/keyboard, "
+        "window ops, desktop_reset. (docs/COMPUTER_USE.md)\n"
+        "**Chrome** — drive the user's browser tabs in-page via the extension (navigate, "
+        "click, type, read, screenshot).\n"
+        "**Voice** — hands-free voice mode (Mistral Voxtral STT/TTS), an animated orb. "
+        "(docs/VOICE.md)\n"
+        "**Generative widgets** — render_widget draws custom UI from a JSON DSL "
+        "(containers, text, charts, SVG/canvas art, buttons, multi-page pagers/quizzes); "
+        "live auto-updating canvases (widget_live); pin to the desktop Home or a real "
+        "Android home-screen widget. Renders on desktop AND phone. (docs/WIDGETS_CANVAS.md)\n"
+        "**Plan / TODO** — todo_write keeps a live checklist the user watches (done items "
+        "strike through).\n"
+        "**Skills** — reusable playbooks. create_skill to author one, skill_load to run "
+        "one, list_skills/get_skill/edit_skill/remove_skill. The user invokes them with "
+        "/skill-name. (docs/AGENTS_AND_COMMANDS.md)\n"
+        "**Agents / subagents** — define specialists (agent_create) and delegate sub-tasks "
+        "(agent_start) that run as their own child sessions; agent_wait blocks for the "
+        "result, agent_result/agent_status check them. (docs/AGENTS_AND_COMMANDS.md)\n"
+        "**Memory** — long-term memory: remember/recall/list_memories/edit_memory/forget.\n"
+        "**Schedules** — run tasks later or on a cadence: schedule_task / list_schedules / "
+        "cancel_schedule (cron or natural language). (docs/SCHEDULES.md)\n"
+        "**Files** — send any file to the user's phone/desktop with send_file.\n"
+        "**MCP & plugins** — extra MCP tool servers + a plugin marketplace, managed in the "
+        "app.\n"
+        "**Cross-surface** — one daemon behind a desktop sidebar, an Android app, and a "
+        "Chrome extension; cross-device biometric unlock. (README.md, docs/ARCHITECTURE.md)\n");
+    m_skills.create(QStringLiteral("internal_docs"),
+                    QStringLiteral("Jarvis's own feature/capability catalog — load this "
+                                   "when asked what you can do or when unsure."),
+                    body, QStringLiteral("builtin"));
 }
 
 Response ControlServer::handleSkillsList(const Request &req)
