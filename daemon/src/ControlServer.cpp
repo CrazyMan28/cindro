@@ -1251,8 +1251,48 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     return row.id;
 }
 
+QString ControlServer::subagentSummary(const QString &sessionId)
+{
+    // The child's LAST assistant message — which (per the dispatch instruction) is a
+    // concise summary of what it did + the result.
+    QString last;
+    for (const StoredEvent &e : m_store.listEvents(sessionId)) {
+        const QJsonObject o = e.ev.toJson();
+        if (o.value(QStringLiteral("kind")).toString() == QStringLiteral("message") &&
+            o.value(QStringLiteral("role")).toString() == QStringLiteral("assistant")) {
+            const QString t = o.value(QStringLiteral("text")).toString();
+            if (!t.trimmed().isEmpty())
+                last = t;
+        }
+    }
+    return last;
+}
+
 void ControlServer::onTurnFinished(const QString &sessionId)
 {
+    // A dispatched SUBAGENT just finished → WAKE its parent with the result + status
+    // so the main agent reviews it (instead of only seeing "done" and redoing it).
+    if (m_subagentPendingWake.contains(sessionId)) {
+        const QString parentSid = m_subagentPendingWake.take(sessionId);
+        if (m_store.get(parentSid).has_value()) {
+            const auto row = m_store.get(sessionId);
+            const QString label = (row && !row->agent.isEmpty()) ? row->agent
+                                                                  : QStringLiteral("subagent");
+            const QString state = row ? row->state : QStringLiteral("done");
+            QString summary = subagentSummary(sessionId);
+            if (summary.trimmed().isEmpty())
+                summary = QStringLiteral("(the subagent returned no text — check its session)");
+            const QString wake = QStringLiteral(
+                "[SUBAGENT DONE] Your subagent \"%1\" (session %2) finished — status: %3.\n"
+                "Its summary / result:\n%4\n\nReview this result and continue the task "
+                "(you can call agent_result(\"%2\") for the full details).")
+                .arg(label, sessionId, state, summary);
+            QString werr;
+            // sendToSession queues if the parent is still busy (flushed on its turn end).
+            sendToSession(parentSid, wake, {}, &werr);
+        }
+    }
+
     if (!m_pendingTurns.contains(sessionId))
         return;
     const HeldTurn pending = m_pendingTurns.take(sessionId);
@@ -1485,9 +1525,12 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "predefined agent: `name` can be any label and you spawn an AD-HOC subagent "
             "(optionally picking its brain/model and giving a one-off system_prompt). It "
             "runs as its own child session and reports back. Do NOT just SAY you delegated "
-            "and then do the work yourself — call agent_start. agent_list shows defined "
-            "agents (each with a when_to_use), agent_status shows what's running, agent_stop "
-            "cancels one, agent_create saves a reusable agent for work you keep doing.\n"
+            "and then do the work yourself — call agent_start. The subagent ALWAYS ends with "
+            "a summary, and the MOMENT it finishes you are AUTOMATICALLY woken with a "
+            "[SUBAGENT DONE] message containing its summary + status — review that result "
+            "and continue (you don't need to poll). You can also call agent_result(session_id) "
+            "any time for a subagent's summary, or agent_status to list running ones; "
+            "agent_stop cancels one; agent_create saves a reusable agent for recurring work.\n"
             "PLAN / TODO: for any task with 3+ steps (or when the user asks your plan), "
             "CALL todo_write with your step list up front — [{\"text\":\"…\",\"status\":"
             "\"pending|in_progress|done\"}] — then keep it current as you go (keep exactly "
@@ -1611,6 +1654,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_coworkGuided.remove(sessionId);
     m_sessionAgentPrompt.remove(sessionId);
     m_agentGuided.remove(sessionId);
+    m_subagentPendingWake.remove(sessionId);   // as a child awaiting parent-wake
     // 4) Drop the row + its event stream from the store.
     if (!m_store.deleteSession(sessionId)) {
         if (err)
@@ -2971,6 +3015,8 @@ Response ControlServer::dispatchMemoryOrSkill(const Request &req)
         return handleAgentsDispatch(req, /*remote=*/false);
     if (m == QStringLiteral("agents.running"))
         return handleAgentsRunning(req);
+    if (m == QStringLiteral("agents.result"))
+        return handleAgentsResult(req);
     return Response::failure(req.id, QStringLiteral("unknown_method"),
                              QStringLiteral("unknown method: ") + m);
 }
@@ -3252,8 +3298,19 @@ Response ControlServer::handleAgentsDispatch(const Request &req, bool remote)
         /*agentPromptOverride=*/sysPrompt);
     if (sid.isEmpty())
         return Response::failure(req.id, QStringLiteral("dispatch_failed"), err);
-    if (!sendToSession(sid, task, {}, &err))
+    // Every subagent MUST end with a summary so the parent can act on its result.
+    const QString taskWithSummary = task +
+        QStringLiteral("\n\n[IMPORTANT] When you finish, end your final reply with a "
+                       "clear SUMMARY: what you did and the exact result/output "
+                       "(paths, values, findings). Keep it concise but complete — your "
+                       "parent agent only sees this summary.");
+    // Remember to wake the parent when this child's turn finishes.
+    if (!parent.isEmpty())
+        m_subagentPendingWake.insert(sid, parent);
+    if (!sendToSession(sid, taskWithSummary, {}, &err)) {
+        m_subagentPendingWake.remove(sid);
         return Response::failure(req.id, QStringLiteral("dispatch_send_failed"), err);
+    }
     m_audit.record(QStringLiteral("agents.dispatch"), true, QStringLiteral("medium"),
                    QStringLiteral("dispatched agent '%1'%2").arg(
                        label, remote ? QStringLiteral(" (remote)") : QString()));
@@ -3262,6 +3319,25 @@ Response ControlServer::handleAgentsDispatch(const Request &req, bool remote)
     result.insert(QStringLiteral("agent"), label);
     if (!parent.isEmpty())
         result.insert(QStringLiteral("parent_session_id"), parent);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleAgentsResult(const Request &req)
+{
+    const QString sid = req.params.value(QStringLiteral("session_id")).toString();
+    if (sid.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("session_id is required"));
+    const auto row = m_store.get(sid);
+    if (!row)
+        return Response::failure(req.id, QStringLiteral("no_session"),
+                                 QStringLiteral("no such session: ") + sid);
+    QJsonObject result;
+    result.insert(QStringLiteral("session_id"), sid);
+    result.insert(QStringLiteral("agent"), row->agent);
+    result.insert(QStringLiteral("status"), row->state);
+    result.insert(QStringLiteral("running"), m_brains.contains(sid));
+    result.insert(QStringLiteral("summary"), subagentSummary(sid));
     return Response::success(req.id, result);
 }
 
