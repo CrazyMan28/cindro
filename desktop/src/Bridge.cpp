@@ -515,6 +515,22 @@ void Bridge::saveSettings(const QVariantMap &patch)
     request(QStringLiteral("settings.set"), params);
 }
 
+void Bridge::setAgentMode(const QString &mode)
+{
+    QString m = mode;
+    if (m != QStringLiteral("plan") && m != QStringLiteral("build"))
+        m = QStringLiteral("coworker");
+    if (m != m_agentMode) {
+        m_agentMode = m;
+        emit agentModeChanged();
+    }
+    // Persist via settings.set (round-trips to config.toml; applies to the preamble
+    // of the next turn).
+    QVariantMap patch;
+    patch.insert(QStringLiteral("agent_mode"), m);
+    saveSettings(patch);
+}
+
 void Bridge::listMcp()
 {
     request(QStringLiteral("mcp.list"), {});
@@ -3081,6 +3097,16 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         m_ttsProvider = result.contains(QStringLiteral("tts_provider"))
                             ? result.value(QStringLiteral("tts_provider")).toString()
                             : QStringLiteral("voxtral");
+        // Cache the agent mode (plan|build|coworker) for the live HUD chip.
+        {
+            const QString am = result.contains(QStringLiteral("agent_mode"))
+                                   ? result.value(QStringLiteral("agent_mode")).toString()
+                                   : QStringLiteral("coworker");
+            if (am != m_agentMode) {
+                m_agentMode = am;
+                emit agentModeChanged();
+            }
+        }
         // Sync the desktop notifications toggle from persisted settings.
         const QVariantMap n = result.value(QStringLiteral("notifications")).toMap();
         if (n.contains(QStringLiteral("enabled"))) {

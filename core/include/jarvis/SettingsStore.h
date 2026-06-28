@@ -100,6 +100,38 @@ public:
                                 : QStringLiteral("medium");
     }
 
+    // Agent MODE — a SOFT behavioral profile injected into the co-work preamble
+    // (like permission_level; it does NOT change the sandbox). Selectable in
+    // Settings and surfaced as a HUD chip on every surface.
+    //   "plan"     -> research + produce a step-by-step plan; make NO changes;
+    //                 present the plan and wait for approval.
+    //   "build"    -> execute the plan autonomously; minimal asking; keep the
+    //                 todo list current.
+    //   "coworker" -> balanced default (today's behavior).
+    // Anything unrecognized normalizes to "coworker". Round-trips in config.toml
+    // as a flat key `agent_mode = "..."`.
+    QString agentMode() const { return m_agentMode; }
+    void setAgentMode(const QString &m)
+    {
+        m_agentMode = (m == QStringLiteral("plan") || m == QStringLiteral("build"))
+                          ? m
+                          : QStringLiteral("coworker");
+    }
+
+    // What happens when a background job finishes (or a sleep/monitor wake fires):
+    //   "silent" -> wake the agent only; never ping the user's phone.
+    //   "ping"   -> wake the agent AND notify the phone for long/important jobs
+    //               (escalates to a real call only if the job is marked critical).
+    //   "always" -> notify the phone on every wake, even routine ones.
+    // Anything unrecognized normalizes to "ping". Round-trips as `wake_notify`.
+    QString wakeNotify() const { return m_wakeNotify; }
+    void setWakeNotify(const QString &w)
+    {
+        m_wakeNotify = (w == QStringLiteral("silent") || w == QStringLiteral("always"))
+                           ? w
+                           : QStringLiteral("ping");
+    }
+
     // Desktop unlock PIN (fallback when the phone can't approve). Stored as a
     // SALTED SHA-256 ("<saltHex>:<hashHex>") in config.toml — never the PIN
     // itself. Empty = no PIN set. setDesktopPin("") clears it.
@@ -144,6 +176,8 @@ private:
     bool m_letJarvisUseComputer = true; // default ON (auto computer-use in chat)
     bool m_authLockEnabled = true;      // default ON (require phone+fingerprint)
     QString m_permissionLevel = QStringLiteral("medium"); // ask-before-risky policy
+    QString m_agentMode = QStringLiteral("coworker");      // plan|build|coworker (soft)
+    QString m_wakeNotify = QStringLiteral("ping");         // silent|ping|always
     QString m_desktopPin;               // "<saltHex>:<hashHex>" or empty (no PIN)
     QString m_ttsVoice;                 // preferred TTS voice slug (empty = default)
     QString m_sttProvider = QStringLiteral("voxtral"); // STT provider id

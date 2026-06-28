@@ -38,6 +38,8 @@ Item {
     property bool compact: false
     property bool authLockEnabled: false        // require phone+fingerprint to open
     property string permissionLevel: "medium"   // ask-before-risky: high|medium|low
+    property string agentMode: "coworker"        // plan|build|coworker (soft mode)
+    property string wakeNotify: "ping"           // silent|ping|always (bg-job/wake)
     property bool hasDesktopPin: false           // a desktop unlock PIN is set
     property string pendingPin: ""               // new PIN to save (write-only)
     property bool dirty: false
@@ -153,6 +155,10 @@ Item {
             page.authLockEnabled = s.auth_lock_enabled === true
             page.permissionLevel = (s.permission_level === "high" || s.permission_level === "low")
                                    ? s.permission_level : "medium"
+            page.agentMode = (s.agent_mode === "plan" || s.agent_mode === "build")
+                             ? s.agent_mode : "coworker"
+            page.wakeNotify = (s.wake_notify === "silent" || s.wake_notify === "always")
+                              ? s.wake_notify : "ping"
             page.hasDesktopPin = (s.has_desktop_pin === true)
             page.pendingPin = ""
             if (s.theme !== undefined) {
@@ -275,6 +281,8 @@ Item {
             "tts_provider": page.ttsProvider,
             "auth_lock_enabled": page.authLockEnabled,
             "permission_level": page.permissionLevel,
+            "agent_mode": page.agentMode,
+            "wake_notify": page.wakeNotify,
             "theme": { "glow": page.glow, "compact": page.compact }
         }
         // PIN is write-only: only send when the user typed/cleared one.
@@ -738,6 +746,169 @@ Item {
                             visible: page.hasDesktopPin
                             label: "Clear"; danger: true
                             onClicked: { page.pendingPin = "__CLEAR__"; page.dirty = true; pinSetField.text = "" }
+                        }
+                    }
+                }
+            }
+
+            // ===== Mode ===================================================
+            Text {
+                text: "// MODE"
+                color: Theme.accent
+                font.family: Theme.fontDisplay
+                font.pixelSize: 11
+                font.letterSpacing: Theme.trackMid
+                font.weight: Font.DemiBold
+                Layout.topMargin: 2
+                Layout.leftMargin: 2
+            }
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+
+                    Text {
+                        text: "How Jarvis works with you (also the HUD chip — click it to switch live)"
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 13
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Repeater {
+                            model: [
+                                { key: "plan",     name: "Plan",      sub: "Research + plan, no changes", tint: Theme.violet },
+                                { key: "coworker", name: "Co-worker", sub: "Balanced, ask before risky",  tint: Theme.accent },
+                                { key: "build",    name: "Build",     sub: "Execute autonomously",        tint: Theme.amber }
+                            ]
+                            delegate: Rectangle {
+                                id: mseg
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 58
+                                radius: Theme.radiusSm
+                                readonly property bool sel: page.agentMode === mseg.modelData.key
+                                color: mseg.sel ? Qt.rgba(mseg.modelData.tint.r, mseg.modelData.tint.g, mseg.modelData.tint.b, 0.16)
+                                           : (msegMa.containsMouse ? Theme.surfaceStrong : Theme.surface)
+                                border.width: 1
+                                border.color: mseg.sel ? mseg.modelData.tint
+                                              : (msegMa.containsMouse ? Theme.accentDim : Theme.hairlineSoft)
+                                Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                                Behavior on border.color { ColorAnimation { duration: Theme.durFast } }
+                                ColumnLayout {
+                                    anchors.centerIn: parent
+                                    width: mseg.width - 16
+                                    spacing: 2
+                                    Text {
+                                        text: mseg.modelData.name.toUpperCase()
+                                        color: mseg.sel ? mseg.modelData.tint : Theme.text
+                                        font.family: Theme.fontDisplay
+                                        font.pixelSize: 12
+                                        font.weight: Font.DemiBold
+                                        font.letterSpacing: Theme.trackMid
+                                        Layout.alignment: Qt.AlignHCenter
+                                    }
+                                    Text {
+                                        text: mseg.modelData.sub
+                                        color: Theme.textMuted
+                                        font.family: Theme.fontSans
+                                        font.pixelSize: 10
+                                        Layout.alignment: Qt.AlignHCenter
+                                        horizontalAlignment: Text.AlignHCenter
+                                        Layout.fillWidth: true
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                                MouseArea {
+                                    id: msegMa
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (page.agentMode !== mseg.modelData.key) {
+                                            page.agentMode = mseg.modelData.key
+                                            page.dirty = true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "When a background job finishes (or a sleep / monitor wake fires)"
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 13
+                        Layout.fillWidth: true
+                        Layout.topMargin: 4
+                        wrapMode: Text.WordWrap
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Repeater {
+                            model: [
+                                { key: "silent", name: "Silent", sub: "Wake Jarvis only" },
+                                { key: "ping",   name: "Ping",   sub: "Notify phone for long jobs" },
+                                { key: "always", name: "Always", sub: "Notify on every wake" }
+                            ]
+                            delegate: Rectangle {
+                                id: wseg
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 52
+                                radius: Theme.radiusSm
+                                readonly property bool sel: page.wakeNotify === wseg.modelData.key
+                                color: wseg.sel ? Theme.accentDim
+                                           : (wsegMa.containsMouse ? Theme.surfaceStrong : Theme.surface)
+                                border.width: 1
+                                border.color: wseg.sel ? Theme.accent
+                                              : (wsegMa.containsMouse ? Theme.accentDim : Theme.hairlineSoft)
+                                Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                                Behavior on border.color { ColorAnimation { duration: Theme.durFast } }
+                                ColumnLayout {
+                                    anchors.centerIn: parent
+                                    width: wseg.width - 16
+                                    spacing: 2
+                                    Text {
+                                        text: wseg.modelData.name.toUpperCase()
+                                        color: wseg.sel ? Theme.accentBright : Theme.text
+                                        font.family: Theme.fontDisplay
+                                        font.pixelSize: 11
+                                        font.weight: Font.DemiBold
+                                        font.letterSpacing: Theme.trackMid
+                                        Layout.alignment: Qt.AlignHCenter
+                                    }
+                                    Text {
+                                        text: wseg.modelData.sub
+                                        color: Theme.textMuted
+                                        font.family: Theme.fontSans
+                                        font.pixelSize: 9
+                                        Layout.alignment: Qt.AlignHCenter
+                                        horizontalAlignment: Text.AlignHCenter
+                                        Layout.fillWidth: true
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                                MouseArea {
+                                    id: wsegMa
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (page.wakeNotify !== wseg.modelData.key) {
+                                            page.wakeNotify = wseg.modelData.key
+                                            page.dirty = true
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

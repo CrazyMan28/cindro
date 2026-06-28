@@ -83,6 +83,8 @@ void SettingsStore::load()
     m_letJarvisUseComputer = true;
     m_authLockEnabled = true;
     m_permissionLevel = QStringLiteral("medium");
+    m_agentMode = QStringLiteral("coworker");
+    m_wakeNotify = QStringLiteral("ping");
     m_desktopPin.clear();
     m_ttsVoice.clear();
     m_sttProvider = QStringLiteral("voxtral");
@@ -124,6 +126,30 @@ void SettingsStore::load()
                              (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
                             v = v.mid(1, v.size() - 2);
                         setPermissionLevel(v.toLower()); // normalizes unknown -> medium
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("agent_mode"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        QString v = line.mid(eq + 1).trimmed();
+                        if (v.size() >= 2 &&
+                            ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
+                             (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
+                            v = v.mid(1, v.size() - 2);
+                        setAgentMode(v.toLower()); // normalizes unknown -> coworker
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("wake_notify"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        QString v = line.mid(eq + 1).trimmed();
+                        if (v.size() >= 2 &&
+                            ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
+                             (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
+                            v = v.mid(1, v.size() - 2);
+                        setWakeNotify(v.toLower()); // normalizes unknown -> ping
                     }
                     continue;
                 }
@@ -257,6 +283,8 @@ bool SettingsStore::saveConfig()
                     t.startsWith(QStringLiteral("let_jarvis_use_computer")) ||
                     t.startsWith(QStringLiteral("auth_lock_enabled")) ||
                     t.startsWith(QStringLiteral("permission_level")) ||
+                    t.startsWith(QStringLiteral("agent_mode")) ||
+                    t.startsWith(QStringLiteral("wake_notify")) ||
                     t.startsWith(QStringLiteral("desktop_pin")) ||
                     t.startsWith(QStringLiteral("tts_voice")) ||
                     t.startsWith(QStringLiteral("stt_provider")) ||
@@ -276,6 +304,8 @@ bool SettingsStore::saveConfig()
     ts << "let_jarvis_use_computer = " << (m_letJarvisUseComputer ? "true" : "false") << "\n";
     ts << "auth_lock_enabled = " << (m_authLockEnabled ? "true" : "false") << "\n";
     ts << "permission_level = \"" << m_permissionLevel << "\"\n";
+    ts << "agent_mode = \"" << m_agentMode << "\"\n";
+    ts << "wake_notify = \"" << m_wakeNotify << "\"\n";
     if (!m_desktopPin.isEmpty())
         ts << "desktop_pin = \"" << m_desktopPin << "\"\n";
     if (!m_ttsVoice.isEmpty())
