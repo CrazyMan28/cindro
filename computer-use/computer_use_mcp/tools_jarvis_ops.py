@@ -302,21 +302,23 @@ def register(mcp: FastMCP) -> None:
             return _err(exc)
 
     @mcp.tool()
-    def agent_wait(session_id: str, timeout_sec: int = 300) -> str:
+    def agent_wait(session_id: str, timeout_sec: int = 7200) -> str:
         """WAIT (block) until a subagent finishes, then return its summary + status.
-        This is the simplest way to use a subagent: call agent_start(...), then
-        agent_wait(session_id) — it returns ONLY once the subagent is done, so you can
-        act on its result immediately (no polling, no guessing). Waits up to
-        timeout_sec (default 5 min); returns the latest status if it times out."""
+        Returns the INSTANT the subagent is done (it checks the session STATE, not
+        whether a brain object lingers), so for quick tasks it comes back in a few
+        seconds. Call agent_start(...) then agent_wait(session_id) to get the result
+        in-line. Default wait up to 2 HOURS (timeout_sec); on timeout it returns the
+        latest status with timed_out=true (then just call agent_result, or you'll be
+        auto-pinged when it finishes)."""
         import time
         try:
-            end = time.time() + max(5, min(int(timeout_sec or 300), 1800))
+            end = time.time() + max(5, min(int(timeout_sec or 7200), 14400))
             last: dict = {}
             while time.time() < end:
                 last = daemon_client.call("agents.result", {"session_id": session_id})
                 if not last.get("running", False):
                     return json.dumps(last)
-                time.sleep(2.0)
+                time.sleep(1.5)
             last["timed_out"] = True
             return json.dumps(last)
         except Exception as exc:  # noqa: BLE001

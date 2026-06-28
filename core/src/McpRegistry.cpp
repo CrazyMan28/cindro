@@ -360,6 +360,11 @@ CodexMcpOverrides McpRegistry::codexOverrides(const EnvResolver &resolveEnv)
         }
         // http(s)
         out.args << QStringLiteral("mcp_servers.%1.url=%2").arg(key, row.endpoint);
+        // The built-in computer-use server hosts the blocking agent_wait tool; give
+        // it a long per-tool timeout so codex never cuts a long wait short (the
+        // user saw agent_wait "time out" because of codex's default tool timeout).
+        if (row.id == builtinId())
+            out.args << QStringLiteral("mcp_servers.%1.tool_timeout_sec=7200").arg(key);
         QString token = row.token;
         if (token.isEmpty() && row.id == builtinId())
             token = computerUseBearer();
