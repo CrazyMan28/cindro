@@ -42,9 +42,15 @@ Item {
     property string todoSpec: ""
     property bool todoOpen: true
     readonly property bool hasPlan: panel.todoSpec.length > 0
-    // Auto-open the panel on a new plan OR when an agent desktop becomes active.
+    // Live subagents (child sessions of THIS chat) — filled from the sub-agent tree.
+    // Each: {id,title,agent,status}. Click one to open it + watch its tool calls.
+    property var subagents: []
+    readonly property bool hasSubagents: panel.subagents.length > 0
+    // Auto-open the panel on a new plan, a dispatched subagent, OR an active desktop.
     onHasPlanChanged: if (hasPlan) peekOpen = true
+    onHasSubagentsChanged: if (hasSubagents) peekOpen = true
     onAgentDeskActiveChanged: if (agentDeskActive) peekOpen = true
+    function refreshSubagents() { if (bridge.connected) bridge.loadSubAgentTree() }
     signal requestComputerPage()   // peek "Full" -> Computer page (AppShell wires it)
     // Slash-command navigation requests (AppShell wires these to page switches).
     signal requestVoice()
@@ -145,6 +151,13 @@ Item {
                 panel.thinkingPhrases[Math.floor(Math.random() * panel.thinkingPhrases.length)]
             interval = panel.randPhraseMs()   // reschedule the NEXT change at a random time
         }
+    }
+    // Poll the sub-agent tree while the right panel is open so dispatched subagents
+    // (and their status) stay live in the pop-out. Cheap (session.list).
+    Timer {
+        interval: 3000; repeat: true
+        running: panel.peekOpen && bridge.connected
+        onTriggered: panel.refreshSubagents()
     }
     // Default model is gpt-5.5 (gpt-5-codex is rejected HTTP 400 by this codex login).
     property var modelOptions: ["gpt-5.5", "gpt-5", "o4-mini", "claude-sonnet-4.5", "claude-opus-4.5"]
@@ -312,6 +325,29 @@ Item {
     // ---- Bridge wiring (Contract A client + Contract B rendering) ----------
     Connections {
         target: bridge
+
+        // Sub-agent tree arrived: keep only the children of THIS chat as the live
+        // subagents shown in the right-side pop-out.
+        function onSubAgentTree(rows) {
+            var kids = []
+            for (var i = 0; i < rows.length; i++) {
+                var r = rows[i]
+                if (("" + (r.parent !== undefined ? r.parent : "")) === ("" + bridge.sessionId))
+                    kids.push({
+                        "id": "" + (r.id !== undefined ? r.id : ""),
+                        "title": "" + (r.title !== undefined ? r.title : ""),
+                        "agent": "" + (r.agent !== undefined ? r.agent : (r.brain !== undefined ? r.brain : "")),
+                        "status": "" + (r.status !== undefined ? r.status : "")
+                    })
+            }
+            panel.subagents = kids
+        }
+        // A subagent was dispatched (by the user via the palette OR by the model):
+        // open the panel + refresh the list so it shows up immediately.
+        function onAgentDispatched(sessionId, agent) {
+            panel.peekOpen = true
+            panel.refreshSubagents()
+        }
 
         function onModelsListed(brain, models) {
             // Ignore replies for a brain the user is no longer on (e.g. a stale
@@ -1448,7 +1484,8 @@ Item {
                     color: bridge.driving ? Theme.danger
                            : (panel.showDesktop ? Theme.success : Theme.accent) }
                 Text { text: bridge.driving ? "Jarvis is driving"
-                             : (panel.showDesktop ? "Agent desktop" : "Plan")
+                             : (panel.showDesktop ? "Agent desktop"
+                                : (panel.hasSubagents && !panel.hasPlan ? "Subagents" : "Plan"))
                     color: Theme.text; font.family: Theme.fontDisplay; font.pixelSize: 11; font.weight: Font.DemiBold }
                 Item { Layout.fillWidth: true }
                 Text { text: "✕"; color: Theme.textMuted; font.pixelSize: 13
@@ -1495,7 +1532,81 @@ Item {
                 }
             }
 
-            // ---- live agent-desktop view (BELOW the plan) -------------------
+            // ---- SUBAGENTS card (live child sessions) — click to watch one ----
+            Rectangle {
+                Layout.fillWidth: true
+                visible: panel.hasSubagents
+                implicitHeight: subCol.implicitHeight + 16
+                radius: Theme.radius
+                color: Theme.surface
+                border.width: 1; border.color: Qt.rgba(0.694, 0.294, 1.0, 0.30)
+                clip: true
+                ColumnLayout {
+                    id: subCol
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    anchors.margins: 9
+                    spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text { text: "✦  SUBAGENTS"; color: Theme.violet; font.family: Theme.fontDisplay
+                            font.pixelSize: 10; font.letterSpacing: 1.4; font.weight: Font.DemiBold }
+                        Item { Layout.fillWidth: true }
+                        Rectangle { radius: 5; implicitWidth: subN.implicitWidth + 12; implicitHeight: 16
+                            color: Qt.rgba(0.694, 0.294, 1.0, 0.14)
+                            Text { id: subN; anchors.centerIn: parent; text: "" + panel.subagents.length
+                                color: Theme.violet; font.family: Theme.fontDisplay; font.pixelSize: 9 } }
+                    }
+                    Repeater {
+                        model: panel.subagents
+                        delegate: Rectangle {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            implicitHeight: 34
+                            radius: Theme.radiusSm
+                            color: subMa.containsMouse ? Theme.navActive : "transparent"
+                            border.width: 1
+                            border.color: subMa.containsMouse ? Theme.accentDim : Theme.hairlineSoft
+                            Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 9; anchors.rightMargin: 9
+                                spacing: 8
+                                // status dot: pulse while running
+                                Rectangle {
+                                    Layout.alignment: Qt.AlignVCenter
+                                    width: 7; height: 7; radius: 3.5
+                                    readonly property bool running: modelData.status === "running" || modelData.status === "starting"
+                                    color: running ? Theme.success : (modelData.status === "error" ? Theme.danger : Theme.textFaint)
+                                    SequentialAnimation on opacity {
+                                        running: parent.running; loops: Animation.Infinite
+                                        NumberAnimation { from: 1.0; to: 0.35; duration: 700; easing.type: Easing.InOutSine }
+                                        NumberAnimation { from: 0.35; to: 1.0; duration: 700; easing.type: Easing.InOutSine }
+                                    }
+                                }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: (modelData.agent && modelData.agent.length ? modelData.agent + " · " : "") +
+                                          (modelData.title && modelData.title.length ? modelData.title : modelData.id)
+                                    color: Theme.text
+                                    font.family: Theme.fontSans; font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                                Text { text: "↗"; color: Theme.accent; font.pixelSize: 12 }
+                            }
+                            MouseArea {
+                                id: subMa
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                // Open the subagent's session -> its full transcript (tool calls + all).
+                                onClicked: bridge.openSession(modelData.id)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---- live agent-desktop view (BELOW the plan/subagents) ---------
             AgentPeek {
                 Layout.fillWidth: true; Layout.fillHeight: true
                 visible: panel.showDesktop

@@ -1086,29 +1086,31 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
                                      const QString &model, const QString &cwd,
                                      const QString &title, QString *err,
                                      const QString &target, const QString &parentSessionId,
-                                     const QString &agent)
+                                     const QString &agent, const QString &agentPromptOverride)
 {
     // Custom-agent (subagent) resolution: when this session runs AS an agent,
-    // the agent definition supplies its brain/model/profile (unless the caller
-    // explicitly overrode them) and its system prompt is injected on turn 1.
+    // a DEFINED agent supplies its brain/model/profile + system prompt; but an
+    // AD-HOC subagent (an unknown name + an inline system prompt) is fine too —
+    // the model can spin one up on the fly. An unknown name is NOT an error; it's
+    // just a label. Explicit brain/model args always win over a def's.
     QString effProfile = profile, effBrain = brainName, effModel = model;
     QString agentName, agentPrompt;
     if (!agent.trimmed().isEmpty()) {
-        auto adef = m_agents.get(agent.trimmed());
-        if (!adef) {
-            if (err)
-                *err = QStringLiteral("no such agent: ") + agent.trimmed();
-            return QString();
+        agentName = agent.trimmed();   // label even when there's no stored def
+        if (auto adef = m_agents.get(agent.trimmed())) {
+            agentName = adef->fm.name;
+            agentPrompt = adef->systemPrompt;
+            if (effBrain.isEmpty() && !adef->fm.brain.isEmpty())
+                effBrain = adef->fm.brain;
+            if (effModel.isEmpty() && !adef->fm.model.isEmpty())
+                effModel = adef->fm.model;
+            if (effProfile.isEmpty() && !adef->fm.profile.isEmpty())
+                effProfile = adef->fm.profile;
         }
-        agentName = adef->fm.name;
-        agentPrompt = adef->systemPrompt;
-        if (effBrain.isEmpty() && !adef->fm.brain.isEmpty())
-            effBrain = adef->fm.brain;
-        if (effModel.isEmpty() && !adef->fm.model.isEmpty())
-            effModel = adef->fm.model;
-        if (effProfile.isEmpty() && !adef->fm.profile.isEmpty())
-            effProfile = adef->fm.profile;
     }
+    // An inline system prompt (ad-hoc subagent, or an override) wins.
+    if (!agentPromptOverride.trimmed().isEmpty())
+        agentPrompt = agentPromptOverride;
 
     SessionRow row;
     row.id = genSessionId();
@@ -1471,14 +1473,20 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "edit_skill to refine, list_skills / get_skill to inspect, remove_skill to "
             "delete, invoke_skill(name, args) to run. Build skills proactively when it "
             "helps — don't wait to be told.\n"
-            "AGENTS (subagents): you can DELEGATE a distinct sub-task to a specialized "
-            "agent. CALL agent_list to see your agents (each has a when_to_use telling you "
-            "WHEN to use it); agent_start(name, task) dispatches one (it runs as its own "
-            "child session and reports back), agent_status shows what's running, agent_stop "
-            "cancels one. CALL agent_create(name, description, when_to_use, system_prompt, …) "
-            "to define a new agent for a kind of work you keep doing (research, code review, "
-            "summarizing). Prefer dispatching the RIGHT agent over doing every sub-task "
-            "inline; build agents proactively.\n"
+            "SKILLS-ON-MENTION: if the user NAMES a skill (with or without a leading /), "
+            "treat it as an instruction to USE it — call invoke_skill (or get_skill to read "
+            "it) FIRST, read the whole skill, then follow/apply it. An invoked skill arrives "
+            "as a [SKILL INVOKED] block — read it in full and actually do what it says; don't "
+            "just acknowledge it.\n"
+            "AGENTS (subagents): when the user asks you to 'spin up / use a subagent', or "
+            "a sub-task is worth offloading, ACTUALLY dispatch one — call "
+            "agent_start(name, task, brain?, model?, system_prompt?). You do NOT need a "
+            "predefined agent: `name` can be any label and you spawn an AD-HOC subagent "
+            "(optionally picking its brain/model and giving a one-off system_prompt). It "
+            "runs as its own child session and reports back. Do NOT just SAY you delegated "
+            "and then do the work yourself — call agent_start. agent_list shows defined "
+            "agents (each with a when_to_use), agent_status shows what's running, agent_stop "
+            "cancels one, agent_create saves a reusable agent for work you keep doing.\n"
             "PLAN / TODO: for any task with 3+ steps (or when the user asks your plan), "
             "CALL todo_write with your step list up front — [{\"text\":\"…\",\"status\":"
             "\"pending|in_progress|done\"}] — then keep it current as you go (keep exactly "
@@ -3221,30 +3229,36 @@ Response ControlServer::handleAgentsDispatch(const Request &req, bool remote)
     const QString agent = p.value(QStringLiteral("agent")).toString().trimmed();
     const QString task = p.value(QStringLiteral("task")).toString();
     const QString parent = p.value(QStringLiteral("parent_session_id")).toString();
-    if (agent.isEmpty())
-        return Response::failure(req.id, QStringLiteral("bad_request"),
-                                 QStringLiteral("agent is required"));
+    // Inline (ad-hoc subagent) overrides: the model can pick brain/model and give
+    // a one-off system prompt without a stored agent definition.
+    const QString brain = p.value(QStringLiteral("brain")).toString();
+    const QString model = p.value(QStringLiteral("model")).toString();
+    const QString sysPrompt = p.value(QStringLiteral("system_prompt")).toString();
     if (task.trimmed().isEmpty())
         return Response::failure(req.id, QStringLiteral("bad_request"),
                                  QStringLiteral("task is required"));
-    // Spawn a CHILD session that runs AS the agent (its def supplies brain/model/
-    // profile + system prompt; parent_session_id links it for the SubAgentTree).
+    // An agent NAME is optional — with none we spawn a generic ad-hoc subagent.
+    const QString label = agent.isEmpty() ? QStringLiteral("subagent") : agent;
+    // Spawn a CHILD session that runs AS the agent. A stored def supplies brain/
+    // model/profile + system prompt; an unknown name + inline brain/model/
+    // system_prompt makes an ad-hoc subagent. parent_session_id links it for the tree.
     QString err;
     const QString sid = createSession(
-        /*profile=*/QString(), /*brain=*/QString(), /*model=*/QString(),
+        /*profile=*/QString(), /*brain=*/brain, /*model=*/model,
         /*cwd=*/p.value(QStringLiteral("cwd")).toString(),
-        /*title=*/agent, &err, /*target=*/QString(),
-        /*parentSessionId=*/parent, /*agent=*/agent);
+        /*title=*/label, &err, /*target=*/QString(),
+        /*parentSessionId=*/parent, /*agent=*/label,
+        /*agentPromptOverride=*/sysPrompt);
     if (sid.isEmpty())
         return Response::failure(req.id, QStringLiteral("dispatch_failed"), err);
     if (!sendToSession(sid, task, {}, &err))
         return Response::failure(req.id, QStringLiteral("dispatch_send_failed"), err);
     m_audit.record(QStringLiteral("agents.dispatch"), true, QStringLiteral("medium"),
                    QStringLiteral("dispatched agent '%1'%2").arg(
-                       agent, remote ? QStringLiteral(" (remote)") : QString()));
+                       label, remote ? QStringLiteral(" (remote)") : QString()));
     QJsonObject result;
     result.insert(QStringLiteral("session_id"), sid);
-    result.insert(QStringLiteral("agent"), agent);
+    result.insert(QStringLiteral("agent"), label);
     if (!parent.isEmpty())
         result.insert(QStringLiteral("parent_session_id"), parent);
     return Response::success(req.id, result);
