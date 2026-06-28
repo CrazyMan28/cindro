@@ -8,6 +8,32 @@ _Last updated: 2026-06-27._
 
 ---
 
+## 🆕 Subagent UX + skills-via-tool + Home CRUD + nav fix (2026-06-28)
+
+Follow-ups on the agents/skills pass (all promoted dev → qa → main via PR):
+
+- **Subagents actually delegate + report back.** Dispatch is **ad-hoc** (no predefined
+  agent needed; the model picks brain/model/system_prompt), every subagent ends with a
+  **summary**, and the parent is **auto-woken** with `[SUBAGENT DONE] <summary> · status`
+  the moment it finishes. New **`agent_wait(session_id)`** MCP tool BLOCKS for the result
+  (`agent_start` → `agent_wait`), plus `agent_result`/`agent_status`/`agent_stop`. Live
+  **SUBAGENTS pop-out** lists children (click to open one), and a **"← Main agent"** pill
+  returns to the parent.
+- **Fixed: clicking a subagent (or any session) jumped to Home.** `Main.qml`
+  `onSessionOpened` used a stale `currentIndex = 0` ("Chat" before the Home page existed);
+  Home is 0 / Chat is 1 now → fixed to 1.
+- **Skills load via a real tool.** Invoking `/skill-name` shows only that as the user
+  turn; the model calls the renamed **`skill_load`** tool itself (per the system prompt)
+  to load + apply the whole skill — no forced dump. CLI-dir skills (`~/.codex`/`~/.claude`)
+  are get/invoke/removable (not just listed); `.system` internals hidden.
+- **`internal_docs` skill** seeded on daemon start — a capability catalog the model
+  loads (`skill_load("internal_docs")`) when asked what it can do / when unsure.
+- **Full desktop-Home CRUD for the model:** `home_list` / `home_pin` / `home_unpin` /
+  `home_move` / **`home_clear`**.
+- **TTS strict FIFO**, plan strikethrough, 200 random-cadence thinking phrases, Chrome
+  extension widgets+agents+`/` palette — all in. Branch flow: `dev → qa → main`
+  (main protected, PR-only).
+
 ## 🆕 "/" command palette + custom agents (subagents) + polish (2026-06-27)
 
 A cross-surface pass — desktop, phone, AND the Chrome extension.
