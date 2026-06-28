@@ -1278,7 +1278,10 @@ void ControlServer::onTurnFinished(const QString &sessionId)
     // so the main agent reviews it (instead of only seeing "done" and redoing it).
     if (m_subagentPendingWake.contains(sessionId)) {
         const QString parentSid = m_subagentPendingWake.take(sessionId);
-        if (m_store.get(parentSid).has_value()) {
+        const bool parentOk = m_store.get(parentSid).has_value();
+        qInfo("jarvisd: subagent %s finished -> waking parent %s (parentOk=%d)",
+              qPrintable(sessionId), qPrintable(parentSid), int(parentOk));
+        if (parentOk) {
             const auto row = m_store.get(sessionId);
             const QString label = (row && !row->agent.isEmpty()) ? row->agent
                                                                   : QStringLiteral("subagent");
@@ -1293,7 +1296,8 @@ void ControlServer::onTurnFinished(const QString &sessionId)
                 .arg(label, sessionId, state, summary);
             QString werr;
             // sendToSession queues if the parent is still busy (flushed on its turn end).
-            sendToSession(parentSid, wake, {}, &werr);
+            if (!sendToSession(parentSid, wake, {}, &werr))
+                qWarning("jarvisd: subagent wake send failed: %s", qPrintable(werr));
         }
     }
 
@@ -1411,8 +1415,14 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
     // do not send until approval.respond arrives. For CLI brains this only
     // audits (they run their own tool loop and can't be intercepted mid-loop).
     QString brainName;
-    if (auto row = m_store.get(sessionId))
+    bool isSubagent = false;
+    if (auto row = m_store.get(sessionId)) {
         brainName = row->brain;
+        // A SUBAGENT (a child session) is ISOLATED: it gets ONLY its own system
+        // prompt + the task its parent gave it — no shared Jarvis memory, no co-work
+        // preamble, and it doesn't write back into the shared memory.
+        isSubagent = !row->parentSessionId.isEmpty();
+    }
     if (gateForInjection(sessionId, brainName, text)) {
         // Blocked: hold the turn (text+images) until the approval flips it
         // through via approval.respond("inject-<id>").
@@ -1445,13 +1455,15 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
     m_store.appendEvent(sessionId,
                         NormalizedBrainEvent::message(QStringLiteral("user"), text));
 
-    // Memory PREFETCH (HERMES_FEATURES §1), applied for ALL brains: prepend a
-    // relevant-memory block to the user's turn so the model has context. The
-    // memory tools (memory.*) let the model curate; this is the injection half.
+    // Memory PREFETCH (HERMES_FEATURES §1): prepend a relevant-memory block so the
+    // model has context. SKIPPED for a subagent — it must NOT inherit the main
+    // agent's memory; it only gets its own prompt + task.
     QString effectiveText = text;
-    const QString memBlock = prefetchMemoryBlock(text);
-    if (!memBlock.isEmpty())
-        effectiveText = memBlock + QStringLiteral("\n---\n") + text;
+    if (!isSubagent) {
+        const QString memBlock = prefetchMemoryBlock(text);
+        if (!memBlock.isEmpty())
+            effectiveText = memBlock + QStringLiteral("\n---\n") + text;
+    }
 
     // ONE-TIME co-work guidance: the first turn a session has computer-use, teach
     // the model the screen-targeting contract + the ASK-WHEN-AMBIGUOUS rule the
@@ -1459,7 +1471,7 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
     // model's own private nested desktop (default, watched on the Computer page);
     // "real" = the user's REAL screen (glowing banner shows). If the user doesn't
     // say whose screen, the model MUST ask_user first.
-    if (m_agentDesktops.has(sessionId) && !m_coworkGuided.contains(sessionId)) {
+    if (!isSubagent && m_agentDesktops.has(sessionId) && !m_coworkGuided.contains(sessionId)) {
         m_coworkGuided.insert(sessionId);
         const QString guide = QStringLiteral(
             "[Jarvis co-work — READ FIRST] You have TWO separate computer-use tool "
@@ -1616,9 +1628,10 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
 
     brain->send(effectiveText, images);
 
-    // Memory SYNC (post-turn write of salient user facts). Cheap + synchronous;
-    // the model can also persist richer facts via the memory tools.
-    syncTurnMemory(sessionId, text);
+    // Memory SYNC (post-turn write of salient user facts). SKIPPED for a subagent —
+    // its isolated task must not pollute the main agent's long-term memory.
+    if (!isSubagent)
+        syncTurnMemory(sessionId, text);
     return true;
 }
 

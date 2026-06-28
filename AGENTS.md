@@ -136,6 +136,14 @@ Design pillars:
   with a `[SUBAGENT DONE]` summary+status turn, so the parent acts on the result
   instead of redoing it. `agents.result` / `agent_result` fetch a summary on demand.
   See `docs/AGENTS_AND_COMMANDS.md`.
+- **Subagents are ISOLATED.** A child session (non-empty `parentSessionId`) gets ONLY
+  its agent system prompt + the task — `sendToSession` SKIPS the memory prefetch, the
+  co-work guide, and the post-turn memory write for it (`isSubagent`). Don't leak the
+  main agent's memory/context into a subagent.
+- **No per-message MultiEffect brightness layers.** The chat bubble edge bar is a SOLID
+  color, not a `layer.effect: MultiEffect{brightness}` — those always-on layers
+  intermittently flood the whole bubble bright (the "random bright text" bug) and cost
+  a GPU layer per message. Keep glows off per-delegate (or gate on `Qt.application.active`).
 - **The "/" palette** is per-surface (`SlashPalette.qml` / `ui/chat/SlashPalette.kt`
   / the extension dropdown). It lists commands + agents + skills. The desktop
   `CommandPalette.qml` (Ctrl+K page jumper) is SEPARATE — keep both. Picking a SKILL
