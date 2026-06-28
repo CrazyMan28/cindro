@@ -60,6 +60,11 @@ qt_add_qml_module(jarvis-sidebar
         qml/FloatingWidgetLayer.qml
         qml/SchedulesPage.qml
         qml/PhonePage.qml
+        qml/PhoneDialerTab.qml
+        qml/PhoneAgentsTab.qml
+        qml/PhoneInboxTab.qml
+        qml/PhoneHudTab.qml
+        qml/PhoneSettingsTab.qml
         qml/SshPage.qml
         qml/ActivityPage.qml
         qml/BrowserPage.qml
