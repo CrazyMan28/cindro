@@ -1873,7 +1873,28 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "SVG markup, or {\"type\":\"canvas\",\"w\":…,\"h\":…,\"ops\":[…]} draw ops "
             "(circle/ellipse/rect/path/line). NEVER a one-word label like \"Duck\".\n"
             "Give the top node a sensible w/h or fill:true so it isn't cramped. Always "
-            "actually CALL render_widget — don't describe the widget in words.");
+            "actually CALL render_widget — don't describe the widget in words.\n"
+            "\n[YOUR NEWER POWERS]\n"
+            "• PHONE — you can reach the user on their REAL phone: call_user / "
+            "call_user_and_wait (in-app, can escalate to a real call), notify_user / "
+            "notify_user_and_wait (text the user, optionally awaiting a reply), "
+            "twilio_call_and_wait + twilio_sms + device_sms (real PSTN call / SMS), "
+            "request_approval_by_phone, send_call_receipt, plus screening / war-room "
+            "(red_alert) / voice-profile tools. Use a VOICE CALL only for: an approval "
+            "of a risky action, a blocking incident, the user explicitly asked, or a "
+            "text fallback already failed — otherwise default to notify_user for "
+            "status. Check list_extensions presence before calling.\n"
+            "• BACKGROUND JOBS — bg_start(command) runs long work DETACHED and WAKES "
+            "you with the exit code + output when it finishes (use it for training, "
+            "builds, deploys, downloads instead of blocking). monitor(command, "
+            "until_regex/until_exit) polls a condition and wakes you when it trips. "
+            "wake_me_in(seconds, note) sleeps then wakes you. bg_status / bg_logs / "
+            "bg_stop / bg_list manage them. Don't sit idle on a slow command — "
+            "background it and you'll be pinged.\n"
+            "• HOOKS — hooks_list / hooks_add / hooks_remove / hooks_test configure "
+            "shell hooks that fire on your lifecycle events (Claude-Code style).\n"
+            "• MODES — the user selects plan / build / co-worker in Settings; follow "
+            "the mode clause appended below.");
         effectiveText = guide + permissionPolicyClause() + modePolicyClause() +
                         QStringLiteral("\n---\n") + effectiveText;
     }
@@ -3456,13 +3477,26 @@ void ControlServer::seedPhoneMcp()
 
 void ControlServer::seedInternalDocsSkill()
 {
-    // Only seed once — don't clobber a user's edits.
-    if (m_skills.get(QStringLiteral("internal_docs")).has_value())
-        return;
+    // Re-seed our BUILTIN catalog when it changes (version marker), so existing
+    // installs pick up new capabilities — but never clobber a user's own skills.
+    // If internal_docs exists and already carries the current marker, skip;
+    // otherwise (absent OR stale) refresh it.
+    const QString kMarker = QStringLiteral("[catalog v2]");
+    if (auto existing = m_skills.get(QStringLiteral("internal_docs"))) {
+        QFile f(existing->path);
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QString cur = QString::fromUtf8(f.readAll());
+            f.close();
+            if (cur.contains(kMarker))
+                return; // already current
+        }
+        m_skills.remove(QStringLiteral("internal_docs")); // stale builtin -> refresh
+    }
     const QString body = QStringLiteral(
-        "When the user asks what you can do, your features, how to do something with "
-        "you, or you're unsure you're capable of something, use THIS as the source of "
-        "truth for Jarvis's capabilities. Tell them what fits + offer to do it.\n\n"
+        "[catalog v2] When the user asks what you can do, your features, how to do "
+        "something with you, or you're unsure you're capable of something, use THIS as "
+        "the source of truth for Jarvis's capabilities. Tell them what fits + offer to "
+        "do it.\n\n"
         "# Jarvis — what you can do\n\n"
         "**Computer use** — drive mouse/keyboard/screen on KDE & Sway. You work on your "
         "OWN nested agent desktop by default (the user watches it live in chat / on the "
@@ -3491,6 +3525,31 @@ void ControlServer::seedInternalDocsSkill()
         "**Files** — send any file to the user's phone/desktop with send_file.\n"
         "**MCP & plugins** — extra MCP tool servers + a plugin marketplace, managed in the "
         "app.\n"
+        "**Phone** — reach the user on their REAL phone: call_user / call_user_and_wait "
+        "(in-app, can escalate to a real call), notify_user / notify_user_and_wait "
+        "(text the user, optionally await a reply), twilio_call_and_wait / twilio_sms / "
+        "device_sms (real PSTN call + SMS), request_approval_by_phone, call screening, "
+        "war room (red_alert), voice profiles. A native phone subsystem in the one repo. "
+        "(docs/PHONE.md)\n"
+        "**Background jobs** — bg_start runs a long command DETACHED and WAKES you with "
+        "its exit code + output when it finishes (training, builds, deploys); monitor "
+        "watches a condition and wakes you when it trips; wake_me_in sleeps then wakes "
+        "you; bg_status / bg_logs / bg_stop / bg_list. (docs/BACKGROUND_JOBS.md)\n"
+        "**Hooks** — Claude-Code-style lifecycle hooks that fire shell commands on your "
+        "events: hooks_list / hooks_add / hooks_remove / hooks_test. (docs/HOOKS.md)\n"
+        "**Modes** — plan / build / co-worker, selectable in Settings (shown as the HUD "
+        "chip). (docs/MODES.md)\n"
+        "**Permissions** — an ask-before-risky policy (cautious / balanced / autonomous) "
+        "the user sets in Settings → Permissions; you call ask_user before actions "
+        "above the chosen risk line.\n"
+        "**SSH** — gated remote command execution on allow-listed hosts (the user manages "
+        "the allow-list in the app).\n"
+        "**Connectors** — a Google connectors framework (Gmail / Calendar / Drive etc.) "
+        "the user can enable. (docs/JARVIS_GOOGLE_CONNECTORS.md)\n"
+        "**Security / unlock** — optional 2FA: open Jarvis by approving on the paired "
+        "phone with a fingerprint, with a local PIN fallback (no-brick fail-open).\n"
+        "**Brains** — you can run on Codex, Claude, or a direct API brain; the user picks "
+        "the brain + model per session.\n"
         "**Cross-surface** — one daemon behind a desktop sidebar, an Android app, and a "
         "Chrome extension; cross-device biometric unlock. (README.md, docs/ARCHITECTURE.md)\n");
     m_skills.create(QStringLiteral("internal_docs"),

@@ -388,6 +388,14 @@ public:
     // Reuses session.list; the page builds the indented tree from parent_session_id.
     Q_INVOKABLE void loadSubAgentTree();
 
+    // ---- Phone (Contract A phone.mcp proxy) ---------------------------------
+    // Forward a phone-server MCP tool call through the daemon's phone.mcp method.
+    // callId is a QML-supplied correlation tag echoed back in phoneResult() so the
+    // caller can match async replies to their request.  arguments may be empty {}.
+    Q_INVOKABLE void phoneMcp(const QString &callId,
+                              const QString &name,
+                              const QVariantMap &arguments);
+
     // ---- Notifications ------------------------------------------------------
     // Toggle desktop notify-send on attention events. Persisted via settings.set so
     // the daemon's NotifyService honors it too.
@@ -637,6 +645,12 @@ signals:
     // ---- Sub-agent tree -----------------------------------------------------
     // Flattened, ordered tree rows: {id,title,brain,status,depth,parent}.
     void subAgentTree(const QVariantList &rows);
+
+    // ---- Phone results ------------------------------------------------------
+    // Emitted when a phone.mcp reply arrives; callId matches what was passed to
+    // phoneMcp().  result contains the parsed tool response
+    // {tool, data, text, error?} or {error: {...}} on failure.
+    void phoneResult(const QString &callId, const QVariantMap &result);
 
     // ---- Notifications ------------------------------------------------------
     void notificationsChanged();
