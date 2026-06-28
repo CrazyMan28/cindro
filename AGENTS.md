@@ -133,7 +133,13 @@ Design pillars:
   is now real — don't drop it. See `docs/AGENTS_AND_COMMANDS.md`.
 - **The "/" palette** is per-surface (`SlashPalette.qml` / `ui/chat/SlashPalette.kt`
   / the extension dropdown). It lists commands + agents + skills. The desktop
-  `CommandPalette.qml` (Ctrl+K page jumper) is SEPARATE — keep both.
+  `CommandPalette.qml` (Ctrl+K page jumper) is SEPARATE — keep both. Picking a SKILL
+  RUNS it (no args); picking an AGENT fills `/dispatch <name> ` (needs a task).
+- **Skill invoke is injected by the CHAT panel.** `JarvisPanel` owns the single
+  `bridge.onSkillInvoked -> injectSkill` handler (the chat page is always loaded), so
+  a skill invoked from the "/" palette OR a typed `/name` lands in chat even when the
+  Skills page was never opened. The Skills page's `onRunSkill` only switches to chat —
+  it must NOT also inject (that double-rendered).
 - **TTS is one strict FIFO.** Voice mode AND the chat "Speak replies" path BOTH go
   through `Bridge::playTtsAudio` (single shared `QMediaPlayer` + `m_ttsQueue`) with
   requests serialized one-in-flight (`pumpTtsRequests`); Android `TtsPlayer` mirrors

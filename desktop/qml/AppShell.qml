@@ -260,11 +260,10 @@ Item {
     Component {
         id: skillsComp
         SkillsPage {
-            // /invoke a skill -> drop the rendered text into the live Chat panel
-            // and jump to the Chat page so the user sees it land.
+            // /invoke a skill -> JarvisPanel's onSkillInvoked injects the rendered
+            // text into chat (single source of truth, avoids a double-inject); here
+            // we just jump to the Chat page so the user sees it land.
             onRunSkill: function(name, message) {
-                if (shell.chatPanel)
-                    shell.chatPanel.injectSkill(name, message)
                 shell.currentIndex = 1
             }
         }
