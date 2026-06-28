@@ -4,7 +4,35 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-06-27._
+_Last updated: 2026-06-28._
+
+---
+
+## 🆕 Live tool cards + reliable subagent wake/timeout (2026-06-28)
+
+Fixes for "tool calls don't show until they finish/time out" and "the subagent never
+woke the main agent" — all verified in the real desktop GUI (codex/gpt-5.5):
+
+- **Tool calls render IMMEDIATELY (in-progress).** `codex exec --json` emits
+  `item.started` (status `in_progress`) the instant a tool is invoked and only later
+  `item.completed` with the output. The parser had **skipped** `item.started`, so a
+  long-blocking tool (e.g. `agent_wait`) showed **nothing** until it returned or timed
+  out. `CodexParser` now maps `item.started` → an in-progress `tool_call` (spinner +
+  "running…"); the matching `item.completed` merges its output and flips the card to
+  done. The `finished` heuristic is now status-aware (an `in_progress` item carrying
+  `exit_code:null` / empty `aggregated_output` is no longer mistaken for completed).
+- **`agent_wait` returns the instant the subagent is done** (running tracked by session
+  STATE, not a lingering brain object) — no more waiting for the tool timeout.
+- **No more premature tool timeouts.** The injected computer-use MCP servers now set
+  `tool_timeout_sec=7200` (codex was cutting a long `agent_wait` short); `agent_wait`'s
+  own default is 2h (cap 4h).
+- **Subagent wake is robust.** When the model dispatches via the shared real-screen
+  engine (no per-session `JARVIS_AGENT_SESSION`), `parent_session_id` arrived empty and
+  the child was orphaned (no tree link, no wake). The daemon now falls back to the
+  session that is mid-turn (the caller), so the parent link — and the done-wake — always
+  holds. Verified: dispatch-without-wait → parent auto-pinged with the result ~40s later.
+- **Subagents show a DONE badge** in the pop-out (RUNNING while in flight → DONE on
+  summary → ERROR on failure).
 
 ---
 

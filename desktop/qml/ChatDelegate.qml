@@ -426,18 +426,20 @@ Item {
                 border.width: 1
                 border.color: del.isUser ? Theme.amberDim : Theme.accentDim
 
-                // role-colored edge bar. NOTE: this used a per-bubble MultiEffect
-                // brightness layer for a glow — removed. Those always-on layers
-                // intermittently mis-composited and flooded the whole bubble bright
-                // cyan (the "random bright text" bug), and cost a GPU layer PER
-                // message. A solid bar reads the same without the glitch/cost.
+                // role-colored edge bar. THE "random bright text" BUG: this bar used
+                // CONDITIONAL left/right anchors (anchors.left: isUser?undefined:left,
+                // anchors.right: isUser?right:undefined). On ListView delegate REUSE
+                // (reuseItems:true) when isUser flips, the old anchor wasn't cleared
+                // before the new one was set, so the 2.5px bar briefly anchored BOTH
+                // left AND right → stretched the full bubble width → flooded it with
+                // the bar's color (cyan for assistant, amber for user). Fixed by
+                // positioning with an explicit x (no flipping anchors), so it can
+                // never span the bubble.
                 Rectangle {
                     anchors.top: parent.top; anchors.bottom: parent.bottom
                     anchors.topMargin: 4; anchors.bottomMargin: 4
-                    anchors.left: del.isUser ? undefined : parent.left
-                    anchors.right: del.isUser ? parent.right : undefined
-                    anchors.leftMargin: 1; anchors.rightMargin: 1
                     width: 2.5
+                    x: del.isUser ? (bubble.width - width - 1) : 1
                     radius: 1.5
                     color: del.isUser ? Theme.amber : Theme.accent
                 }
