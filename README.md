@@ -198,6 +198,10 @@ Honest about the rough edges (full status in [`docs/STATUS.md`](docs/STATUS.md))
 ## 📚 Docs
 
 - [`docs/STATUS.md`](docs/STATUS.md) — **where the project actually is** (done vs partial vs next)
+- [`docs/PHONE.md`](docs/PHONE.md) — **native phone** (call/text you, Twilio PSTN, screening) + [`docs/AGENT_PHONE_FEATURE_MAP.md`](docs/AGENT_PHONE_FEATURE_MAP.md)
+- [`docs/BACKGROUND_JOBS.md`](docs/BACKGROUND_JOBS.md) — background jobs, `monitor`, sleep/wake (auto session-wake)
+- [`docs/HOOKS.md`](docs/HOOKS.md) — Claude-Code-style lifecycle hooks · [`docs/MODES.md`](docs/MODES.md) — plan/build/co-worker modes
+- [`docs/WINDOWS.md`](docs/WINDOWS.md) — the planned Windows port (phase 2)
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design + Contract A/B/C protocols
 - [`docs/COMPUTER_USE.md`](docs/COMPUTER_USE.md) — the computer-use engine + nested agent desktop
 - [`docs/AGENTS_AND_COMMANDS.md`](docs/AGENTS_AND_COMMANDS.md) — the "/" command palette + custom agents (subagents)
