@@ -8,6 +8,16 @@ _Last updated: 2026-06-27._
 
 ---
 
+## 🆕 Home-screen widget: DYNAMIC pin size (2026-06-28)
+
+- **The pin size now adapts to the widget's content.** Android has no per-pin size
+  API — `requestPinAppWidget` always uses the chosen *provider's* default cell. So we
+  ship **four size-tier providers** (compact 3×2 · default 3×3 · tall 4×5 · xtall 4×7),
+  all sharing the same binding/render logic, and `WidgetPinHelper` measures the
+  content's natural height and pins via the tier that fits — a big widget (e.g. Thread
+  Command Center) pins **tall**, a stat card pins **compact**. Still drag-resizable.
+  (0.9.1)
+
 ## 🆕 Home-screen widget: full-width readable render (2026-06-28)
 
 - **Tall widgets no longer render as a tiny, side-margined blob.** The bitmap
