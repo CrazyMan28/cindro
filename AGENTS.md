@@ -190,6 +190,24 @@ Design pillars:
   the file itself and never subscribes, so it doesn't double-render. Don't broadcast
   widgets to all control clients.
 
+## New subsystems (2026-06-28) — gotchas
+
+- **Phone is VENDORED, not rewritten.** `phone/server` is the agent-phone server copied
+  byte-for-byte (`diff -rq` clean). Don't hand-edit it to "fix" things — re-vendor from the
+  source if it must change. Secrets live in `~/.config/jarvis/phone.env` (0600, gitignored);
+  never commit them. `seedPhoneMcp()` seeds the `phone` MCP row for the brain; `phone.mcp`
+  (Contract A, control + device) proxies tool calls to it for the UIs (the bearer stays in
+  the daemon). A new QML page MUST be added to `desktop/CMakeLists.txt` `QML_FILES` or it
+  loads as "X is not a type" (gui_selftest catches this).
+- **Background jobs wake via `session.wake`** (`bg_jobs.py` → daemon), the generalized form
+  of the subagent wake — queued if the session is mid-turn. Don't add a second wake path.
+- **Hooks fire points are mostly observational.** Only UserPromptSubmit blocks/injects and
+  SessionStart injects; tool/Stop/Notification hooks can't abort (the brain's CLI runs MCP
+  tools itself). `HookStore::run()` is a no-op when an event has no hooks — keep it that way
+  so fire points stay free by default.
+- **Modes & wake-notify are SOFT** (`agent_mode`, `wake_notify` in SettingsStore, like
+  `permission_level`) — preamble clauses only, never the sandbox.
+
 ## Branches & flow
 
 Three long-lived branches; **`main` is protected** (PR-only, no direct pushes, no
