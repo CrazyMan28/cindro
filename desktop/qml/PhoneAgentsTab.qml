@@ -13,19 +13,31 @@ Item {
     id: tab
     property var phonePage
 
-    // ---- async helper ---------------------------------------------------------
+    // ---- async helpers --------------------------------------------------------
     property var  _pending: ({})
     property int  _seq: 0
 
+    // phoneMcp path (existing tools: list_extensions, list_agents, call_extension)
     function callTool(tool, args, cb) {
         var id = "agents_" + (++tab._seq)
         tab._pending[id] = cb || null
         bridge.phoneMcp(id, tool, args || {})
     }
 
+    // phone.http path (REST routes on the phone server)
+    function callHttp(method, path, body, cb) {
+        var id = "agentsH_" + (++tab._seq)
+        tab._pending[id] = cb || null
+        bridge.phoneHttp(id, method, path, body || {})
+    }
+
     Connections {
         target: bridge
         function onPhoneResult(callId, result) {
+            var cb = tab._pending[callId]
+            if (cb) { delete tab._pending[callId]; cb(result) }
+        }
+        function onPhoneHttpResult(callId, result) {
             var cb = tab._pending[callId]
             if (cb) { delete tab._pending[callId]; cb(result) }
         }
@@ -87,16 +99,21 @@ Item {
         tab.configThinking = "low"; tab.configStatus = "Loading…"
         tab.configMode = true
 
-        // load voices
+        // load voices — GET /api/voices
         voicesModel.clear()
-        tab.callTool("list_voices", {}, function(r) {
-            // TODO: list_voices may not be in the phoneMcp proxy; falls back to hardcoded
-            if (!r.error && r.data instanceof Array) {
-                for (var i = 0; i < r.data.length; i++) {
-                    var v = r.data[i]
-                    var nm = v.name || v.label || ("Voice " + i)
-                    var sp = nm.indexOf(" - ") >= 0 ? nm.split(" - ")[0].trim() : nm.replace(/ *\(.*\)/, "").trim()
-                    var em = nm.indexOf(" - ") >= 0 ? nm.split(" - ")[1].trim() : "Default"
+        tab.callHttp("GET", "/api/voices", {}, function(r) {
+            var arr = null
+            if (!r.error) {
+                var d = r.data
+                if (d instanceof Array) arr = d
+                else if (d && d.voices instanceof Array) arr = d.voices
+            }
+            if (arr && arr.length > 0) {
+                for (var i = 0; i < arr.length; i++) {
+                    var v = arr[i]
+                    var nm = v.label || v.name || ("Voice " + i)
+                    var sp = v.speaker || (nm.indexOf(" - ") >= 0 ? nm.split(" - ")[0].trim() : nm.replace(/ *\(.*\)/, "").trim())
+                    var em = v.emotion || (nm.indexOf(" - ") >= 0 ? nm.split(" - ")[1].trim() : "Default")
                     voicesModel.append({ "vid": v.id || "", "vname": nm, "speaker": sp, "emotion": em })
                 }
             } else {
@@ -123,23 +140,22 @@ Item {
             }
         })
 
-        // load voice profile
-        tab.callTool("get_voice_profile", { extension: ext }, function(r) {
-            if (!r.error) {
+        // load voice profile — GET /api/extensions/<ext>/voice
+        tab.callHttp("GET", "/api/extensions/" + ext + "/voice", {}, function(r) {
+            if (!r.error && r.data) {
                 var d = r.data || {}
-                var vp = d.voice || d
-                tab.configVoiceId   = vp.voice_id   || vp.id   || ""
-                tab.configVoiceName = vp.voice_name || vp.name || "(default)"
-                tab.configSpeed     = vp.speed      !== undefined ? vp.speed : 1.0
+                tab.configVoiceId   = d.voice_id   || d.id   || ""
+                tab.configVoiceName = d.voice_name || d.name || "(default)"
+                tab.configSpeed     = d.speed      !== undefined ? d.speed : 1.0
             }
         })
 
-        // load model config — TODO: verify exact tool name on server
-        tab.callTool("get_agent_model", { extension: ext }, function(r) {
+        // load model config — GET /api/extensions/<ext>/model
+        tab.callHttp("GET", "/api/extensions/" + ext + "/model", {}, function(r) {
             if (!r.error && r.data) {
                 var d = r.data || {}
-                tab.configModel   = d.model   || "claude-sonnet-4-6"
-                tab.configThinking = d.thinking || d.reasoning || "low"
+                tab.configModel    = d.model     || "claude-sonnet-4-6"
+                tab.configThinking = d.reasoning || d.thinking || "low"
             }
             tab.configStatus = ""
         })
@@ -149,32 +165,39 @@ Item {
         tab.configVoiceId   = vid
         tab.configVoiceName = vname
         tab.configStatus = "Saving…"
-        tab.callTool("set_voice_profile", { extension: tab.configExt, voice_id: vid, voice_name: vname }, function(r) {
+        // PUT /api/extensions/<ext>/voice {voice_id, speed}
+        tab.callHttp("PUT", "/api/extensions/" + tab.configExt + "/voice",
+            { voice_id: vid, speed: tab.configSpeed }, function(r) {
             tab.configStatus = r.error ? ("Voice error: " + (r.error.message || "?")) : "Voice saved."
         })
     }
 
     function setSpeed(spd) {
         tab.configSpeed = spd
-        tab.callTool("set_voice_profile", { extension: tab.configExt, speed: spd }, function(r) {
+        // PUT /api/extensions/<ext>/voice {voice_id, speed}
+        tab.callHttp("PUT", "/api/extensions/" + tab.configExt + "/voice",
+            { voice_id: tab.configVoiceId, speed: spd }, function(r) {
             tab.configStatus = r.error ? ("Speed error: " + (r.error.message || "?")) : "Speed saved."
         })
     }
 
     function setModelConfig(model, thinking) {
-        // TODO: set_agent_model — not yet in official tool list; wire when available
-        if (model   !== "") tab.configModel   = model
+        if (model    !== "") tab.configModel    = model
         if (thinking !== "") tab.configThinking = thinking
         tab.configStatus = "Saving model config…"
-        tab.callTool("set_agent_model",
-            { extension: tab.configExt, model: tab.configModel, thinking: tab.configThinking },
-            function(r) { tab.configStatus = r.error ? ("Model error: " + (r.error.message || "?")) : "Model saved." })
+        // PUT /api/extensions/<ext>/model {model, reasoning}
+        tab.callHttp("PUT", "/api/extensions/" + tab.configExt + "/model",
+            { model: tab.configModel, reasoning: tab.configThinking }, function(r) {
+            tab.configStatus = r.error ? ("Model error: " + (r.error.message || "?")) : "Model saved."
+        })
     }
 
     function previewVoice(vid) {
-        // TODO: preview_voice not yet confirmed in phoneMcp proxy
         tab.configStatus = "Previewing…"
-        tab.callTool("preview_voice", { voice_id: vid, extension: tab.configExt }, function(r) {
+        // GET /api/voices/<voiceId>/sample — audio endpoint; desktop just shows status
+        var voiceId = vid || tab.configVoiceId
+        if (!voiceId) { tab.configStatus = "No voice selected."; return }
+        tab.callHttp("GET", "/api/voices/" + encodeURIComponent(voiceId) + "/sample", {}, function(r) {
             tab.configStatus = r.error ? "Preview unavailable on this server." : "Playing preview…"
         })
     }
