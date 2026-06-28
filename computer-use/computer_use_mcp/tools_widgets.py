@@ -318,6 +318,16 @@ def register(mcp: FastMCP) -> None:
         _write_home_order(order)
         return json.dumps({"ok": True, "order": order})
 
+    @mcp.tool()
+    def home_clear() -> str:
+        """Remove ALL widgets from the DESKTOP Home screen (unpin everything)."""
+        ids = [c.get("id") for c in _home_in_order() if c.get("id")]
+        for hid in ids:
+            live_widgets.delete(hid)
+            widgets_bus.append_op("remove", widget_id=hid)
+        _write_home_order([])
+        return json.dumps({"ok": True, "cleared": ids})
+
     # ----- Live (auto-updating) widgets ------------------------------------
     @mcp.tool()
     def widget_live(id: str, command: str, spec: dict, interval_sec: float = 5,
