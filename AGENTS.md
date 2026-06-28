@@ -170,6 +170,19 @@ Design pillars:
   the file itself and never subscribes, so it doesn't double-render. Don't broadcast
   widgets to all control clients.
 
+## Branches & flow
+
+Three long-lived branches; **`main` is protected** (PR-only, no direct pushes, no
+force-push, no deletion). Promote up, never push straight to `main`:
+
+```
+work on dev  →  push  →  test  →  promote dev → qa  →  test  →  PR qa → main  →  merge
+```
+
+Do day-to-day work on **`dev`**. When it's good, fast-forward/merge into **`qa`** and
+test. When qa passes, open a **PR into `main`** and merge it. Never commit directly to
+`main` (the branch protection will reject it).
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.
