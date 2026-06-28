@@ -169,6 +169,45 @@ int main()
               "config.toml has a desktop_pin (hashed) line");
     }
 
+    // --- Agent mode + wake-notify: defaults, normalize, round-trip ---------
+    {
+        writeConfig(QStringLiteral("default_brain = \"codex\"\n"));
+        jarvis::SettingsStore s;
+        s.load();
+        check(s.agentMode() == QStringLiteral("coworker"),
+              "fresh config => agent_mode defaults coworker");
+        check(s.wakeNotify() == QStringLiteral("ping"),
+              "fresh config => wake_notify defaults ping");
+
+        // Unknown values normalize back to the safe defaults.
+        s.setAgentMode(QStringLiteral("bogus"));
+        check(s.agentMode() == QStringLiteral("coworker"),
+              "unknown agent_mode normalizes to coworker");
+        s.setWakeNotify(QStringLiteral("bogus"));
+        check(s.wakeNotify() == QStringLiteral("ping"),
+              "unknown wake_notify normalizes to ping");
+
+        s.setAgentMode(QStringLiteral("plan"));
+        s.setWakeNotify(QStringLiteral("silent"));
+        check(s.saveConfig(), "saveConfig() with mode/wake succeeds");
+
+        jarvis::SettingsStore s2;
+        s2.load();
+        check(s2.agentMode() == QStringLiteral("plan"),
+              "agent_mode=plan round-trips through config.toml");
+        check(s2.wakeNotify() == QStringLiteral("silent"),
+              "wake_notify=silent round-trips through config.toml");
+
+        // build + always also persist
+        s2.setAgentMode(QStringLiteral("build"));
+        s2.setWakeNotify(QStringLiteral("always"));
+        s2.saveConfig();
+        jarvis::SettingsStore s3;
+        s3.load();
+        check(s3.agentMode() == QStringLiteral("build"), "agent_mode=build round-trips");
+        check(s3.wakeNotify() == QStringLiteral("always"), "wake_notify=always round-trips");
+    }
+
     if (g_failures == 0) {
         std::fprintf(stderr, "\nPASS settings_store_test\n");
         return 0;

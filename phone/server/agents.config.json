@@ -1,0 +1,162 @@
+{
+  "version": 1,
+  "agents": [
+    {
+      "extension": "103",
+      "agentId": "copilot-agent",
+      "name": "Copilot",
+      "adapterType": "copilot-cli",
+      "mode": "stdio",
+      "command": "node",
+      "args": [
+        "/home/kihi2024/projects/mcp/agent_tts-stt/agent-phone/server/src/adapters/copilot-bridge.mjs"
+      ],
+      "cwd": null,
+      "enabled": true,
+      "timeoutSeconds": 30,
+      "memoryTags": [
+        "agent-phone",
+        "copilot"
+      ],
+      "systemPrompt": "You are GitHub Copilot, reachable by phone. The caller is talking to you by voice, so keep replies brief and conversational and avoid code blocks unless asked.",
+      "capabilities": [
+        "calls",
+        "terminal",
+        "repo-work"
+      ],
+      "env": {
+        "COPILOT_BIN": "/home/kihi2024/.local/bin/copilot",
+        "COPILOT_CWD": "/home/kihi2024"
+      }
+    },
+    {
+      "extension": "101",
+      "agentId": "codex-agent",
+      "name": "Codex",
+      "adapterType": "codex-cli",
+      "mode": "stdio",
+      "command": "node",
+      "args": [
+        "/home/kihi2024/projects/mcp/agent_tts-stt/agent-phone/server/src/adapters/codex-bridge.mjs"
+      ],
+      "cwd": null,
+      "enabled": true,
+      "timeoutSeconds": 30,
+      "memoryTags": [
+        "agent-phone",
+        "codex"
+      ],
+      "systemPrompt": "You are Codex, the caller's primary phone agent on extension 101. The caller is usually talking to you by voice, so keep replies brief and conversational and avoid code blocks unless asked. The primary user is extension 100. You have a full shell.\n\nYou can reach the caller two extra ways:\n- Text them: node /home/kihi2024/projects/mcp/agent_tts-stt/agent-phone/server/src/adapters/phone-text.mjs \"your message\"\n- Call them (rings their phone, speaks the message, returns their spoken answer): node /home/kihi2024/projects/mcp/agent_tts-stt/agent-phone/server/src/adapters/phone-call.mjs \"what to say\" --reason \"why\"\n\nWhen to use them: on a live call, default to just speaking \u2014 only text or call when the caller asks (e.g. 'text me that'), then speak a one-line confirmation. When doing background work, you may text updates or results on your own, or call if it's urgent or needs a decision; for long tasks, run them in the background and text or call when done. If the caller reaches you by text instead of a call, just reply normally \u2014 your answer is delivered to them as a text automatically.",
+      "capabilities": [
+        "calls",
+        "terminal",
+        "repo-work"
+      ],
+      "env": {
+        "CODEX_CWD": "/home/kihi2024",
+        "CODEX_SANDBOX": "danger-full-access",
+        "CODEX_MODEL": "gpt-5.5"
+      }
+    },
+    {
+      "extension": "104",
+      "agentId": "fake-echo-agent",
+      "name": "Echo (built-in test)",
+      "adapterType": "stub-echo",
+      "mode": "stub",
+      "command": null,
+      "args": [],
+      "cwd": null,
+      "enabled": true,
+      "timeoutSeconds": 10,
+      "memoryTags": [
+        "agent-phone",
+        "echo"
+      ],
+      "systemPrompt": "Echo the user's transcript back, then end the call.",
+      "capabilities": [
+        "calls",
+        "test"
+      ]
+    },
+    {
+      "extension": "105",
+      "agentId": "hermes-agent",
+      "name": "Hermes",
+      "adapterType": "hermes-cli",
+      "mode": "stdio",
+      "command": "hermes",
+      "args": [
+        "--phone-mode"
+      ],
+      "cwd": null,
+      "enabled": true,
+      "timeoutSeconds": 20,
+      "memoryTags": [
+        "agent-phone",
+        "hermes"
+      ],
+      "systemPrompt": "You are Hermes. Use NDJSON directives to speak, notify, or store memory.",
+      "capabilities": [
+        "calls",
+        "knowledge"
+      ]
+    },
+    {
+      "extension": "106",
+      "agentId": "claude-agent",
+      "name": "Claude",
+      "adapterType": "claude-cli",
+      "mode": "stdio",
+      "command": "node",
+      "args": [
+        "/home/kihi2024/projects/mcp/agent_tts-stt/agent-phone/server/src/adapters/claude-bridge.mjs"
+      ],
+      "cwd": null,
+      "enabled": true,
+      "timeoutSeconds": 90,
+      "memoryTags": [
+        "agent-phone",
+        "claude"
+      ],
+      "systemPrompt": "You are Claude, reachable by phone, with a full shell and all tools (full access). The caller is usually talking to you by voice, so keep replies brief and conversational and avoid code blocks unless asked. You can run commands, read and edit files, and reach the caller by text or by calling their phone.",
+      "capabilities": [
+        "calls",
+        "reasoning",
+        "tools",
+        "terminal",
+        "repo-work"
+      ],
+      "env": {
+        "CLAUDE_BIN": "claude",
+        "AGENT_CLAUDE_CONFIG_DIR": "/home/kihi2024/.claude",
+        "AGENT_CLAUDE_CWD": "/home/kihi2024",
+        "AGENT_NAME": "Claude"
+      }
+    },
+    {
+      "extension": "107",
+      "agentId": "mistral-screener",
+      "name": "Mistral Screener",
+      "adapterType": "mistral-chat",
+      "mode": "stdio",
+      "command": "node",
+      "args": [
+        "/home/kihi2024/projects/mcp/agent_tts-stt/agent-phone/server/src/adapters/mistral-bridge.mjs"
+      ],
+      "cwd": null,
+      "enabled": true,
+      "timeoutSeconds": 30,
+      "memoryTags": [
+        "agent-phone",
+        "mistral",
+        "screening"
+      ],
+      "systemPrompt": "You are Kizek's friendly phone receptionist. You screen calls on his behalf.",
+      "capabilities": [
+        "calls"
+      ],
+      "env": {}
+    }
+  ]
+}

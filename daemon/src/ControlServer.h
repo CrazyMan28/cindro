@@ -27,6 +27,7 @@
 #include "jarvis/SessionStore.h"
 #include "jarvis/SettingsStore.h"
 #include "jarvis/SkillStore.h"
+#include "jarvis/HookStore.h"
 #include "jarvis/SshAllowList.h"
 #include "jarvis/VoiceProvider.h"
 #include "jarvis/VoiceService.h"
@@ -230,10 +231,24 @@ private:
     Response handleModelList(const Request &req);
     Response handleSessionCreate(const Request &req);
     Response handleSessionSend(const Request &req);
+    // session.wake — inject a turn into a session (queued if mid-turn) to resume
+    // it: used by background jobs / monitors / sleep-timers to wake the agent when
+    // their work finishes. Also drives the wake_notify phone behavior.
+    Response handleSessionWake(const Request &req);
     Response handleSessionCancel(const Request &req);
     Response handleSessionDelete(const Request &req);
     Response handleSessionList(const Request &req);
     Response handleSessionHistory(const Request &req);
+    // Claude-Code-style hooks (hooks.* Contract A): list/add/remove/test.
+    Response handleHooksList(const Request &req);
+    Response handleHooksAdd(const Request &req);
+    Response handleHooksRemove(const Request &req);
+    Response handleHooksTest(const Request &req);
+    // phone.mcp — proxy a phone-subsystem MCP tool call ({name, arguments}) to the
+    // native phone server, keeping its bearer inside the daemon. Lets every surface
+    // (desktop/Android/Chrome) drive all 55 phone tools over its existing Contract A
+    // connection. Returns {data|text, tool, error?}.
+    Response handlePhoneMcp(const Request &req);
     // Session manager (Contract A): a client declares which session ids it is
     // currently viewing; the daemon then fans session.event frames ONLY for those
     // ids to it. Needs the socket, so it is dispatched with `client` (unlike the
@@ -398,6 +413,10 @@ private:
     // clause to append after the co-work guide (empty when level == "low" and
     // no HIGH-risk confirm is wanted — but we always confirm the worst).
     QString permissionPolicyClause() const;
+    // Soft behavioral clause for the current agent_mode (plan/build/coworker),
+    // appended to the co-work preamble right after permissionPolicyClause().
+    // Empty for the balanced "coworker" default (the guide already covers it).
+    QString modePolicyClause() const;
 
     // Render the base system block (memory) injected into ApiBrain's system
     // prompt at session.create time.
@@ -461,8 +480,18 @@ private:
     // Custom agents (subagents): user/model-defined AGENT.md files. A dispatched
     // agent runs as a child session; its system prompt is injected on turn 1.
     AgentStore m_agents;
+    // Claude-Code-style lifecycle hooks. HookStore loads ~/.config/jarvis/hooks.json
+    // and fires per event (UserPromptSubmit can block/inject; tool/Stop/Notification
+    // are observational). m_hookSessionContext holds SessionStart additionalContext
+    // until the session's first turn drains it.
+    HookStore m_hooks;
+    QHash<QString, QString> m_hookSessionContext;
     // Seed the built-in "internal_docs" capability-catalog skill (once).
     void seedInternalDocsSkill();
+    // Seed the native phone subsystem's MCP endpoint (call_user / notify_user /
+    // twilio_* etc.) into the brain's registry from ~/.config/jarvis/phone.env, if
+    // present. Idempotent; no-op when the phone isn't set up.
+    void seedPhoneMcp();
 
     // Wave 8 co-worker ops backend: cron/at scheduler (fires session.create+send
     // via a QTimer tick), the SSH allow-list (gated ssh.exec), the audit log

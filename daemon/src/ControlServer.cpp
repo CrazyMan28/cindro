@@ -152,6 +152,10 @@ bool ControlServer::start()
     // Contract A v2 stores/registries. SettingsStore loads config.toml prefs +
     // secrets.json; the registries wrap the (now-open) SessionStore tables.
     m_settings.load();
+    // Claude-Code-style lifecycle hooks (~/.config/jarvis/hooks.json). run() is a
+    // no-op fast-path when an event has no hooks, so fire points cost ~nothing by
+    // default.
+    m_hooks.load();
     // MISTRAL key bootstrap: if ~/.config/jarvis/mistral_api_key exists and the
     // SettingsStore doesn't already carry a "mistral" secret, load it in-memory
     // so settings.get reports api_keys_set.mistral=true and the api brain can use
@@ -172,6 +176,8 @@ bool ControlServer::start()
     m_config.defaultBrain = m_settings.defaultBrain();
     m_config.defaultModel = m_settings.defaultModel();
     m_mcp = std::make_unique<McpRegistry>(m_store);
+    // Native phone subsystem: expose its MCP tools to the brain if configured.
+    seedPhoneMcp();
     m_plugins = std::make_unique<PluginRegistry>(m_store);
     m_plugins->ensureSeeded(); // seed sample manifests if the catalog is empty
 
@@ -316,6 +322,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionCreate(req);
     else if (m == QStringLiteral("session.send"))
         resp = handleSessionSend(req);
+    else if (m == QStringLiteral("session.wake"))
+        resp = handleSessionWake(req);
     else if (m == QStringLiteral("session.cancel"))
         resp = handleSessionCancel(req);
     else if (m == QStringLiteral("session.delete"))
@@ -324,6 +332,16 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionList(req);
     else if (m == QStringLiteral("session.history"))
         resp = handleSessionHistory(req);
+    else if (m == QStringLiteral("hooks.list"))
+        resp = handleHooksList(req);
+    else if (m == QStringLiteral("hooks.add"))
+        resp = handleHooksAdd(req);
+    else if (m == QStringLiteral("hooks.remove"))
+        resp = handleHooksRemove(req);
+    else if (m == QStringLiteral("hooks.test"))
+        resp = handleHooksTest(req);
+    else if (m == QStringLiteral("phone.mcp"))
+        resp = handlePhoneMcp(req);
     else if (m == QStringLiteral("session.subscribe"))
         resp = handleSessionSubscribe(client, req);
     else if (m == QStringLiteral("widget.viewing"))
@@ -496,6 +514,12 @@ Response ControlServer::handleSettingsGet(const Request &req)
     // capability sandbox is unchanged.
     s.insert(QStringLiteral("permission_level"), m_settings.permissionLevel());
 
+    // Agent mode (plan|build|coworker): soft behavioral profile surfaced as a HUD
+    // chip and selectable in Settings. wake_notify (silent|ping|always): what a
+    // background-job / sleep-wake does to the user's phone.
+    s.insert(QStringLiteral("agent_mode"), m_settings.agentMode());
+    s.insert(QStringLiteral("wake_notify"), m_settings.wakeNotify());
+
     // Whether a desktop unlock PIN is set (boolean only — never the PIN/hash).
     s.insert(QStringLiteral("has_desktop_pin"), m_settings.hasDesktopPin());
 
@@ -561,6 +585,14 @@ Response ControlServer::handleSettingsSet(const Request &req)
             patch.value(QStringLiteral("permission_level")).toString());
         prefsTouched = true;
     }
+    if (patch.contains(QStringLiteral("agent_mode"))) {
+        m_settings.setAgentMode(patch.value(QStringLiteral("agent_mode")).toString());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("wake_notify"))) {
+        m_settings.setWakeNotify(patch.value(QStringLiteral("wake_notify")).toString());
+        prefsTouched = true;
+    }
     if (patch.contains(QStringLiteral("desktop_pin"))) {
         // Write-only: set or clear the desktop unlock PIN (hashed in SettingsStore).
         m_settings.setDesktopPin(patch.value(QStringLiteral("desktop_pin")).toString());
@@ -592,6 +624,133 @@ Response ControlServer::handleSettingsSet(const Request &req)
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleHooksList(const Request &req)
+{
+    QJsonObject result = m_hooks.toJson(); // { "hooks": {...} }
+    result.insert(QStringLiteral("events"),
+                  QJsonArray::fromStringList(HookStore::events()));
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleHooksAdd(const Request &req)
+{
+    const QString event = req.params.value(QStringLiteral("event")).toString();
+    const QString matcher = req.params.value(QStringLiteral("matcher")).toString();
+    const QString command = req.params.value(QStringLiteral("command")).toString();
+    const int timeout = req.params.value(QStringLiteral("timeout")).toInt(60);
+    if (!m_hooks.addHook(event, matcher, command, timeout))
+        return Response::failure(req.id, QStringLiteral("bad_request"), m_hooks.lastError());
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleHooksRemove(const Request &req)
+{
+    const QString event = req.params.value(QStringLiteral("event")).toString();
+    const int index = req.params.value(QStringLiteral("index")).toInt(-1);
+    if (!m_hooks.removeHook(event, index))
+        return Response::failure(req.id, QStringLiteral("bad_request"), m_hooks.lastError());
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleHooksTest(const Request &req)
+{
+    const QString event = req.params.value(QStringLiteral("event")).toString();
+    const QString matchKey = req.params.value(QStringLiteral("match_key")).toString();
+    const QJsonObject input = req.params.value(QStringLiteral("input")).toObject();
+    const HookOutcome o = m_hooks.run(event, input, matchKey);
+    QJsonObject result;
+    result.insert(QStringLiteral("ran_any"), o.ranAny);
+    result.insert(QStringLiteral("blocked"), o.blocked);
+    result.insert(QStringLiteral("block_reason"), o.blockReason);
+    result.insert(QStringLiteral("injected_context"), o.injectedContext);
+    result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(o.notes));
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handlePhoneMcp(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    if (name.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("name (a phone MCP tool) is required"));
+    const QJsonObject args = req.params.value(QStringLiteral("arguments")).toObject();
+
+    // Read the phone subsystem's bearer + port (Jarvis-managed env). The token
+    // never leaves the daemon — clients call phone.mcp and we forward.
+    QString token;
+    QString port = QStringLiteral("8801");
+    QFile f(Config::configDir() + QStringLiteral("/phone.env"));
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QList<QByteArray> lines = f.readAll().split('\n');
+        f.close();
+        for (const QByteArray &raw : lines) {
+            const QString line = QString::fromUtf8(raw).trimmed();
+            if (line.startsWith(QStringLiteral("AGENT_TOKEN=")))
+                token = line.mid(QStringLiteral("AGENT_TOKEN=").size()).trimmed();
+            else if (line.startsWith(QStringLiteral("SERVER_PORT=")))
+                port = line.mid(QStringLiteral("SERVER_PORT=").size()).trimmed();
+        }
+    }
+    if (token.isEmpty())
+        return Response::failure(req.id, QStringLiteral("phone_not_configured"),
+                                 QStringLiteral("phone subsystem is not set up (no phone.env)"));
+
+    QJsonObject params;
+    params.insert(QStringLiteral("name"), name);
+    params.insert(QStringLiteral("arguments"), args);
+    QJsonObject rpc;
+    rpc.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
+    rpc.insert(QStringLiteral("id"), 1);
+    rpc.insert(QStringLiteral("method"), QStringLiteral("tools/call"));
+    rpc.insert(QStringLiteral("params"), params);
+
+    QNetworkAccessManager nam;
+    QNetworkRequest rq(QUrl(QStringLiteral("http://127.0.0.1:%1/mcp").arg(port)));
+    rq.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    rq.setRawHeader("Authorization", QByteArray("Bearer ") + token.toUtf8());
+    QNetworkReply *reply = nam.post(rq, QJsonDocument(rpc).toJson(QJsonDocument::Compact));
+    QEventLoop loop;
+    QTimer::singleShot(35000, &loop, &QEventLoop::quit);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    if (!reply->isFinished() || reply->error() != QNetworkReply::NoError) {
+        const QString e = reply->isFinished() ? reply->errorString()
+                                              : QStringLiteral("timeout");
+        reply->deleteLater();
+        return Response::failure(req.id, QStringLiteral("phone_unreachable"),
+                                 QStringLiteral("phone server: ") + e);
+    }
+    const QByteArray body = reply->readAll();
+    reply->deleteLater();
+    const QJsonObject obj = QJsonDocument::fromJson(body).object();
+    const QJsonObject mcpResult = obj.value(QStringLiteral("result")).toObject();
+
+    // Unwrap the MCP text content and, when it parses as JSON, hand back structured
+    // data so QML / Compose / JS can bind to it directly.
+    QString text;
+    const QJsonArray content = mcpResult.value(QStringLiteral("content")).toArray();
+    if (!content.isEmpty())
+        text = content.first().toObject().value(QStringLiteral("text")).toString();
+    QJsonObject out;
+    out.insert(QStringLiteral("tool"), name);
+    if (!text.isEmpty()) {
+        const QJsonDocument td = QJsonDocument::fromJson(text.toUtf8());
+        if (td.isObject())
+            out.insert(QStringLiteral("data"), td.object());
+        else if (td.isArray())
+            out.insert(QStringLiteral("data"), td.array());
+        else
+            out.insert(QStringLiteral("text"), text);
+    }
+    if (obj.contains(QStringLiteral("error")))
+        out.insert(QStringLiteral("error"), obj.value(QStringLiteral("error")));
+    return Response::success(req.id, out);
 }
 
 Response ControlServer::handleModelList(const Request &req)
@@ -1039,6 +1198,31 @@ QString ControlServer::permissionPolicyClause() const
                           "Permissions. Respect it for the whole session.");
 }
 
+QString ControlServer::modePolicyClause() const
+{
+    const QString mode = m_settings.agentMode();
+    if (mode == QStringLiteral("plan")) {
+        return QStringLiteral(
+            "\n[MODE: PLAN] You are in PLAN mode. RESEARCH the task and produce a "
+            "clear, step-by-step PLAN using todo_write (one item per step). Do NOT "
+            "make changes yet — no file edits, no installs, nothing destructive or "
+            "outward-facing; read-only investigation only. When the plan is ready, "
+            "present it and ask the user to approve (and switch to BUILD mode) "
+            "before you execute. The user picks the mode in Settings.");
+    }
+    if (mode == QStringLiteral("build")) {
+        return QStringLiteral(
+            "\n[MODE: BUILD] You are in BUILD mode. Execute the agreed plan "
+            "autonomously and efficiently. Keep your todo list current (mark items "
+            "in_progress / done as you go). Ask only when an action is genuinely "
+            "risky per the permission policy above; otherwise keep moving and "
+            "narrate what you're doing. The user picks the mode in Settings.");
+    }
+    // "coworker" (default): no extra clause — the balanced behavior already lives
+    // in the co-work guide + the permission policy.
+    return QString();
+}
+
 QString ControlServer::memorySystemBlock()
 {
     // ApiBrain has no CLI system prompt of its own; seed it with recent memory.
@@ -1257,6 +1441,19 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     // scheduler path; all early-error returns are above this point.
     broadcastSessionOpened(row.id, row.title);  // control-WS fan-out (desktop)
     emit sessionOpened(row.id, row.title);      // device-WS + FCM fan-out (phone)
+
+    // SessionStart hook — top-level sessions only (a child session = a subagent).
+    // Any additionalContext is stashed and prepended to the session's FIRST turn
+    // (drained in sendToSession). No-op unless a SessionStart hook is configured.
+    if (parentSessionId.isEmpty()) {
+        QJsonObject hin;
+        hin.insert(QStringLiteral("session_id"), row.id);
+        hin.insert(QStringLiteral("source"), QStringLiteral("startup"));
+        const HookOutcome ho = m_hooks.run(QStringLiteral("SessionStart"), hin,
+                                           QStringLiteral("startup"));
+        if (!ho.injectedContext.isEmpty())
+            m_hookSessionContext.insert(row.id, ho.injectedContext);
+    }
     return row.id;
 }
 
@@ -1292,6 +1489,18 @@ void ControlServer::wakeParentForSubagent(const QString &childSid)
     const QString label = (row && !row->agent.isEmpty()) ? row->agent
                                                           : QStringLiteral("subagent");
     const QString state = row ? row->state : QStringLiteral("done");
+
+    // SubagentStop hook (observational): matchKey = the agent type. No-op unless
+    // configured.
+    {
+        QJsonObject hin;
+        hin.insert(QStringLiteral("session_id"), childSid);
+        hin.insert(QStringLiteral("parent_session_id"), parentSid);
+        hin.insert(QStringLiteral("agent_type"), label);
+        hin.insert(QStringLiteral("stop_reason"), state);
+        m_hooks.run(QStringLiteral("SubagentStop"), hin, label);
+    }
+
     QString summary = subagentSummary(childSid);
     if (summary.trimmed().isEmpty())
         summary = QStringLiteral("(the subagent returned no text — check its session)");
@@ -1311,6 +1520,14 @@ void ControlServer::onTurnFinished(const QString &sessionId)
 {
     // Backup wake trigger (the primary is the `final` event in onBrainEvent).
     wakeParentForSubagent(sessionId);
+
+    // Stop hook (observational): the agent finished responding. Fire for the main
+    // agent only (a child's completion is a SubagentStop). No-op unless configured.
+    if (auto r = m_store.get(sessionId); r && r->parentSessionId.isEmpty()) {
+        QJsonObject hin;
+        hin.insert(QStringLiteral("session_id"), sessionId);
+        m_hooks.run(QStringLiteral("Stop"), hin);
+    }
 
     if (!m_pendingTurns.contains(sessionId))
         return;
@@ -1444,6 +1661,33 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         return true;
     }
 
+    // Claude-Code-style UserPromptSubmit hook — can BLOCK the turn (exit 2 /
+    // decision:block) or inject additionalContext. Skipped for subagents (their
+    // isolated task is not a user prompt). Also drains any SessionStart context
+    // captured at session creation, once, on this first turn.
+    QString hookContext;
+    if (!isSubagent) {
+        QJsonObject hin;
+        hin.insert(QStringLiteral("session_id"), sessionId);
+        hin.insert(QStringLiteral("user_prompt"), text);
+        const HookOutcome ho = m_hooks.run(QStringLiteral("UserPromptSubmit"), hin);
+        if (ho.blocked) {
+            m_store.updateState(sessionId, QStringLiteral("idle"));
+            if (err)
+                *err = ho.blockReason.isEmpty()
+                           ? QStringLiteral("blocked by a UserPromptSubmit hook")
+                           : ho.blockReason;
+            return false;
+        }
+        hookContext = ho.injectedContext;
+        if (m_hookSessionContext.contains(sessionId)) {
+            const QString sc = m_hookSessionContext.take(sessionId);
+            if (!sc.isEmpty())
+                hookContext = sc + (hookContext.isEmpty() ? QString()
+                                                          : QStringLiteral("\n")) + hookContext;
+        }
+    }
+
     m_store.updateState(sessionId, QStringLiteral("running"));
 
     // Auto-title an untitled session from its FIRST user message so the Sessions
@@ -1475,6 +1719,11 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         if (!memBlock.isEmpty())
             effectiveText = memBlock + QStringLiteral("\n---\n") + text;
     }
+    // Hook-injected context (UserPromptSubmit + SessionStart additionalContext)
+    // rides at the very front so the model sees it as a system reminder.
+    if (!hookContext.isEmpty())
+        effectiveText = QStringLiteral("[HOOK CONTEXT]\n") + hookContext +
+                        QStringLiteral("\n---\n") + effectiveText;
 
     // ONE-TIME co-work guidance: the first turn a session has computer-use, teach
     // the model the screen-targeting contract + the ASK-WHEN-AMBIGUOUS rule the
@@ -1624,8 +1873,29 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "SVG markup, or {\"type\":\"canvas\",\"w\":…,\"h\":…,\"ops\":[…]} draw ops "
             "(circle/ellipse/rect/path/line). NEVER a one-word label like \"Duck\".\n"
             "Give the top node a sensible w/h or fill:true so it isn't cramped. Always "
-            "actually CALL render_widget — don't describe the widget in words.");
-        effectiveText = guide + permissionPolicyClause() +
+            "actually CALL render_widget — don't describe the widget in words.\n"
+            "\n[YOUR NEWER POWERS]\n"
+            "• PHONE — you can reach the user on their REAL phone: call_user / "
+            "call_user_and_wait (in-app, can escalate to a real call), notify_user / "
+            "notify_user_and_wait (text the user, optionally awaiting a reply), "
+            "twilio_call_and_wait + twilio_sms + device_sms (real PSTN call / SMS), "
+            "request_approval_by_phone, send_call_receipt, plus screening / war-room "
+            "(red_alert) / voice-profile tools. Use a VOICE CALL only for: an approval "
+            "of a risky action, a blocking incident, the user explicitly asked, or a "
+            "text fallback already failed — otherwise default to notify_user for "
+            "status. Check list_extensions presence before calling.\n"
+            "• BACKGROUND JOBS — bg_start(command) runs long work DETACHED and WAKES "
+            "you with the exit code + output when it finishes (use it for training, "
+            "builds, deploys, downloads instead of blocking). monitor(command, "
+            "until_regex/until_exit) polls a condition and wakes you when it trips. "
+            "wake_me_in(seconds, note) sleeps then wakes you. bg_status / bg_logs / "
+            "bg_stop / bg_list manage them. Don't sit idle on a slow command — "
+            "background it and you'll be pinged.\n"
+            "• HOOKS — hooks_list / hooks_add / hooks_remove / hooks_test configure "
+            "shell hooks that fire on your lifecycle events (Claude-Code style).\n"
+            "• MODES — the user selects plan / build / co-worker in Settings; follow "
+            "the mode clause appended below.");
+        effectiveText = guide + permissionPolicyClause() + modePolicyClause() +
                         QStringLiteral("\n---\n") + effectiveText;
     }
 
@@ -1854,6 +2124,29 @@ Response ControlServer::handleSessionSend(const Request &req)
 
     QJsonObject result;
     result.insert(QStringLiteral("accepted"), true);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleSessionWake(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    const QString message = req.params.value(QStringLiteral("message")).toString();
+    if (sessionId.isEmpty() || message.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("session_id and message are required"));
+    // Inject the wake as a turn into the session — QUEUED if the session is
+    // mid-turn — exactly like the subagent-done wake, so the brain picks the work
+    // back up on its own. (wake_notify -> phone ping is layered on in the phone
+    // subsystem; the boolean `critical` flag is forwarded for that.)
+    QString err;
+    if (!sendToSession(sessionId, message, {}, &err))
+        return Response::failure(req.id, QStringLiteral("no_session"), err);
+    qInfo("jarvisd: session.wake -> %s (%lld chars, notify=%s)",
+          qPrintable(sessionId), static_cast<long long>(message.size()),
+          qPrintable(m_settings.wakeNotify()));
+    QJsonObject result;
+    result.insert(QStringLiteral("accepted"), true);
+    result.insert(QStringLiteral("wake_notify"), m_settings.wakeNotify());
     return Response::success(req.id, result);
 }
 
@@ -3147,15 +3440,63 @@ Response ControlServer::handleMemoryRemove(const Request &req)
     return Response::success(req.id, ok);
 }
 
+void ControlServer::seedPhoneMcp()
+{
+    // The native phone subsystem (vendored under phone/) runs its own MCP gateway.
+    // Its agent bearer + port live in the Jarvis-managed env file. If that's
+    // absent, the phone isn't set up — seed nothing (no phone tools for the brain).
+    const QString envPath = Config::configDir() + QStringLiteral("/phone.env");
+    QFile f(envPath);
+    if (!f.exists() || !f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    QString token;
+    QString port = QStringLiteral("8801");
+    const QList<QByteArray> lines = f.readAll().split('\n');
+    f.close();
+    for (const QByteArray &raw : lines) {
+        const QString line = QString::fromUtf8(raw).trimmed();
+        if (line.startsWith(QStringLiteral("AGENT_TOKEN=")))
+            token = line.mid(QStringLiteral("AGENT_TOKEN=").size()).trimmed();
+        else if (line.startsWith(QStringLiteral("SERVER_PORT=")))
+            port = line.mid(QStringLiteral("SERVER_PORT=").size()).trimmed();
+    }
+    if (token.isEmpty())
+        return;
+    const QString endpoint = QStringLiteral("http://127.0.0.1:%1/mcp").arg(port);
+    // Idempotent: drop any prior "phone" row so the token/port stay in sync with
+    // the env on every restart.
+    for (const McpServerRow &r : m_mcp->list())
+        if (r.name == QStringLiteral("phone"))
+            m_mcp->remove(r.id);
+    // risk=high: these tools call/text the user, spend money, and reach the real
+    // world — the permission policy should pause before them.
+    m_mcp->add(QStringLiteral("phone"), QStringLiteral("http"), endpoint, token,
+               true, QStringLiteral("high"));
+    qInfo("jarvisd: seeded phone MCP server -> %s", qPrintable(endpoint));
+}
+
 void ControlServer::seedInternalDocsSkill()
 {
-    // Only seed once — don't clobber a user's edits.
-    if (m_skills.get(QStringLiteral("internal_docs")).has_value())
-        return;
+    // Re-seed our BUILTIN catalog when it changes (version marker), so existing
+    // installs pick up new capabilities — but never clobber a user's own skills.
+    // If internal_docs exists and already carries the current marker, skip;
+    // otherwise (absent OR stale) refresh it.
+    const QString kMarker = QStringLiteral("[catalog v2]");
+    if (auto existing = m_skills.get(QStringLiteral("internal_docs"))) {
+        QFile f(existing->path);
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QString cur = QString::fromUtf8(f.readAll());
+            f.close();
+            if (cur.contains(kMarker))
+                return; // already current
+        }
+        m_skills.remove(QStringLiteral("internal_docs")); // stale builtin -> refresh
+    }
     const QString body = QStringLiteral(
-        "When the user asks what you can do, your features, how to do something with "
-        "you, or you're unsure you're capable of something, use THIS as the source of "
-        "truth for Jarvis's capabilities. Tell them what fits + offer to do it.\n\n"
+        "[catalog v2] When the user asks what you can do, your features, how to do "
+        "something with you, or you're unsure you're capable of something, use THIS as "
+        "the source of truth for Jarvis's capabilities. Tell them what fits + offer to "
+        "do it.\n\n"
         "# Jarvis — what you can do\n\n"
         "**Computer use** — drive mouse/keyboard/screen on KDE & Sway. You work on your "
         "OWN nested agent desktop by default (the user watches it live in chat / on the "
@@ -3184,6 +3525,31 @@ void ControlServer::seedInternalDocsSkill()
         "**Files** — send any file to the user's phone/desktop with send_file.\n"
         "**MCP & plugins** — extra MCP tool servers + a plugin marketplace, managed in the "
         "app.\n"
+        "**Phone** — reach the user on their REAL phone: call_user / call_user_and_wait "
+        "(in-app, can escalate to a real call), notify_user / notify_user_and_wait "
+        "(text the user, optionally await a reply), twilio_call_and_wait / twilio_sms / "
+        "device_sms (real PSTN call + SMS), request_approval_by_phone, call screening, "
+        "war room (red_alert), voice profiles. A native phone subsystem in the one repo. "
+        "(docs/PHONE.md)\n"
+        "**Background jobs** — bg_start runs a long command DETACHED and WAKES you with "
+        "its exit code + output when it finishes (training, builds, deploys); monitor "
+        "watches a condition and wakes you when it trips; wake_me_in sleeps then wakes "
+        "you; bg_status / bg_logs / bg_stop / bg_list. (docs/BACKGROUND_JOBS.md)\n"
+        "**Hooks** — Claude-Code-style lifecycle hooks that fire shell commands on your "
+        "events: hooks_list / hooks_add / hooks_remove / hooks_test. (docs/HOOKS.md)\n"
+        "**Modes** — plan / build / co-worker, selectable in Settings (shown as the HUD "
+        "chip). (docs/MODES.md)\n"
+        "**Permissions** — an ask-before-risky policy (cautious / balanced / autonomous) "
+        "the user sets in Settings → Permissions; you call ask_user before actions "
+        "above the chosen risk line.\n"
+        "**SSH** — gated remote command execution on allow-listed hosts (the user manages "
+        "the allow-list in the app).\n"
+        "**Connectors** — a Google connectors framework (Gmail / Calendar / Drive etc.) "
+        "the user can enable. (docs/JARVIS_GOOGLE_CONNECTORS.md)\n"
+        "**Security / unlock** — optional 2FA: open Jarvis by approving on the paired "
+        "phone with a fingerprint, with a local PIN fallback (no-brick fail-open).\n"
+        "**Brains** — you can run on Codex, Claude, or a direct API brain; the user picks "
+        "the brain + model per session.\n"
         "**Cross-surface** — one daemon behind a desktop sidebar, an Android app, and a "
         "Chrome extension; cross-device biometric unlock. (README.md, docs/ARCHITECTURE.md)\n");
     m_skills.create(QStringLiteral("internal_docs"),
@@ -3844,6 +4210,11 @@ bool ControlServer::isConfigMethod(const QString &method)
         // 2FA unlock gate (read/action tier; harmless over the device channel).
         QStringLiteral("auth.request"),      QStringLiteral("auth.status"),
         QStringLiteral("auth.deny"),
+        // Native phone subsystem proxy + lifecycle hooks (the phone app drives
+        // calls/inbox via phone.mcp; the daemon holds the phone bearer).
+        QStringLiteral("phone.mcp"),
+        QStringLiteral("hooks.list"),        QStringLiteral("hooks.add"),
+        QStringLiteral("hooks.remove"),      QStringLiteral("hooks.test"),
     };
     return methods.contains(method);
 }
@@ -3853,6 +4224,11 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
     const QString &m = req.method;
     if (m == QStringLiteral("settings.get"))    return handleSettingsGet(req);
     if (m == QStringLiteral("settings.set"))    return handleSettingsSet(req);
+    if (m == QStringLiteral("phone.mcp"))       return handlePhoneMcp(req);
+    if (m == QStringLiteral("hooks.list"))      return handleHooksList(req);
+    if (m == QStringLiteral("hooks.add"))       return handleHooksAdd(req);
+    if (m == QStringLiteral("hooks.remove"))    return handleHooksRemove(req);
+    if (m == QStringLiteral("hooks.test"))      return handleHooksTest(req);
     if (m == QStringLiteral("model.list"))      return handleModelList(req);
     if (m == QStringLiteral("mcp.list"))        return handleMcpList(req);
     if (m == QStringLiteral("mcp.add"))         return handleMcpAdd(req);
@@ -4147,6 +4523,11 @@ void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrain
                        ev.fields.value(QStringLiteral("summary")).toString(), sessionId);
     } else if (ev.kind == NormalizedBrainEvent::Kind::Final) {
         m_notify.taskDone(QStringLiteral("Session ") + sessionId + QStringLiteral(" finished a turn."));
+        // Notification hook (observational).
+        QJsonObject nh;
+        nh.insert(QStringLiteral("session_id"), sessionId);
+        nh.insert(QStringLiteral("message"), QStringLiteral("turn finished"));
+        m_hooks.run(QStringLiteral("Notification"), nh, QStringLiteral("turn_complete"));
     } else if (ev.kind == NormalizedBrainEvent::Kind::ToolCall) {
         // Audit every brain tool call with an injection-scanned risk tier.
         const QString name = ev.fields.value(QStringLiteral("name")).toString();
@@ -4157,6 +4538,20 @@ void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrain
         m_audit.record(QStringLiteral("tool:") + name, true,
                        scan.risky ? scan.risk : QStringLiteral("low"),
                        scan.risky ? scan.summary() : name, sessionId);
+        // PreToolUse hook (observational: the brain's CLI executes MCP tools
+        // itself, so this is a side-effect callback, not an abort point). The
+        // matcher routes on the tool name. No-op unless configured.
+        QJsonObject ptu;
+        ptu.insert(QStringLiteral("session_id"), sessionId);
+        ptu.insert(QStringLiteral("tool_name"), name);
+        ptu.insert(QStringLiteral("tool_input"), args);
+        m_hooks.run(QStringLiteral("PreToolUse"), ptu, name);
+    } else if (ev.kind == NormalizedBrainEvent::Kind::ToolResult) {
+        // PostToolUse hook (observational).
+        QJsonObject po;
+        po.insert(QStringLiteral("session_id"), sessionId);
+        po.insert(QStringLiteral("tool_result"), ev.fields.value(QStringLiteral("output")));
+        m_hooks.run(QStringLiteral("PostToolUse"), po);
     }
 
     broadcastSessionEvent(sessionId, ev);

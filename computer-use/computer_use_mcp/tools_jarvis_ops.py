@@ -333,3 +333,51 @@ def register(mcp: FastMCP) -> None:
                                                  {"session_id": session_id}))
         except Exception as exc:  # noqa: BLE001
             return _err(exc)
+
+    # ---- Claude-Code-style lifecycle hooks --------------------------------
+    @mcp.tool()
+    def hooks_list() -> str:
+        """List configured Claude-Code-style lifecycle hooks + the available event
+        names. Hooks are shell commands that fire at session/turn/tool events;
+        config lives in ~/.config/jarvis/hooks.json (same schema as Claude Code)."""
+        try:
+            return json.dumps(daemon_client.call("hooks.list"))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def hooks_add(event: str, command: str, matcher: str = "",
+                  timeout: int = 60) -> str:
+        """Add a hook: run `command` (a shell command) on `event`. Events:
+        PreToolUse, PostToolUse, UserPromptSubmit, Notification, Stop, SubagentStop,
+        SessionStart, SessionEnd, PreCompact. `matcher` (regex) filters by tool name
+        (Pre/PostToolUse) / source / agent type; empty = always. The command gets a
+        JSON event on stdin; exit 2 — or stdout {"decision":"block","reason":...} —
+        BLOCKS where supported (UserPromptSubmit), and {"additionalContext":"..."}
+        (or plain non-JSON stdout) injects context into the turn."""
+        try:
+            return json.dumps(daemon_client.call("hooks.add", {
+                "event": event, "command": command,
+                "matcher": matcher, "timeout": int(timeout)}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def hooks_remove(event: str, index: int) -> str:
+        """Remove the hook group at `index` under `event` (indices from hooks_list)."""
+        try:
+            return json.dumps(daemon_client.call("hooks.remove",
+                                                 {"event": event, "index": int(index)}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def hooks_test(event: str, match_key: str = "", input: dict | None = None) -> str:
+        """Fire the hooks for `event` NOW with a test payload and return what they
+        did: ran_any, blocked, block_reason, injected_context, notes. Use to verify a
+        hook before relying on it."""
+        try:
+            return json.dumps(daemon_client.call("hooks.test", {
+                "event": event, "match_key": match_key, "input": input or {}}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)

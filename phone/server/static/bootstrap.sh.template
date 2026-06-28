@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Agent Phone — remote agent bootstrap. Generated for __AGENT_NAME__ (ext __EXTENSION__).
+# Expires: __EXPIRES_AT__. Single-use.
+set -euo pipefail
+
+DEST="${HOME}/.agent-phone"
+mkdir -p "${DEST}"
+
+cat > "${DEST}/agent.json" <<'AGENT_CONFIG_EOF'
+__AGENT_JSON__
+AGENT_CONFIG_EOF
+chmod 600 "${DEST}/agent.json"
+
+cd "${DEST}"
+
+# Bring up Node + ws (idempotent; reuses any existing install).
+if ! command -v node >/dev/null; then
+  echo "agent-phone: node is required (>= 18). Install it and re-run this script." >&2
+  exit 1
+fi
+if ! command -v npm >/dev/null; then
+  echo "agent-phone: npm is required. Install it and re-run this script." >&2
+  exit 1
+fi
+if [[ ! -f "${DEST}/package.json" ]]; then
+  echo '{"name":"agent-phone-remote","private":true,"type":"module","dependencies":{"ws":"^8.18.0"}}' > "${DEST}/package.json"
+fi
+if [[ ! -d "${DEST}/node_modules/ws" ]]; then
+  echo "installing ws…"
+  ( cd "${DEST}" && npm install --omit=dev --no-audit --no-fund --silent )
+fi
+
+# Refresh the connector source (idempotent).
+curl -fsSL "__CONNECTOR_URL__" -o "${DEST}/connect.mjs"
+chmod +x "${DEST}/connect.mjs"
+
+# Stop any previous connector for this extension before starting fresh.
+if [[ -f "${DEST}/connect.pid" ]]; then
+  OLD_PID="$(cat ${DEST}/connect.pid 2>/dev/null || true)"
+  if [[ -n "${OLD_PID}" ]] && kill -0 "${OLD_PID}" 2>/dev/null; then
+    echo "stopping previous connector (pid ${OLD_PID})"
+    kill "${OLD_PID}" || true
+    sleep 1
+  fi
+fi
+
+# Start the connector in the background and write its log + pid.
+nohup node "${DEST}/connect.mjs" "${DEST}/agent.json" >> "${DEST}/connect.log" 2>&1 &
+NEW_PID=$!
+echo "${NEW_PID}" > "${DEST}/connect.pid"
+
+cat <<INFO
+
+agent-phone: __AGENT_NAME__ (ext __EXTENSION__) connector started.
+
+  config : ${DEST}/agent.json
+  log    : ${DEST}/connect.log
+  pid    : ${NEW_PID}   (written to ${DEST}/connect.pid)
+
+Tail the log:
+  tail -f ${DEST}/connect.log
+
+Stop:
+  kill ${NEW_PID}    # or: kill \$(cat ${DEST}/connect.pid)
+
+When this connector is up, you can dial extension __EXTENSION__ from your phone
+(or from any other extension on the same Agent Phone server).
+INFO

@@ -460,6 +460,21 @@ class JarvisRepository(
         client.request("take_over.request", Params.of("session_id" to sessionId)).orThrow()
     }
 
+    // --- phone subsystem (phone.mcp Contract A proxy) ---------------------
+
+    /**
+     * Invoke any phone-subsystem MCP tool via the `phone.mcp` Contract A method.
+     * Request: {method:"phone.mcp", params:{name, arguments:{...}}}
+     * Response result: {tool, data:<object|array>, text, error?}
+     */
+    suspend fun phoneMcp(name: String, arguments: JsonObject = JsonObject()): JsonObject {
+        return client.request(
+            "phone.mcp",
+            Params.of("name" to name, "arguments" to arguments),
+            timeoutMs = 60_000,
+        ).orThrow()
+    }
+
     // --- live widgets: viewer leases + home-screen pins --------------------
     // Best-effort (a dropped heartbeat must not crash the UI). The daemon records
     // a lease so the engine's live-widget supervisor only runs a widget someone is
