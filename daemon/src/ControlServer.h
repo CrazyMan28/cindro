@@ -249,6 +249,12 @@ private:
     // (desktop/Android/Chrome) drive all 55 phone tools over its existing Contract A
     // connection. Returns {data|text, tool, error?}.
     Response handlePhoneMcp(const Request &req);
+    // phone.http — proxy an arbitrary REST call ({method, path, body}) to the
+    // native phone server's HTTP API (e.g. PUT /api/extensions/:ext/voice or
+    // /model, GET/POST /api/screening, /api/sms-agent, /api/voices, /api/calls),
+    // keeping the bearer in the daemon. Covers the per-agent config the original
+    // app drives over HTTP (not MCP). Returns {status, data|text}.
+    Response handlePhoneHttp(const Request &req);
     // Session manager (Contract A): a client declares which session ids it is
     // currently viewing; the daemon then fans session.event frames ONLY for those
     // ids to it. Needs the socket, so it is dispatched with `client` (unlike the

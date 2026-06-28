@@ -12,19 +12,31 @@ Item {
     id: tab
     property var phonePage
 
-    // ---- async helper ---------------------------------------------------------
+    // ---- async helpers --------------------------------------------------------
     property var  _pending: ({})
     property int  _seq: 0
 
+    // phoneMcp path (existing tools: twilio_status, allowlist, red_alert, register…)
     function callTool(tool, args, cb) {
         var id = "settings_" + (++tab._seq)
         tab._pending[id] = cb || null
         bridge.phoneMcp(id, tool, args || {})
     }
 
+    // phone.http path (REST routes on the phone server)
+    function callHttp(method, path, body, cb) {
+        var id = "settingsH_" + (++tab._seq)
+        tab._pending[id] = cb || null
+        bridge.phoneHttp(id, method, path, body || {})
+    }
+
     Connections {
         target: bridge
         function onPhoneResult(callId, result) {
+            var cb = tab._pending[callId]
+            if (cb) { delete tab._pending[callId]; cb(result) }
+        }
+        function onPhoneHttpResult(callId, result) {
             var cb = tab._pending[callId]
             if (cb) { delete tab._pending[callId]; cb(result) }
         }
@@ -87,15 +99,22 @@ Item {
                 tab.voiceProfile = vp.voice_id || vp.voice_name || vp.name || "(default)"
             }
         })
-        // SMS agent config — TODO: verify exact tool names on server
-        tab.callTool("screening_get_config", {}, function(r) {
+        // Screening + SMS config — GET /api/screening
+        tab.callHttp("GET", "/api/screening", {}, function(r) {
             if (!r.error && r.data) {
                 var d = r.data || {}
-                tab.smsEnabled      = d.sms_enabled === true
-                tab.smsAgentExt     = d.sms_agent   || ""
-                tab.screenTransport = d.transport    || "twilio"
-                tab.inboundExt      = d.inbound_extension || ""
-                tab.screeningExt    = d.screening_extension || ""
+                tab.screeningOn     = d.enabled === true
+                tab.screenTransport = d.transport || "twilio"
+                tab.inboundExt      = "" + (d.inbound_extension  || "")
+                tab.screeningExt    = "" + (d.screening_extension || "")
+            }
+        })
+        // SMS agent — GET /api/sms-agent
+        tab.callHttp("GET", "/api/sms-agent", {}, function(r) {
+            if (!r.error && r.data) {
+                var d = r.data || {}
+                tab.smsEnabled  = d.enabled === true
+                tab.smsAgentExt = "" + (d.extension || "")
             }
         })
         // agents for picker
@@ -119,10 +138,11 @@ Item {
         })
         // WebSocket test: if bridge is connected, WS is up
         tab.diagWsOk = bridge.connected
-        // Mistral: check via a separate tool if available
-        tab.callTool("get_server_health", {}, function(r) {
+        // Setup/health — GET /api/setup/status
+        tab.callHttp("GET", "/api/setup/status", {}, function(r) {
             if (!r.error && r.data) {
-                tab.diagMistralOk = r.data.mistral_configured === true
+                var d = r.data || {}
+                tab.diagMistralOk = d.mistral_configured === true || d.mistral_ok === true
             }
         })
     }
@@ -130,10 +150,12 @@ Item {
     function loadHistory() {
         tab.historyLoading = true
         callHistoryModel.clear()
-        tab.callTool("list_call_history", { limit: 50 }, function(r) {
+        // GET /api/calls (returns array or {calls:[...]})
+        tab.callHttp("GET", "/api/calls", {}, function(r) {
             tab.historyLoading = false
             if (r.error) return
-            var arr = r.data instanceof Array ? r.data : []
+            var arr = r.data instanceof Array ? r.data
+                    : (r.data && r.data.calls instanceof Array ? r.data.calls : [])
             for (var i = 0; i < arr.length; i++) {
                 var c = arr[i]
                 callHistoryModel.append({
@@ -141,7 +163,7 @@ Item {
                     "cto":    c.to_extension   || c.to   || "—",
                     "cstate": c.state          || "",
                     "creason":c.reason         || "",
-                    "cts":    c.created_at     || "",
+                    "cts":    c.created_at     || c.timestamp || "",
                     "missed": c.missed === true
                 })
             }
@@ -162,22 +184,27 @@ Item {
     }
     function setTransport(t) {
         var prev = tab.screenTransport; tab.screenTransport = t
-        tab.callTool("screening_set_transport", { transport: t }, function(r) { if (r.error) tab.screenTransport = prev })
+        // POST /api/screening {transport: t}
+        tab.callHttp("POST", "/api/screening", { transport: t }, function(r) { if (r.error) tab.screenTransport = prev })
     }
     function setSmsEnabled(want) {
-        tab.callTool("screening_set_sms_enabled", { enabled: want }, function(r) { if (!r.error) tab.smsEnabled = want })
+        // POST /api/sms-agent {enabled: bool}
+        tab.callHttp("POST", "/api/sms-agent", { enabled: want }, function(r) { if (!r.error) tab.smsEnabled = want })
     }
     function setSmsAgent(ext) {
         var prev = tab.smsAgentExt; tab.smsAgentExt = ext
-        tab.callTool("screening_set_sms_agent", { extension: ext }, function(r) { if (r.error) tab.smsAgentExt = prev })
+        // POST /api/sms-agent {extension: str}
+        tab.callHttp("POST", "/api/sms-agent", { extension: ext }, function(r) { if (r.error) tab.smsAgentExt = prev })
     }
     function setInboundAgent(ext) {
         var prev = tab.inboundExt; tab.inboundExt = ext
-        tab.callTool("screening_set_inbound_agent", { extension: ext }, function(r) { if (r.error) tab.inboundExt = prev })
+        // POST /api/screening {inbound_extension: str}
+        tab.callHttp("POST", "/api/screening", { inbound_extension: ext }, function(r) { if (r.error) tab.inboundExt = prev })
     }
     function setScreeningAgent(ext) {
         var prev = tab.screeningExt; tab.screeningExt = ext
-        tab.callTool("screening_set_screening_agent", { extension: ext }, function(r) { if (r.error) tab.screeningExt = prev })
+        // POST /api/screening {screening_extension: str}
+        tab.callHttp("POST", "/api/screening", { screening_extension: ext }, function(r) { if (r.error) tab.screeningExt = prev })
     }
     function redAlert(msg) {
         tab.callTool("red_alert", { message: msg }, function(r) {
