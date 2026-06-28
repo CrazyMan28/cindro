@@ -40,6 +40,8 @@ class Bridge : public QObject
     Q_PROPERTY(bool connected READ isConnected NOTIFY connectedChanged)
     Q_PROPERTY(QString sessionId READ sessionId NOTIFY sessionIdChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
+    // Agent mode (plan|build|coworker) — live for the HUD chip; WRITE persists it.
+    Q_PROPERTY(QString agentMode READ agentMode WRITE setAgentMode NOTIFY agentModeChanged)
 
     // ---- COMPUTER page (Wave 5 co-worker / take-over) ----------------------
     // The active co-worker (target="agent") session driving the nested desktop.
@@ -96,6 +98,7 @@ public:
     bool isConnected() const { return m_connected; }
     QString sessionId() const { return m_sessionId; }
     QString status() const { return m_status; }
+    QString agentMode() const { return m_agentMode; }
     QString coworkerSessionId() const { return m_coworkerSessionId; }
     bool driving() const { return m_driving; }
     bool mirroring() const { return m_mirroring; }
@@ -168,6 +171,9 @@ public:
     Q_INVOKABLE void loadSettings();
     // settings.set { patch } -> settingsSaved(); api key values are write-only.
     Q_INVOKABLE void saveSettings(const QVariantMap &patch);
+    // Persist + locally apply the agent mode (plan|build|coworker). Doubles as the
+    // agentMode property WRITE so QML can two-way bind or call it directly.
+    Q_INVOKABLE void setAgentMode(const QString &mode);
 
     // mcp.* registry.
     Q_INVOKABLE void listMcp();
@@ -492,6 +498,7 @@ signals:
     void connectedChanged();
     void sessionIdChanged();
     void statusChanged();
+    void agentModeChanged();
 
     // A NormalizedBrainEvent (Contract B) for a session, with session_id folded in.
     void sessionEvent(const QVariantMap &event);
@@ -894,6 +901,7 @@ private:
 
     // ---- Voice MODE (QtMultimedia capture + playback, orb state) ------------
     QString m_voiceState = QStringLiteral("idle");
+    QString m_agentMode = QStringLiteral("coworker"); // plan|build|coworker (settings.get)
     QString m_ttsVoice;                 // preferred TTS slug (from settings.get)
     QString m_sttProvider = QStringLiteral("voxtral"); // STT provider (settings.get)
     QString m_ttsProvider = QStringLiteral("voxtral"); // TTS provider (settings.get)

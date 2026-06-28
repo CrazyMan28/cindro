@@ -54,6 +54,67 @@ Rectangle {
             tint: bridge.connected ? Theme.accent : Theme.textFaint
         }
 
+        // ---- agent MODE chip (plan | build | coworker) ----------------------
+        // Live from bridge.agentMode; click to cycle coworker → plan → build.
+        // Colored per mode (violet=plan, amber=build, cyan=coworker); the dot
+        // pulses while in BUILD (actively executing).
+        Rectangle {
+            id: modeChip
+            Layout.alignment: Qt.AlignVCenter
+            implicitHeight: 22
+            implicitWidth: modeRow.implicitWidth + 18
+            radius: 11
+            readonly property string mode: bridge.agentMode
+            readonly property color modeTint: mode === "plan" ? Theme.violet
+                                            : mode === "build" ? Theme.amber
+                                            : Theme.accent
+            color: Qt.rgba(modeTint.r, modeTint.g, modeTint.b,
+                           modeChipMa.containsMouse ? 0.22 : 0.13)
+            border.width: 1
+            border.color: Qt.rgba(modeTint.r, modeTint.g, modeTint.b, 0.55)
+            Behavior on color { ColorAnimation { duration: 180 } }
+            Behavior on border.color { ColorAnimation { duration: 180 } }
+            Behavior on implicitWidth { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+            Row {
+                id: modeRow
+                anchors.centerIn: parent
+                spacing: 5
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 6; height: 6; radius: 3
+                    color: modeChip.modeTint
+                    SequentialAnimation on opacity {
+                        running: modeChip.mode === "build"
+                        loops: Animation.Infinite
+                        NumberAnimation { from: 1.0; to: 0.4; duration: 700; easing.type: Easing.InOutSine }
+                        NumberAnimation { from: 0.4; to: 1.0; duration: 700; easing.type: Easing.InOutSine }
+                    }
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: modeChip.mode === "plan" ? "PLAN"
+                        : modeChip.mode === "build" ? "BUILD" : "COWORK"
+                    color: modeChip.modeTint
+                    font.family: Theme.fontDisplay
+                    font.pixelSize: 9
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: Theme.trackMid
+                }
+            }
+            MouseArea {
+                id: modeChipMa
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    var m = bridge.agentMode
+                    var next = m === "coworker" ? "plan"
+                             : (m === "plan" ? "build" : "coworker")
+                    bridge.setAgentMode(next)
+                }
+            }
+        }
+
         Gauge { label: "CPU"; value: strip.cpu; suffix: "%"; tint: Theme.accent }
         Gauge { label: "RAM"; value: strip.ram; suffix: "%"; tint: Theme.violet }
 

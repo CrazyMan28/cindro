@@ -398,6 +398,10 @@ private:
     // clause to append after the co-work guide (empty when level == "low" and
     // no HIGH-risk confirm is wanted — but we always confirm the worst).
     QString permissionPolicyClause() const;
+    // Soft behavioral clause for the current agent_mode (plan/build/coworker),
+    // appended to the co-work preamble right after permissionPolicyClause().
+    // Empty for the balanced "coworker" default (the guide already covers it).
+    QString modePolicyClause() const;
 
     // Render the base system block (memory) injected into ApiBrain's system
     // prompt at session.create time.

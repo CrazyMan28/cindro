@@ -496,6 +496,12 @@ Response ControlServer::handleSettingsGet(const Request &req)
     // capability sandbox is unchanged.
     s.insert(QStringLiteral("permission_level"), m_settings.permissionLevel());
 
+    // Agent mode (plan|build|coworker): soft behavioral profile surfaced as a HUD
+    // chip and selectable in Settings. wake_notify (silent|ping|always): what a
+    // background-job / sleep-wake does to the user's phone.
+    s.insert(QStringLiteral("agent_mode"), m_settings.agentMode());
+    s.insert(QStringLiteral("wake_notify"), m_settings.wakeNotify());
+
     // Whether a desktop unlock PIN is set (boolean only — never the PIN/hash).
     s.insert(QStringLiteral("has_desktop_pin"), m_settings.hasDesktopPin());
 
@@ -559,6 +565,14 @@ Response ControlServer::handleSettingsSet(const Request &req)
     if (patch.contains(QStringLiteral("permission_level"))) {
         m_settings.setPermissionLevel(
             patch.value(QStringLiteral("permission_level")).toString());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("agent_mode"))) {
+        m_settings.setAgentMode(patch.value(QStringLiteral("agent_mode")).toString());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("wake_notify"))) {
+        m_settings.setWakeNotify(patch.value(QStringLiteral("wake_notify")).toString());
         prefsTouched = true;
     }
     if (patch.contains(QStringLiteral("desktop_pin"))) {
@@ -1037,6 +1051,31 @@ QString ControlServer::permissionPolicyClause() const
     return QStringLiteral("\n") + head + rule +
            QStringLiteral(" The user can change this level in Settings → "
                           "Permissions. Respect it for the whole session.");
+}
+
+QString ControlServer::modePolicyClause() const
+{
+    const QString mode = m_settings.agentMode();
+    if (mode == QStringLiteral("plan")) {
+        return QStringLiteral(
+            "\n[MODE: PLAN] You are in PLAN mode. RESEARCH the task and produce a "
+            "clear, step-by-step PLAN using todo_write (one item per step). Do NOT "
+            "make changes yet — no file edits, no installs, nothing destructive or "
+            "outward-facing; read-only investigation only. When the plan is ready, "
+            "present it and ask the user to approve (and switch to BUILD mode) "
+            "before you execute. The user picks the mode in Settings.");
+    }
+    if (mode == QStringLiteral("build")) {
+        return QStringLiteral(
+            "\n[MODE: BUILD] You are in BUILD mode. Execute the agreed plan "
+            "autonomously and efficiently. Keep your todo list current (mark items "
+            "in_progress / done as you go). Ask only when an action is genuinely "
+            "risky per the permission policy above; otherwise keep moving and "
+            "narrate what you're doing. The user picks the mode in Settings.");
+    }
+    // "coworker" (default): no extra clause — the balanced behavior already lives
+    // in the co-work guide + the permission policy.
+    return QString();
 }
 
 QString ControlServer::memorySystemBlock()
@@ -1625,7 +1664,7 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "(circle/ellipse/rect/path/line). NEVER a one-word label like \"Duck\".\n"
             "Give the top node a sensible w/h or fill:true so it isn't cramped. Always "
             "actually CALL render_widget — don't describe the widget in words.");
-        effectiveText = guide + permissionPolicyClause() +
+        effectiveText = guide + permissionPolicyClause() + modePolicyClause() +
                         QStringLiteral("\n---\n") + effectiveText;
     }
 
