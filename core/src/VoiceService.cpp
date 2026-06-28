@@ -164,7 +164,7 @@ VoiceService::Result VoiceService::stt(const QByteArray &audio, const QString &m
 
 VoiceService::Result VoiceService::tts(const QString &text, const QString &voice,
                                        const QString &format, const QString &model,
-                                       int timeoutMs)
+                                       int timeoutMs, const QString &refAudioB64)
 {
     Result r;
     if (m_apiKey.isEmpty()) {
@@ -186,8 +186,13 @@ VoiceService::Result VoiceService::tts(const QString &text, const QString &voice
     QJsonObject reqBody;
     reqBody.insert(QStringLiteral("model"), model.isEmpty() ? defaultTtsModel() : model);
     reqBody.insert(QStringLiteral("input"), text);
-    // A voice (or ref_audio) is REQUIRED by the API; default to a stock voice.
-    reqBody.insert(QStringLiteral("voice"), voice.isEmpty() ? defaultVoice() : voice);
+    // A voice OR ref_audio is REQUIRED by the API. A reference clip (zero-shot
+    // cloning) takes precedence and replaces the named voice; otherwise fall back
+    // to the requested slug / the stock default.
+    if (!refAudioB64.isEmpty())
+        reqBody.insert(QStringLiteral("ref_audio"), refAudioB64);
+    else
+        reqBody.insert(QStringLiteral("voice"), voice.isEmpty() ? defaultVoice() : voice);
     reqBody.insert(QStringLiteral("response_format"), fmt);
 
     QNetworkReply *reply =

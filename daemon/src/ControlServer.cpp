@@ -53,6 +53,37 @@ QString genSessionId()
     return QStringLiteral("sess_") + QString::fromLatin1(bytes.toHex());
 }
 
+// The signature cloned voice. Selecting this slug makes voice.tts synth via a
+// stored reference clip (Mistral ref_audio zero-shot cloning) instead of a named
+// preset. It is also the product DEFAULT voice (used when no tts_voice is set).
+const QString kCloneVoiceDefault = QStringLiteral("jarvice");
+
+// Map a cloned-voice slug to a base64 reference clip for ref_audio TTS.
+//   "jarvice"     -> ~/.config/jarvis/voices/jarvice_ref.{mp3,wav,opus,flac,ogg}
+//   "clone:NAME"  -> ~/.config/jarvis/voices/NAME_ref.*
+// Returns an empty string when the slug is not a clone OR no reference clip is on
+// disk (the caller then falls back to a normal named voice, so TTS never breaks).
+QString cloneRefAudioB64(const QString &voiceSlug)
+{
+    QString name;
+    if (voiceSlug == kCloneVoiceDefault)
+        name = kCloneVoiceDefault;
+    else if (voiceSlug.startsWith(QStringLiteral("clone:")))
+        name = voiceSlug.mid(6);
+    if (name.isEmpty())
+        return QString();
+    const QString dir = QDir::homePath() + QStringLiteral("/.config/jarvis/voices/");
+    static const QStringList exts = { QStringLiteral("mp3"), QStringLiteral("wav"),
+                                      QStringLiteral("opus"), QStringLiteral("flac"),
+                                      QStringLiteral("ogg") };
+    for (const QString &ext : exts) {
+        QFile f(dir + name + QStringLiteral("_ref.") + ext);
+        if (f.exists() && f.open(QIODevice::ReadOnly))
+            return QString::fromLatin1(f.readAll().toBase64());
+    }
+    return QString();
+}
+
 } // namespace
 
 ControlServer::ControlServer(Config config, QString controlToken, QObject *parent)
@@ -3077,12 +3108,29 @@ Response ControlServer::handleVoiceTts(const Request &req)
     if (text.trimmed().isEmpty())
         return Response::failure(req.id, QStringLiteral("bad_request"),
                                  QStringLiteral("text is required"));
-    const QString vc = req.params.value(QStringLiteral("voice")).toString();
+    // Effective voice: explicit param, else the persisted tts_voice setting, else
+    // the product default (the cloned "jarvice" voice).
+    QString vc = req.params.value(QStringLiteral("voice")).toString();
+    if (vc.isEmpty())
+        vc = m_settings.ttsVoice();
+    if (vc.isEmpty())
+        vc = kCloneVoiceDefault;
     const QString format = req.params.value(QStringLiteral("format")).toString();
     const QString model = req.params.value(QStringLiteral("model")).toString();
 
+    // A cloned voice synths from a reference clip (ref_audio) and clears the named
+    // voice. If the clip is missing on disk, fall back to a stock voice so the
+    // assistant still speaks rather than erroring on an unknown slug.
+    QString refB64 = cloneRefAudioB64(vc);
+    if (refB64.isEmpty() && (vc == kCloneVoiceDefault || vc.startsWith(QStringLiteral("clone:")))) {
+        qWarning("voice.tts: clone voice '%s' has no reference clip "
+                 "(~/.config/jarvis/voices/) — using stock voice", qPrintable(vc));
+        vc = VoiceService::defaultVoice();
+    }
+    const QString effVoice = refB64.isEmpty() ? vc : QString();
+
     const VoiceService::Result r =
-        VoiceProvider::ttsWithProvider(provider, key, text, vc, format, model, 30000);
+        VoiceProvider::ttsWithProvider(provider, key, text, effVoice, format, model, 30000, refB64);
     if (!r.ok)
         return Response::failure(req.id, QStringLiteral("voice_tts_failed"), r.error);
 
@@ -3101,6 +3149,8 @@ Response ControlServer::handleVoiceListVoices(const Request &req)
     // listing them here is safe.
     struct V { const char *id; const char *label; };
     static const V voices[] = {
+        // The signature cloned voice (Mistral ref_audio) + the product default.
+        { "jarvice",           "Jarvice — cloned voice (default)" },
         { "en_paul_neutral",   "Paul — neutral (EN)" },
         { "en_emma_neutral",   "Emma — neutral (EN)" },
         { "en_oliver_warm",    "Oliver — warm (EN)" },
@@ -3131,7 +3181,7 @@ Response ControlServer::handleVoiceListVoices(const Request &req)
     // VoiceService default slug.
     const QString cur = m_settings.ttsVoice();
     result.insert(QStringLiteral("default"),
-                  cur.isEmpty() ? QStringLiteral("en_paul_neutral") : cur);
+                  cur.isEmpty() ? kCloneVoiceDefault : cur);
     // Provider lists so a single call gives the picker both, plus a per-provider
     // voice map so the desktop can switch provider client-side without a round-trip.
     result.insert(QStringLiteral("stt_providers"), VoiceProvider::sttProviders());
