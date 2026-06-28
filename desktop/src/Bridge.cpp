@@ -998,6 +998,21 @@ void Bridge::diffOpenPr(const QString &title)
     request(QStringLiteral("diff.open_pr"), params, QStringLiteral("__pr__"));
 }
 
+// ---- Phone (Contract A phone.mcp proxy) ------------------------------------
+
+void Bridge::phoneMcp(const QString &callId, const QString &name,
+                      const QVariantMap &arguments)
+{
+    if (name.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), name);
+    if (!arguments.isEmpty())
+        params.insert(QStringLiteral("arguments"), arguments);
+    // Store callId as ctx so the reply routing in handleResponse can echo it back.
+    request(QStringLiteral("phone.mcp"), params, callId);
+}
+
 // ---- Notifications ---------------------------------------------------------
 
 void Bridge::setNotificationsEnabled(bool enabled)
@@ -2971,6 +2986,13 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                 return;
             }
         }
+        // phone.mcp errors: surface through phoneResult (never a generic toast).
+        if (method == QStringLiteral("phone.mcp")) {
+            QVariantMap r;
+            r.insert(QStringLiteral("error"), error);
+            emit phoneResult(ctx, r);
+            return;
+        }
         // SSH exec can also fail with the daemon's allow-list / tier errors; route
         // those to the console rather than a toast so the user sees the reason.
         if (method == QStringLiteral("ssh.exec")) {
@@ -3339,6 +3361,10 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
     } else if (method == QStringLiteral("devices.revoke")) {
         emit devicesChanged();
         devicesList(); // refresh the paired-device list after a revoke
+    } else if (method == QStringLiteral("phone.mcp")) {
+        // Echo the result back to QML tagged with the caller's callId (ctx).
+        // result is already the parsed { tool, data, text, error? } payload.
+        emit phoneResult(ctx, result);
     }
     // ping / session.send / session.cancel / approval.respond: ack only.
 }

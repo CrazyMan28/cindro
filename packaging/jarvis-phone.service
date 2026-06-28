@@ -1,0 +1,22 @@
+[Unit]
+Description=Jarvis phone subsystem (native call/text — vendored agent-phone server)
+# Independent Node service; jarvisd seeds it into the brain's MCP registry +
+# proxies it to every surface via phone.mcp. Wants (not Requires) so a brief
+# jarvisd blip doesn't take the phone down.
+Wants=jarvisd.service
+After=network-online.target
+
+[Service]
+# Runs the built server (phone/server/dist/main.js) on 127.0.0.1+tailnet:8801.
+# Secrets (Twilio + Mistral) + DB path come from the Jarvis-managed env file
+# (~/.config/jarvis/phone.env, 0600 — NEVER in git), pointed at via
+# AGENT_PHONE_ENV_FILE. Build once with `cd phone/server && npm install &&
+# npm run build`.
+WorkingDirectory=%h/projects/computer_use/phone/server
+Environment=AGENT_PHONE_ENV_FILE=%h/.config/jarvis/phone.env
+ExecStart=/usr/bin/env node dist/main.js
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
