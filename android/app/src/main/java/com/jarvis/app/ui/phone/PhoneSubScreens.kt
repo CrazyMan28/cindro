@@ -31,8 +31,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DialerSip
 import androidx.compose.material.icons.filled.Done
@@ -47,6 +49,7 @@ import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -235,8 +238,7 @@ private fun copyToClipboard(ctx: Context, label: String, text: String) {
 
 @Composable
 fun PhoneCallsScreen(state: PhoneUiState, viewModel: PhoneViewModel) {
-    var dialTarget by remember { mutableStateOf("") }
-    var dialReason by remember { mutableStateOf("") }
+    var dialTarget by remember { mutableStateOf("101") }
 
     Column(
         modifier = Modifier
@@ -287,43 +289,77 @@ fun PhoneCallsScreen(state: PhoneUiState, viewModel: PhoneViewModel) {
             }
         }
 
-        // Dial pad
+        // Dialer — big display + quick chips + keypad + call button (parity)
         SectionLabel("New Call")
-        PhoneCard {
-            Text("Extension or phone number", style = MaterialTheme.typography.labelMedium, color = JarvisPalette.TextSecondary)
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = dialTarget,
-                onValueChange = { dialTarget = it },
-                placeholder = { Text("+1234… or 102", color = JarvisPalette.TextFaint) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                colors = outlinedFieldColors(),
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = JarvisPalette.TextPrimary),
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = dialReason,
-                onValueChange = { dialReason = it },
-                placeholder = { Text("Reason (optional)", color = JarvisPalette.TextFaint) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                colors = outlinedFieldColors(),
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = JarvisPalette.TextPrimary),
-            )
-            Spacer(Modifier.height(12.dp))
-            CyanButton(
-                label = "Call",
-                onClick = {
-                    if (dialTarget.isNotBlank()) {
-                        viewModel.placeCall(dialTarget.trim(), dialReason.ifBlank { "Jarvis call" })
-                        dialTarget = ""
-                        dialReason = ""
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = dialTarget.ifBlank { "•" },
+            style = MaterialTheme.typography.displayLarge.copy(
+                fontFamily = FontFamily.Monospace, fontSize = 44.sp, fontWeight = FontWeight.Light),
+            color = JarvisPalette.TextPrimary,
+            modifier = Modifier.align(Alignment.CenterHorizontally),
+        )
+        Text(
+            text = if (dialTarget.isBlank()) "Enter an extension or number" else "Ready to dial",
+            style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextFaint,
+            modifier = Modifier.align(Alignment.CenterHorizontally),
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            listOf("101", "102", "103", "104", "105", "900").forEach { ext ->
+                Box(
+                    Modifier.clip(RoundedCornerShape(50)).background(JarvisPalette.Surface)
+                        .border(1.dp, JarvisPalette.Outline, RoundedCornerShape(50))
+                        .clickable { dialTarget = ext }
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                ) {
+                    Text(ext, style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace), color = JarvisPalette.TextPrimary)
+                }
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        listOf(listOf("1", "2", "3"), listOf("4", "5", "6"), listOf("7", "8", "9"), listOf("*", "0", "#")).forEach { keyRow ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                keyRow.forEach { digit ->
+                    Box(
+                        Modifier.weight(1f).height(60.dp)
+                            .clip(RoundedCornerShape(20.dp)).background(JarvisPalette.Surface)
+                            .border(1.dp, JarvisPalette.Outline, RoundedCornerShape(20.dp))
+                            .clickable { if (dialTarget.length < 18) dialTarget += digit },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(digit, style = MaterialTheme.typography.headlineMedium.copy(fontSize = 24.sp), color = JarvisPalette.TextPrimary)
                     }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = dialTarget.isNotBlank(),
-            )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.weight(1f))
+            Box(
+                Modifier.size(70.dp).clip(CircleShape)
+                    .background(if (dialTarget.isNotBlank()) JarvisPalette.Accent else JarvisPalette.AccentDim.copy(alpha = 0.4f))
+                    .clickable(enabled = dialTarget.isNotBlank()) {
+                        viewModel.placeCall(dialTarget.trim())
+                        dialTarget = "101"
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.Call, contentDescription = "Call", tint = JarvisPalette.OnAccent, modifier = Modifier.size(30.dp))
+            }
+            Box(
+                Modifier.weight(1f).height(70.dp).clickable { dialTarget = dialTarget.dropLast(1) },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("⌫", fontSize = 24.sp, color = JarvisPalette.TextSecondary)
+            }
         }
         Spacer(Modifier.height(16.dp))
     }
@@ -346,11 +382,34 @@ fun PhoneInboxScreen(
     viewModel: PhoneViewModel,
     onOpenThread: (String) -> Unit,
 ) {
+    var showNewChat by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
+        // Header: title + refresh + NEW CHAT (text an agent)
+        Row(
+            Modifier.fillMaxWidth().padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Chats", style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextPrimary, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            IconButton(onClick = { viewModel.refreshThreads() }) {
+                Icon(Icons.Filled.Refresh, contentDescription = "Refresh", tint = JarvisPalette.TextSecondary)
+            }
+            IconButton(onClick = { viewModel.refreshAgents(); showNewChat = true }) {
+                Icon(Icons.Filled.Add, contentDescription = "New chat", tint = JarvisPalette.Accent)
+            }
+        }
+        if (showNewChat) {
+            NewChatDialog(
+                agents = state.phoneAgents,
+                onDismiss = { showNewChat = false },
+                onStartChat = { ext, msg -> viewModel.startChat(ext, msg) { onOpenThread(it) } },
+                onStartGroup = { members, msg -> viewModel.startGroupChat(members, msg) { onOpenThread(it) } },
+                onCall = { members -> viewModel.startConferenceCall(members) },
+            )
+        }
         if (state.threads.isEmpty() && state.inboxMessages.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1451,4 +1510,72 @@ fun PhoneSetupScreen(state: PhoneUiState, viewModel: PhoneViewModel) {
         }
         Spacer(Modifier.height(16.dp))
     }
+}
+
+// ── New chat dialog (text / call an agent) ────────────────────────────────────
+@Composable
+private fun NewChatDialog(
+    agents: List<PhoneAgent>,
+    onDismiss: () -> Unit,
+    onStartChat: (ext: String, text: String) -> Unit,
+    onStartGroup: (members: List<String>, text: String) -> Unit,
+    onCall: (members: List<String>) -> Unit,
+) {
+    var selected by remember { mutableStateOf(setOf(agents.firstOrNull()?.extension ?: "")) }
+    var text by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = JarvisPalette.Surface,
+        title = {
+            Text(
+                if (selected.count { it.isNotBlank() } > 1) "New group chat · ${selected.count { it.isNotBlank() }}" else "New chat",
+                color = JarvisPalette.TextPrimary,
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Tap one or more agents", style = MaterialTheme.typography.labelSmall, color = JarvisPalette.TextFaint)
+                agents.forEach { agent ->
+                    val isSel = agent.extension in selected
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isSel) JarvisPalette.Accent.copy(alpha = 0.18f) else Color.Transparent)
+                            .clickable { selected = if (isSel) selected - agent.extension else selected + agent.extension }
+                            .padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(if (isSel) "✓ " else "○ ", color = JarvisPalette.Accent)
+                        Text("${agent.name} · ${agent.extension}", color = JarvisPalette.TextPrimary)
+                    }
+                }
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    placeholder = { Text(if (selected.count { it.isNotBlank() } > 1) "First message to the group…" else "First message…", color = JarvisPalette.TextFaint) },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = outlinedFieldColors(),
+                    textStyle = LocalTextStyle.current.copy(color = JarvisPalette.TextPrimary),
+                )
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlineButton(label = "Call", onClick = {
+                    val m = selected.filter { it.isNotBlank() }
+                    if (m.isNotEmpty()) { onCall(m); onDismiss() }
+                })
+                CyanButton(
+                    label = if (selected.count { it.isNotBlank() } > 1) "Start group" else "Start",
+                    enabled = selected.any { it.isNotBlank() } && text.isNotBlank(),
+                    onClick = {
+                        val m = selected.filter { it.isNotBlank() }
+                        if (m.size == 1) onStartChat(m.first(), text) else onStartGroup(m, text)
+                        onDismiss()
+                    },
+                )
+            }
+        },
+        dismissButton = { OutlineButton(label = "Cancel", onClick = onDismiss) },
+    )
 }
