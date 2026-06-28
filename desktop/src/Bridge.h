@@ -732,7 +732,13 @@ private:
     // Wrap raw int16 mono PCM (m_voicePcm) in a 44-byte WAV header.
     QByteArray pcmToWav(const QByteArray &pcm, int sampleRate, int channels) const;
     // Decode TTS audio_b64 -> temp file -> play via QMediaPlayer (sets speaking).
+    // playTtsAudio ENQUEUES the clip; playNextTtsClip stages+plays the head of the
+    // queue. One assistant turn can arrive as several `message` events (each its own
+    // voice.tts), so we play them strictly in order — one utterance finishes before
+    // the next begins — instead of each new clip cutting off the one mid-sentence.
     void playTtsAudio(const QByteArray &audio, const QString &mime);
+    void playNextTtsClip();
+    void ensureTtsPlayer();
 
     // ---- Sub-agent tree builder --------------------------------------------
     // Build an indented tree (depth + parent) from a flat session.list result.
@@ -864,6 +870,13 @@ private:
     QAudioOutput *m_ttsOutput = nullptr;
     QByteArray m_ttsDeviceId;   // chosen TTS output sink id (empty = system default)
     QString m_ttsTmpPath;              // last decoded TTS file (kept until next play)
+    // FIFO of TTS clips waiting to play. A turn that arrives as multiple message
+    // events queues here so each utterance plays to completion before the next —
+    // the single shared player used to interrupt itself, cutting sentences off.
+    struct TtsClip { QByteArray audio; QString mime; };
+    QList<TtsClip> m_ttsQueue;
+    bool m_ttsPlaying = false;         // a clip is currently on the player
+    int m_ttsTmpSeq = 0;               // ping-pong temp-file index (avoid rewriting in-use path)
     // The dedicated voice session id (coworker/coder), so "what's on my screen"
     // works. Mirrors m_sessionId once created; we (re)use createSession.
     QString m_voiceSessionId;
