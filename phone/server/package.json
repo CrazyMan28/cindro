@@ -1,0 +1,42 @@
+{
+  "name": "@agent-phone/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests=false",
+    "test:watch": "vitest",
+    "fake-agent": "tsx src/adapters/fakeAgentCli.ts",
+    "fake-android": "tsx src/adapters/fakeAndroidClient.ts",
+    "tmux-agent": "tsx src/adapters/tmuxAgentCli.ts",
+    "codex-agent": "tsx src/adapters/codexAgentCli.ts",
+    "copilot-agent": "tsx src/adapters/copilotAgentCli.ts",
+    "universal-agent": "tsx src/adapters/universalAgent.ts",
+    "seed": "tsx src/adapters/seedDemoData.ts",
+    "mistral:smoke": "tsx src/adapters/mistralSmoke.ts",
+    "config": "tsx src/adapters/printConfig.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "@fastify/formbody": "^8.0.2",
+    "@fastify/rate-limit": "^10.3.0",
+    "better-sqlite3": "^11.10.0",
+    "dotenv": "^16.5.0",
+    "fastify": "^5.3.3",
+    "twilio": "^6.0.2",
+    "ws": "^8.18.1",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.21",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.4"
+  }
+}

@@ -176,6 +176,8 @@ bool ControlServer::start()
     m_config.defaultBrain = m_settings.defaultBrain();
     m_config.defaultModel = m_settings.defaultModel();
     m_mcp = std::make_unique<McpRegistry>(m_store);
+    // Native phone subsystem: expose its MCP tools to the brain if configured.
+    seedPhoneMcp();
     m_plugins = std::make_unique<PluginRegistry>(m_store);
     m_plugins->ensureSeeded(); // seed sample manifests if the catalog is empty
 
@@ -3333,6 +3335,41 @@ Response ControlServer::handleMemoryRemove(const Request &req)
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
+}
+
+void ControlServer::seedPhoneMcp()
+{
+    // The native phone subsystem (vendored under phone/) runs its own MCP gateway.
+    // Its agent bearer + port live in the Jarvis-managed env file. If that's
+    // absent, the phone isn't set up — seed nothing (no phone tools for the brain).
+    const QString envPath = Config::configDir() + QStringLiteral("/phone.env");
+    QFile f(envPath);
+    if (!f.exists() || !f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    QString token;
+    QString port = QStringLiteral("8801");
+    const QList<QByteArray> lines = f.readAll().split('\n');
+    f.close();
+    for (const QByteArray &raw : lines) {
+        const QString line = QString::fromUtf8(raw).trimmed();
+        if (line.startsWith(QStringLiteral("AGENT_TOKEN=")))
+            token = line.mid(QStringLiteral("AGENT_TOKEN=").size()).trimmed();
+        else if (line.startsWith(QStringLiteral("SERVER_PORT=")))
+            port = line.mid(QStringLiteral("SERVER_PORT=").size()).trimmed();
+    }
+    if (token.isEmpty())
+        return;
+    const QString endpoint = QStringLiteral("http://127.0.0.1:%1/mcp").arg(port);
+    // Idempotent: drop any prior "phone" row so the token/port stay in sync with
+    // the env on every restart.
+    for (const McpServerRow &r : m_mcp->list())
+        if (r.name == QStringLiteral("phone"))
+            m_mcp->remove(r.id);
+    // risk=high: these tools call/text the user, spend money, and reach the real
+    // world — the permission policy should pause before them.
+    m_mcp->add(QStringLiteral("phone"), QStringLiteral("http"), endpoint, token,
+               true, QStringLiteral("high"));
+    qInfo("jarvisd: seeded phone MCP server -> %s", qPrintable(endpoint));
 }
 
 void ControlServer::seedInternalDocsSkill()
