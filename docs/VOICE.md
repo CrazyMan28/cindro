@@ -35,3 +35,22 @@ voxtral-mini-tts + voxtral realtime/transcribe models).
   read-back of replies via `voice.tts`. Mic capture via PipeWire/pw-record or Qt Multimedia.
 - Settings: a "Voice" section (provider=Mistral, STT model, TTS model+voice, wake on/off) on both
   desktop and phone.
+
+## Spoken-reply playback ordering (desktop voice mode)
+
+One assistant turn can arrive as **several** `message` events, and hands-free Voice Mode
+(`VoiceMode.qml`) calls `bridge.speak()` on each one — so multiple `voice.tts` replies can come back
+while a clip is still playing. The desktop **queues** these clips and plays them strictly in order:
+
+- `Bridge::playTtsAudio()` **appends** each clip to `m_ttsQueue` instead of playing immediately.
+- `Bridge::playNextTtsClip()` stages the head of the queue to a (ping-ponged) temp file and plays it;
+  the next clip starts only when the current one fires `QMediaPlayer`'s `EndOfMedia` — not the
+  transient `StoppedState` that source-swapping passes through.
+- Hands-free **resume-listening / orb-idle happens once**, when the queue drains — not after every
+  clip — so Jarvis never starts listening (and capturing its own TTS tail) mid-reply.
+- Ending the conversation (Space / leaving the page) is a barge-in: `stopConversation()` clears the
+  queue and stops the player.
+
+Without the queue, each new clip's `setSource()`+`play()` interrupted the one still mid-sentence, so
+multi-segment replies cut each other off / overlapped. (Android speaks only the turn's **final**
+assistant message once on the `final` event, so it never had this overlap.)

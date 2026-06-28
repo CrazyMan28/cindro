@@ -1282,6 +1282,12 @@ void Bridge::stopConversation()
         m_voiceProc->deleteLater();
         m_voiceProc = nullptr;
     }
+    // Ending the conversation (Space / leaving the page) is a barge-in: drop any
+    // queued utterances and silence the player so Jarvis doesn't keep talking.
+    m_ttsQueue.clear();
+    m_ttsPlaying = false;
+    if (m_ttsPlayer)
+        m_ttsPlayer->stop();
     m_voicePcm.clear();
     if (m_voiceLevel != 0.0) {
         m_voiceLevel = 0.0;
@@ -1434,54 +1440,91 @@ void Bridge::setTtsOutput(int index)
         m_ttsOutput->setDevice(resolveTtsOutput(m_ttsDeviceId));
 }
 
+void Bridge::ensureTtsPlayer()
+{
+    if (m_ttsPlayer)
+        return;
+    m_ttsPlayer = new QMediaPlayer(this);
+    m_ttsOutput = new QAudioOutput(resolveTtsOutput(m_ttsDeviceId), this);
+    m_ttsOutput->setVolume(1.0);
+    m_ttsPlayer->setAudioOutput(m_ttsOutput);
+    // Surface playback failures (missing codec/route) instead of silent no-sound.
+    // A clip that fails to decode would never reach EndOfMedia, so the queue would
+    // stall — drop the whole pending reply and recover (resume listening / idle).
+    connect(m_ttsPlayer, &QMediaPlayer::errorOccurred, this,
+            [this](QMediaPlayer::Error err, const QString &errStr) {
+        if (err == QMediaPlayer::NoError)
+            return;
+        qWarning("Bridge: TTS playback error %d: %s", int(err), qPrintable(errStr));
+        m_ttsQueue.clear();
+        m_ttsPlaying = false;
+        emit voiceSpeaking(false);
+        if (m_handsFree)
+            resumeListening();
+        else if (m_voiceState == QStringLiteral("speaking"))
+            setVoiceState(QStringLiteral("idle"));
+    });
+    // Advance the queue when a clip plays to its natural END. We key off
+    // EndOfMedia (not StoppedState) so that swapping in the next clip's source —
+    // which transiently passes through Stopped — never looks like "done speaking".
+    connect(m_ttsPlayer, &QMediaPlayer::mediaStatusChanged, this,
+            [this](QMediaPlayer::MediaStatus st) {
+        if (st == QMediaPlayer::EndOfMedia)
+            playNextTtsClip();
+    });
+}
+
 void Bridge::playTtsAudio(const QByteArray &audio, const QString &mime)
 {
     if (audio.isEmpty())
         return;
+    // Queue, don't interrupt. One assistant turn can produce several `message`
+    // events (each its own voice.tts reply), and their audio can arrive while a
+    // previous clip is still playing. Append and let playNextTtsClip drain the
+    // queue one utterance at a time so sentences never cut each other off / overlap.
+    m_ttsQueue.append(TtsClip{audio, mime});
+    if (!m_ttsPlaying)
+        playNextTtsClip();
+}
+
+void Bridge::playNextTtsClip()
+{
+    if (m_ttsQueue.isEmpty()) {
+        // Whole reply spoken. Transition out of "speaking" exactly ONCE here, after
+        // the last clip — not after every clip — so hands-free doesn't resume
+        // listening mid-reply (which would also let us capture our own TTS tail).
+        m_ttsPlaying = false;
+        emit voiceSpeaking(false);
+        if (m_handsFree)
+            resumeListening();
+        else if (m_voiceState == QStringLiteral("speaking"))
+            setVoiceState(QStringLiteral("idle"));
+        return;
+    }
+    const TtsClip clip = m_ttsQueue.takeFirst();
+
     QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     if (base.isEmpty())
         base = QDir::tempPath();
-    const QString ext = (mime.contains(QStringLiteral("mpeg"))
-                         || mime.contains(QStringLiteral("mp3")))
+    const QString ext = (clip.mime.contains(QStringLiteral("mpeg"))
+                         || clip.mime.contains(QStringLiteral("mp3")))
                             ? QStringLiteral(".mp3") : QStringLiteral(".wav");
-    m_ttsTmpPath = base + QStringLiteral("/jarvis_voicemode_tts") + ext;
+    // Ping-pong two temp paths so we never rewrite the file the player may still be
+    // releasing from the clip that just ended.
+    m_ttsTmpSeq ^= 1;
+    m_ttsTmpPath = base + QStringLiteral("/jarvis_voicemode_tts")
+                   + QString::number(m_ttsTmpSeq) + ext;
     QFile out(m_ttsTmpPath);
-    if (!out.open(QIODevice::WriteOnly))
+    if (!out.open(QIODevice::WriteOnly)) {
+        // Couldn't stage this clip — skip it rather than stall the rest of the reply.
+        playNextTtsClip();
         return;
-    out.write(audio);
+    }
+    out.write(clip.audio);
     out.close();
 
-    if (!m_ttsPlayer) {
-        m_ttsPlayer = new QMediaPlayer(this);
-        m_ttsOutput = new QAudioOutput(resolveTtsOutput(m_ttsDeviceId), this);
-        m_ttsOutput->setVolume(1.0);
-        m_ttsPlayer->setAudioOutput(m_ttsOutput);
-        // Surface playback failures (missing codec/route) instead of silent no-sound.
-        connect(m_ttsPlayer, &QMediaPlayer::errorOccurred, this,
-                [this](QMediaPlayer::Error err, const QString &errStr) {
-            if (err == QMediaPlayer::NoError)
-                return;
-            qWarning("Bridge: TTS playback error %d: %s", int(err), qPrintable(errStr));
-            emit voiceSpeaking(false);
-            if (m_handsFree)
-                resumeListening();
-            else if (m_voiceState == QStringLiteral("speaking"))
-                setVoiceState(QStringLiteral("idle"));
-        });
-        connect(m_ttsPlayer, &QMediaPlayer::playbackStateChanged, this,
-                [this](QMediaPlayer::PlaybackState st) {
-            if (st == QMediaPlayer::StoppedState) {
-                emit voiceSpeaking(false);
-                // Hands-free: spoken reply done -> listen for the next turn.
-                if (m_handsFree)
-                    resumeListening();
-                // Otherwise only fall back to idle if still "speaking" (a new
-                // listen may have already moved us on).
-                else if (m_voiceState == QStringLiteral("speaking"))
-                    setVoiceState(QStringLiteral("idle"));
-            }
-        });
-    }
+    ensureTtsPlayer();
+    m_ttsPlaying = true;
     m_ttsOutput->setVolume(1.0);
     setVoiceState(QStringLiteral("speaking"));
     emit voiceSpeaking(true);
@@ -2834,7 +2877,9 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         }
         if (method == QStringLiteral("voice.tts")) {
             m_ttsRequested = false;
-            if (ctx == QStringLiteral("__voicemode__"))
+            // Don't drop the orb to idle if an earlier clip is still speaking or
+            // queued — one failed segment shouldn't interrupt the rest of the reply.
+            if (ctx == QStringLiteral("__voicemode__") && !m_ttsPlaying && m_ttsQueue.isEmpty())
                 setVoiceState(QStringLiteral("idle"));
         }
         // If creating the session failed, drop any queued first message so it can't
@@ -3113,7 +3158,11 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         const QByteArray audio = QByteArray::fromBase64(
             result.value(QStringLiteral("audio_b64")).toString().toLatin1());
         if (audio.isEmpty()) {
-            if (ctx == QStringLiteral("__voicemode__")) {
+            // Empty audio for one segment must NOT cut the conversation back to
+            // listening while an earlier clip is still speaking or queued — only the
+            // queue draining (playNextTtsClip) ends the turn. Resume/idle solely when
+            // nothing is in flight.
+            if (ctx == QStringLiteral("__voicemode__") && !m_ttsPlaying && m_ttsQueue.isEmpty()) {
                 if (m_handsFree)
                     resumeListening();
                 else
