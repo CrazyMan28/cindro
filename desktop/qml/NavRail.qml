@@ -35,6 +35,7 @@ Item {
         { key: "mcp",       label: "MCP",       section: "SYSTEM" },
         { key: "plugins",   label: "PLUGINS",   section: "SYSTEM" },
         { key: "ssh",       label: "SSH",       section: "SYSTEM" },
+        { key: "phone",     label: "PHONE",     section: "SYSTEM" },
         { key: "settings",  label: "SETTINGS",  section: "SYSTEM" }
     ]
 
@@ -477,6 +478,20 @@ Item {
                     ctx.strokeRect(10, 2.5, 5.5, 5.5)
                     ctx.strokeRect(2.5, 10, 5.5, 5.5)
                     ctx.strokeRect(10, 10, 5.5, 5.5)
+                    break
+                case "phone":
+                    // classic handset: earpiece arc (top-left) + mouthpiece arc (bottom-right)
+                    // connected by a diagonal handle
+                    ctx.beginPath()
+                    ctx.arc(5, 5, 2.5, Math.PI * 0.55, Math.PI * 1.45)
+                    ctx.stroke()
+                    ctx.beginPath()
+                    ctx.arc(13, 13, 2.5, Math.PI * 1.55, Math.PI * 0.45)
+                    ctx.stroke()
+                    ctx.beginPath()
+                    ctx.moveTo(3.3, 7.0)
+                    ctx.lineTo(11.0, 14.7)
+                    ctx.stroke()
                     break
                 }
             }

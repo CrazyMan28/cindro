@@ -515,6 +515,22 @@ void Bridge::saveSettings(const QVariantMap &patch)
     request(QStringLiteral("settings.set"), params);
 }
 
+void Bridge::setAgentMode(const QString &mode)
+{
+    QString m = mode;
+    if (m != QStringLiteral("plan") && m != QStringLiteral("build"))
+        m = QStringLiteral("coworker");
+    if (m != m_agentMode) {
+        m_agentMode = m;
+        emit agentModeChanged();
+    }
+    // Persist via settings.set (round-trips to config.toml; applies to the preamble
+    // of the next turn).
+    QVariantMap patch;
+    patch.insert(QStringLiteral("agent_mode"), m);
+    saveSettings(patch);
+}
+
 void Bridge::listMcp()
 {
     request(QStringLiteral("mcp.list"), {});
@@ -980,6 +996,21 @@ void Bridge::diffOpenPr(const QString &title)
     if (!title.trimmed().isEmpty())
         params.insert(QStringLiteral("title"), title.trimmed());
     request(QStringLiteral("diff.open_pr"), params, QStringLiteral("__pr__"));
+}
+
+// ---- Phone (Contract A phone.mcp proxy) ------------------------------------
+
+void Bridge::phoneMcp(const QString &callId, const QString &name,
+                      const QVariantMap &arguments)
+{
+    if (name.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), name);
+    if (!arguments.isEmpty())
+        params.insert(QStringLiteral("arguments"), arguments);
+    // Store callId as ctx so the reply routing in handleResponse can echo it back.
+    request(QStringLiteral("phone.mcp"), params, callId);
 }
 
 // ---- Notifications ---------------------------------------------------------
@@ -2955,6 +2986,13 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                 return;
             }
         }
+        // phone.mcp errors: surface through phoneResult (never a generic toast).
+        if (method == QStringLiteral("phone.mcp")) {
+            QVariantMap r;
+            r.insert(QStringLiteral("error"), error);
+            emit phoneResult(ctx, r);
+            return;
+        }
         // SSH exec can also fail with the daemon's allow-list / tier errors; route
         // those to the console rather than a toast so the user sees the reason.
         if (method == QStringLiteral("ssh.exec")) {
@@ -3081,6 +3119,16 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         m_ttsProvider = result.contains(QStringLiteral("tts_provider"))
                             ? result.value(QStringLiteral("tts_provider")).toString()
                             : QStringLiteral("voxtral");
+        // Cache the agent mode (plan|build|coworker) for the live HUD chip.
+        {
+            const QString am = result.contains(QStringLiteral("agent_mode"))
+                                   ? result.value(QStringLiteral("agent_mode")).toString()
+                                   : QStringLiteral("coworker");
+            if (am != m_agentMode) {
+                m_agentMode = am;
+                emit agentModeChanged();
+            }
+        }
         // Sync the desktop notifications toggle from persisted settings.
         const QVariantMap n = result.value(QStringLiteral("notifications")).toMap();
         if (n.contains(QStringLiteral("enabled"))) {
@@ -3313,6 +3361,10 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
     } else if (method == QStringLiteral("devices.revoke")) {
         emit devicesChanged();
         devicesList(); // refresh the paired-device list after a revoke
+    } else if (method == QStringLiteral("phone.mcp")) {
+        // Echo the result back to QML tagged with the caller's callId (ctx).
+        // result is already the parsed { tool, data, text, error? } payload.
+        emit phoneResult(ctx, result);
     }
     // ping / session.send / session.cancel / approval.respond: ack only.
 }

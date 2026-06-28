@@ -67,7 +67,7 @@ Item {
 
     Component.onCompleted: {
         // --page <n> (screenshots/testing): jump to a specific page on load.
-        if (typeof startPage !== "undefined" && startPage >= 0 && startPage < 15)
+        if (typeof startPage !== "undefined" && startPage >= 0 && startPage < 17)
             shell.currentIndex = startPage
         updateWidgetViewing()
     }
@@ -124,7 +124,7 @@ Item {
             // Each page is wrapped so we can animate opacity + a small x-slide.
             // Only the active page is interactive; the rest fade out behind it.
             Repeater {
-                model: 16
+                model: 17
                 delegate: Item {
                     id: pageWrap
                     required property int index
@@ -172,7 +172,8 @@ Item {
                             case 12: return mcpComp
                             case 13: return pluginsComp
                             case 14: return sshComp
-                            case 15: return settingsComp
+                            case 15: return phoneComp
+                            case 16: return settingsComp
                             }
                         }
                     }
@@ -294,6 +295,7 @@ Item {
             }
         }
     }
+    Component { id: phoneComp;    PhonePage {} }
     Component { id: settingsComp; SettingsPage {} }
     Component { id: mcpComp;      McpPage {} }
     Component { id: pluginsComp;  PluginsPage {} }

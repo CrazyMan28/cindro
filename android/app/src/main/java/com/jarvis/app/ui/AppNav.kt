@@ -16,6 +16,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -71,6 +72,8 @@ import com.jarvis.app.ui.settings.SettingsScreen
 import com.jarvis.app.ui.settings.SettingsViewModel
 import com.jarvis.app.ui.agents.AgentsScreen
 import com.jarvis.app.ui.agents.AgentsViewModel
+import com.jarvis.app.ui.phone.PhoneScreen
+import com.jarvis.app.ui.phone.PhoneViewModel
 import com.jarvis.app.ui.skills.SkillsScreen
 import com.jarvis.app.ui.skills.SkillsViewModel
 import com.jarvis.app.ui.theme.JarvisPalette
@@ -94,6 +97,7 @@ private object Routes {
     const val PLUGINS = "plugins"
     const val MEMORY = "memory"
     const val FILES = "files"
+    const val PHONE = "phone"
     const val CHAT = "chat/{sessionId}?wake={wake}"
     fun chat(id: String, wake: Boolean = false) = "chat/$id?wake=$wake"
     // 2FA + fingerprint cross-device unlock — the phone Approve leg.
@@ -108,6 +112,7 @@ private val tabs = listOf(
     Tab(Routes.SESSIONS, "Chat", Icons.AutoMirrored.Filled.Chat),
     Tab(Routes.CANVAS, "Canvas", Icons.Filled.Dashboard),
     Tab(Routes.COMPUTER, "Computer", Icons.Filled.Computer),
+    Tab(Routes.PHONE, "Phone", Icons.Filled.Phone),
     Tab(Routes.SETTINGS, "Settings", Icons.Filled.Settings),
 )
 
@@ -355,6 +360,10 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
             composable(Routes.COMPUTER) {
                 val vm: ComputerViewModel = viewModel(factory = ComputerViewModel.factory(app))
                 ComputerScreen(viewModel = vm, activity = activity)
+            }
+            composable(Routes.PHONE) {
+                val vm: PhoneViewModel = viewModel(factory = PhoneViewModel.factory(app))
+                PhoneScreen(viewModel = vm)
             }
             composable(Routes.SETTINGS) {
                 val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(app))
