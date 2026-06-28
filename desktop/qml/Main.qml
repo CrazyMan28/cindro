@@ -55,11 +55,13 @@ Window {
             if (bridge.connected)
                 bridge.loadSettings()
         }
-        // A session was opened (locally from the Sessions page OR via a remote
-        // session.opened broadcast). Navigate the shell to the Chat page (index 0)
-        // and raise/focus the window so the new chat is surfaced.
+        // A session was opened (locally from the Sessions page / a subagent click /
+        // a remote session.opened broadcast). Navigate the shell to the CHAT page
+        // (index 1 — Home is 0) and raise/focus the window so the chat is surfaced.
+        // (This used to be 0 = Chat before the Home page was added; that stale 0 sent
+        // every session-open to Home — including clicking a subagent.)
         function onSessionOpened(sid) {
-            floatWin.panel.currentIndex = 0
+            floatWin.panel.currentIndex = 1
             WindowController.present()
         }
         // A foreign session (Chrome/phone/scheduler) opened: ONLY raise the window so
