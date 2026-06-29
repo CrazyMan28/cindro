@@ -1,6 +1,8 @@
 package com.jarvis.app.ui.settings
 
 import android.Manifest
+import android.content.pm.PackageManager
+import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -11,6 +13,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.core.content.ContextCompat
+import com.jarvis.app.voice.AudioRecorder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -78,6 +85,53 @@ fun SettingsScreen(
         if (granted) {
             viewModel.setWakeEnabled(true)
             WakeService.start(context)
+        }
+    }
+
+    // --- Named voice library: record / upload a candidate reference clip ---
+    val recorder = remember { AudioRecorder() }
+    var recording by remember { mutableStateOf(false) }
+    var clipB64 by remember { mutableStateOf<String?>(null) }
+    var clipFormat by remember { mutableStateOf("wav") }
+    var clipSource by remember { mutableStateOf("upload") }
+    var newVoiceName by remember { mutableStateOf("") }
+    var cleanClip by remember { mutableStateOf(true) }
+
+    fun beginRecording() {
+        if (recorder.start()) recording = true
+    }
+    val recordPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> if (granted) beginRecording() }
+    fun toggleRecording() {
+        if (recording) {
+            val wav = recorder.stopToWav()
+            recording = false
+            clipB64 = Base64.encodeToString(wav, Base64.NO_WRAP)
+            clipFormat = "wav"
+            clipSource = "record"
+        } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED
+        ) {
+            beginRecording()
+        } else {
+            recordPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+    val uploadLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val bytes = withContext(Dispatchers.IO) {
+                    runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+                }
+                if (bytes != null && bytes.isNotEmpty()) {
+                    clipB64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    clipFormat = (uri.lastPathSegment ?: "").substringAfterLast('.', "wav").lowercase().ifBlank { "wav" }
+                    clipSource = "upload"
+                }
+            }
         }
     }
 
@@ -376,6 +430,98 @@ fun SettingsScreen(
                     )
                     Spacer(Modifier.height(6.dp))
                     TextButton(onClick = { viewModel.setTtsVoice(voice) }) { Text("Save voice") }
+
+                    Spacer(Modifier.height(14.dp))
+                    Text("Default voice", style = MaterialTheme.typography.titleSmall, color = JarvisPalette.TextPrimary)
+                    Text(
+                        "Record your own or upload a clip, name it, and set it as default — used everywhere Jarvis speaks, including phone calls (when it calls you and when it answers).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = JarvisPalette.TextSecondary,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    if (state.voiceLibrary.isEmpty()) {
+                        Text(
+                            "No saved voices yet — record or upload one below.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = JarvisPalette.TextFaint,
+                        )
+                    } else {
+                        state.voiceLibrary.forEach { v ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            ) {
+                                Text(
+                                    if (v.isDefault) "● " else "○ ",
+                                    color = if (v.isDefault) JarvisPalette.Success else JarvisPalette.TextFaint,
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        v.label + if (v.isDefault) "  · default" else "",
+                                        color = JarvisPalette.TextPrimary,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                    Text(
+                                        when { v.source == "record" -> "recorded"; v.raw -> "raw clip"; else -> "clip" },
+                                        color = JarvisPalette.TextFaint,
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
+                                }
+                                TextButton(onClick = { viewModel.previewVoice(v.id) }) { Text("Preview") }
+                                if (!v.isDefault) {
+                                    TextButton(onClick = { viewModel.setDefaultVoice(v.id) }) { Text("Set default") }
+                                }
+                                TextButton(onClick = { viewModel.deleteVoiceClone(v.id) }) {
+                                    Text("Delete", color = JarvisPalette.Error)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = newVoiceName,
+                        onValueChange = { newVoiceName = it },
+                        label = { Text("New voice name (e.g. My Voice)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Button(onClick = { toggleRecording() }) {
+                            Text(if (recording) "■ Stop" else "● Record")
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        OutlinedButton(
+                            onClick = { uploadLauncher.launch(arrayOf("audio/*")) },
+                            enabled = !recording,
+                        ) { Text("Upload clip") }
+                        Spacer(Modifier.width(8.dp))
+                        if (clipB64 != null) {
+                            Text("clip ready ✓", color = JarvisPalette.Accent, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(checked = cleanClip, onCheckedChange = { cleanClip = it })
+                        Text("Auto-clean", color = JarvisPalette.TextSecondary, modifier = Modifier.padding(start = 6.dp))
+                        Spacer(Modifier.weight(1f))
+                        Button(
+                            enabled = clipB64 != null && newVoiceName.isNotBlank() && !state.voiceBusy,
+                            onClick = {
+                                viewModel.createVoiceClone(newVoiceName, clipB64!!, clipFormat, cleanClip, clipSource)
+                                newVoiceName = ""
+                                clipB64 = null
+                            },
+                        ) { Text("Save voice") }
+                    }
+                    state.voiceMsg?.let { msg ->
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            msg,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (msg.startsWith("Saved")) JarvisPalette.Success else JarvisPalette.Error,
+                        )
+                    }
                 }
             }
 

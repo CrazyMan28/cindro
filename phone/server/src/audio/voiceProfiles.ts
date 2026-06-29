@@ -62,6 +62,8 @@ export class VoiceProfileService {
     if (patch.voiceId !== undefined) {
       if (patch.voiceId === null || patch.voiceId === "") delete next.voiceId;
       else if (/^local:[a-z0-9_-]+$/i.test(patch.voiceId)) next.voiceId = patch.voiceId; // on-device model
+      else if (patch.voiceId === "jarvice" || /^clone:[a-z0-9_-]+$/i.test(patch.voiceId))
+        next.voiceId = patch.voiceId; // named cloned voice (daemon-managed ref clip)
       else if (!VOICE_UUID_RE.test(patch.voiceId)) {
         // Reject at SET time — a malformed id persisted here would make every
         // subsequent TTS call from this extension fail (tts_synthesis_failed),
