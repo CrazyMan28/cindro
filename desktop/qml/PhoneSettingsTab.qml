@@ -56,11 +56,20 @@ Item {
     property string inboundExt:       ""
     property string screeningExt:     ""
     // Diagnostics
-    property bool   diagHealthOk:     false
-    property bool   diagAuthOk:       false
-    property bool   diagWsOk:         false
-    property bool   diagMistralOk:    false
-    property string diagError:        ""
+    property bool   diagHealthOk:       false
+    property bool   diagAuthOk:         false
+    property bool   diagWsOk:           false
+    property bool   diagMistralOk:      false
+    property string diagError:          ""
+    property bool   diagServerOk:       false
+    property bool   diagExt100Ok:       false
+    property int    diagExtCount:       0
+    property int    diagAgentCount:     0
+    property bool   diagMistralVoiceOk: false
+    property bool   diagMistralChatOk:  false
+    property bool   diagRunning:        false
+    property string diagTimestamp:      ""
+    property string diagReport:         ""
     // Call history
     property bool   historyLoading:   false
     ListModel { id: callHistoryModel }
@@ -93,7 +102,7 @@ Item {
                 }
             }
         })
-        tab.callTool("get_voice_profile", { extension: 100 }, function(r) {
+        tab.callTool("get_voice_profile", { extension: "100" }, function(r) {
             if (!r.error) {
                 var d = r.data || {}; var vp = d.voice || d
                 tab.voiceProfile = vp.voice_id || vp.voice_name || vp.name || "(default)"
@@ -130,20 +139,73 @@ Item {
     }
 
     function runDiagnostics() {
-        tab.diagError = ""
-        tab.callTool("twilio_status", {}, function(r) {
-            tab.diagHealthOk = !r.error && r.data && r.data.configured === true
-            tab.diagAuthOk   = !r.error
-            tab.diagError    = r.error ? (r.error.message || "Twilio error") : ""
-        })
-        // WebSocket test: if bridge is connected, WS is up
+        tab.diagError     = ""
+        tab.diagRunning   = true
+        tab.diagTimestamp = ""
+        tab.diagReport    = ""
+        var _done = 0; var _total = 4
+        function _finish() {
+            _done++
+            if (_done < _total) return
+            tab.diagRunning = false
+            var now = new Date()
+            tab.diagTimestamp = (now.toISOString ? now.toISOString() : String(now)).slice(0, 16).replace("T", " ")
+            tab.diagReport = "Agent Phone Diagnostics — " + tab.diagTimestamp + "\n"
+                           + "Server alive:   " + (tab.diagServerOk       ? "OK"     : "FAIL") + "\n"
+                           + "Twilio config:  " + (tab.diagHealthOk       ? "OK"     : "FAIL") + "\n"
+                           + "Tailscale/WS:   " + (tab.diagWsOk           ? "OK"     : "FAIL") + "\n"
+                           + "Ext-100:        " + (tab.diagExt100Ok       ? "ONLINE" : "OFFLINE")
+                           + "  (" + tab.diagExtCount + " ext, " + tab.diagAgentCount + " agents)\n"
+                           + "Mistral voice:  " + (tab.diagMistralVoiceOk ? "OK"     : "FAIL") + "\n"
+                           + "Mistral chat:   " + (tab.diagMistralChatOk  ? "OK"     : "FAIL")
+                           + (tab.diagError.length > 0 ? "\nError: " + tab.diagError : "")
+        }
+        // Tailscale / WS — synchronous snapshot (not a counted async slot)
         tab.diagWsOk = bridge.connected
-        // Setup/health — GET /api/setup/status
-        tab.callHttp("GET", "/api/setup/status", {}, function(r) {
-            if (!r.error && r.data) {
-                var d = r.data || {}
-                tab.diagMistralOk = d.mistral_configured === true || d.mistral_ok === true
+        // 1. Server health — GET /health (no auth required)
+        tab.callHttp("GET", "/health", {}, function(r) {
+            tab.diagServerOk = !r.error && !!(r.data && r.data.ok === true)
+            _finish()
+        })
+        // 2. Twilio configured
+        tab.callTool("twilio_status", {}, function(r) {
+            tab.diagHealthOk = !r.error && !!(r.data && r.data.configured === true)
+            tab.diagAuthOk   = !r.error
+            if (r.error) tab.diagError = r.error.message || "Twilio error"
+            _finish()
+        })
+        // 3. Extensions (includes ext-100 online check) then agents count
+        tab.callTool("list_extensions", {}, function(r) {
+            if (!r.error && r.data instanceof Array) {
+                tab.diagExtCount = r.data.length
+                var found = false
+                for (var i = 0; i < r.data.length; i++) {
+                    var e = r.data[i]
+                    if (String(e.extension || e.ext || "") === "100") {
+                        found = (e.status === "online" || e.online === true || e.connected === true)
+                        break
+                    }
+                }
+                tab.diagExt100Ok = found
+            } else {
+                tab.diagExt100Ok = false; tab.diagExtCount = 0
             }
+            tab.callTool("list_agents", {}, function(r2) {
+                tab.diagAgentCount = (!r2.error && r2.data instanceof Array) ? r2.data.length : 0
+                _finish()
+            })
+        })
+        // 4. Mistral key health — GET /api/mistral-health
+        tab.callHttp("GET", "/api/mistral-health", {}, function(r) {
+            if (!r.error && r.data) {
+                tab.diagMistralVoiceOk = !!(r.data.voice_key && r.data.voice_key.ok === true)
+                tab.diagMistralChatOk  = !!(r.data.chat_key  && r.data.chat_key.ok  === true)
+                tab.diagMistralOk      = r.data.ok === true
+            } else {
+                tab.diagMistralVoiceOk = false
+                tab.diagMistralChatOk  = false
+            }
+            _finish()
         })
     }
 
@@ -180,7 +242,7 @@ Item {
         tab.callTool("twilio_set_user_number", { phone_number: num }, function(r) { if (!r.error) tab.refresh() })
     }
     function setScreening(enable) {
-        tab.callTool(enable ? "twilio_screening_enable" : "twilio_screening_disable", {}, function(r) { tab.screeningOn = enable })
+        tab.callTool(enable ? "twilio_screening_enable" : "twilio_screening_disable", {}, function(r) { if (!r.error) tab.screeningOn = enable })
     }
     function setTransport(t) {
         var prev = tab.screenTransport; tab.screenTransport = t
@@ -212,8 +274,8 @@ Item {
         })
     }
     function registerAgent(ext, aname, token) {
-        tab.callTool("register_inbound_agent", { extension: ext, name: aname, token: token }, function(r) {
-            _enrollStatus.text = r.error ? ("Error: " + (r.error.message || "?")) : "Agent registered — ext " + ext
+        tab.callHttp("POST", "/api/agents/enroll", { name: aname, requested_extension: ext, adapter_type: "claude" }, function(r) {
+            _enrollStatus.text = r.error ? ("Error: " + (r.error.message || "?")) : "Agent enrolled — ext " + ext
             if (!r.error) tab.refresh()
         })
     }
@@ -307,6 +369,7 @@ Item {
             ColumnLayout {
                 id: _diagCol; width: parent.width; spacing: 10
 
+                // header row
                 RowLayout {
                     Layout.fillWidth: true; spacing: 8
                     Rectangle {
@@ -319,20 +382,22 @@ Item {
                     Text { text: "DIAGNOSTICS"; color: Theme.text; font.family: Theme.fontDisplay; font.pixelSize: 13; font.weight: Font.DemiBold; Layout.fillWidth: true }
                     Rectangle {
                         height: 28; implicitWidth: _diagRunLbl.implicitWidth + 16; radius: Theme.radiusXs
-                        color: _diagRunMa.containsMouse ? Theme.accent : Theme.accentDim
+                        color: tab.diagRunning ? Theme.accentDeep : (_diagRunMa.containsMouse ? Theme.accent : Theme.accentDim)
                         Behavior on color { ColorAnimation { duration: Theme.durFast } }
-                        Text { id: _diagRunLbl; anchors.centerIn: parent; text: "RUN"; color: Theme.inkOnAccent; font.family: Theme.fontDisplay; font.pixelSize: 10; font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold }
-                        MouseArea { id: _diagRunMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: tab.runDiagnostics() }
+                        Text { id: _diagRunLbl; anchors.centerIn: parent; text: tab.diagRunning ? "RUNNING…" : "RUN"; color: Theme.inkOnAccent; font.family: Theme.fontDisplay; font.pixelSize: 10; font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold }
+                        MouseArea { id: _diagRunMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; enabled: !tab.diagRunning; onClicked: tab.runDiagnostics() }
                     }
                 }
 
-                // check cards
+                // check cards — 6 checks: server · twilio · tailscale · ext-100 · mistral voice · mistral chat
                 Repeater {
                     model: [
-                        { label: "Twilio configured",  ok: tab.diagHealthOk, detail: "GET /twilio_status" },
-                        { label: "Auth token",         ok: tab.diagAuthOk,   detail: "Tool response OK" },
-                        { label: "WebSocket / daemon", ok: tab.diagWsOk,     detail: "bridge.connected" },
-                        { label: "Mistral API key",    ok: tab.diagMistralOk,detail: "From server health" }
+                        { label: "Server alive",       ok: tab.diagServerOk,       detail: "GET /health" },
+                        { label: "Twilio configured",  ok: tab.diagHealthOk,       detail: "twilio_status" },
+                        { label: "Tailscale / WS",     ok: tab.diagWsOk,           detail: "bridge.connected" },
+                        { label: "Ext-100 online",     ok: tab.diagExt100Ok,       detail: tab.diagExtCount + " ext · " + tab.diagAgentCount + " agents" },
+                        { label: "Mistral voice key",  ok: tab.diagMistralVoiceOk, detail: "GET /api/mistral-health" },
+                        { label: "Mistral chat key",   ok: tab.diagMistralChatOk,  detail: "GET /api/mistral-health" }
                     ]
                     delegate: Rectangle {
                         required property var modelData
@@ -380,6 +445,38 @@ Item {
                         Text { text: tab.diagError; color: Theme.text; font.family: Theme.fontMono; font.pixelSize: 10; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
                     }
                 }
+
+                // copy report row
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 8
+                    Text {
+                        text: tab.diagTimestamp.length > 0 ? "Run: " + tab.diagTimestamp : ""
+                        color: Theme.textFaint; font.family: Theme.fontMono; font.pixelSize: 9
+                        Layout.fillWidth: true
+                    }
+                    Rectangle {
+                        height: 26; implicitWidth: _copyLbl.implicitWidth + 16; radius: Theme.radiusXs
+                        visible: tab.diagReport.length > 0
+                        color: _copyMa.containsMouse ? Theme.accentDim : "transparent"
+                        border.color: Theme.accent; border.width: 1
+                        Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                        Text { id: _copyLbl; anchors.centerIn: parent; text: "COPY REPORT"; color: Theme.accent; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold }
+                        MouseArea {
+                            id: _copyMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                _reportArea.text = tab.diagReport
+                                _reportArea.selectAll()
+                                _reportArea.copy()
+                                _copyStatus.visible = true
+                                _copyTimer.restart()
+                            }
+                        }
+                    }
+                }
+                Text { id: _copyStatus; text: "Copied to clipboard"; visible: false; color: Theme.success; font.family: Theme.fontMono; font.pixelSize: 9 }
+                Timer { id: _copyTimer; interval: 2000; repeat: false; onTriggered: _copyStatus.visible = false }
+                // hidden TextEdit — selectAll() + copy() writes to the system clipboard
+                TextEdit { id: _reportArea; visible: false; text: ""; width: 1; height: 1 }
 
                 Item { height: 20 }
             }

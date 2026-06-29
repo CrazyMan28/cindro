@@ -4,14 +4,14 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import JarvisSidebar
 
-// INBOX tab — SMS/agent thread list with priority badges, thread detail view,
-// compose notification panel, and new-chat dialog (agent picker + first message
-// + optional group/conference).
+// INBOX tab — SMS/agent thread list with priority badges, thread detail view
+// (incl. response-option buttons, free-text reply bar, mark-read, delete),
+// compose notification panel, and new-chat dialog.
 Item {
     id: tab
     property var phonePage
 
-    // ---- async helper ---------------------------------------------------------
+    // ---- async helpers --------------------------------------------------------
     property var  _pending: ({})
     property int  _seq: 0
 
@@ -21,21 +21,35 @@ Item {
         bridge.phoneMcp(id, tool, args || {})
     }
 
+    function callHttp(method, path, body, cb) {
+        var id = "inboxH_" + (++tab._seq)
+        tab._pending[id] = cb || null
+        bridge.phoneHttp(id, method, path, body || {})
+    }
+
     Connections {
         target: bridge
         function onPhoneResult(callId, result) {
             var cb = tab._pending[callId]
-            if (cb) { delete tab._pending[callId]; cb(result) }
+            delete tab._pending[callId]
+            if (cb) cb(result)
+        }
+        function onPhoneHttpResult(callId, result) {
+            var cb = tab._pending[callId]
+            delete tab._pending[callId]
+            if (cb) cb(result)
         }
     }
 
     // ---- state ----------------------------------------------------------------
     ListModel { id: threadModel }
     ListModel { id: messageModel }
-    property string threadText:    ""   // loading/error status only
-    property string openThreadId:  ""
-    property string threadSubject: ""
-    property bool   showNewChat:   false
+    property string threadText:       ""
+    property string openThreadId:     ""
+    property string threadSubject:    ""
+    property string openThreadRelExt: ""
+    property string replyStatus:      ""
+    property bool   showNewChat:      false
 
     // ---- functions ------------------------------------------------------------
     function refresh() {
@@ -58,25 +72,94 @@ Item {
         })
     }
 
-    function loadThread(tid, subject) {
-        tab.openThreadId  = tid
-        tab.threadSubject = subject
-        tab.threadText    = "Loading…"
+    function loadThread(tid, subject, relExt) {
+        tab.openThreadId     = tid
+        tab.threadSubject    = subject
+        tab.openThreadRelExt = (relExt !== undefined && relExt !== null) ? ("" + relExt) : tab.openThreadRelExt
+        tab.threadText       = "Loading…"
+        tab.replyStatus      = ""
         messageModel.clear()
         tab.callTool("get_thread_messages", { thread_id: tid }, function(r) {
             if (r.error) { tab.threadText = "Error: " + (r.error.message || "?"); return }
             var d    = r.data || {}
             var msgs = d.messages instanceof Array ? d.messages : []
             messageModel.clear()
+            var unreadIds = []
             for (var i = 0; i < msgs.length; i++) {
                 var m = msgs[i]
+                // Normalise response_options → always store as JSON string "[]" or "[...]"
+                var rawOpts = m.response_options
+                var optsStr = "[]"
+                if (rawOpts instanceof Array)         optsStr = JSON.stringify(rawOpts)
+                else if (typeof rawOpts === "string") optsStr = rawOpts.length > 0 ? rawOpts : "[]"
                 messageModel.append({
+                    "msgId":     m.id !== undefined ? ("" + m.id) : "",
                     "fromExt":   m.from_extension !== undefined ? ("" + m.from_extension) : "",
-                    "body":      m.message || m.content || m.text || "",
-                    "replyEcho": m.response_text || m.selected_option || m.reply_text || ""
+                    "body":      m.message || m.content || m.text || m.body || "",
+                    "replyEcho": m.response_text || m.selected_option || m.reply_text || "",
+                    "opts":      optsStr,
+                    "replied":   !!(m.response_text || m.selected_option)
                 })
+                // Collect unread/queued/delivered message IDs for mark-read
+                if (m.id && (m.status === "queued" || m.status === "delivered")) {
+                    unreadIds.push("" + m.id)
+                }
             }
             tab.threadText = msgs.length > 0 ? "" : "(empty thread)"
+            // Fire-and-forget mark-read for each unread message
+            for (var j = 0; j < unreadIds.length; j++) {
+                tab.callHttp("POST", "/api/messages/" + unreadIds[j] + "/read", {}, null)
+            }
+            if (unreadIds.length > 0) tab.refresh()
+        })
+    }
+
+    // Reply to a specific message by selecting a response option
+    function selectOption(msgId, option) {
+        if (!msgId) return
+        tab.replyStatus = "Sending…"
+        tab.callHttp("POST", "/api/messages/" + msgId + "/reply",
+            { selected_option: option }, function(r) {
+            if (r.error) {
+                tab.replyStatus = "Error: " + (r.error.message || "?")
+            } else {
+                tab.replyStatus = ""
+                tab.loadThread(tab.openThreadId, tab.threadSubject)
+            }
+        })
+    }
+
+    // Send a free-text reply into the open thread
+    function sendFreeReply(text) {
+        if (!text || !text.trim()) return
+        var toExt = tab.openThreadRelExt
+        if (!toExt) { tab.replyStatus = "Error: no agent extension for this thread"; return }
+        tab.replyStatus = "Sending…"
+        tab.callHttp("POST", "/api/messages",
+            { to_extension: toExt, from_extension: "100",
+              thread_id: tab.openThreadId, body: text.trim() },
+            function(r) {
+                if (r.error) {
+                    tab.replyStatus = "Error: " + (r.error.message || "?")
+                } else {
+                    tab.replyStatus = ""
+                    tab.loadThread(tab.openThreadId, tab.threadSubject)
+                }
+            })
+    }
+
+    // Delete the open thread and return to the list
+    function deleteThread() {
+        var tid = tab.openThreadId
+        if (!tid) return
+        tab.callHttp("DELETE", "/api/message-threads/" + tid, {}, function(r) {
+            tab.openThreadId     = ""
+            tab.threadSubject    = ""
+            tab.openThreadRelExt = ""
+            tab.threadText       = ""
+            tab.replyStatus      = ""
+            messageModel.clear()
+            tab.refresh()
         })
     }
 
@@ -121,7 +204,7 @@ Item {
         Item {
             Layout.fillWidth: true
             Layout.fillHeight: tab.openThreadId.length === 0
-            Layout.preferredHeight: tab.openThreadId.length > 0 ? 200 : -1
+            Layout.preferredHeight: tab.openThreadId.length > 0 ? 160 : -1
 
             // empty state
             ColumnLayout {
@@ -216,16 +299,18 @@ Item {
                         id: _tMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
                         property string _tid:     _tRow.tid
                         property string _subject: _tRow.subject
-                        onClicked: tab.loadThread(_tid, _subject)
+                        property string _relExt:  _tRow.relExt
+                        onClicked: tab.loadThread(_tid, _subject, _relExt)
                     }
                 }
             }
         }
 
-        // ── thread detail panel (styled chat bubbles) ─────────────────────────
+        // ── thread detail panel ───────────────────────────────────────────────
         Rectangle {
             Layout.fillWidth: true
-            height: 260
+            Layout.fillHeight: tab.openThreadId.length > 0
+            Layout.minimumHeight: tab.openThreadId.length > 0 ? 240 : 0
             visible: tab.openThreadId.length > 0
             color: Theme.surface; radius: Theme.radiusSm; border.color: Theme.hairlineSoft; border.width: 1
 
@@ -233,7 +318,7 @@ Item {
                 anchors { fill: parent; margins: 10 }
                 spacing: 6
 
-                // header row
+                // ── header row ──────────────────────────────────────────────
                 RowLayout {
                     Layout.fillWidth: true
                     Text {
@@ -241,13 +326,46 @@ Item {
                         color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 11; font.weight: Font.Medium
                         Layout.fillWidth: true; elide: Text.ElideRight
                     }
+                    // inline status / error text
+                    Text {
+                        visible: tab.replyStatus.length > 0
+                        text: tab.replyStatus
+                        color: tab.replyStatus.indexOf("Error") >= 0 ? Theme.danger : Theme.accent
+                        font.family: Theme.fontMono; font.pixelSize: 9
+                    }
+                    Item { width: 4 }
+                    // delete-thread button
+                    Rectangle {
+                        height: 22; implicitWidth: _delLbl.implicitWidth + 14; radius: 4
+                        color: _delTrMa.containsMouse ? Qt.rgba(1, 0.18, 0.18, 0.14) : "transparent"
+                        border.color: _delTrMa.containsMouse ? Theme.danger : Theme.hairlineSoft; border.width: 1
+                        Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                        Text {
+                            id: _delLbl; anchors.centerIn: parent; text: "DEL"
+                            color: _delTrMa.containsMouse ? Theme.danger : Theme.textFaint
+                            font.family: Theme.fontDisplay; font.pixelSize: 8; font.letterSpacing: 0.6
+                        }
+                        MouseArea {
+                            id: _delTrMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: tab.deleteThread()
+                        }
+                    }
+                    Item { width: 4 }
+                    // close button
                     Rectangle {
                         width: 22; height: 22; radius: 4
                         color: _closeTrMa.containsMouse ? Qt.rgba(1,1,1,0.08) : "transparent"
                         Text { anchors.centerIn: parent; text: "✕"; color: Theme.textMuted; font.pixelSize: 10 }
                         MouseArea {
                             id: _closeTrMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                            onClicked: { tab.openThreadId = ""; tab.threadSubject = ""; tab.threadText = ""; messageModel.clear() }
+                            onClicked: {
+                                tab.openThreadId     = ""
+                                tab.threadSubject    = ""
+                                tab.openThreadRelExt = ""
+                                tab.threadText       = ""
+                                tab.replyStatus      = ""
+                                messageModel.clear()
+                            }
                         }
                     }
                 }
@@ -260,26 +378,42 @@ Item {
                     Layout.fillWidth: true; wrapMode: Text.WrapAnywhere
                 }
 
-                // chat bubble ListView
+                // ── chat bubble ListView ────────────────────────────────────
                 ListView {
+                    id: _msgList
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     model: messageModel
                     spacing: 6; clip: true
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                    // auto-scroll to latest message on every model change
+                    onCountChanged: Qt.callLater(positionViewAtEnd)
 
                     delegate: Item {
                         id: _bubble
+                        required property string msgId
                         required property string fromExt
                         required property string body
                         required property string replyEcho
+                        required property string opts     // JSON string e.g. '["approve","deny"]'
+                        required property bool   replied
+
                         property bool _out: _bubble.fromExt === "101"
+                        property var  _optsArr: {
+                            try { var a = JSON.parse(_bubble.opts); return (a instanceof Array) ? a : [] }
+                            catch(e) { return [] }
+                        }
+                        property bool _showOpts: _bubble._optsArr.length > 0 && !_bubble.replied
+
                         width: ListView.view.width
                         height: _bRect.height + 4
 
                         Rectangle {
                             id: _bRect
-                            width: Math.min(_bBody.implicitWidth + 24, parent.width * 0.80)
+                            // Wider bubble when it carries option buttons so they all fit
+                            width: _bubble._showOpts
+                                ? Math.min(parent.width * 0.90, Math.max(180, _bBody.implicitWidth + 24))
+                                : Math.min(_bBody.implicitWidth + 24, parent.width * 0.80)
                             height: _bCol.implicitHeight + 16
                             x: _bubble._out ? (parent.width - width) : 0
                             radius: Theme.radiusXs
@@ -290,7 +424,7 @@ Item {
                             ColumnLayout {
                                 id: _bCol
                                 anchors { left: parent.left; right: parent.right; top: parent.top; margins: 8 }
-                                spacing: 2
+                                spacing: 4
 
                                 Text {
                                     id: _bBody
@@ -305,6 +439,84 @@ Item {
                                     color: Theme.textFaint; font.family: Theme.fontMono; font.pixelSize: 9
                                     wrapMode: Text.WordWrap; Layout.fillWidth: true
                                 }
+
+                                // ── response-option buttons ─────────────
+                                // _mid is captured here (outer delegate scope) so the
+                                // inner Repeater delegates can reach it via parent.parent._mid
+                                // without needing to cross a ComponentBehavior boundary.
+                                Flow {
+                                    visible: _bubble._showOpts
+                                    Layout.fillWidth: true
+                                    spacing: 4
+                                    property string _mid: _bubble.msgId  // captured in outer scope
+
+                                    Repeater {
+                                        model: _bubble._optsArr
+                                        delegate: Rectangle {
+                                            required property string modelData
+                                            property string _opt: modelData
+                                            height: 22; implicitWidth: _optLbl.implicitWidth + 16; radius: Theme.radiusXs
+                                            color: _optMa.containsMouse ? Theme.accent : Theme.accentDim
+                                            border.color: Theme.accent; border.width: 1
+                                            Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                                            Text {
+                                                id: _optLbl; anchors.centerIn: parent
+                                                text: parent._opt.replace(/_/g, " ").toUpperCase()
+                                                color: _optMa.containsMouse ? Theme.inkOnAccent : Theme.accentBright
+                                                font.family: Theme.fontDisplay; font.pixelSize: 8; font.letterSpacing: 0.6
+                                            }
+                                            MouseArea {
+                                                id: _optMa; anchors.fill: parent
+                                                hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                                // parent = option button Rectangle
+                                                // parent.parent = Flow (has _mid)
+                                                onClicked: tab.selectOption(parent.parent._mid, parent._opt)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── free-text reply bar ─────────────────────────────────────
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    TextField {
+                        id: _replyField
+                        Layout.fillWidth: true
+                        placeholderText: "Reply to thread…"
+                        background: Rectangle {
+                            color: Theme.surfaceInput; radius: Theme.radiusXs
+                            border.color: _replyField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1
+                        }
+                        color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 11
+                        leftPadding: 10; rightPadding: 10; height: 32
+                        onAccepted: {
+                            var t = _replyField.text
+                            _replyField.text = ""
+                            tab.sendFreeReply(t)
+                        }
+                    }
+
+                    Rectangle {
+                        height: 32; implicitWidth: _frSendLbl.implicitWidth + 18; radius: Theme.radiusXs
+                        color: _frSendMa.containsMouse ? Theme.accent : Theme.accentDim
+                        Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                        Text {
+                            id: _frSendLbl; anchors.centerIn: parent; text: "SEND"
+                            color: Theme.inkOnAccent
+                            font.family: Theme.fontDisplay; font.pixelSize: 10
+                            font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold
+                        }
+                        MouseArea {
+                            id: _frSendMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                var t = _replyField.text
+                                if (t.trim()) { _replyField.text = ""; tab.sendFreeReply(t) }
                             }
                         }
                     }
@@ -355,7 +567,7 @@ Item {
                         color: _sendMa.containsMouse ? Theme.accent : Theme.accentDim
                         Behavior on color { ColorAnimation { duration: Theme.durFast } }
                         Text { id: _sendLbl; anchors.centerIn: parent; text: "SEND"; color: Theme.inkOnAccent; font.family: Theme.fontDisplay; font.pixelSize: 10; font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold }
-                        MouseArea { id: _sendMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { if (_nTitle.text.trim() || _nMsg.text.trim()) tab.sendNotify(_nTitle.text, _nMsg.text, _nPriority.value) } }
+                        MouseArea { id: _sendMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { if (_nTitle.text.trim() && _nMsg.text.trim()) tab.sendNotify(_nTitle.text, _nMsg.text, _nPriority.value) } }
                     }
                 }
                 Text { id: notifyStatus; text: ""; visible: text.length > 0; color: Theme.success; font.family: Theme.fontMono; font.pixelSize: 10 }
@@ -468,7 +680,7 @@ Item {
                             onClicked: {
                                 var sel = parent.parent.parent.parent._selected
                                 if (sel.length === 0) return
-                                tab.callTool("call_extension", { from_extension: "101", to_extension: sel[0] }, function(r) {})
+                                tab.callTool("call_extension", { from_extension: "100", extension: sel[0] }, function(r) {})
                                 tab.showNewChat = false
                             }
                         }
@@ -487,8 +699,8 @@ Item {
                                 // Text the selected agent(s): notify_user_and_wait
                                 // routes a message to an extension's inbox + awaits a reply.
                                 for (var i = 0; i < sel.length; i++) {
-                                    tab.callTool("notify_user_and_wait",
-                                        { to_extension: sel[i], message: msg, title: "Message" },
+                                    tab.callHttp("POST", "/api/messages",
+                                        { from_extension: "100", to_extension: sel[i], body: msg, title: "Message" },
                                         function(r) { tab.refresh() })
                                 }
                                 tab.showNewChat = false
