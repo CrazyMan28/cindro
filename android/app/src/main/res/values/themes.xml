@@ -10,4 +10,17 @@
         <item name="android:windowBackground">@color/jarvis_background</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
+
+    <!--
+      Window theme for the vendored Agent Phone activities (com.agentphone.*).
+      Verbatim from agent-phone's res/values/styles.xml AppTheme, renamed so it
+      doesn't clobber Jarvis's own theme. Compose draws the real UI on top.
+    -->
+    <style name="AgentPhoneAppTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+    </style>
 </resources>
