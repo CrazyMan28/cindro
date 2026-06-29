@@ -58,7 +58,7 @@ Item {
         tab.busy = true
         if (tab.phonePage) tab.phonePage.callerBusy = true
         callStatus.text = "Ringing " + ext + "…"
-        tab.callTool("call_extension", { from_extension: "101", to_extension: ext }, function(r) {
+        tab.callTool("call_extension", { from_extension: "100", extension: ext }, function(r) {
             tab.busy = false
             if (tab.phonePage) tab.phonePage.callerBusy = false
             if (r.error) { callStatus.text = "Error: " + (r.error.message || "failed"); return }
@@ -74,7 +74,7 @@ Item {
         tab.busy = true
         if (tab.phonePage) tab.phonePage.callerBusy = true
         callStatus.text = "Calling user…"
-        tab.callTool("call_user_and_wait", { reason: reason || "Desktop call" }, function(r) {
+        tab.callTool("call_user", { reason: reason || "Desktop call" }, function(r) {
             tab.busy = false
             if (tab.phonePage) tab.phonePage.callerBusy = false
             if (r.error) { callStatus.text = "Error: " + (r.error.message || "failed"); return }
