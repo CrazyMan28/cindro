@@ -203,6 +203,9 @@ export class AgentRunner {
       const env = {
         ...process.env,
         AGENT_PHONE_EXTENSION: cfg.extension,
+        // The adapter greets/identifies by this on a voice call, so ext 101 says
+        // "Jarvis", 102 "Codex", etc. — not a hardcoded name.
+        AGENT_PHONE_NAME: cfg.name,
         AGENT_TOKEN: this.config.auth.agentToken,
         // Children spawned here run on the SAME machine as the server, so always
         // hand them a loopback URL. publicBaseUrl may be a Tailscale/LAN address,
