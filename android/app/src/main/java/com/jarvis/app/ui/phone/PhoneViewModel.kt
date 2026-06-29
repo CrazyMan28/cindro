@@ -142,6 +142,7 @@ data class PhoneUiState(
     // Calls
     val activeCalls: List<PhoneCall> = emptyList(),
     val incomingCall: PhoneCall? = null,
+    val outgoingCall: PhoneCall? = null,
     val callTranscripts: Map<String, String> = emptyMap(),
 
     // Inbox / Threads
@@ -196,6 +197,7 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
     fun clearToast() = _uiState.update { it.copy(toast = null) }
     fun clearError() = _uiState.update { it.copy(error = null) }
     fun dismissIncomingCall() = _uiState.update { it.copy(incomingCall = null) }
+    fun dismissOutgoingCall() = _uiState.update { it.copy(outgoingCall = null) }
     fun clearEnrollResult() = _uiState.update { it.copy(enrollResult = null, enrollError = null) }
 
     // ── Core refresh ────────────────────────────────────────────────────────
@@ -203,7 +205,8 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
     fun refresh() {
         _uiState.update { it.copy(loading = true, error = null) }
         viewModelScope.launch {
-            val calls = safePhoneMcp("list_active_calls") { parseActiveCalls(it) } ?: emptyList()
+            val callsResult = safePhoneMcp("list_active_calls") { parseActiveCalls(it) }
+            val calls = callsResult ?: emptyList()
             val inbox = safePhoneMcp("list_inbox") { parseInboxMessages(it) } ?: emptyList()
             val threads = safePhoneMcp("list_inbox") { parseThreads(it) } ?: emptyList()
             val twilioStatus = safePhoneMcp("twilio_status") { parseTwilioStatus(it) }
@@ -215,7 +218,7 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
             _uiState.update {
                 it.copy(
                     loading = false,
-                    statusLine = "connected",
+                    statusLine = if (callsResult != null) "connected" else "error",
                     activeCalls = calls.filter { c -> c.state !in terminalStates },
                     inboxMessages = inbox,
                     threads = threads,
@@ -250,7 +253,23 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
                     }
                 }
             }
-                .onSuccess { _uiState.update { it.copy(toast = "Calling $target…") }; refresh() }
+                .onSuccess { result ->
+                    val dataObj = result.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: result
+                    val callId = dataObj.get("call_id")?.takeIf { !it.isJsonNull }?.asString
+                        ?: dataObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                        ?: "outgoing-${System.currentTimeMillis()}"
+                    _uiState.update {
+                        it.copy(
+                            toast = "Calling $target…",
+                            outgoingCall = PhoneCall(
+                                id = callId, state = "ringing",
+                                fromExtension = "101", toExtension = target,
+                                reason = reason, urgency = null,
+                            ),
+                        )
+                    }
+                    refresh()
+                }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message, loading = false) } }
         }
     }
@@ -364,6 +383,17 @@ class PhoneViewModel(private val repo: JarvisRepository) : ViewModel() {
             }
                 .onSuccess { loadThread(threadId) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
+    fun markMessageRead(msgId: String) {
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    repo.phoneHttp("POST", "/api/messages/$msgId/read", null)
+                }
+            }
+            // non-fatal — ignore errors
         }
     }
 

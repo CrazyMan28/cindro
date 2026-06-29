@@ -6,13 +6,15 @@ import JarvisSidebar
 
 // PHONE HUB — desktop surface for the agent-phone subsystem.
 //
-// Five tabs: CALLS (real dialer + quick-chips + active calls),
+// Six tabs:  CALLS (real dialer + quick-chips + active calls),
 //            AGENTS (live roster + per-agent voice/model config),
 //            INBOX (thread list + compose),
 //            HUD (ops dashboard + Red Alert),
 //            SETTINGS (SMS agent, call screening, carrier forwarding incl.
 //                      Verizon *72/*73, allowlist, diagnostics, history,
-//                      add-agent).
+//                      add-agent),
+//            SCREENING (live caller/agent transcript while a carrier call is
+//                       being screened by an AI agent).
 //
 // Every action goes through bridge.phoneMcp(callId, tool, args) and is
 // dispatched back via bridge.phoneResult(callId, result).  Each tab owns its
@@ -24,8 +26,8 @@ Item {
     property bool callerBusy: false
 
     // ---- tab state ---------------------------------------------------------
-    property int tabIndex: 0   // 0=CALLS 1=AGENTS 2=INBOX 3=HUD 4=SETTINGS
-    readonly property var _tabLabels: ["CALLS","AGENTS","INBOX","HUD","SETTINGS"]
+    property int tabIndex: 0   // 0=CALLS 1=AGENTS 2=INBOX 3=HUD 4=SETTINGS 5=SCREENING
+    readonly property var _tabLabels: ["CALLS","AGENTS","INBOX","HUD","SETTINGS","SCREENING"]
 
     function onTabActivated(idx) {
         if (!bridge.connected) return
@@ -35,6 +37,7 @@ Item {
         case 2: inboxTab.refresh();  break
         case 3: hudTab.refresh();    break
         case 4: settingsTab.refresh(); break
+        case 5: screeningTab.refresh(); break
         }
     }
 
@@ -72,7 +75,7 @@ Item {
                     font.pixelSize: 18; font.letterSpacing: Theme.trackWide; font.weight: Font.Bold
                 }
                 Text {
-                    text: "Dialer · Agents · Inbox · Ops HUD · Settings"
+                    text: "Dialer · Agents · Inbox · Ops HUD · Settings · Screening"
                     color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11
                 }
             }
@@ -126,11 +129,12 @@ Item {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            PhoneDialerTab  { id: dialerTab;  anchors.fill: parent; visible: page.tabIndex === 0; phonePage: page }
-            PhoneAgentsTab  { id: agentsTab;  anchors.fill: parent; visible: page.tabIndex === 1; phonePage: page }
-            PhoneInboxTab   { id: inboxTab;   anchors.fill: parent; visible: page.tabIndex === 2; phonePage: page }
-            PhoneHudTab     { id: hudTab;     anchors.fill: parent; visible: page.tabIndex === 3; phonePage: page }
-            PhoneSettingsTab { id: settingsTab; anchors.fill: parent; visible: page.tabIndex === 4; phonePage: page }
+            PhoneDialerTab   { id: dialerTab;    anchors.fill: parent; visible: page.tabIndex === 0; phonePage: page }
+            PhoneAgentsTab   { id: agentsTab;    anchors.fill: parent; visible: page.tabIndex === 1; phonePage: page }
+            PhoneInboxTab    { id: inboxTab;     anchors.fill: parent; visible: page.tabIndex === 2; phonePage: page }
+            PhoneHudTab      { id: hudTab;       anchors.fill: parent; visible: page.tabIndex === 3; phonePage: page }
+            PhoneSettingsTab { id: settingsTab;  anchors.fill: parent; visible: page.tabIndex === 4; phonePage: page }
+            PhoneScreeningTab { id: screeningTab; anchors.fill: parent; visible: page.tabIndex === 5; phonePage: page }
         }
     }
 }

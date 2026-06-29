@@ -6,11 +6,18 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Dashboard
@@ -23,9 +30,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -33,7 +37,11 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -122,6 +130,22 @@ fun PhoneScreen(viewModel: PhoneViewModel, onBack: () -> Unit = {}) {
     }
     if (state.incomingCall != null) return
 
+    // ── Full-screen outgoing call overlay ─────────────────────────────────
+    AnimatedVisibility(
+        visible = state.outgoingCall != null,
+        enter = fadeIn(tween(180)),
+        exit  = fadeOut(tween(180)),
+    ) {
+        state.outgoingCall?.let { call ->
+            PhoneOutgoingCallScreen(
+                call       = call,
+                transcript = state.callTranscripts[call.id] ?: "",
+                viewModel  = viewModel,
+            )
+        }
+    }
+    if (state.outgoingCall != null) return
+
     // ── Route → top-bar title ─────────────────────────────────────────────
     val title = when {
         currentRoute == PhoneRoutes.CALLS      -> "Calls"
@@ -198,22 +222,51 @@ fun PhoneScreen(viewModel: PhoneViewModel, onBack: () -> Unit = {}) {
         },
         bottomBar = {
             if (isTabScreen) {
-                NavigationBar(containerColor = JarvisPalette.Surface) {
-                    PHONE_TABS.forEach { item ->
-                        val selected = currentRoute == item.route
-                        NavigationBarItem(
-                            selected = selected,
-                            onClick  = { switchPhoneTab(item.route) },
-                            icon     = { Icon(item.icon, contentDescription = item.label) },
-                            label    = { Text(item.label) },
-                            colors   = NavigationBarItemDefaults.colors(
-                                selectedIconColor   = JarvisPalette.OnAccent,
-                                selectedTextColor   = JarvisPalette.Accent,
-                                indicatorColor      = JarvisPalette.Accent,
-                                unselectedIconColor = JarvisPalette.TextSecondary,
-                                unselectedTextColor = JarvisPalette.TextSecondary,
-                            ),
-                        )
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(22.dp))
+                            .background(JarvisPalette.Surface)
+                            .padding(6.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                    ) {
+                        PHONE_TABS.forEach { item ->
+                            val selected = currentRoute == item.route
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(if (selected) JarvisPalette.Background else Color.Transparent)
+                                    .clickable(
+                                        indication = null,
+                                        interactionSource = remember { MutableInteractionSource() },
+                                    ) { switchPhoneTab(item.route) }
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(
+                                        item.icon,
+                                        contentDescription = item.label,
+                                        tint = if (selected) JarvisPalette.Accent else JarvisPalette.TextSecondary,
+                                        modifier = Modifier.size(22.dp),
+                                    )
+                                    if (selected) {
+                                        Text(
+                                            item.label,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = JarvisPalette.Accent,
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
