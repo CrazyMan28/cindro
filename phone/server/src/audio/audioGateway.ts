@@ -9,6 +9,7 @@ import { assertValidWavBuffer, pcm16ToWav } from "./wav.js";
 import { VoiceProfileService } from "./voiceProfiles.js";
 import { ExtensionService } from "../extensions/extensionService.js";
 import { isLocalVoiceId, getLocalVoice } from "../voices/localVoices.js";
+import { isCloneVoiceId, readCloneRefAudioBase64 } from "../voices/cloneVoices.js";
 
 type BufferedAudio = {
   callId: string;
@@ -171,6 +172,17 @@ export class AudioGateway {
       speed: options.speed ?? profile.speed
     };
     options = effectiveOptions;
+    // NAMED CLONED VOICE (clone:<slug> / jarvice): the user's recorded/uploaded
+    // voice. Load its reference clip and clone it ZERO-SHOT via ref_audio,
+    // clearing the named voiceId. This is cloud-only Mistral audio, so it works
+    // on PSTN too. A missing clip drops back to the global config voice in tts.ts
+    // (so a call never fails on a deleted clip).
+    if (isCloneVoiceId(options.voiceId)) {
+      const ref = readCloneRefAudioBase64(options.voiceId!);
+      options = ref
+        ? { ...options, voiceId: undefined, refAudioBase64: ref }
+        : { ...options, voiceId: undefined };
+    }
     // PSTN target (Twilio bridge on ext 700): there is no phone-side TTS engine
     // on a real telephone, so on-device voices (local:*) must fall back to the
     // server Mistral voice, and the output must be self-describing WAV so the
