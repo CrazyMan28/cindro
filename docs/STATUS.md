@@ -4,11 +4,36 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-06-28._
+_Last updated: 2026-06-29._
 
 ---
 
-## 🆕 Full phone UI parity on all 3 surfaces (2026-06-28)
+## 🆕 Android = the original phone app verbatim + Jarvis answers inbound (2026-06-29)
+
+- **Verbatim Android port (Jarvis v0.11.0).** The **entire** original agent-phone Android app
+  — all 60 files / ~11,882 lines, package `com.agentphone.*` — is copied **byte-for-byte** into
+  the one Jarvis APK; nothing reimplemented or removed. The **Phone tab launches the real
+  `com.agentphone.MainActivity`**, so every original screen/setting/button/flow is present
+  (Calls · Inbox · Agents · HUD · Settings, setup wizard, agent config, call screening, SMS
+  agent, diagnostics, history, enroll, relay puck, call activities/services, on-device sherpa
+  TTS). The earlier reimplemented phone UI was deleted. Build green (`assembleDebug`).
+- **Jarvis answers when you call OR text.** Ext **101** is the inbound **and** SMS agent; the
+  phone server spawns Jarvis's brain adapter **headlessly** on inbound and bridges voice (call)
+  or a text reply (SMS). SMS agent enabled → 101; replies go out free via the **device SIM**
+  (Twilio toll-free SMS is A2P-gated). Jarvis can **call/text back mid-conversation**.
+- **Jarvis is now THE one for the number.** The app default server URL is repointed `:8799` →
+  **`:8801`** (Jarvis), and the Tailscale funnel `/twilio` is repointed to `:8801` so inbound
+  calls/texts hit Jarvis (ext 101), not the original. The **original `:8799` is left running,
+  untouched** (it just no longer receives the Twilio webhook).
+- **Tools + skill + docs.** All **~56** phone tools reach the brain (`seedPhoneMcp`). A builtin
+  **`/phone` skill** (`seedPhoneSkill`) is the playbook; `internal_docs` bumped to v3 with the
+  inbound-wake behavior.
+
+See [`PHONE.md`](PHONE.md).
+
+---
+
+## Full phone UI parity on all 3 surfaces (2026-06-28)
 
 The entire **agent-phone app UI** is now embedded in Jarvis — no new app. A full-screen
 **Phone section** (Calls · Inbox · Agents · HUD · Settings) ships on all three surfaces:
