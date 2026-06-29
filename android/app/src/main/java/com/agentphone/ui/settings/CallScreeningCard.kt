@@ -274,6 +274,31 @@ fun CallScreeningCard(vm: AppViewModel) {
                 style = MaterialTheme.typography.bodySmall,
                 color = semantic.textMuted
             )
+            Spacer(Modifier.height(12.dp))
+            // Carrier-specific, step-by-step. Verizon (and Verizon MVNOs / "5G UW")
+            // REJECT the GSM ** codes below — lead those users straight to the *7x
+            // codes so they don't hit "invalid MMI code".
+            Text(
+                "📱 Verizon / \"5G UW\" — the ** buttons below DON'T work on Verizon. Do THIS instead:",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Open your normal Phone dialer, type the code, and press call:\n" +
+                    "1.  *71$AGENT_NUMBER_10  — forwards calls you MISS or DECLINE to your agent (it still rings you first). You'll hear a confirmation tone. RECOMMENDED.\n" +
+                    "2.  *72$AGENT_NUMBER_10  — forwards EVERY call straight to your agent.\n" +
+                    "3.  *73  — turns forwarding OFF.\n" +
+                    "4.  *#21#  — check what's currently set.\n" +
+                    "(You can also just tap the \"VZ busy/no-ans\" button further down — it pre-fills *71$AGENT_NUMBER_10 for you. You do NOT need forwarding to talk to your agent — you can always just call $AGENT_NUMBER directly.)",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Other carriers (T-Mobile, etc.) — use the GSM ** codes below:",
+                style = MaterialTheme.typography.titleSmall
+            )
             Spacer(Modifier.height(8.dp))
             // **SC*number# is the GSM REGISTER form (double asterisk). The single-
             // asterisk *SC* form is "activate" and rejects a number → "invalid MMI".
