@@ -1164,6 +1164,168 @@ void Bridge::finishDictation()
     request(QStringLiteral("voice.stt"), params);
 }
 
+// ---- Named voice library (record/upload, name, set-default) ----------------
+
+void Bridge::setVoiceCloneState(const QString &s)
+{
+    if (m_voiceCloneState == s)
+        return;
+    m_voiceCloneState = s;
+    emit voiceCloneStateChanged();
+}
+
+void Bridge::recordVoiceClone(int seconds)
+{
+    if (m_cloneRecProc) {
+        emit errorOccurred(QStringLiteral("already recording a voice clip"));
+        return;
+    }
+    if (!voiceAvailable()) {
+        emit errorOccurred(
+            QStringLiteral("pw-record (PipeWire) not found; can't record a voice clip"));
+        return;
+    }
+    QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    if (base.isEmpty())
+        base = QDir::tempPath();
+    m_cloneRecPath = base + QStringLiteral("/jarvis_voice_clip.wav");
+    QFile::remove(m_cloneRecPath);
+
+    m_cloneRecProc = new QProcess(this);
+    const int secs = (seconds > 0 && seconds <= 60) ? seconds : 20;
+    m_cloneAutoStop = true;
+    QStringList args;
+    // Mono 24k is a clean reference for cloning (the server re-cleans on save).
+    args << QStringLiteral("--rate") << QStringLiteral("24000")
+         << QStringLiteral("--channels") << QStringLiteral("1") << m_cloneRecPath;
+    connect(m_cloneRecProc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
+            this, [this](int, QProcess::ExitStatus) { finishCloneRecording(); });
+    setVoiceCloneState(QStringLiteral("recording"));
+    m_cloneRecProc->start(QStringLiteral("pw-record"), args);
+    if (!m_cloneRecProc->waitForStarted(1500)) {
+        emit errorOccurred(QStringLiteral("failed to start pw-record"));
+        m_cloneRecProc->deleteLater();
+        m_cloneRecProc = nullptr;
+        setVoiceCloneState(QStringLiteral("idle"));
+        return;
+    }
+    QTimer::singleShot(secs * 1000, this, [this]() {
+        if (m_cloneRecProc && m_cloneRecProc->state() != QProcess::NotRunning && m_cloneAutoStop)
+            m_cloneRecProc->terminate();
+    });
+}
+
+void Bridge::stopVoiceCloneRecording()
+{
+    if (m_cloneRecProc && m_cloneRecProc->state() != QProcess::NotRunning) {
+        m_cloneAutoStop = false;
+        m_cloneRecProc->terminate(); // finished() -> finishCloneRecording()
+    }
+}
+
+void Bridge::finishCloneRecording()
+{
+    if (m_cloneRecProc) {
+        m_cloneRecProc->deleteLater();
+        m_cloneRecProc = nullptr;
+    }
+    QFile f(m_cloneRecPath);
+    if (!f.open(QIODevice::ReadOnly)) {
+        setVoiceCloneState(QStringLiteral("idle"));
+        emit errorOccurred(QStringLiteral("no audio captured"));
+        return;
+    }
+    m_voiceClipBytes = f.readAll();
+    f.close();
+    m_voiceClipFormat = QStringLiteral("wav");
+    m_voiceClipSource = QStringLiteral("record");
+    setVoiceCloneState(QStringLiteral("idle"));
+    if (m_voiceClipBytes.size() < 256) { // empty/aborted capture
+        m_voiceClipBytes.clear();
+        emit errorOccurred(QStringLiteral("recording too short"));
+        return;
+    }
+    emit voiceClipCaptured(int(m_voiceClipBytes.size()), m_voiceClipFormat);
+}
+
+void Bridge::loadVoiceClipFromFile(const QString &fileUrl)
+{
+    QString path = fileUrl;
+    if (path.startsWith(QStringLiteral("file://")))
+        path = QUrl(fileUrl).toLocalFile();
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        emit errorOccurred(QStringLiteral("can't read that audio file"));
+        return;
+    }
+    m_voiceClipBytes = f.readAll();
+    f.close();
+    const QString ext = QFileInfo(path).suffix().toLower();
+    m_voiceClipFormat = ext.isEmpty() ? QStringLiteral("wav") : ext;
+    m_voiceClipSource = QStringLiteral("upload");
+    if (m_voiceClipBytes.isEmpty()) {
+        emit errorOccurred(QStringLiteral("that audio file is empty"));
+        return;
+    }
+    emit voiceClipCaptured(int(m_voiceClipBytes.size()), m_voiceClipFormat);
+}
+
+void Bridge::saveVoiceClone(const QString &name, bool clean)
+{
+    if (name.trimmed().isEmpty()) {
+        emit voiceCloneResult(false, QStringLiteral("Give the voice a name first."));
+        return;
+    }
+    if (m_voiceClipBytes.isEmpty()) {
+        emit voiceCloneResult(false, QStringLiteral("Record or upload a clip first."));
+        return;
+    }
+    setVoiceCloneState(QStringLiteral("saving"));
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), name.trimmed());
+    params.insert(QStringLiteral("audio_b64"), QString::fromLatin1(m_voiceClipBytes.toBase64()));
+    params.insert(QStringLiteral("format"),
+                  m_voiceClipFormat.isEmpty() ? QStringLiteral("wav") : m_voiceClipFormat);
+    params.insert(QStringLiteral("clean"), clean);
+    params.insert(QStringLiteral("source"), m_voiceClipSource);
+    request(QStringLiteral("voice.create_clone"), params);
+}
+
+void Bridge::setDefaultVoice(const QString &voiceId)
+{
+    if (voiceId.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("voice"), voiceId);
+    request(QStringLiteral("voice.set_default"), params);
+}
+
+void Bridge::deleteVoiceClone(const QString &id)
+{
+    if (id.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    request(QStringLiteral("voice.delete_clone"), params);
+}
+
+void Bridge::renameVoiceClone(const QString &id, const QString &name)
+{
+    if (id.isEmpty() || name.trimmed().isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    params.insert(QStringLiteral("name"), name.trimmed());
+    request(QStringLiteral("voice.rename_clone"), params);
+}
+
+void Bridge::previewVoice(const QString &voiceId)
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("voice"), voiceId);
+    request(QStringLiteral("voice.preview_clone"), params);
+}
+
 void Bridge::voiceSpeak(const QString &text)
 {
     // Chat "Speak replies" path: enqueue and let pumpTtsRequests serialize so
@@ -3043,6 +3205,17 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                 m_ttsQueue.isEmpty() && m_ttsReqQueue.isEmpty() && !m_ttsReqInFlight)
                 setVoiceState(QStringLiteral("idle"));
         }
+        // Named voice library actions: surface the reason in the card, no toast.
+        if (method == QStringLiteral("voice.create_clone") ||
+            method == QStringLiteral("voice.delete_clone") ||
+            method == QStringLiteral("voice.set_default") ||
+            method == QStringLiteral("voice.rename_clone") ||
+            method == QStringLiteral("voice.preview_clone")) {
+            if (method == QStringLiteral("voice.create_clone"))
+                setVoiceCloneState(QStringLiteral("idle"));
+            emit voiceCloneResult(false, msg.isEmpty() ? code : msg);
+            return;
+        }
         // If creating the session failed, drop any queued first message so it can't
         // later land in an unrelated session.
         if (method == QStringLiteral("session.create")) {
@@ -3369,6 +3542,28 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                     setVoiceState(QStringLiteral("idle"));
             }
         }
+        return;
+    } else if (method == QStringLiteral("voice.preview_clone")) {
+        // Synthesized sample for the picker's "▶ Preview" — play it like any TTS.
+        const QByteArray audio = QByteArray::fromBase64(
+            result.value(QStringLiteral("audio_b64")).toString().toLatin1());
+        if (!audio.isEmpty())
+            playTtsAudio(audio, result.value(QStringLiteral("mime")).toString());
+        return;
+    } else if (method == QStringLiteral("voice.create_clone") ||
+               method == QStringLiteral("voice.delete_clone") ||
+               method == QStringLiteral("voice.set_default") ||
+               method == QStringLiteral("voice.rename_clone")) {
+        if (method == QStringLiteral("voice.create_clone")) {
+            setVoiceCloneState(QStringLiteral("idle"));
+            m_voiceClipBytes.clear(); // consumed
+        }
+        // Keep the cached default in sync so Voice Mode's speak() uses the new one.
+        if (result.contains(QStringLiteral("default")))
+            m_ttsVoice = result.value(QStringLiteral("default")).toString();
+        emit voiceLibraryChanged(result.value(QStringLiteral("voices")).toList(),
+                                 result.value(QStringLiteral("default")).toString());
+        emit voiceCloneResult(true, QString());
         return;
     } else if (method == QStringLiteral("devices.pair_start")) {
         // { code, payload, qr_svg, expires_at }
