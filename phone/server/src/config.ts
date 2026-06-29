@@ -2,6 +2,19 @@ import dotenv from "dotenv";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import fs from "node:fs";
+
+/** Read a TTS reference-audio clip (for zero-shot voice cloning) and base64-encode
+ *  it, so calls can speak in a custom cloned voice (Mistral ref_audio). An empty
+ *  path or unreadable file -> undefined (fall back to the named voice). */
+function loadRefAudioFile(p: string): string | undefined {
+  if (!p) return undefined;
+  try {
+    return fs.readFileSync(p).toString("base64");
+  } catch {
+    return undefined;
+  }
+}
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const envFile = process.env.AGENT_PHONE_ENV_FILE ?? path.join(repoRoot, ".env");
@@ -21,6 +34,9 @@ const EnvSchema = z.object({
   MISTRAL_STT_MODEL: z.string().default("").transform((value) => value.trim()),
   MISTRAL_TTS_MODEL: z.string().default("").transform((value) => value.trim()),
   MISTRAL_TTS_VOICE_ID: z.string().optional().default("").transform((value) => value.trim()),
+  // Path to a reference-audio clip. When set, calls speak in this CLONED voice
+  // (zero-shot ref_audio) instead of the named MISTRAL_TTS_VOICE_ID.
+  MISTRAL_TTS_REF_AUDIO_FILE: z.string().optional().default("").transform((value) => value.trim()),
   MISTRAL_REAL_AUDIO: z
     .string()
     .default("true")
@@ -103,6 +119,7 @@ export function loadConfig(overrides: Record<string, string | undefined> = {}) {
       sttModel: parsed.MISTRAL_STT_MODEL,
       ttsModel: parsed.MISTRAL_TTS_MODEL,
       voiceId: parsed.MISTRAL_TTS_VOICE_ID || undefined,
+      refAudioBase64: loadRefAudioFile(parsed.MISTRAL_TTS_REF_AUDIO_FILE),
       realAudio,
       enableRealCalls: realAudio,
       timeoutMs: parsed.MISTRAL_TIMEOUT_MS,
