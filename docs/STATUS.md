@@ -8,7 +8,26 @@ _Last updated: 2026-06-29._
 
 ---
 
-## 🆕 Calls answer + speak (custom voice), brain can call/text, desktop+Chrome parity (2026-06-29)
+## 🆕 Incoming VOIP works: device stays online + outbound-call (Twilio trial) caveat (2026-06-29)
+
+- **Device (ext 100) now stays online in the background.** The vendored agent-phone
+  foreground service (holds the device WS so the phone can receive in-app/VOIP calls) only
+  started when the user opened the Phone *tab* — so the device was offline and never rang.
+  Jarvis's `MainActivity.onCreate` now starts it on **every** launch (any tab) + re-enables
+  the boot receiver (**v0.11.2**). Verified: ext 100 connected, and a test `call_user` **rang
+  the app — the user answered ("Hello?")**.
+- **Outbound real-phone calls + the Twilio TRIAL account.** With the device offline,
+  `call_user_and_wait` escalates to a real PSTN call from the **toll-free** number, which the
+  carrier readily **spam-filters to voicemail** (a 265s call had zero transcripts = voicemail).
+  The account is also **Trial** (adds a "press a key" preamble; outbound only to verified
+  numbers). So: prefer the **in-app path** (keep the device online); for the PSTN fallback,
+  save `+18449040251` in contacts + upgrade Twilio out of trial.
+- **`phone.mcp` proxy timeout 35s → 300s** so the blocking `*_and_wait` call tools don't time
+  out mid-call ("phone server: timeout").
+
+---
+
+## Calls answer + speak (custom voice), brain can call/text, desktop+Chrome parity (2026-06-29)
 
 Inbound calls to the Twilio number now reach Jarvis and **talk back in the user's own
 cloned voice**; the brain can call/text; and the desktop/Chrome phone UIs gained the

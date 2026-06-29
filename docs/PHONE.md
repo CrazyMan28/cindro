@@ -122,11 +122,23 @@ for the extension's width constraints.
 | **Settings** | Call screening rules + carrier forwarding toggle; SMS agent assignment; setup wizard; history; diagnostics |
 
 ## Real-world verification
-A real outbound **voice call** was placed to the user's phone via Twilio + Mistral TTS and
-**answered** (Twilio SID `CA7ea2…`). Outbound **SMS** via the toll-free number returns a
-Twilio SID but carrier delivery for *unverified toll-free* is gated by A2P rules (the 2019
-law) — use the voice path or complete toll-free verification for guaranteed SMS. Set the
-destination once with `twilio_set_user_number(<your cell>)`.
+Inbound PSTN calls reach Jarvis and converse (verified). An **in-app VOIP call** to the
+user's device was placed (`call_user`) and **rang the app — the user answered** (the call
+went `ringing → accepted → active`, transcript `100/user: "Hello?"`).
+
+**Two real-world gotchas, both important:**
+- **The device must be ONLINE** for in-app calls to ring it. The agent-phone foreground
+  service holds that device WS; Jarvis's `MainActivity` now starts it on every app launch
+  (not just the Phone tab), so ext 100 stays connected in the background. If the device is
+  offline, in-app calls are marked `missed/target_offline`.
+- **Outbound real-phone calls** come from the **toll-free** Twilio number, which carriers
+  readily **spam-filter to voicemail** (a 265s call with zero transcripts = voicemail). The
+  account is also a **Trial** (a "press a key" preamble; outbound only to *verified* numbers
+  — manage at `/Accounts/<SID>/OutgoingCallerIds`). For a reliable PSTN ring: save the number
+  in contacts + disable carrier spam filtering, and upgrade Twilio out of trial. Otherwise
+  **prefer the in-app path** (keep the device online). Outbound **SMS** via the toll-free
+  number is A2P-gated (the 2019 law) — prefer `device_sms`. Set the destination once with
+  `twilio_set_user_number(<your cell>)`.
 
 ## Notes
 - A PSTN voice call needs Twilio's webhook to reach **this** server — the Tailscale funnel's
