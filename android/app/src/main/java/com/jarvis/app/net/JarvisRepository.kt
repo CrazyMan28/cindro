@@ -208,6 +208,46 @@ class JarvisRepository(
         return b64 to mime
     }
 
+    // --- named voice library (record/upload, name, set-default) ------------
+
+    /** Full voice catalog: {voices:[{id,label,custom,is_default,source,raw}], default}. */
+    suspend fun voiceListVoices(): JsonObject = client.request("voice.list_voices").orThrow()
+
+    /** Create (or replace) a named cloned voice from a recorded/uploaded clip. */
+    suspend fun voiceCreateClone(
+        name: String,
+        audioB64: String,
+        format: String,
+        clean: Boolean,
+        source: String = "upload",
+    ): JsonObject = client.request(
+        "voice.create_clone",
+        Params.of(
+            "name" to name, "audio_b64" to audioB64, "format" to format,
+            "clean" to clean, "source" to source,
+        ),
+        timeoutMs = 60_000,
+    ).orThrow()
+
+    /** Make a voice the default everywhere Jarvis speaks (also propagates to calls). */
+    suspend fun voiceSetDefault(voice: String): JsonObject =
+        client.request("voice.set_default", Params.of("voice" to voice)).orThrow()
+
+    suspend fun voiceDeleteClone(id: String): JsonObject =
+        client.request("voice.delete_clone", Params.of("id" to id)).orThrow()
+
+    /** Synthesize a short sample in `voice` -> {audioB64, mime} to play it. */
+    suspend fun voicePreviewClone(voice: String): Pair<String, String>? {
+        val r = client.request(
+            "voice.preview_clone",
+            Params.of("voice" to voice),
+            timeoutMs = 60_000,
+        ).orThrow()
+        val b64 = r.get("audio_b64")?.takeIf { !it.isJsonNull }?.asString ?: return null
+        val mime = r.get("mime")?.takeIf { !it.isJsonNull }?.asString ?: "audio/mpeg"
+        return b64 to mime
+    }
+
     // --- settings / models (parity with desktop) ---------------------------
 
     suspend fun getSettings(): JsonObject = client.request("settings.get").orThrow()
