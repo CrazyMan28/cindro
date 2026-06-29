@@ -1562,13 +1562,53 @@ async function loadInbox() {
   box.innerHTML = '<div class="phone-card"><div class="phone-card-meta">Loading…</div></div>';
   try {
     const data = await phoneMcp("list_inbox", { limit: 30 });
-    const msgs = Array.isArray(data) ? data : (data.messages || []);
-    renderInboxList(msgs);
+    // C-5: if the server returns a threads shape prefer it over flat messages.
+    if (data && Array.isArray(data.threads) && data.threads.length) {
+      renderThreadsList(data.threads);
+    } else {
+      const msgs = Array.isArray(data) ? data : (data.messages || []);
+      renderInboxList(msgs);
+    }
   } catch (e) {
     box.innerHTML =
       '<div class="phone-card"><div class="phone-card-meta" style="color:var(--bad)">' +
       escHtml(e.message || String(e)) + '</div></div>';
   }
+}
+
+// C-5: render a threads-shaped inbox list (grouped by thread).
+function renderThreadsList(threads) {
+  const box = $("phoneInboxList"); if (!box) return;
+  box.innerHTML = "";
+  if (!threads.length) {
+    const d = document.createElement("div"); d.className = "phone-card";
+    d.innerHTML = '<div class="phone-card-meta">Inbox is empty.</div>';
+    box.appendChild(d); return;
+  }
+  threads.forEach((t) => {
+    const card = document.createElement("div");
+    card.className = "phone-card";
+    const unread = t.unread_count || 0;
+    card.innerHTML =
+      '<div style="display:flex;align-items:center;gap:6px">' +
+        '<span class="phone-card-title">' +
+          escHtml(t.subject || t.title || "(no subject)") +
+        '</span>' +
+        (unread ? '<span class="phone-card-badge">' + unread + ' new</span>' : '') +
+      '</div>' +
+      '<div class="phone-card-meta">' +
+        escHtml(truncate(t.last_message || t.preview || "", 70)) +
+      '</div>';
+    const tid = t.thread_id || t.id;
+    if (tid) {
+      const btn = document.createElement("button");
+      btn.className = "phone-sm-btn"; btn.style.marginTop = "4px";
+      btn.textContent = "Open Thread";
+      btn.addEventListener("click", () => loadThread(String(tid)));
+      card.appendChild(btn);
+    }
+    box.appendChild(card);
+  });
 }
 
 function renderInboxList(msgs) {
@@ -1604,26 +1644,45 @@ function renderInboxList(msgs) {
   });
 }
 
+// C-3: render thread as chat bubbles (inbound left / outbound right).
+// from_extension === "101" = outbound (right, cyan tint).
 async function loadThread(threadId) {
   const wrap = $("phoneThreadWrap");
   const body = $("phoneThreadBody");
   if (!wrap || !body) return;
   wrap.classList.remove("hidden");
-  body.textContent = "Loading…";
+  // Switch body to flex-column layout for bubbles.
+  body.className = "phone-bubble-wrap";
+  body.innerHTML = '<div class="phone-card-meta" style="padding:4px 0">Loading…</div>';
   try {
     const data = await phoneMcp("get_thread_messages", { thread_id: threadId });
-    const msgs = data.messages || data || [];
+    const msgs = Array.isArray(data) ? data : (data.messages || data || []);
     if (!Array.isArray(msgs) || !msgs.length) {
-      body.textContent = "No messages in thread."; return;
+      body.innerHTML = '<div class="phone-card-meta" style="padding:4px 0">No messages in thread.</div>';
+      return;
     }
-    body.textContent = msgs.map((m) =>
-      "[ext " + (m.from_extension || "?") + " → " + (m.to_extension || "?") + "]" +
-      (m.title ? "  " + m.title : "") + "\n" +
-      (m.message || m.body || "") +
-      (m.reply_text ? "\n↩ " + m.reply_text : "")
-    ).join("\n\n---\n\n");
+    body.innerHTML = "";
+    msgs.forEach((m) => {
+      const isOut = String(m.from_extension) === "101";
+      const bubble = document.createElement("div");
+      bubble.className = "phone-bubble " + (isOut ? "out" : "in");
+      let inner = "";
+      if (m.title) inner += '<div class="phone-bubble-title">' + escHtml(m.title) + '</div>';
+      inner += '<div>' + escHtml(m.message || m.body || "") + '</div>';
+      if (m.reply_text)
+        inner += '<div class="phone-bubble-reply">↪ ' + escHtml(m.reply_text) + '</div>';
+      inner +=
+        '<div class="phone-bubble-meta">ext ' +
+        escHtml(String(m.from_extension || "?")) + ' → ' +
+        escHtml(String(m.to_extension   || "?")) + '</div>';
+      bubble.innerHTML = inner;
+      body.appendChild(bubble);
+    });
+    body.scrollTop = body.scrollHeight;
   } catch (e) {
-    body.textContent = "Error: " + (e.message || e);
+    body.innerHTML =
+      '<div class="phone-card-meta" style="color:var(--bad);padding:4px 0">Error: ' +
+      escHtml(e.message || String(e)) + '</div>';
   }
 }
 
@@ -2396,6 +2455,122 @@ async function toggleAutoScreening(on) {
   }
 }
 
+// ================================================================= NEW CHAT OVERLAY (C-1)
+// "+ New Chat" button in the inbox header opens this overlay. It loads agents via
+// phoneMcp("list_agents"), lets the user multi-select them, type a first message,
+// then either "📞 Call" (call_extension for each selected agent) or "Start"
+// (notify_user_and_wait with to_extension for each selected agent).
+
+let _newChatAgents  = [];
+let _newChatSelected = new Set();
+
+async function openNewChatOverlay() {
+  const overlay = $("phoneNewChatOverlay"); if (!overlay) return;
+  // Reset.
+  _newChatSelected = new Set();
+  const msgEl = $("newChatMsg"); if (msgEl) msgEl.value = "";
+  const res   = $("newChatResult"); if (res) { res.textContent = ""; res.className = "phone-result"; }
+  overlay.classList.remove("hidden");
+
+  const listEl = $("newChatAgentList");
+  if (listEl) listEl.innerHTML = '<div class="new-chat-agent-row"><span class="phone-card-meta">Loading agents…</span></div>';
+  try {
+    const data = await phoneMcp("list_agents");
+    _newChatAgents = Array.isArray(data) ? data : (data.agents || data.extensions || []);
+    _renderNewChatAgents();
+  } catch (e) {
+    if (listEl)
+      listEl.innerHTML = '<div class="new-chat-agent-row"><span class="phone-card-meta" style="color:var(--bad)">' +
+        escHtml(e.message || String(e)) + '</span></div>';
+  }
+}
+
+function _renderNewChatAgents() {
+  const box = $("newChatAgentList"); if (!box) return;
+  box.innerHTML = "";
+  if (!_newChatAgents.length) {
+    box.innerHTML = '<div class="new-chat-agent-row"><span class="phone-card-meta">No agents found.</span></div>';
+    _updateNewChatButtons(); return;
+  }
+  _newChatAgents.forEach((a) => {
+    const ext    = String(a.extension || a.ext || "");
+    const name   = String(a.name || a.agent_name || "Agent");
+    const online = (a.status || "") === "online";
+    const isSel  = _newChatSelected.has(ext);
+    const row    = document.createElement("div");
+    row.className = "new-chat-agent-row" + (isSel ? " selected" : "");
+    row.innerHTML =
+      '<span class="new-chat-check">' + (isSel ? "✓" : "○") + '</span>' +
+      '<span style="flex:1;color:var(--text)">' + escHtml(name) + '</span>' +
+      '<span class="phone-card-badge ' + (online ? "ok" : "") +
+        '" style="font-size:9px">' + escHtml(a.status || "") + '</span>' +
+      '<span class="phone-card-meta" style="min-width:26px;text-align:right">' + escHtml(ext) + '</span>';
+    row.addEventListener("click", () => {
+      if (_newChatSelected.has(ext)) _newChatSelected.delete(ext);
+      else _newChatSelected.add(ext);
+      _renderNewChatAgents();
+    });
+    box.appendChild(row);
+  });
+  _updateNewChatButtons();
+}
+
+function _updateNewChatButtons() {
+  const n       = _newChatSelected.size;
+  const msgEl   = $("newChatMsg");
+  const hasMsg  = msgEl ? msgEl.value.trim().length > 0 : false;
+  const callBtn = $("newChatCallBtn");
+  const startBtn= $("newChatStartBtn");
+  if (callBtn)  callBtn.disabled  = n === 0;
+  if (startBtn) startBtn.disabled = n === 0 || !hasMsg;
+  const hdr = $("newChatOverlayTitle");
+  if (hdr) hdr.textContent = n > 1 ? "New Group Chat · " + n + " selected" : "New Chat";
+}
+
+function closeNewChatOverlay() {
+  const overlay = $("phoneNewChatOverlay");
+  if (overlay) overlay.classList.add("hidden");
+}
+
+async function doNewChatStart() {
+  const msg  = ($("newChatMsg") && $("newChatMsg").value.trim()) || "";
+  const exts = [..._newChatSelected];
+  if (!msg || !exts.length) return;
+  const startBtn = $("newChatStartBtn"); if (startBtn) startBtn.disabled = true;
+  const res = $("newChatResult");
+  if (res) { res.textContent = "Sending…"; res.className = "phone-result"; }
+  try {
+    for (const ext of exts) {
+      await phoneMcp("notify_user_and_wait", {
+        to_extension: _extArg(ext), title: "New Message", message: msg, priority: "normal"
+      });
+    }
+    if (res) { res.textContent = "✓ Sent to " + exts.length + " agent(s)"; res.className = "phone-result ok"; }
+    setTimeout(() => { closeNewChatOverlay(); loadInbox(); }, 900);
+  } catch (e) {
+    if (res) { res.textContent = "✗ " + (e.message || e); res.className = "phone-result bad"; }
+    if (startBtn) startBtn.disabled = false;
+  }
+}
+
+async function doNewChatCall() {
+  const exts = [..._newChatSelected];
+  if (!exts.length) return;
+  const callBtn = $("newChatCallBtn"); if (callBtn) callBtn.disabled = true;
+  const res = $("newChatResult");
+  if (res) { res.textContent = "Calling…"; res.className = "phone-result"; }
+  try {
+    for (const ext of exts) {
+      await phoneMcp("call_extension", { extension: _extArg(ext) });
+    }
+    if (res) { res.textContent = "✓ Call placed"; res.className = "phone-result ok"; }
+    setTimeout(() => { closeNewChatOverlay(); setPhoneTab("calls"); }, 800);
+  } catch (e) {
+    if (res) { res.textContent = "✗ " + (e.message || e); res.className = "phone-result bad"; }
+    if (callBtn) callBtn.disabled = false;
+  }
+}
+
 // ---- wire up all phone panel events once DOM is ready ----
 function initPhonePanel() {
   // ---- close ----
@@ -2407,10 +2582,20 @@ function initPhonePanel() {
   );
 
   // ---- call banner ----
+  // C-4: Accept button now calls phoneMcp("accept_call") instead of a helpless message.
   const bAccept = $("phoneBannerAccept");
-  if (bAccept) bAccept.addEventListener("click", () => {
+  if (bAccept) bAccept.addEventListener("click", async () => {
     const cid = $("phoneBanner") && $("phoneBanner").dataset.callId;
-    addSys("Call accept must be done on the phone app (call id: " + (cid || "?") + ").");
+    if (!cid) return;
+    bAccept.disabled = true;
+    try {
+      await phoneMcp("accept_call", { call_id: cid });
+      await loadActiveCalls();
+    } catch (e) {
+      addSys("Accept failed: " + (e.message || e));
+    } finally {
+      bAccept.disabled = false;
+    }
   });
   const bEnd = $("phoneBannerEnd");
   if (bEnd) bEnd.addEventListener("click", () => {
@@ -2480,6 +2665,14 @@ function initPhonePanel() {
   if (thBack) thBack.addEventListener("click", () => {
     const w = $("phoneThreadWrap"); if (w) w.classList.add("hidden");
   });
+
+  // ---- NEW CHAT OVERLAY (C-1) ----
+  const ncBtn = $("phoneNewChatBtn"); if (ncBtn) ncBtn.addEventListener("click", openNewChatOverlay);
+  const ncCancel = $("newChatCancelBtn"); if (ncCancel) ncCancel.addEventListener("click", closeNewChatOverlay);
+  const ncCall  = $("newChatCallBtn");  if (ncCall)  ncCall.addEventListener("click",  doNewChatCall);
+  const ncStart = $("newChatStartBtn"); if (ncStart) ncStart.addEventListener("click", doNewChatStart);
+  const ncMsg   = $("newChatMsg");
+  if (ncMsg) ncMsg.addEventListener("input", _updateNewChatButtons);
 
   // ---- HUD TAB ----
   const hudRefresh = $("phoneHudRefresh"); if (hudRefresh) hudRefresh.addEventListener("click", loadHud);

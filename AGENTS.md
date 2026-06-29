@@ -193,12 +193,28 @@ Design pillars:
 ## New subsystems (2026-06-28) — gotchas
 
 - **Phone is VENDORED, not rewritten.** `phone/server` is the agent-phone server copied
-  byte-for-byte (`diff -rq` clean). Don't hand-edit it to "fix" things — re-vendor from the
-  source if it must change. Secrets live in `~/.config/jarvis/phone.env` (0600, gitignored);
-  never commit them. `seedPhoneMcp()` seeds the `phone` MCP row for the brain; `phone.mcp`
-  (Contract A, control + device) proxies tool calls to it for the UIs (the bearer stays in
-  the daemon). A new QML page MUST be added to `desktop/CMakeLists.txt` `QML_FILES` or it
-  loads as "X is not a type" (gui_selftest catches this).
+  byte-for-byte (`diff -rq` clean). The **original agent-phone repo is untouched and still
+  runs as its own separate process** — the Jarvis copy is a snapshot only. Don't hand-edit
+  `phone/server` to "fix" things — re-vendor from the source if it must change. Secrets live
+  in `~/.config/jarvis/phone.env` (0600, gitignored); never commit them.
+- **Jarvis is extension 101 on the phone server.** Codex = 102, Copilot = 103, Echo = 104,
+  Hermes = 105, Claude = 106, Mistral Screener = 107. Don't reassign 101 — that's the Jarvis
+  identity used for enrollment, MCP calls, and the per-agent config routes.
+- **Two daemon proxies, not one.** `seedPhoneMcp()` seeds the `phone` MCP row for the brain.
+  The UIs use **two** Contract A methods:
+  - **`phone.mcp`** (`{name, arguments}` → `{data|text, tool, error?}`) — forwards an MCP
+    tool call to the phone server; bearer stays in the daemon. Exposed on control + device.
+  - **`phone.http`** (`{method, path, body?}` → `{status, data}`) — forwards a raw HTTP
+    request to the phone server's REST API; bearer stays in the daemon. Used by the Phone
+    UI for everything MCP doesn't cover: per-agent voice/model config
+    (`/api/extensions/<ext>/voice`, `/api/extensions/<ext>/model`), screening
+    (`/api/screening`), SMS agent (`/api/sms-agent`), voice catalog (`/api/voices`), call
+    list (`/api/calls`). UI surfaces must NEVER hold the admin bearer themselves.
+- **Full-screen Phone UI on all three surfaces.** The entire agent-phone app UI is embedded
+  in Jarvis as a Phone section (Calls/Inbox/Agents/HUD/Settings nav). On Android the Phone
+  section hides Jarvis's main bottom nav (full-screen); backing out restores it. A new QML
+  page MUST be added to `desktop/CMakeLists.txt` `QML_FILES` or it loads as "X is not a
+  type" (gui_selftest catches this).
 - **Background jobs wake via `session.wake`** (`bg_jobs.py` → daemon), the generalized form
   of the subagent wake — queued if the session is mid-turn. Don't add a second wake path.
 - **Hooks fire points are mostly observational.** Only UserPromptSubmit blocks/injects and
