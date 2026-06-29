@@ -135,6 +135,10 @@ Item {
             PhoneHudTab      { id: hudTab;       anchors.fill: parent; visible: page.tabIndex === 3; phonePage: page }
             PhoneSettingsTab { id: settingsTab;  anchors.fill: parent; visible: page.tabIndex === 4; phonePage: page }
             PhoneScreeningTab { id: screeningTab; anchors.fill: parent; visible: page.tabIndex === 5; phonePage: page }
+
+            // Incoming / active call overlay — sits on top of all tabs.
+            // Polls list_active_calls and becomes visible whenever a call is live.
+            PhoneCallOverlay { id: callOverlay; anchors.fill: parent }
         }
     }
 }

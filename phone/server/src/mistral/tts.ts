@@ -30,6 +30,7 @@ export async function textToSpeech(
 ): Promise<TextToSpeechResult> {
   const format = options.responseFormat ?? config.audioFormat;
   const voiceId = options.voiceId ?? config.voiceId;
+  const refAudio = options.refAudioBase64 ?? config.refAudioBase64;
   if (!config.realAudio) {
     return {
       audio: mockWav(text),
@@ -40,7 +41,7 @@ export async function textToSpeech(
     };
   }
   await validateMistralConfig(config);
-  assertRealVoiceConfig(voiceId, options.refAudioBase64);
+  assertRealVoiceConfig(voiceId, refAudio);
   const response = await retryMistral(config, () =>
     fetchImpl(`${config.baseUrl}/audio/speech`, {
       method: "POST",
@@ -51,8 +52,8 @@ export async function textToSpeech(
       body: JSON.stringify({
         model: config.ttsModel,
         input: text,
-        voice_id: voiceId,
-        ref_audio: options.refAudioBase64,
+        // A reference clip (cloned voice) REPLACES the named voice — send one.
+        ...(refAudio ? { ref_audio: refAudio } : { voice_id: voiceId }),
         response_format: format,
         sample_rate: config.ttsSampleRate,
         stream: false
@@ -87,6 +88,7 @@ export async function* textToSpeechStream(
 ): AsyncIterable<TextToSpeechResult> {
   const format = options.responseFormat ?? config.audioFormat;
   const voiceId = options.voiceId ?? config.voiceId;
+  const refAudio = options.refAudioBase64 ?? config.refAudioBase64;
   if (!config.realAudio) {
     const audio = mockWav(text);
     yield { audio: audio.subarray(0, Math.ceil(audio.length / 2)), model: config.ttsModel || "mock-tts", voiceId, format: "wav", mock: true };
@@ -94,7 +96,7 @@ export async function* textToSpeechStream(
     return;
   }
   await validateMistralConfig(config);
-  assertRealVoiceConfig(voiceId, options.refAudioBase64);
+  assertRealVoiceConfig(voiceId, refAudio);
   const response = await retryMistral(config, () =>
     fetchImpl(`${config.baseUrl}/audio/speech`, {
       method: "POST",
@@ -106,8 +108,8 @@ export async function* textToSpeechStream(
       body: JSON.stringify({
         model: config.ttsModel,
         input: text,
-        voice_id: voiceId,
-        ref_audio: options.refAudioBase64,
+        // A reference clip (cloned voice) REPLACES the named voice — send one.
+        ...(refAudio ? { ref_audio: refAudio } : { voice_id: voiceId }),
         response_format: format,
         sample_rate: config.ttsSampleRate,
         stream: true
