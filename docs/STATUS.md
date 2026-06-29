@@ -8,6 +8,39 @@ _Last updated: 2026-06-28._
 
 ---
 
+## 🆕 Full phone UI parity on all 3 surfaces (2026-06-28)
+
+The entire **agent-phone app UI** is now embedded in Jarvis — no new app. A full-screen
+**Phone section** (Calls · Inbox · Agents · HUD · Settings) ships on all three surfaces:
+**desktop QML**, **Android Compose (v0.10.6+)**, and **Chrome MV3**. Android hides
+Jarvis's main bottom nav while inside Phone (full-screen), restoring it on back.
+
+Feature coverage:
+- **Calls** — real dialpad (12-key + `*`/`#`) with extension-chip shortcuts, live call
+  state machine, history.
+- **Inbox** — in-app message threads; **New Chat**: multi-agent picker + optional first
+  message + Start (text) or Call button.
+- **Agents** — per-agent voice picker + emotion sliders + TTS preview, speaking-rate, LLM
+  model, thinking toggle; enroll/unenroll.
+- **HUD** — live call HUD (transcription, agent state, mute/hold), diagnostics, Bluetooth
+  relay puck.
+- **Settings** — call screening + carrier forwarding, SMS agent assignment, setup wizard,
+  diagnostics.
+
+Infrastructure shipped alongside the UI:
+- **`phone.http`** — new Contract A proxy (`{method, path, body?}` → `{status, data}`)
+  forwarding the phone server's REST API to every surface with the admin bearer kept in the
+  daemon (`/api/extensions/<ext>/voice`, `/model`, `/api/screening`, `/api/sms-agent`,
+  `/api/voices`, `/api/calls`).
+- **Jarvis = extension 101** on the phone server. Codex moved to 102; 103–107 are Copilot,
+  Echo, Hermes, Claude, Mistral Screener.
+- The **original agent-phone repo is untouched** and still runs as its own process. The
+  vendored `phone/server` is a byte-identical snapshot (`diff -rq` clean).
+
+See [`PHONE.md`](PHONE.md) and [`AGENT_PHONE_FEATURE_MAP.md`](AGENT_PHONE_FEATURE_MAP.md).
+
+---
+
 ## 🆕 Phone + Background jobs + Hooks + Modes (2026-06-28)
 
 A multi-surface capability drop. **Backend done + tested; full UI parity across desktop/
