@@ -8,9 +8,9 @@ export type TextToSpeechOptions = {
   voiceId?: string;
   refAudioBase64?: string;
   responseFormat?: "pcm" | "wav" | "mp3" | "flac" | "opus";
-  /** Speaking-rate multiplier (1 = normal). Sent to the TTS API only when set,
-   *  so default calls are byte-for-byte unchanged. Best-effort: honored if the
-   *  provider supports it. */
+  /** Speaking-rate multiplier (1 = normal). Kept for the voice-profile API and
+   *  future providers, but NOT sent to Mistral: its /audio/speech rejects `speed`
+   *  ("extra_forbidden", HTTP 422), which silently broke every call's audio. */
   speed?: number;
 };
 
@@ -55,7 +55,6 @@ export async function textToSpeech(
         ref_audio: options.refAudioBase64,
         response_format: format,
         sample_rate: config.ttsSampleRate,
-        ...(options.speed != null ? { speed: options.speed } : {}),
         stream: false
       }),
       signal: AbortSignal.timeout(config.timeoutMs)
@@ -111,7 +110,6 @@ export async function* textToSpeechStream(
         ref_audio: options.refAudioBase64,
         response_format: format,
         sample_rate: config.ttsSampleRate,
-        ...(options.speed != null ? { speed: options.speed } : {}),
         stream: true
       }),
       signal: AbortSignal.timeout(config.timeoutMs)
