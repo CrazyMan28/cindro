@@ -6,6 +6,7 @@ import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,6 +35,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DialerSip
@@ -69,11 +72,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -84,6 +89,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarvis.app.ui.theme.JarvisPalette
 import kotlin.math.roundToInt
+import kotlinx.coroutines.delay
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared private helpers
@@ -94,10 +100,10 @@ private fun PhoneCard(modifier: Modifier = Modifier, content: @Composable Column
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(JarvisPalette.Surface)
-            .border(1.dp, JarvisPalette.Outline, RoundedCornerShape(16.dp))
-            .padding(16.dp),
+            .clip(RoundedCornerShape(18.dp))
+            .background(Brush.verticalGradient(listOf(JarvisPalette.SurfaceVariant, JarvisPalette.Surface)))
+            .border(1.dp, JarvisPalette.Outline, RoundedCornerShape(18.dp))
+            .padding(18.dp),
         content = content,
     )
 }
@@ -383,6 +389,7 @@ fun PhoneInboxScreen(
     onOpenThread: (String) -> Unit,
 ) {
     var showNewChat by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<PhoneThread?>(null) }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -400,6 +407,21 @@ fun PhoneInboxScreen(
             IconButton(onClick = { viewModel.refreshAgents(); showNewChat = true }) {
                 Icon(Icons.Filled.Add, contentDescription = "New chat", tint = JarvisPalette.Accent)
             }
+        }
+        pendingDelete?.let { thread ->
+            AlertDialog(
+                onDismissRequest = { pendingDelete = null },
+                containerColor = JarvisPalette.Surface,
+                title = { Text("Delete thread?", color = JarvisPalette.TextPrimary) },
+                text = { Text(thread.subject, color = JarvisPalette.TextSecondary) },
+                confirmButton = {
+                    CyanButton("Delete", onClick = {
+                        viewModel.deleteThread(thread.id)
+                        pendingDelete = null
+                    })
+                },
+                dismissButton = { OutlineButton("Cancel", onClick = { pendingDelete = null }) },
+            )
         }
         if (showNewChat) {
             NewChatDialog(
@@ -432,7 +454,10 @@ fun PhoneInboxScreen(
                             else -> JarvisPalette.TextFaint
                         }
                         PhoneCard(
-                            modifier = Modifier.clickable { onOpenThread(thread.id) },
+                            modifier = Modifier.combinedClickable(
+                                onClick = { onOpenThread(thread.id) },
+                                onLongClick = { pendingDelete = thread },
+                            ),
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Box(
@@ -734,8 +759,9 @@ fun PhoneSettingsScreen(
             }
         }
 
-        // Screening toggle
+        // Screening toggle + full config
         val sc = state.screeningConfig
+        val settingsCtx = LocalContext.current
         if (sc != null) {
             SectionLabel("Call Screening")
             PhoneCard {
@@ -750,6 +776,44 @@ fun PhoneSettingsScreen(
                         colors = SwitchDefaults.colors(checkedThumbColor = JarvisPalette.OnAccent, checkedTrackColor = JarvisPalette.Accent),
                     )
                 }
+                if (sc.enabled) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("Transport", style = MaterialTheme.typography.labelSmall, color = JarvisPalette.TextFaint)
+                    Spacer(Modifier.height(6.dp))
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        SelectionChip("Twilio (anywhere)", selected = sc.transport == "twilio" || sc.transport.isBlank(), onClick = { viewModel.setScreeningTransport("twilio") {} })
+                        SelectionChip("Bluetooth relay", selected = sc.transport == "bluetooth", onClick = { viewModel.setScreeningTransport("bluetooth") {} })
+                    }
+                    if (sc.agents.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
+                        Text("Who answers inbound calls", style = MaterialTheme.typography.labelSmall, color = JarvisPalette.TextFaint)
+                        Spacer(Modifier.height(6.dp))
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            sc.agents.forEach { (ext, name) ->
+                                SelectionChip("$name ($ext)", selected = sc.inboundExtension == ext, onClick = { viewModel.setInboundAgent(ext) {} })
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        Text("Who screens unknown callers", style = MaterialTheme.typography.labelSmall, color = JarvisPalette.TextFaint)
+                        Spacer(Modifier.height(6.dp))
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            sc.agents.forEach { (ext, name) ->
+                                SelectionChip("$name ($ext)", selected = sc.screeningExtension == ext, onClick = { viewModel.setScreeningAgent(ext) {} })
+                            }
+                        }
+                    }
+                }
+            }
+            SectionLabel("Carrier Forwarding")
+            PhoneCard {
+                Text("Copy the code for your carrier to forward calls to Jarvis.", style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextFaint)
+                Spacer(Modifier.height(8.dp))
+                ForwardCodeRow("Set all-forward (GSM)", "**004*+NUMBER#", settingsCtx)
+                ForwardCodeRow("Cancel all forwards", "##002#", settingsCtx)
+                Spacer(Modifier.height(6.dp))
+                Text("Verizon", style = MaterialTheme.typography.labelSmall, color = JarvisPalette.TextFaint)
+                ForwardCodeRow("Verizon: Start forward", "*72 + NUMBER", settingsCtx)
+                ForwardCodeRow("Verizon: Cancel forward", "*73", settingsCtx)
             }
         }
 
@@ -821,6 +885,11 @@ fun PhoneThreadScreen(state: PhoneUiState, viewModel: PhoneViewModel, threadId: 
     }
     val pending = remember(messages) {
         messages.lastOrNull { it.requiresResponse && it.selectedOption == null && it.responseText == null }
+    }
+
+    // A-11: auto-mark the pending unread message as read when thread is opened
+    LaunchedEffect(pending?.id) {
+        pending?.id?.let { msgId -> viewModel.markMessageRead(msgId) }
     }
 
     LaunchedEffect(messages.size) {
@@ -1477,6 +1546,7 @@ fun PhoneSetupScreen(state: PhoneUiState, viewModel: PhoneViewModel) {
         // Screening
         SectionLabel("Call Screening")
         val sc = state.screeningConfig
+        val setupCtx = LocalContext.current
         PhoneCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -1489,14 +1559,44 @@ fun PhoneSetupScreen(state: PhoneUiState, viewModel: PhoneViewModel) {
                     colors = SwitchDefaults.colors(checkedThumbColor = JarvisPalette.OnAccent, checkedTrackColor = JarvisPalette.Accent),
                 )
             }
-            if (sc != null && sc.agents.isNotEmpty()) {
-                Spacer(Modifier.height(10.dp))
-                Text("Available agents", style = MaterialTheme.typography.labelSmall, color = JarvisPalette.TextFaint)
-                Spacer(Modifier.height(4.dp))
-                sc.agents.forEach { (ext, name) ->
-                    Text("• Ext $ext — $name", style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary)
+            if (sc != null && sc.enabled) {
+                Spacer(Modifier.height(12.dp))
+                Text("Transport", style = MaterialTheme.typography.labelSmall, color = JarvisPalette.TextFaint)
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SelectionChip("Twilio (anywhere)", selected = sc.transport == "twilio" || sc.transport.isBlank(), onClick = { viewModel.setScreeningTransport("twilio") {} })
+                    SelectionChip("Bluetooth relay", selected = sc.transport == "bluetooth", onClick = { viewModel.setScreeningTransport("bluetooth") {} })
+                }
+                if (sc.agents.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Text("Who answers inbound calls", style = MaterialTheme.typography.labelSmall, color = JarvisPalette.TextFaint)
+                    Spacer(Modifier.height(6.dp))
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        sc.agents.forEach { (ext, name) ->
+                            SelectionChip("$name ($ext)", selected = sc.inboundExtension == ext, onClick = { viewModel.setInboundAgent(ext) {} })
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text("Who screens unknown callers", style = MaterialTheme.typography.labelSmall, color = JarvisPalette.TextFaint)
+                    Spacer(Modifier.height(6.dp))
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        sc.agents.forEach { (ext, name) ->
+                            SelectionChip("$name ($ext)", selected = sc.screeningExtension == ext, onClick = { viewModel.setScreeningAgent(ext) {} })
+                        }
+                    }
                 }
             }
+        }
+        SectionLabel("Carrier Forwarding")
+        PhoneCard {
+            Text("Copy the code for your carrier to forward calls to Jarvis.", style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextFaint)
+            Spacer(Modifier.height(8.dp))
+            ForwardCodeRow("Set all-forward (GSM)", "**004*+NUMBER#", setupCtx)
+            ForwardCodeRow("Cancel all forwards", "##002#", setupCtx)
+            Spacer(Modifier.height(6.dp))
+            Text("Verizon", style = MaterialTheme.typography.labelSmall, color = JarvisPalette.TextFaint)
+            ForwardCodeRow("Verizon: Start forward", "*72 + NUMBER", setupCtx)
+            ForwardCodeRow("Verizon: Cancel forward", "*73", setupCtx)
         }
 
         // TODO: Full Twilio number provisioning requires VM-side credentials
@@ -1509,6 +1609,152 @@ fun PhoneSetupScreen(state: PhoneUiState, viewModel: PhoneViewModel) {
             }
         }
         Spacer(Modifier.height(16.dp))
+    }
+}
+
+// ── Outgoing call overlay (A-7) ───────────────────────────────────────────────
+
+@Composable
+fun PhoneOutgoingCallScreen(
+    call: PhoneCall,
+    transcript: String,
+    viewModel: PhoneViewModel,
+) {
+    var elapsedSeconds by remember { mutableIntStateOf(0) }
+    var muted by remember { mutableStateOf(false) }
+
+    LaunchedEffect(call.id) { viewModel.loadCallTranscript(call.id) }
+    LaunchedEffect(Unit) { while (true) { delay(1000L); elapsedSeconds++ } }
+    LaunchedEffect(Unit) { while (true) { delay(5000L); viewModel.loadCallTranscript(call.id) } }
+
+    val timeStr = "%02d:%02d".format(elapsedSeconds / 60, elapsedSeconds % 60)
+    val peer = call.toExtension ?: call.fromExtension ?: "?"
+
+    Box(Modifier.fillMaxSize().background(JarvisPalette.Background)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+        ) {
+            Spacer(Modifier.height(40.dp))
+
+            // Avatar circle
+            Box(
+                Modifier.size(96.dp).clip(CircleShape)
+                    .background(JarvisPalette.Accent.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    peer.take(3),
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = JarvisPalette.Accent,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+
+            Text(
+                call.state.replaceFirstChar { it.uppercase() } + "…",
+                style = MaterialTheme.typography.titleMedium,
+                color = JarvisPalette.TextSecondary,
+            )
+            Text(
+                peer,
+                style = MaterialTheme.typography.displaySmall,
+                color = JarvisPalette.TextPrimary,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+            )
+            Text(
+                timeStr,
+                style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace),
+                color = JarvisPalette.TextFaint,
+            )
+
+            // Transcript panel
+            if (transcript.isNotBlank()) {
+                Column(
+                    Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(JarvisPalette.Surface)
+                        .border(1.dp, JarvisPalette.Outline, RoundedCornerShape(16.dp))
+                        .padding(12.dp),
+                ) {
+                    Text("Transcript", style = MaterialTheme.typography.labelSmall, color = JarvisPalette.TextFaint)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        transcript,
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = JarvisPalette.TextSecondary,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // Control buttons
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(32.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // Mute toggle (placeholder — local only)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Box(
+                        Modifier.size(56.dp).clip(CircleShape)
+                            .background(if (muted) JarvisPalette.Warning.copy(alpha = 0.2f) else JarvisPalette.Surface)
+                            .border(1.dp, if (muted) JarvisPalette.Warning else JarvisPalette.Outline, CircleShape)
+                            .clickable { muted = !muted },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            if (muted) Icons.Filled.MicOff else Icons.Filled.Mic,
+                            contentDescription = if (muted) "Unmute" else "Mute",
+                            tint = if (muted) JarvisPalette.Warning else JarvisPalette.TextSecondary,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
+                    Text(if (muted) "Unmute" else "Mute", style = MaterialTheme.typography.labelSmall, color = JarvisPalette.TextFaint)
+                }
+
+                // End call button
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Box(
+                        Modifier.size(72.dp).clip(CircleShape).background(JarvisPalette.Error)
+                            .clickable { viewModel.endCall(call.id); viewModel.dismissOutgoingCall() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Filled.CallEnd, contentDescription = "End call", tint = Color.White, modifier = Modifier.size(32.dp))
+                    }
+                    Text("End", style = MaterialTheme.typography.labelSmall, color = JarvisPalette.TextFaint)
+                }
+            }
+        }
+    }
+}
+
+// ── Carrier forwarding code row ───────────────────────────────────────────────
+
+@Composable
+private fun ForwardCodeRow(label: String, code: String, ctx: Context) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextPrimary)
+            Text(code, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace), color = JarvisPalette.Accent)
+        }
+        IconButton(onClick = { copyToClipboard(ctx, label, code) }) {
+            Icon(Icons.Filled.ContentCopy, contentDescription = "Copy", tint = JarvisPalette.TextFaint, modifier = Modifier.size(16.dp))
+        }
     }
 }
 

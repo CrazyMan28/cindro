@@ -294,7 +294,54 @@
     .phone-panel {
       flex: 1 1 auto; display: flex; flex-direction: column;
       overflow: hidden; background: var(--panel);
+      position: relative; /* anchors new-chat overlay */
     }
+
+    /* ===================================================== new-chat overlay (C-1) */
+    .phone-new-chat-overlay {
+      position: absolute; inset: 0; z-index: 50;
+      background: var(--panel); display: flex; flex-direction: column;
+      animation: phoneSlideIn 150ms ease-out;
+    }
+    .phone-new-chat-overlay.hidden { display: none !important; }
+    .new-chat-agent-list {
+      flex: 1 1 auto; overflow-y: auto; min-height: 60px; max-height: 220px;
+      border-bottom: 1px solid var(--hairline-soft);
+      scrollbar-width: thin; scrollbar-color: var(--hairline) transparent;
+    }
+    .new-chat-agent-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 12px; border-bottom: 1px solid var(--hairline-soft);
+      cursor: pointer; font-size: 11px; transition: background 120ms;
+    }
+    .new-chat-agent-row:hover { background: rgba(41,231,255,0.07); }
+    .new-chat-agent-row.selected { background: rgba(41,231,255,0.13); }
+    .new-chat-check { font-size: 13px; color: var(--accent); min-width: 16px; text-align: center; }
+
+    /* ===================================================== thread chat bubbles (C-3) */
+    .phone-bubble-wrap {
+      padding: 8px 12px 14px; display: flex; flex-direction: column; gap: 6px;
+      overflow-y: auto; flex: 1 1 auto;
+    }
+    .phone-bubble {
+      padding: 7px 11px; border-radius: 12px;
+      font-size: 11px; font-family: var(--mono);
+      line-height: 1.55; word-wrap: break-word; overflow-wrap: anywhere;
+      max-width: 85%;
+    }
+    .phone-bubble.out {
+      align-self: flex-end;
+      background: rgba(41,231,255,0.12); border: 1px solid rgba(41,231,255,0.25);
+      border-bottom-right-radius: 4px; color: var(--text);
+    }
+    .phone-bubble.in {
+      align-self: flex-start;
+      background: rgba(255,255,255,0.06); border: 1px solid var(--hairline-soft);
+      border-bottom-left-radius: 4px; color: var(--text);
+    }
+    .phone-bubble-title { font-weight: 700; color: var(--accent); margin-bottom: 2px; }
+    .phone-bubble-reply { color: var(--muted); font-size: 10px; margin-top: 4px; }
+    .phone-bubble-meta  { color: var(--muted); font-size: 9.5px; margin-top: 3px; opacity: 0.75; }
 
     /* active / incoming call banner with pulsing ring */
     .phone-banner {
@@ -671,6 +718,26 @@
       </div>
     </div>
 
+    <!-- New Chat Overlay (C-1) -->
+    <div id="phoneNewChatOverlay" class="phone-new-chat-overlay hidden">
+      <div class="phone-section-head" style="justify-content:space-between;padding-right:8px">
+        <span id="newChatOverlayTitle">New Chat</span>
+        <button class="phone-sm-btn" id="newChatCancelBtn">✕ Cancel</button>
+      </div>
+      <div id="newChatAgentList" class="new-chat-agent-list"></div>
+      <div style="padding:8px 12px;display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--hairline)">
+        <textarea id="newChatMsg" class="phone-input" rows="3"
+          placeholder="First message to selected agent(s)…"></textarea>
+        <div style="display:flex;gap:6px">
+          <button class="phone-btn" id="newChatCallBtn" disabled
+            style="flex:1;font-size:10px;padding:5px 8px">📞 Call</button>
+          <button class="phone-btn" id="newChatStartBtn" disabled
+            style="flex:2">Start</button>
+        </div>
+        <div id="newChatResult" class="phone-result"></div>
+      </div>
+    </div>
+
     <!-- Tab bar -->
     <div class="phone-tabs" style="overflow-x:auto;scrollbar-width:none">
       <button class="phone-tab active" data-ptab="calls">☎ Calls</button>
@@ -772,6 +839,7 @@
       <div class="phone-section-head">
         Messages
         <button class="phone-sm-btn" id="phoneRefreshInbox">↻</button>
+        <button class="phone-sm-btn" id="phoneNewChatBtn" style="margin-left:4px">+ New Chat</button>
       </div>
       <div id="phoneInboxList" class="phone-list"></div>
 
