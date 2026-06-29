@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import JarvisSidebar
 
 // Settings page: per-provider masked API-key fields (write-only; the saved/empty
@@ -27,8 +28,13 @@ Item {
     property string defaultBrain: "codex"
     property string defaultModel: ""
     property string claudeAccount: "pro"        // "pro" (default) | "max"
-    property string ttsVoice: ""                 // preferred TTS voice slug
+    property string ttsVoice: ""                 // preferred TTS voice slug (the default)
     property var voiceList: []                   // [{id,label}] from voice.list_voices
+    // Named voice library (record/upload your own voice + set one as default).
+    property var libraryVoices: []               // custom voices [{id,label,is_default,source,raw}]
+    property bool clipReady: false               // a candidate clip is recorded/uploaded
+    property string clipInfo: ""                 // status line under the record/upload row
+    property bool cleanClip: true                // auto-clean (ffmpeg trim) on save
     property string sttProvider: "voxtral"       // STT provider id
     property string ttsProvider: "voxtral"       // TTS provider id
     property var sttProviders: []                // [{id,label,available}]
@@ -176,7 +182,27 @@ Item {
         }
         function onVoicesListed(voices) {
             page.voiceList = voices !== undefined ? voices : []
+            // The named voices (record/upload) are flagged custom:true — pull them
+            // out for the Default Voice manager below.
+            page.libraryVoices = page.voiceList.filter(function (v) { return v && v.custom === true })
             voiceCombo.refill()
+        }
+        // A candidate reference clip was recorded/uploaded and is ready to name+save.
+        function onVoiceClipCaptured(bytes, format) {
+            page.clipReady = true
+            page.clipInfo = "clip ready — " + Math.round(bytes / 1024) + " KB (" + format + ")"
+        }
+        // The library changed (after create/delete/set-default/rename): refresh the
+        // manager rows + the picker, and adopt the new default voice id.
+        function onVoiceLibraryChanged(voices, defaultVoice) {
+            page.libraryVoices = voices !== undefined ? voices : []
+            if (defaultVoice !== undefined && defaultVoice.length) page.ttsVoice = defaultVoice
+            bridge.listVoices()          // refresh the full picker (stock + custom)
+            voiceCombo.syncFromState()
+        }
+        function onVoiceCloneResult(ok, error) {
+            if (ok) { page.clipReady = false; page.clipInfo = "saved ✓" }
+            else { page.clipInfo = "⚠ " + (error && error.length ? error : "failed") }
         }
         function onVoiceProvidersListed(sttProviders, ttsProviders, voicesByProvider) {
             if (sttProviders !== undefined && sttProviders.length) page.sttProviders = sttProviders
@@ -206,6 +232,14 @@ Item {
 
     // Paired phones (devices.list).
     ListModel { id: devicesModel }
+
+    // Upload an audio clip to clone as a named voice.
+    FileDialog {
+        id: voiceFileDialog
+        title: "Choose a voice clip"
+        nameFilters: ["Audio (*.mp3 *.wav *.ogg *.flac *.opus *.m4a *.webm)", "All files (*)"]
+        onAccepted: bridge.loadVoiceClipFromFile("" + selectedFile)
+    }
 
     function currentModels() {
         var m = page.modelsByBrain[page.defaultBrain]
@@ -549,6 +583,135 @@ Item {
                                 page.ttsVoice = page.voiceIdForIndex(currentIndex)
                                 page.dirty = true
                             }
+                        }
+                    }
+                }
+
+                // ---- Default voice: record/upload your own, set as default ----
+                Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairlineSoft; Layout.topMargin: 4 }
+                Text {
+                    text: "DEFAULT VOICE — RECORD YOUR OWN OR UPLOAD A CLIP"
+                    color: Theme.accent
+                    font.family: Theme.fontDisplay
+                    font.pixelSize: 11
+                    font.letterSpacing: Theme.trackMid
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "The default voice is used everywhere Jarvis speaks — read-back, voice mode, and phone calls (when it calls you and when it answers)."
+                    color: Theme.textMuted
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+
+                // Saved voices — each row: default dot · name · source · preview / set-default / delete
+                Repeater {
+                    model: page.libraryVoices
+                    delegate: RowLayout {
+                        id: voiceRow
+                        required property var modelData
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text {
+                            text: voiceRow.modelData.is_default ? "●" : "○"
+                            color: voiceRow.modelData.is_default ? Theme.success : Theme.textFaint
+                            font.pixelSize: 14
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: ("" + (voiceRow.modelData.label !== undefined ? voiceRow.modelData.label : voiceRow.modelData.id))
+                                  + (voiceRow.modelData.is_default ? "  ·  default" : "")
+                            color: Theme.text
+                            font.family: Theme.fontSans
+                            font.pixelSize: 13
+                            elide: Text.ElideRight
+                        }
+                        Text {
+                            text: voiceRow.modelData.source === "record" ? "recorded"
+                                  : (voiceRow.modelData.raw === true ? "raw clip" : "clip")
+                            color: Theme.textFaint
+                            font.family: Theme.fontMono
+                            font.pixelSize: 10
+                        }
+                        Widgets.PillButton {
+                            label: "Preview"
+                            onClicked: bridge.previewVoice(voiceRow.modelData.id)
+                        }
+                        Widgets.PillButton {
+                            label: "Set default"
+                            primary: !voiceRow.modelData.is_default
+                            enabledBtn: !voiceRow.modelData.is_default
+                            onClicked: bridge.setDefaultVoice(voiceRow.modelData.id)
+                        }
+                        Widgets.PillButton {
+                            label: "Delete"
+                            danger: true
+                            onClicked: bridge.deleteVoiceClone(voiceRow.modelData.id)
+                        }
+                    }
+                }
+                Text {
+                    visible: page.libraryVoices.length === 0
+                    text: "No saved voices yet — record or upload one below."
+                    color: Theme.textFaint
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                }
+
+                // Record / upload + name + save
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Widgets.StyledField {
+                        id: voiceNameField
+                        Layout.fillWidth: true
+                        placeholder: "Voice name (e.g. My Voice)"
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Widgets.PillButton {
+                        label: bridge.voiceCloneState === "recording" ? "Stop recording" : "● Record"
+                        danger: bridge.voiceCloneState === "recording"
+                        busy: bridge.voiceCloneState === "saving"
+                        onClicked: bridge.voiceCloneState === "recording"
+                                   ? bridge.stopVoiceCloneRecording()
+                                   : bridge.recordVoiceClone(20)
+                    }
+                    Widgets.PillButton {
+                        label: "Upload clip"
+                        enabledBtn: bridge.voiceCloneState !== "recording"
+                        onClicked: voiceFileDialog.open()
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: page.clipInfo
+                        color: page.clipInfo.indexOf("⚠") === 0 ? Theme.danger : Theme.textMuted
+                        font.family: Theme.fontSans
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                    }
+                    Widgets.StyledSwitch {
+                        checked: page.cleanClip
+                        onToggled: function (value) { page.cleanClip = value }
+                    }
+                    Text {
+                        text: "Auto-clean"
+                        color: Theme.textMuted
+                        font.family: Theme.fontSans
+                        font.pixelSize: 12
+                    }
+                    Widgets.PillButton {
+                        label: "Save voice"
+                        primary: true
+                        enabledBtn: page.clipReady && voiceNameField.text.trim().length > 0
+                                    && bridge.voiceCloneState !== "saving"
+                        onClicked: {
+                            bridge.saveVoiceClone(voiceNameField.text, page.cleanClip)
+                            voiceNameField.text = ""
                         }
                     }
                 }

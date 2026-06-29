@@ -60,6 +60,8 @@ class Bridge : public QObject
 
     // Voice dictation indicator: "idle" | "recording" | "transcribing".
     Q_PROPERTY(QString recordingState READ recordingState NOTIFY recordingStateChanged)
+    // Voice-clone library recorder state: "idle" | "recording" | "saving".
+    Q_PROPERTY(QString voiceCloneState READ voiceCloneState NOTIFY voiceCloneStateChanged)
     // Voice MODE orb state: "idle" | "listening" | "thinking" | "speaking".
     // Drives the VoiceMode.qml glowing orb's animation.
     Q_PROPERTY(QString voiceState READ voiceState NOTIFY voiceStateChanged)
@@ -105,6 +107,7 @@ public:
     bool hasAgentDesktop() const { return m_hasAgentDesktop; }
     int frameSeq() const { return m_frameSeq; }
     QString recordingState() const { return m_recordingState; }
+    QString voiceCloneState() const { return m_voiceCloneState; }
     QString voiceState() const { return m_voiceState; }
     bool handsFree() const { return m_handsFree; }
     qreal voiceLevel() const { return m_voiceLevel; }
@@ -330,6 +333,24 @@ public:
     Q_INVOKABLE void voiceSpeak(const QString &text);
     Q_INVOKABLE bool voiceAvailable() const;
 
+    // ---- Named voice library (record/upload, name, set-default) -------------
+    // Record ~`seconds` of mic (pw-record -> temp wav) as a candidate reference
+    // clip; on finish emits voiceClipCaptured(bytes, "wav") and voiceCloneState
+    // goes idle. stopVoiceCloneRecording() ends it early. loadVoiceClipFromFile()
+    // takes an uploaded clip instead. saveVoiceClone() sends the captured/loaded
+    // clip to voice.create_clone (clean=true runs the ffmpeg trim/clean server-side).
+    Q_INVOKABLE void recordVoiceClone(int seconds = 20);
+    Q_INVOKABLE void stopVoiceCloneRecording();
+    Q_INVOKABLE void loadVoiceClipFromFile(const QString &fileUrl);
+    Q_INVOKABLE bool hasVoiceClip() const { return !m_voiceClipBytes.isEmpty(); }
+    Q_INVOKABLE void saveVoiceClone(const QString &name, bool clean = true);
+    // Library management (all drive the daemon voice.* methods + refresh the list).
+    Q_INVOKABLE void setDefaultVoice(const QString &voiceId);
+    Q_INVOKABLE void deleteVoiceClone(const QString &id);
+    Q_INVOKABLE void renameVoiceClone(const QString &id, const QString &name);
+    // Synthesize a short sample in `voiceId` and play it (voice.preview_clone).
+    Q_INVOKABLE void previewVoice(const QString &voiceId);
+
     // ---- Voice MODE (the spinny-orb page) -----------------------------------
     // Push-to-talk capture via QtMultimedia (QAudioSource -> int16 mono 16k PCM
     // buffer). startListening() begins capture (voiceState=listening). stopListening()
@@ -531,6 +552,13 @@ signals:
     void voiceProvidersListed(const QVariantList &sttProviders,
                               const QVariantList &ttsProviders,
                               const QVariantMap &voicesByProvider);
+    // Named voice library: a candidate reference clip was captured/loaded (ready
+    // to name + save); the library changed (rows + current default voiceId); and
+    // the result of a create/delete/set-default/rename action.
+    void voiceClipCaptured(int bytes, const QString &format);
+    void voiceLibraryChanged(const QVariantList &voices, const QString &defaultVoice);
+    void voiceCloneResult(bool ok, const QString &error);
+    void voiceCloneStateChanged();
 
     // ---- Contract A v2 results ---------------------------------------------
     void settingsLoaded(const QVariantMap &settings);
@@ -793,6 +821,8 @@ private:
     void setRecordingState(const QString &s);
     void finishDictation();          // record stopped -> read wav -> voice.stt
     QString recordWavPath() const;   // temp wav path for the active capture
+    void setVoiceCloneState(const QString &s);
+    void finishCloneRecording();     // clone record stopped -> keep wav bytes
     static bool hasExecutable(const QString &name);
 
     // ---- Voice MODE helpers -------------------------------------------------
@@ -921,6 +951,14 @@ private:
     QProcess *m_recProc = nullptr;      // active pw-record capture
     QString m_recPath;                  // wav path for the active capture
     bool m_recAutoStop = false;         // a duration timer will stop the capture
+    // Named voice-library reference-clip recorder (separate from dictation above).
+    QString m_voiceCloneState = QStringLiteral("idle");
+    QProcess *m_cloneRecProc = nullptr; // active pw-record capture for a voice clip
+    QString m_cloneRecPath;             // temp wav path for the clip capture
+    bool m_cloneAutoStop = false;       // duration timer will stop the clip capture
+    QByteArray m_voiceClipBytes;        // the captured/loaded candidate reference clip
+    QString m_voiceClipFormat;          // its container ext ("wav", "mp3", ...)
+    QString m_voiceClipSource = QStringLiteral("upload"); // "record" | "upload"
     // Hands-free voice mode capture: continuous pw-record streaming raw s16 to
     // stdout (same proven path as dictation). m_pwHeaderSkip drops the WAV header.
     QProcess *m_voiceProc = nullptr;
