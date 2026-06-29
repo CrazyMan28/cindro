@@ -79,7 +79,7 @@ export class TwilioService {
     }
     if (digits.length === 10) return `+1${digits}`;
     if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-    throw new Error(`invalid phone number: ${raw} (use E.164, e.g. +18449040251)`);
+    throw new Error(`invalid phone number: ${raw} (use E.164, e.g. +15551234567)`);
   }
 
   // ---- allowlist -----------------------------------------------------------

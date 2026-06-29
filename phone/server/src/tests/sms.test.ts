@@ -41,14 +41,14 @@ describe("sms ↔ agent bridge", () => {
   it("routes an inbound SMS to the selected agent and texts the agent's reply back", async () => {
     const built = await makeTestApp();
     builts.push(built);
-    built.services.twilio.allowlistAdd("+18449040251");
+    built.services.twilio.allowlistAdd("+15551234567");
     built.services.twilio.setSmsAgentEnabled(true);
     built.services.twilio.setSmsAgentExtension("101");
 
     // Inbound SMS → routed to the agent (ext 101), NOT the ext-100 inbox.
     const sms = await formPost(built, "/twilio/sms", {
       MessageSid: "SM_in_1",
-      From: "+18449040251",
+      From: "+15551234567",
       Body: "hey codex, status?"
     });
     expect(sms.statusCode).toBe(200);
@@ -75,19 +75,19 @@ describe("sms ↔ agent bridge", () => {
       "outbound SMS sent"
     );
     expect(built.twilioApi.createMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "+18449040251", from: "+15550001111", body: "All green — build passing." })
+      expect.objectContaining({ to: "+15551234567", from: "+15550001111", body: "All green — build passing." })
     );
   });
 
   it("leaves inbound SMS in the inbox (no agent, no outbound text) when the feature is OFF", async () => {
     const built = await makeTestApp();
     builts.push(built);
-    built.services.twilio.allowlistAdd("+18449040251");
+    built.services.twilio.allowlistAdd("+15551234567");
     // sms-agent defaults OFF.
 
     const sms = await formPost(built, "/twilio/sms", {
       MessageSid: "SM_off_1",
-      From: "+18449040251",
+      From: "+15551234567",
       Body: "just a note"
     });
     expect(sms.statusCode).toBe(200);

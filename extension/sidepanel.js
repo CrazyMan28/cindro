@@ -2993,15 +2993,15 @@ function initPhonePanel() {
   const soff = $("phoneScreeningOff"); if (soff) soff.addEventListener("click", () => doToggleScreening(false));
 
   // carrier forwarding — copy codes to clipboard
-  const AGENT_NUMBER = "+18449040251";
+  const AGENT_NUMBER = "+15551234567";
   const CF_CODES = {
     cfAll:       "**004*" + AGENT_NUMBER + "#",
     cfBusy:      "**67*"  + AGENT_NUMBER + "#",
     cfNoAns:     "**61*"  + AGENT_NUMBER + "#",
     cfUnreach:   "**62*"  + AGENT_NUMBER + "#",
     cfUndo:      "##002#",
-    vzBusyNoAns: "*718449040251",
-    vzAll:       "*728449040251",
+    vzBusyNoAns: "*715551234567",
+    vzAll:       "*725551234567",
     vzOff:       "*73"
   };
   Object.entries(CF_CODES).forEach(([id, code]) => {

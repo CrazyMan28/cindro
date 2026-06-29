@@ -10,7 +10,7 @@ Leaves hooks.json empty and settings at the captured baseline.
 
 Run:
   env -u PYTHONPATH \\
-    /home/kihi2024/projects/computer_use/computer-use/.venv/bin/python \\
+    computer-use/.venv/bin/python \\
     scripts/verify_contract_a_full.py
 """
 
@@ -26,7 +26,7 @@ except ImportError:
     print(
         "FAIL: websockets not in venv.\n"
         "  env -u PYTHONPATH "
-        "/home/kihi2024/projects/computer_use/computer-use/.venv/bin/python "
+        "computer-use/.venv/bin/python "
         "scripts/verify_contract_a_full.py",
         file=sys.stderr,
     )

@@ -57,6 +57,6 @@ class PairingStore(context: Context) {
          * Default device-WebSocket endpoint (Contract C, port 8796) on the laptop's
          * Tailscale address. The user can override it in the pairing screen.
          */
-        const val DEFAULT_HOST_PORT = "100.114.201.41:8796"
+        const val DEFAULT_HOST_PORT = "127.0.0.1:8796"
     }
 }

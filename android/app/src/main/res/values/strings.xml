@@ -5,7 +5,7 @@
     <string name="pair_title">Pair with Jarvis</string>
     <string name="pair_subtitle">Open the Jarvis sidebar on your laptop, choose “Pair a device”, then scan the QR or type the host and 6-digit code shown.</string>
     <string name="pair_host_label">Host : Port</string>
-    <string name="pair_host_hint">100.114.201.41:8796</string>
+    <string name="pair_host_hint">127.0.0.1:8796</string>
     <string name="pair_code_label">Pairing code</string>
     <string name="pair_name_label">This device’s name</string>
     <string name="pair_scan_qr">Scan QR</string>

@@ -416,7 +416,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "twilio_allowlist_add",
     description:
-      "Allow a phone number for real Twilio calls/SMS (E.164 like +18449040251, or US 10-digit). Trial accounts ALSO require the number to be verified in the Twilio console.",
+      "Allow a phone number for real Twilio calls/SMS (E.164 like +15551234567, or US 10-digit). Trial accounts ALSO require the number to be verified in the Twilio console.",
     inputSchema: schema({ phone_number: "string", label: "string?" }),
     handler: (args, context) => {
       const parsed = z.object({ phone_number: zString, label: z.string().optional() }).parse(args);

@@ -340,8 +340,8 @@ fun SettingsScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     val accounts = listOf(
-                        "pro" to "Pro (ogkihi2024@gmail.com)",
-                        "max" to "Max (issac676767@proton.me)",
+                        "pro" to "Pro (you@example.com)",
+                        "max" to "Max (you-max@example.com)",
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         accounts.forEach { (id, label) ->
@@ -365,7 +365,7 @@ fun SettingsScreen(
                     if (state.claudeAccount == "max") {
                         Spacer(Modifier.height(6.dp))
                         Text(
-                            "⚠ Max — uses your Max quota (issac676767@proton.me).",
+                            "⚠ Max — uses your Max quota (you-max@example.com).",
                             style = MaterialTheme.typography.bodySmall, color = JarvisPalette.Warning,
                         )
                     }

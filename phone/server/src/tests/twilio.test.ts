@@ -89,10 +89,10 @@ function silentFrame(): string {
 describe("twilio outbound call bridge", () => {
   it("twilio_call_and_wait places the call, speaks TTS to the stream, and returns the caller's transcript", async () => {
     const { built, host } = await listeningApp();
-    built.services.twilio.allowlistAdd("+18449040251", "Kizek");
+    built.services.twilio.allowlistAdd("+15551234567", "Kizek");
 
     const resultPromise = mcpCall(built, "twilio_call_and_wait", {
-      to_number: "+18449040251",
+      to_number: "+15551234567",
       reason: "integration test",
       say: "hello from the agent",
       from_extension: "101",
@@ -145,14 +145,14 @@ describe("twilio outbound call bridge", () => {
     expect(result.answered).toBe(true);
     expect(result.user_transcript).toContain("mock transcript");
     expect(result.twilio_call_sid).toBe(row.call_sid);
-    expect(result.phone_number).toBe("+18449040251");
+    expect(result.phone_number).toBe("+15551234567");
     expect(sawMark).toBe(true);
     expect(mediaFrames.length).toBeGreaterThan(0); // agent TTS reached the phone line
 
     // The call is in the same calls table the app's History screen renders.
     const call = built.services.db.sqlite.prepare("SELECT * FROM calls WHERE id = ?").get(row.call_id) as Record<string, unknown>;
     expect(call.to_extension).toBe("700");
-    expect(String(call.reason)).toContain("+18449040251");
+    expect(String(call.reason)).toContain("+15551234567");
   });
 
   it("refuses to call numbers that are not allowlisted", async () => {
@@ -171,9 +171,9 @@ describe("twilio outbound call bridge", () => {
 
   it("resolves as timeout when the status callback reports no-answer", async () => {
     const { built } = await listeningApp();
-    built.services.twilio.allowlistAdd("+18449040251");
+    built.services.twilio.allowlistAdd("+15551234567");
     const resultPromise = mcpCall(built, "twilio_call_and_wait", {
-      to_number: "+18449040251",
+      to_number: "+15551234567",
       reason: "no answer test",
       say: "hello?",
       from_extension: "101",
@@ -196,7 +196,7 @@ describe("twilio outbound call bridge", () => {
 describe("twilio inbound call bridge", () => {
   it("answers an allowlisted caller and bridges them to the registered agent extension", async () => {
     const { built, host } = await listeningApp();
-    built.services.twilio.allowlistAdd("+18449040251", "Kizek");
+    built.services.twilio.allowlistAdd("+15551234567", "Kizek");
 
     // A fake agent client on ext 101 that auto-accepts incoming calls.
     const agent = track(new WebSocket(`ws://${host}/ws?token=agent-token-test&extension=101&clientType=agent`));
@@ -211,7 +211,7 @@ describe("twilio inbound call bridge", () => {
     await new Promise((resolve) => agent.on("open", resolve));
     await new Promise((resolve) => setTimeout(resolve, 100)); // let auth settle
 
-    const voice = await formPost(built, "/twilio/voice", { CallSid: "CA_inbound_1", From: "+18449040251" });
+    const voice = await formPost(built, "/twilio/voice", { CallSid: "CA_inbound_1", From: "+15551234567" });
     expect(voice.statusCode).toBe(200);
     expect(voice.body).toContain("<Connect>");
     expect(voice.body).toContain("/twilio/media");
@@ -234,10 +234,10 @@ describe("twilio inbound call bridge", () => {
       "active inbound PSTN call"
     );
     expect(call.to_extension).toBe("101");
-    expect(String(call.reason)).toContain("+18449040251");
+    expect(String(call.reason)).toContain("+15551234567");
     expect(agentSawIncoming).toBe(true);
     const twilioRow = built.services.twilio.findByCallSid("CA_inbound_1");
-    expect(twilioRow).toMatchObject({ direction: "inbound", phone_number: "+18449040251" });
+    expect(twilioRow).toMatchObject({ direction: "inbound", phone_number: "+15551234567" });
   });
 
   it("rejects callers that are not on the allowlist", async () => {
@@ -253,24 +253,24 @@ describe("twilio sms", () => {
   it("twilio_sms sends to an allowlisted number", async () => {
     const built = await makeTestApp();
     builts.push(built);
-    built.services.twilio.allowlistAdd("+18449040251");
-    const response = await mcpCall(built, "twilio_sms", { to_number: "+18449040251", body: "build finished" });
+    built.services.twilio.allowlistAdd("+15551234567");
+    const response = await mcpCall(built, "twilio_sms", { to_number: "+15551234567", body: "build finished" });
     const result = toolResult(response);
     expect(result.ok).toBe(true);
-    expect(built.twilioApi.createMessage).toHaveBeenCalledWith({ to: "+18449040251", from: "+15550001111", body: "build finished" });
+    expect(built.twilioApi.createMessage).toHaveBeenCalledWith({ to: "+15551234567", from: "+15550001111", body: "build finished" });
   });
 
   it("inbound SMS from an allowlisted number lands in the user's inbox", async () => {
     const built = await makeTestApp();
     builts.push(built);
-    built.services.twilio.allowlistAdd("+18449040251");
-    const sms = await formPost(built, "/twilio/sms", { MessageSid: "SM_in_1", From: "+18449040251", Body: "on my way" });
+    built.services.twilio.allowlistAdd("+15551234567");
+    const sms = await formPost(built, "/twilio/sms", { MessageSid: "SM_in_1", From: "+15551234567", Body: "on my way" });
     expect(sms.statusCode).toBe(200);
     const message = built.services.db.sqlite
       .prepare("SELECT * FROM agent_messages WHERE to_extension = '100' AND from_extension = '700'")
       .get() as Record<string, unknown>;
     expect(message.body).toBe("on my way");
-    expect(String(message.title)).toContain("+18449040251");
+    expect(String(message.title)).toContain("+15551234567");
     expect(JSON.parse(String(message.metadata)).channel).toBe("sms");
   });
 
@@ -288,21 +288,21 @@ describe("twilio management tools", () => {
   it("allowlist add/list/remove round-trips through MCP", async () => {
     const built = await makeTestApp();
     builts.push(built);
-    const add = toolResult(await mcpCall(built, "twilio_allowlist_add", { phone_number: "844 904 0251", label: "Kizek" }));
-    expect(add.allowlisted.phone_number).toBe("+18449040251");
+    const add = toolResult(await mcpCall(built, "twilio_allowlist_add", { phone_number: "555 123 4567", label: "Kizek" }));
+    expect(add.allowlisted.phone_number).toBe("+15551234567");
     const list = toolResult(await mcpCall(built, "twilio_allowlist_list", {}));
     expect(list.numbers).toHaveLength(1);
-    const removed = toolResult(await mcpCall(built, "twilio_allowlist_remove", { phone_number: "+18449040251" }));
+    const removed = toolResult(await mcpCall(built, "twilio_allowlist_remove", { phone_number: "+15551234567" }));
     expect(removed.removed).toBe(true);
   });
 
   it("twilio_set_user_number sets the default destination and allowlists it", async () => {
     const built = await makeTestApp();
     builts.push(built);
-    const set = toolResult(await mcpCall(built, "twilio_set_user_number", { phone_number: "8449040251" }));
-    expect(set.default_user_number).toBe("+18449040251");
+    const set = toolResult(await mcpCall(built, "twilio_set_user_number", { phone_number: "5551234567" }));
+    expect(set.default_user_number).toBe("+15551234567");
     const list = toolResult(await mcpCall(built, "twilio_allowlist_list", {}));
-    expect(list.default_user_number).toBe("+18449040251");
+    expect(list.default_user_number).toBe("+15551234567");
     expect(list.numbers).toHaveLength(1);
   });
 
@@ -508,7 +508,7 @@ describe("twilio call screening", () => {
 describe("call_user_and_wait escalation to a real phone call", () => {
   it("escalates after the in-app call misses and the text fallback times out", async () => {
     const { built } = await listeningApp();
-    built.services.twilio.allowlistAdd("+18449040251");
+    built.services.twilio.allowlistAdd("+15551234567");
 
     // User device (ext 100) is OFFLINE and never answers the text fallback.
     const response = await mcpCall(built, "call_user_and_wait", {
@@ -519,7 +519,7 @@ describe("call_user_and_wait escalation to a real phone call", () => {
       fallback_timeout_seconds: 1,
       expected_response_type: "freeform",
       escalate_to_twilio: true,
-      escalate_phone_number: "+18449040251"
+      escalate_phone_number: "+15551234567"
     });
     const result = toolResult(response);
     expect(result.escalated).toBe(true);

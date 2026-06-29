@@ -471,7 +471,7 @@ Item {
                             id: claudeAccountCombo
                             Layout.fillWidth: true
                             // index 0 == Pro (default), index 1 == Max
-                            model: ["Pro (ogkihi2024@gmail.com)", "Max (issac676767@proton.me)"]
+                            model: ["Pro (you@example.com)", "Max (you-max@example.com)"]
                             function syncFromState() {
                                 currentIndex = (page.claudeAccount === "max") ? 1 : 0
                             }
@@ -486,7 +486,7 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     visible: page.claudeAccount === "max"
-                    text: "⚠ Max — uses your Max quota (issac676767@proton.me)."
+                    text: "⚠ Max — uses your Max quota (you-max@example.com)."
                     color: Theme.amber
                     font.family: Theme.fontSans
                     font.pixelSize: 12

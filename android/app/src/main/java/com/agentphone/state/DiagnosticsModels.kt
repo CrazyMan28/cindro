@@ -43,9 +43,9 @@ data class DiagnosticsState(
 }
 
 object ConnectionTroubleshooter {
-    const val KNOWN_TAILSCALE_URL = "http://100.114.201.41:8799"
+    const val KNOWN_TAILSCALE_URL = "http://127.0.0.1:8799"
     const val TIMEOUT_MESSAGE =
-        "Could not reach server. Check that Tailscale is on, server is running, firewall allows 8799, and URL is http://100.114.201.41:8799."
+        "Could not reach server. Check that Tailscale is on, server is running, firewall allows 8799, and URL is http://127.0.0.1:8799."
     const val AUTH_MESSAGE = "Auth failed. Check DEVICE_TOKEN in .env and app settings."
     const val EXTENSION_100_MESSAGE = "Extension 100 is missing. Run ./scripts/dev-fix-empty-extensions.sh on the server."
     const val LOOPBACK_MESSAGE = "127.0.0.1 means this phone, not your laptop/server. Use your Tailscale URL."

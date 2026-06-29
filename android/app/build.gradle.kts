@@ -9,7 +9,7 @@ plugins {
 // Firebase Cloud Messaging is wired through the google-services plugin, but the
 // plugin hard-fails the build if app/google-services.json is missing. Apply it
 // only when the file is present so a clean checkout (or a CI box without the
-// baratone config) still produces a working assembleDebug — the app degrades to
+// FCM project config) still produces a working assembleDebug — the app degrades to
 // a no-op FCM path in that case (see FcmService / PushRegistrar).
 val hasGoogleServices = file("google-services.json").exists()
 if (hasGoogleServices) {
@@ -132,7 +132,7 @@ dependencies {
     // Image loading for chat photo attachments / previews.
     implementation(libs.coil.compose)
 
-    // FCM push (project "baratone"). Resolved regardless; the google-services
+    // FCM push (project "the FCM project"). Resolved regardless; the google-services
     // plugin is only applied when google-services.json is present.
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)

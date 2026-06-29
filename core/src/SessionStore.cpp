@@ -200,7 +200,7 @@ bool SessionStore::migrate()
             ins.addBindValue(QStringLiteral("computer-use"));
             ins.addBindValue(QStringLiteral("Computer Use"));
             ins.addBindValue(QStringLiteral("http"));
-            ins.addBindValue(QStringLiteral("http://100.114.201.41:8794/mcp"));
+            ins.addBindValue(QStringLiteral("http://127.0.0.1:8794/mcp"));
             ins.addBindValue(QString());
             ins.addBindValue(1);
             ins.addBindValue(1);

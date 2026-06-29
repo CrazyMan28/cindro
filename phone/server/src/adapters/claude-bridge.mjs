@@ -10,7 +10,7 @@
 // continuity is kept by prepending a short rolling transcript + memory context.
 //
 // ACCOUNT: pinned to the PRO profile — the default `claude` config dir
-// (~/.claude = ogkihi2024@gmail.com), NOT the `claude2` / secondary / Max profile
+// (~/.claude = you@example.com), NOT the `claude2` / secondary / Max profile
 // (~/.claude-secondary). The inherited Claude Code session env is stripped so the
 // spawned claude runs as a clean, non-nested session on the right account.
 

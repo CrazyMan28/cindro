@@ -26,7 +26,7 @@ DEFAULT_HOST = "0.0.0.0"
 # 8790 project-tracker, 8791 phone-installer, 8792 phone file server, 8794
 # computer-use, 8795 jarvisd control, 8796 jarvisd device -> 8797 is free.
 DEFAULT_PORT = 8797
-ADVERTISE_HOST = "100.114.201.41"
+ADVERTISE_HOST = "127.0.0.1"
 
 # --- jarvisd control WS (Contract A) ---------------------------------------
 CONTROL_TOKEN_FILE = JARVIS_CONFIG_DIR / "control_token"

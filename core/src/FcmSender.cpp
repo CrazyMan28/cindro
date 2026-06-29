@@ -41,7 +41,7 @@ QString FcmSender::resolveServiceAccountPath()
     if (!env.isEmpty() && QFile::exists(QString::fromLocal8Bit(env)))
         return QString::fromLocal8Bit(env);
 
-    // 2) reuse the phone-installer "baratone" service account if present.
+    // 2) reuse the phone-installer "the FCM project" service account if present.
     const QString home = QDir::homePath();
     const QStringList candidates = {
         home + QStringLiteral("/.phone-installer/service-account.json"),

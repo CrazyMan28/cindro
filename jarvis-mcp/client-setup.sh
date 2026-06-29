@@ -12,7 +12,7 @@
 set -euo pipefail
 
 NAME="jarvis"
-HOST="${JARVIS_MCP_ADVERTISE_HOST:-100.114.201.41}"
+HOST="${JARVIS_MCP_ADVERTISE_HOST:-127.0.0.1}"
 PORT="${JARVIS_MCP_PORT:-8797}"
 URL="http://${HOST}:${PORT}/mcp"
 TOKEN_FILE="${HOME}/.config/jarvis/jarvis_mcp_token"

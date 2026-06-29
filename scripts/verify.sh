@@ -4,7 +4,8 @@
 # Prints a clear per-step PASS/FAIL line. Fails fast on the first error.
 set -euo pipefail
 
-ROOT="/home/kihi2024/projects/computer_use"
+# Repo root = the parent of this script's scripts/ dir (works from any clone).
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD="${ROOT}/build"
 
 # Print a "<STEP>: PASS/FAIL" line. Called via trap so it also fires on early exit.

@@ -93,7 +93,7 @@ video). Reuse the design in
 
 | Port  | Endpoint                                   | Used by |
 |-------|--------------------------------------------|---------|
-| 8794  | `http://100.114.201.41:8794/mcp`           | computer-use MCP engine (the desktop-use server the brain calls). |
+| 8794  | `http://127.0.0.1:8794/mcp`           | computer-use MCP engine (the desktop-use server the brain calls). |
 | 8795  | `ws://127.0.0.1:8795/control/ws`           | Contract A control protocol (sidebar/clients <-> jarvisd), loopback only. |
 | 8796  | `ws://...:8796`                            | Contract C device protocol (jarvisd <-> phone), Wave 3+. |
 
@@ -107,7 +107,7 @@ video). Reuse the design in
   schedules, memories, skills, ssh_allow, plugins, devices, audit.
 - `~/.computer-use/config.yaml` — computer-use bearer; jarvisd injects it into
   the spawned codex/claude MCP config so the brain can reach the engine at
-  `http://100.114.201.41:8794/mcp`.
+  `http://127.0.0.1:8794/mcp`.
 
 ## Data flow (Workflow #1 vertical slice)
 

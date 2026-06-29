@@ -4,7 +4,7 @@
 Invocation (uses the project venv, avoids host PYTHONPATH):
 
   env -u PYTHONPATH \\
-    /home/kihi2024/projects/computer_use/computer-use/.venv/bin/python \\
+    computer-use/.venv/bin/python \\
     scripts/verify_phone_mcp_full.py
 
 Daemon control WS: ws://127.0.0.1:8795/control/ws?token=<control_token>
@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover
     print(
         "FAIL: 'websockets' not in venv. Run via:\n"
         "  env -u PYTHONPATH "
-        "/home/kihi2024/projects/computer_use/computer-use/.venv/bin/python "
+        "computer-use/.venv/bin/python "
         "scripts/verify_phone_mcp_full.py",
         file=sys.stderr,
     )
@@ -40,7 +40,7 @@ CONTROL_PORT = 8795
 TOKEN_PATH = os.path.expanduser("~/.config/jarvis/control_token")
 
 # Twilio constants expected in the running config
-EXPECTED_FROM_NUMBER = "+18449040251"
+EXPECTED_FROM_NUMBER = "+15551234567"
 ORIG_USER_NUMBER = "+13193898338"
 TEST_ALLOWLIST_NUMBER = "+15555550123"
 
