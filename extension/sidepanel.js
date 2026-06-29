@@ -1436,14 +1436,14 @@ function renderCallsList(calls) {
       acceptBtn.className = "phone-sm-btn ok"; acceptBtn.textContent = "✓ Accept";
       acceptBtn.addEventListener("click", async () => {
         acceptBtn.disabled = true;
-        try { await phoneHttp("POST", "/api/calls/" + callId + "/accept", {}); await loadActiveCalls(); }
+        try { await phoneHttp("POST", "/api/calls/" + callId + "/accept", { extension: "100" }); await loadActiveCalls(); }
         catch (e) { addSys("Accept: " + (e.message || e)); acceptBtn.disabled = false; }
       });
       const rejectBtn = document.createElement("button");
       rejectBtn.className = "phone-sm-btn bad"; rejectBtn.textContent = "✗ Reject";
       rejectBtn.addEventListener("click", async () => {
         rejectBtn.disabled = true;
-        try { await phoneHttp("POST", "/api/calls/" + callId + "/reject", {}); await loadActiveCalls(); }
+        try { await phoneHttp("POST", "/api/calls/" + callId + "/reject", { extension: "100" }); await loadActiveCalls(); }
         catch (e) { addSys("Reject: " + (e.message || e)); rejectBtn.disabled = false; }
       });
       actions.appendChild(acceptBtn);
@@ -1656,7 +1656,7 @@ async function doPhoneDial() {
     phoneResult("phoneDialResult", "Calling ext " + ext + "…", "");
     if (btn) btn.disabled = true;
     try {
-      const data = await phoneMcp("call_extension", { extension: ext });
+      const data = await phoneMcp("call_extension", { extension: String(ext) });
       phoneResult("phoneDialResult",
         (data.ok !== false)
           ? "✓ " + (data.call_id ? "call_id: " + data.call_id : "Dialing…")
@@ -1685,7 +1685,7 @@ async function doPhoneDial() {
       data = await phoneMcp("twilio_call_and_wait", args);
     } else {
       const fromExt = parseInt(target, 10) || 101;
-      data = await phoneMcp("call_user_and_wait", { reason, say, from_extension: fromExt });
+      data = await phoneMcp("call_user_and_wait", { reason, say, from_extension: String(fromExt) });
     }
     phoneResult(
       "phoneDialResult",
@@ -2038,7 +2038,7 @@ async function doSetVoice() {
   if (!ext) { phoneResult("phoneVoiceResult", "Extension required.", "bad"); return; }
   phoneResult("phoneVoiceResult", "Setting…", "");
   try {
-    const args = { extension: isNaN(Number(ext)) ? ext : Number(ext) };
+    const args = { extension: String(ext) };
     if (vid)   args.voice_id = vid;
     if (speed) args.speed    = parseFloat(speed);
     const data = await phoneMcp("set_voice_profile", args);
@@ -2051,7 +2051,7 @@ async function doGetVoice() {
   if (!ext) { phoneResult("phoneVoiceResult", "Extension required.", "bad"); return; }
   phoneResult("phoneVoiceResult", "Loading…", "");
   try {
-    const data = await phoneMcp("get_voice_profile", { extension: isNaN(Number(ext)) ? ext : Number(ext) });
+    const data = await phoneMcp("get_voice_profile", { extension: String(ext) });
     phoneResult("phoneVoiceResult", fmtPhoneData(data.voice || data), "");
   } catch (e) { phoneResult("phoneVoiceResult", "Error: " + (e.message || e), "bad"); }
 }
@@ -2083,8 +2083,8 @@ async function doRedAlert() {
 
 // ---- helper: convert ext string to the right type for phoneMcp args ----
 function _extArg(ext) {
-  const n = Number(ext);
-  return isNaN(n) ? String(ext) : n;
+  // Phone MCP tools (zString) + REST routes all expect the extension as a STRING.
+  return String(ext);
 }
 
 // ---- dialer state ----
@@ -2275,7 +2275,7 @@ function renderVoiceGroups(container, voices, selectedId) {
         if (vc) vc.textContent = "Current: " + (o.id || "Default");
         if (!agentConfigState.ext) return;
         const body = {};
-        if (o.id) body.voice_id = o.id;
+        if (o.id) body.voiceId = o.id;
         phoneHttp("PUT", "/api/extensions/" + agentConfigState.ext + "/voice", body).catch((e) => {
           const r = $("agentConfigResult");
           if (r) { r.textContent = "Voice error: " + (e.message || e); r.className = "phone-result bad"; }
@@ -2820,7 +2820,7 @@ function initPhonePanel() {
     if (!cid) return;
     bAccept.disabled = true;
     try {
-      await phoneHttp("POST", "/api/calls/" + cid + "/accept", {});
+      await phoneHttp("POST", "/api/calls/" + cid + "/accept", { extension: "100" });
       await loadActiveCalls();
     } catch (e) {
       addSys("Accept failed: " + (e.message || e));
@@ -2835,7 +2835,7 @@ function initPhonePanel() {
     if (!cid) return;
     bReject.disabled = true;
     try {
-      await phoneHttp("POST", "/api/calls/" + cid + "/reject", {});
+      await phoneHttp("POST", "/api/calls/" + cid + "/reject", { extension: "100" });
       await loadActiveCalls();
     } catch (e) {
       addSys("Reject failed: " + (e.message || e));
@@ -2933,7 +2933,7 @@ function initPhonePanel() {
       if (!agentConfigState.ext) return;
       agentConfigState.speed = parseFloat(speedSlider.value);
       const body = { speed: agentConfigState.speed };
-      if (agentConfigState.voiceId) body.voice_id = agentConfigState.voiceId;
+      if (agentConfigState.voiceId) body.voiceId = agentConfigState.voiceId;
       phoneHttp("PUT", "/api/extensions/" + agentConfigState.ext + "/voice", body).catch((e) => {
         const r = $("agentConfigResult");
         if (r) { r.textContent = "Speed: " + (e.message || e); r.className = "phone-result bad"; }

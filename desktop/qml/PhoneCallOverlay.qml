@@ -160,7 +160,7 @@ Item {
             for (var i = 0; i < txts.length; i++) {
                 var t = txts[i]
                 _txModel.append({
-                    "speaker": t.extension !== undefined ? ("ext " + t.extension) : "caller",
+                    "speaker": t.from_extension !== undefined ? ("ext " + t.from_extension) : "caller",
                     "body":    t.text || "",
                     "isAgent": false
                 })

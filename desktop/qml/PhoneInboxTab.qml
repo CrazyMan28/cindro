@@ -31,11 +31,13 @@ Item {
         target: bridge
         function onPhoneResult(callId, result) {
             var cb = tab._pending[callId]
-            if (cb) { delete tab._pending[callId]; cb(result) }
+            delete tab._pending[callId]
+            if (cb) cb(result)
         }
         function onPhoneHttpResult(callId, result) {
             var cb = tab._pending[callId]
-            if (cb) { delete tab._pending[callId]; cb(result) }
+            delete tab._pending[callId]
+            if (cb) cb(result)
         }
     }
 
@@ -134,7 +136,7 @@ Item {
         if (!toExt) { tab.replyStatus = "Error: no agent extension for this thread"; return }
         tab.replyStatus = "Sending…"
         tab.callHttp("POST", "/api/messages",
-            { to_extension: toExt, from_extension: "101",
+            { to_extension: toExt, from_extension: "100",
               thread_id: tab.openThreadId, body: text.trim() },
             function(r) {
                 if (r.error) {
@@ -565,7 +567,7 @@ Item {
                         color: _sendMa.containsMouse ? Theme.accent : Theme.accentDim
                         Behavior on color { ColorAnimation { duration: Theme.durFast } }
                         Text { id: _sendLbl; anchors.centerIn: parent; text: "SEND"; color: Theme.inkOnAccent; font.family: Theme.fontDisplay; font.pixelSize: 10; font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold }
-                        MouseArea { id: _sendMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { if (_nTitle.text.trim() || _nMsg.text.trim()) tab.sendNotify(_nTitle.text, _nMsg.text, _nPriority.value) } }
+                        MouseArea { id: _sendMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { if (_nTitle.text.trim() && _nMsg.text.trim()) tab.sendNotify(_nTitle.text, _nMsg.text, _nPriority.value) } }
                     }
                 }
                 Text { id: notifyStatus; text: ""; visible: text.length > 0; color: Theme.success; font.family: Theme.fontMono; font.pixelSize: 10 }
@@ -678,7 +680,7 @@ Item {
                             onClicked: {
                                 var sel = parent.parent.parent.parent._selected
                                 if (sel.length === 0) return
-                                tab.callTool("call_extension", { from_extension: "101", to_extension: sel[0] }, function(r) {})
+                                tab.callTool("call_extension", { from_extension: "100", extension: sel[0] }, function(r) {})
                                 tab.showNewChat = false
                             }
                         }
@@ -697,8 +699,8 @@ Item {
                                 // Text the selected agent(s): notify_user_and_wait
                                 // routes a message to an extension's inbox + awaits a reply.
                                 for (var i = 0; i < sel.length; i++) {
-                                    tab.callTool("notify_user_and_wait",
-                                        { to_extension: sel[i], message: msg, title: "Message" },
+                                    tab.callHttp("POST", "/api/messages",
+                                        { from_extension: "100", to_extension: sel[i], body: msg, title: "Message" },
                                         function(r) { tab.refresh() })
                                 }
                                 tab.showNewChat = false
