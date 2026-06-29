@@ -466,6 +466,14 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("devices.pair_start") ||
         method == QStringLiteral("voice.stt") ||
         method == QStringLiteral("voice.tts") ||
+        // Named cloned-voice library (record/upload, name, set-default, preview).
+        // Managing your own voice clips is a config action, not security-sensitive.
+        method == QStringLiteral("voice.create_clone") ||
+        method == QStringLiteral("voice.delete_clone") ||
+        method == QStringLiteral("voice.set_default") ||
+        method == QStringLiteral("voice.rename_clone") ||
+        method == QStringLiteral("voice.preview_clone") ||
+        method == QStringLiteral("voice.list_voices") ||
         // Live-widget viewer leases / home-screen pins — not security-sensitive.
         method == QStringLiteral("widget.viewing") ||
         method == QStringLiteral("widget.pin") ||
@@ -542,6 +550,11 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("auth.approve"),    QStringLiteral("auth.deny"),
         // Voice (Mistral Voxtral, laptop-proxied) + device->phone file push.
         QStringLiteral("voice.stt"),       QStringLiteral("voice.tts"),
+        QStringLiteral("voice.list_voices"),
+        // Named cloned-voice library: record/upload, name, set-default, preview.
+        QStringLiteral("voice.create_clone"), QStringLiteral("voice.delete_clone"),
+        QStringLiteral("voice.set_default"),  QStringLiteral("voice.rename_clone"),
+        QStringLiteral("voice.preview_clone"),
         QStringLiteral("file.push"),       QStringLiteral("file.get"),
         // Live-widget viewer leases + home-screen widget pin/unpin.
         QStringLiteral("widget.viewing"),  QStringLiteral("widget.pin"),
