@@ -48,6 +48,9 @@ add_library(jarvis-core STATIC
     src/AgentDesktop.cpp
     src/VoiceService.cpp
     src/VoiceProvider.cpp
+    # Named cloned-voice library (record/upload, name, set-default) — the manifest
+    # + reference clips under ~/.config/jarvis/voices/.
+    src/VoiceLibrary.cpp
     # Wave 8 co-worker ops backend: scheduler (cron/at), SSH allow-list, audit
     # log + prompt-injection gate, desktop notifications.
     src/Scheduler.cpp
@@ -86,6 +89,7 @@ add_library(jarvis-core STATIC
     include/jarvis/AgentDesktop.h
     include/jarvis/VoiceService.h
     include/jarvis/VoiceProvider.h
+    include/jarvis/VoiceLibrary.h
     include/jarvis/Scheduler.h
     include/jarvis/SshAllowList.h
     include/jarvis/AuditLog.h
@@ -196,6 +200,14 @@ add_test(NAME agent_store_test COMMAND agent_store_test)
 add_executable(voice_provider_test tests/voice_provider_test.cpp)
 target_link_libraries(voice_provider_test PRIVATE jarvis-core Qt6::Core Qt6::Network)
 add_test(NAME voice_provider_test COMMAND voice_provider_test)
+
+# VoiceLibrary: named cloned-voice manifest CRUD against a QTemporaryDir HOME —
+# seed-from-disk (jarvice_ref.* -> "Jarvis" default), create/list/set-default,
+# slug + create-or-replace by slug, removal repairs the default, raw (no-ffmpeg)
+# storage, and clip-path resolution. Hermetic (raw .wav bytes; no ffmpeg/network).
+add_executable(voice_library_test tests/voice_library_test.cpp)
+target_link_libraries(voice_library_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME voice_library_test COMMAND voice_library_test)
 
 # SettingsStore: auth-lock is ON by default (no-brick) on a FRESH config; the
 # default + an explicit user OFF round-trip through saveConfig->load against a
