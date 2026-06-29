@@ -719,7 +719,11 @@ Response ControlServer::handlePhoneMcp(const Request &req)
     rq.setRawHeader("Authorization", QByteArray("Bearer ") + token.toUtf8());
     QNetworkReply *reply = nam.post(rq, QJsonDocument(rpc).toJson(QJsonDocument::Compact));
     QEventLoop loop;
-    QTimer::singleShot(35000, &loop, &QEventLoop::quit);
+    // The *_and_wait phone tools (call_user_and_wait, twilio_call_and_wait,
+    // notify_user_and_wait, wait_for_message_reply, …) BLOCK until the user answers
+    // — that can take minutes. A 35s cap timed those out ("phone server: timeout");
+    // give the proxy 5 minutes so a real call/wait can complete.
+    QTimer::singleShot(300000, &loop, &QEventLoop::quit);
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     loop.exec();
     if (!reply->isFinished() || reply->error() != QNetworkReply::NoError) {

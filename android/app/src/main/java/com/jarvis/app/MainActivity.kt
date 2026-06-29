@@ -12,6 +12,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
 import androidx.fragment.app.FragmentActivity
+import com.agentphone.service.AgentPhoneForegroundService
+import com.agentphone.state.AgentPhonePreferences
 import com.jarvis.app.fcm.JarvisNotifier
 import com.jarvis.app.net.JarvisConnectionService
 import com.jarvis.app.ui.AppNav
@@ -54,6 +56,16 @@ class MainActivity : FragmentActivity() {
         // offer). Paired users only; harmless to call repeatedly.
         if ((application as JarvisApp).pairingStore.isPaired)
             JarvisConnectionService.start(this)
+
+        // Keep the PHONE device (ext 100) ONLINE in the background so incoming VOIP
+        // calls/texts reach the user even when the app is closed — start the vendored
+        // agent-phone foreground service (it holds the device WS to the phone server)
+        // on EVERY Jarvis launch, not only when the Phone tab is opened. Idempotent;
+        // also (re-)enables the boot receiver so it comes back after a reboot.
+        if (AgentPhonePreferences.isAlwaysOnEnabled(this)) {
+            AgentPhonePreferences.setAlwaysOnEnabled(this, true)
+            AgentPhoneForegroundService.start(this, "jarvis_launch")
+        }
 
         // Seed deep-link state from the launching intent (cold start / from background).
         applyIntentExtras(intent)
