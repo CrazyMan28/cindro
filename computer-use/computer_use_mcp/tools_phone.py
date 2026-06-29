@@ -5,12 +5,12 @@ codex/claude only ever see the ISOLATED computer-use MCP server (per AGENTS.md t
 brain runs --ignore-user-config / --strict-mcp-config). The separate `phone` HTTP
 server therefore never reaches the brain. So we surface the phone tools HERE, on
 the same engine the brain already drives, by proxying each call through jarvisd's
-`phone.mcp` method (which holds the phone bearer). This keeps codex's own CLI MCP
-servers off-by-default while still letting Jarvis call/text the user.
+`phone.mcp` method (which holds the phone bearer). codex's own CLI MCP servers stay
+off-by-default.
 
-Every tool forwards to `phone.mcp {name, arguments}`; failures return {"error": …}.
-There is also a generic `phone_tool` escape hatch so ANY of the ~56 phone tools is
-reachable by name even if it has no explicit wrapper here.
+Argument names below MUST match phone/server/src/mcp/tools.ts exactly (a wrong/
+missing required field makes the server reply 400 Bad Request). There is also a
+generic `phone_tool` escape hatch for any tool without an explicit wrapper.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from computer_use_mcp import daemon_client
 def _call(name: str, arguments: dict | None = None) -> str:
     """Proxy a single phone-server MCP tool through jarvisd's phone.mcp method."""
     try:
-        args = {k: v for k, v in (arguments or {}).items() if v is not None}
+        args = {k: v for k, v in (arguments or {}).items() if v is not None and v != ""}
         res = daemon_client.call("phone.mcp", {"name": name, "arguments": args}, timeout=240)
         return json.dumps(res)
     except Exception as exc:  # noqa: BLE001
@@ -33,58 +33,73 @@ def _call(name: str, arguments: dict | None = None) -> str:
 
 
 def register(mcp: FastMCP) -> None:
-    # ---- reach the user: call -------------------------------------------------
+    # ---- reach the user: CALL -------------------------------------------------
+    @mcp.tool()
+    def twilio_call_and_wait(reason: str, say: str, to_number: str = "") -> str:
+        """Place a REAL PSTN phone call to the user's actual cell phone, speak `say`
+        via TTS, wait for their spoken reply, and return the transcript. This is the
+        MOST RELIABLE way to "call the user" / "call me" — it rings their real phone
+        and does NOT need the Jarvis app to be open. `to_number` defaults to the
+        user's configured number. PREFER THIS when the in-app device shows offline."""
+        return _call("twilio_call_and_wait", {"reason": reason, "say": say, "to_number": to_number})
+
     @mcp.tool()
     def call_user(reason: str, urgency: str = "normal") -> str:
-        """Call the primary user (ext 100) in-app for help/approval/incident.
-        urgency: low|normal|high. Rings the user's Jarvis app."""
+        """Place an IN-APP voice call to the user (ext 100) — only rings if their
+        Jarvis app is OPEN and connected (else it's marked missed/target_offline).
+        For a guaranteed ring use twilio_call_and_wait instead. urgency: low|normal|high."""
         return _call("call_user", {"reason": reason, "urgency": urgency})
 
     @mcp.tool()
-    def call_user_and_wait(reason: str, say: str, fallback_to_text: bool = True) -> str:
-        """Call the user, SPEAK `say` via TTS, wait for their spoken answer, and
-        return the transcript. Falls back to an urgent in-app text if missed."""
-        return _call("call_user_and_wait", {"reason": reason, "say": say,
-                                            "fallback_to_text": fallback_to_text})
-
-    @mcp.tool()
-    def twilio_call_and_wait(say: str, to_number: str = "", reason: str = "") -> str:
-        """Place a REAL PSTN phone call (Twilio), speak `say`, and return what the
-        user said back. to_number defaults to the configured user number."""
-        return _call("twilio_call_and_wait", {"say": say, "to_number": to_number, "reason": reason})
+    def call_user_and_wait(reason: str, say: str, from_extension: str = "101",
+                           fallback_to_text: bool = True, escalate_to_twilio: bool = False) -> str:
+        """IN-APP call the user, speak `say`, wait for their spoken answer, return the
+        transcript. Needs the app online; set escalate_to_twilio=True to fall back to a
+        REAL phone call if the in-app call goes unanswered. (For a plain real call, use
+        twilio_call_and_wait.)"""
+        return _call("call_user_and_wait", {
+            "from_extension": from_extension, "reason": reason, "say": say,
+            "fallback_to_text": fallback_to_text, "escalate_to_twilio": escalate_to_twilio,
+        })
 
     @mcp.tool()
     def ask_on_call_and_wait(call_id: str, say: str) -> str:
         """Ask another question on an already-active call without hanging up."""
         return _call("ask_on_call_and_wait", {"call_id": call_id, "say": say})
 
-    # ---- reach the user: text -------------------------------------------------
+    # ---- reach the user: TEXT -------------------------------------------------
     @mcp.tool()
     def notify_user(message: str, title: str = "Jarvis", priority: str = "normal") -> str:
         """Send the user a text/notification into their Jarvis inbox (phone+desktop)."""
-        return _call("notify_user", {"message": message, "title": title, "priority": priority})
+        return _call("notify_user", {"title": title, "message": message, "priority": priority})
 
     @mcp.tool()
-    def notify_user_and_wait(message: str, title: str = "Jarvis") -> str:
-        """Text the user and WAIT for their reply, returning it."""
-        return _call("notify_user_and_wait", {"message": message, "title": title})
+    def notify_user_and_wait(message: str, title: str = "Jarvis",
+                             options: list[str] | None = None) -> str:
+        """Text the user and WAIT for their reply (optionally with quick-reply
+        `options` buttons); returns the reply."""
+        return _call("notify_user_and_wait", {"title": title, "message": message, "options": options})
 
     @mcp.tool()
-    def device_sms(phone_number: str, message: str) -> str:
-        """Send a FREE SMS from the user's OWN phone SIM (needs the Android app
-        online). Preferred for texting a real phone number."""
-        return _call("device_sms", {"phone_number": phone_number, "message": message})
+    def device_sms(to_number: str, body: str) -> str:
+        """Send a FREE SMS from the user's OWN phone SIM (needs the Android app online).
+        Preferred for texting a real phone number. `to_number` is E.164 (+1…)."""
+        return _call("device_sms", {"to_number": to_number, "body": body})
 
     @mcp.tool()
-    def twilio_sms(message: str, to_number: str = "") -> str:
-        """Send a PSTN SMS via Twilio (blocked until toll-free verification —
-        prefer device_sms). to_number defaults to the user number."""
-        return _call("twilio_sms", {"message": message, "to_number": to_number})
+    def twilio_sms(body: str, to_number: str = "") -> str:
+        """Send a PSTN SMS via Twilio (blocked until toll-free verification — prefer
+        device_sms). `to_number` defaults to the user's number."""
+        return _call("twilio_sms", {"body": body, "to_number": to_number})
 
     @mcp.tool()
-    def request_approval_by_phone(reason: str, say: str = "") -> str:
-        """Ask the user to APPROVE an action by phone; returns their decision."""
-        return _call("request_approval_by_phone", {"reason": reason, "say": say})
+    def request_approval_by_phone(action: str, reason: str, risk: str = "medium",
+                                  command: str = "") -> str:
+        """Ask the user to APPROVE an action by phone; returns their decision.
+        `action` = what you want to do, `risk` = low|medium|high, `command` = the
+        exact command if any."""
+        return _call("request_approval_by_phone",
+                     {"action": action, "reason": reason, "risk": risk, "command": command})
 
     @mcp.tool()
     def red_alert(message: str) -> str:
@@ -103,9 +118,9 @@ def register(mcp: FastMCP) -> None:
         return _call("end_call", {"call_id": call_id, "reason": reason})
 
     @mcp.tool()
-    def send_call_message(call_id: str, text: str) -> str:
+    def send_call_message(call_id: str, message: str) -> str:
         """Drop a text into a live call (synthesized to speech for a user/device)."""
-        return _call("send_call_message", {"call_id": call_id, "text": text})
+        return _call("send_call_message", {"call_id": call_id, "message": message})
 
     @mcp.tool()
     def get_call_summary(call_id: str) -> str:
@@ -118,9 +133,10 @@ def register(mcp: FastMCP) -> None:
         return _call("get_call_transcript", {"call_id": call_id})
 
     @mcp.tool()
-    def call_extension(extension: str, from_extension: str = "101") -> str:
+    def call_extension(extension: str, reason: str = "", from_extension: str = "101") -> str:
         """Call another internal extension/agent."""
-        return _call("call_extension", {"extension": extension, "from_extension": from_extension})
+        return _call("call_extension",
+                     {"extension": extension, "reason": reason, "from_extension": from_extension})
 
     # ---- agents / extensions / screening -------------------------------------
     @mcp.tool()
@@ -167,8 +183,8 @@ def register(mcp: FastMCP) -> None:
     def set_voice_profile(extension: str, voice_id: str = "", speed: float | None = None,
                           name: str = "") -> str:
         """Set an extension's call voice + speaking rate (voice_id = Mistral UUID)."""
-        return _call("set_voice_profile", {"extension": extension, "voice_id": voice_id,
-                                          "speed": speed, "name": name})
+        return _call("set_voice_profile",
+                     {"extension": extension, "voice_id": voice_id, "speed": speed, "name": name})
 
     @mcp.tool()
     def get_voice_profile(extension: str) -> str:
@@ -192,19 +208,21 @@ def register(mcp: FastMCP) -> None:
         return _call("wait_for_message_reply", {"message_id": message_id})
 
     @mcp.tool()
-    def start_group_chat(extensions: list[str], message: str = "", title: str = "") -> str:
-        """Start a multi-agent group chat / war room."""
-        return _call("start_group_chat", {"extensions": extensions, "message": message, "title": title})
+    def start_group_chat(members: list[str], message: str = "", subject: str = "") -> str:
+        """Start a multi-agent group chat / war room. `members` = list of extensions."""
+        return _call("start_group_chat", {"members": members, "message": message, "subject": subject})
 
     @mcp.tool()
-    def post_group_message(thread_id: str, message: str) -> str:
+    def post_group_message(group_id: str, body: str) -> str:
         """Post a message into a group chat / war room thread."""
-        return _call("post_group_message", {"thread_id": thread_id, "message": message})
+        return _call("post_group_message", {"group_id": group_id, "body": body})
 
     @mcp.tool()
-    def store_memory(content: str, tags: list[str] | None = None) -> str:
-        """Store a phone-subsystem memory (persists across calls + texts)."""
-        return _call("store_memory", {"content": content, "tags": tags or []})
+    def store_memory(content: str, key: str, scope: str = "agent",
+                     tags: list[str] | None = None) -> str:
+        """Store a phone-subsystem memory (persists across calls + texts). `scope` is a
+        namespace (e.g. "agent"), `key` a short id, `content` the text."""
+        return _call("store_memory", {"scope": scope, "key": key, "content": content, "tags": tags})
 
     @mcp.tool()
     def search_memory(query: str, limit: int = 10) -> str:
@@ -217,8 +235,8 @@ def register(mcp: FastMCP) -> None:
         """Call ANY phone-subsystem MCP tool by name (escape hatch for tools without
         an explicit wrapper above). `tool` is the tool name (see the /phone skill /
         internal_docs for the full ~56-tool list); `arguments_json` is a JSON object
-        string of its arguments. Example:
-          phone_tool("summarize_call", '{"call_id":"call_123"}')."""
+        string of its arguments (names must match phone/server/src/mcp/tools.ts).
+        Example: phone_tool("summarize_call", '{"call_id":"call_123"}')."""
         try:
             args = json.loads(arguments_json or "{}")
             if not isinstance(args, dict):

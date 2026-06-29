@@ -66,6 +66,9 @@ Design pillars:
 - **MCP isolation is intentional:** codex runs `--ignore-user-config` with an isolated `CODEX_HOME`;
   claude runs `--strict-mcp-config --mcp-config`. The brain only sees Jarvis's built-in computer-use
   plus servers the user explicitly re-enables (CLI MCP toggles). Don't "helpfully" re-add user MCPs.
+  Corollary: a **separate HTTP MCP server never reaches the isolated brain** — so the **phone tools
+  live ON the computer-use engine** (`computer-use/computer_use_mcp/tools_phone.py`, proxied via
+  jarvisd's `phone.mcp`), not as a standalone server. Put brain-facing tools on computer-use.
 - Installing over a running binary → `ETXTBSY`. Copy to a temp name then `mv -f` over it.
 - **KWin fork deploy:** NEVER `ninja install` the fork (`~/projects/kwin-jarvis-fork`)
   while it's the LIVE compositor — it overwrites the mmap'd `libkwin.so` and SIGSEGVs
