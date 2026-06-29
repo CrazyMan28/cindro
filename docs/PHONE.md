@@ -39,13 +39,20 @@ needed, not hand-edited here.
 - **Config / secrets:** reads a Jarvis-managed env at `~/.config/jarvis/phone.env`
   (gitignored, 0600; `AGENT_PHONE_ENV_FILE` points the server at it) — Twilio + Mistral
   creds, DB at `~/.local/share/jarvis/phone.sqlite`. Never in git.
-- **Brain access:** `ControlServer::seedPhoneMcp()` reads the phone env and seeds an enabled,
-  **high-risk** `phone` MCP server row into `McpRegistry`, so the co-work brain (codex/claude)
-  gets **all ~56 phone tools** through the normal MCP injection — `call_user`, `notify_user`,
-  `twilio_call_and_wait`, `device_sms`, screening, war room, voice profiles, … The co-work
-  system prompt documents when to call vs. text, and a builtin **`/phone` skill**
-  (`ControlServer::seedPhoneSkill()`) is the full playbook. The `internal_docs` capability
-  catalog (v3) also covers the phone.
+- **Brain access (tools live ON computer-use):** the brain runs **isolated** (codex
+  `--ignore-user-config`, claude `--strict-mcp-config`), so it only sees the built-in
+  **computer-use** MCP — a separate `phone` HTTP server registered in `McpRegistry` is
+  **never reached by codex**. So the phone tools are registered directly on the computer-use
+  engine in `computer-use/computer_use_mcp/tools_phone.py`, each proxying to jarvisd's
+  **`phone.mcp`** method (which holds the phone bearer): **26 explicit** tools — `call_user`,
+  `call_user_and_wait`, `twilio_call_and_wait`, `device_sms`, `twilio_sms`, `notify_user`/
+  `_and_wait`, screening, allowlist, voice profiles, group/inbox, `red_alert`, … — **plus a
+  generic `phone_tool(name, arguments_json)`** escape hatch for the rest of the ~56. This keeps
+  codex's own CLI MCP servers off-by-default while still letting Jarvis call/text the user. A
+  builtin **`/phone` skill** (`ControlServer::seedPhoneSkill()`) is the full playbook;
+  `internal_docs` (v3) covers it too. (`seedPhoneMcp()` still seeds a `phone` registry row that
+  the desktop/app/Chrome surfaces drive via `phone.mcp`/`phone.http`, but the BRAIN gets its
+  tools through computer-use.)
 
 ## Inbound — Jarvis wakes up and answers when you call or text
 Jarvis is **extension 101**, registered as both the **inbound call agent** and the **SMS
@@ -129,5 +136,14 @@ destination once with `twilio_set_user_number(<your cell>)`.
   the server's `TWILIO_PUBLIC_BASE_URL` must equal the funnel host for signature validation.
 - On-device desktop voice still uses Jarvis's own Voxtral; a phone *line* uses the server
   Mistral voice (a PSTN line can't run the on-device voice).
+- **Custom cloned voice on calls:** set `MISTRAL_TTS_REF_AUDIO_FILE` in `phone.env` to a
+  reference clip (e.g. `~/.config/jarvis/voices/jarvice_ref.mp3`, the same clip the desktop
+  uses). The server then sends it as `ref_audio` (zero-shot clone) on every TTS, which
+  REPLACES the named `MISTRAL_TTS_VOICE_ID`. Mistral's `/audio/speech` rejects a `speed`
+  field (HTTP 422) — never send it; that bug made every call silent.
+- **Carrier call-forwarding** (forward your own cell to the agent) is carrier-specific:
+  Verizon/"5G UW" needs `*71<num>` (missed/declined) / `*72<num>` (all) / `*73` (off), NOT
+  the GSM `**` codes. The Android Call-screening card spells this out. Not needed to *call*
+  the number directly.
 - The `phone.http` proxy keeps the admin bearer token exclusively inside `jarvisd` — UI
   surfaces never hold the server credential.
