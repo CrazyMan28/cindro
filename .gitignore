@@ -53,3 +53,6 @@ plugins/**/*.tar.gz
 Testing/
 .venv_test/
 computer-use/.venv_test/
+
+# Android: vendored sherpa-onnx AAR (on-device TTS, ~56MB, re-fetch locally)
+android/app/libs/*.aar

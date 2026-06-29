@@ -24,6 +24,24 @@
     <!-- Subtle haptic feedback in chat (send tick, streaming micro-ticks, completion). -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- ===== Vendored Agent Phone (com.agentphone.*) permissions =====
+         Verbatim from agent-phone's manifest; the ones Jarvis already declares
+         (INTERNET, RECORD_AUDIO, POST_NOTIFICATIONS, FOREGROUND_SERVICE,
+         FOREGROUND_SERVICE_MICROPHONE) are not repeated. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Relay PUCK mode: legacy Bluetooth perms for HFP-HF proxy on pre-Android-12 devices. -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+
     <application
         android:name=".JarvisApp"
         android:allowBackup="true"
@@ -142,6 +160,81 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+
+        <!-- ===================================================================
+             Vendored Agent Phone (com.agentphone.*) — full original app embedded
+             in this one APK. Activities/services/receiver are declared with their
+             fully-qualified names so they coexist with Jarvis's own components.
+             MainActivity is NOT a launcher here (Jarvis's MainActivity is the only
+             launcher); Jarvis's Phone tab starts it via an explicit Intent.
+             ==================================================================== -->
+        <activity
+            android:name="com.agentphone.MainActivity"
+            android:exported="false"
+            android:label="Agent Phone"
+            android:theme="@style/AgentPhoneAppTheme"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
+            android:name="com.agentphone.IncomingCallActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:showOnLockScreen="true"
+            android:theme="@style/AgentPhoneAppTheme"
+            android:turnScreenOn="true" />
+        <activity
+            android:name="com.agentphone.OutgoingCallActivity"
+            android:exported="false"
+            android:label="Calling"
+            android:launchMode="singleTop"
+            android:theme="@style/AgentPhoneAppTheme" />
+        <activity
+            android:name="com.agentphone.ScreeningActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="Call screening"
+            android:launchMode="singleTop"
+            android:showOnLockScreen="true"
+            android:theme="@style/AgentPhoneAppTheme"
+            android:turnScreenOn="true" />
+        <receiver
+            android:name="com.agentphone.service.BootCompletedReceiver"
+            android:directBootAware="true"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+        <service
+            android:name="com.agentphone.service.AgentPhoneForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="remoteMessaging" />
+        <service
+            android:name="com.agentphone.service.CallForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+        <service
+            android:name="com.agentphone.puck.RelayPuckService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+        <service
+            android:name="com.agentphone.service.AgentPhoneConnectionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
+        <service
+            android:name="com.agentphone.service.AgentCallScreeningService"
+            android:exported="true"
+            android:permission="android.permission.BIND_SCREENING_SERVICE">
+            <intent-filter>
+                <action android:name="android.telecom.CallScreeningService" />
+            </intent-filter>
+        </service>
 
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"

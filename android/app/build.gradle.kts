@@ -24,8 +24,8 @@ android {
         applicationId = "com.jarvis.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 39
-        versionName = "0.10.7"
+        versionCode = 40
+        versionName = "0.11.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
@@ -34,6 +34,11 @@ android {
         // config is absent, and so the device-WS default port lives in one place.
         buildConfigField("boolean", "FCM_ENABLED", hasGoogleServices.toString())
         buildConfigField("int", "DEVICE_PORT", "8796")
+
+        // The vendored Agent Phone code (com.agentphone.*) uses sherpa-onnx for
+        // on-device TTS; that AAR ships native libs per-ABI (~14MB each). The phone
+        // is arm64, so restrict to arm64-v8a to keep the APK lean.
+        ndk { abiFilters += "arm64-v8a" }
     }
 
     buildTypes {
@@ -74,6 +79,15 @@ kotlin {
 }
 
 dependencies {
+    // --- Vendored Agent Phone (com.agentphone.*) deps, verbatim from agent-phone ---
+    // On-device TTS engine (Piper/VITS via sherpa-onnx); AAR kept out of git
+    // (see android/app/libs/ + .gitignore — re-fetch from the sherpa-onnx release).
+    implementation(files("libs/sherpa-onnx-1.13.2.aar"))
+    // WorkManager: AgentPhoneReconnectWorker reconnects the phone WS after kills.
+    implementation("androidx.work:work-runtime:2.9.1")
+    // Compose animation-graphics (animated vectors) used by some phone screens.
+    implementation("androidx.compose.animation:animation-graphics")
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
