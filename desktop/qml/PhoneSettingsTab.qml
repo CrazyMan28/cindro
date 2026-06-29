@@ -102,7 +102,7 @@ Item {
                 }
             }
         })
-        tab.callTool("get_voice_profile", { extension: 100 }, function(r) {
+        tab.callTool("get_voice_profile", { extension: "100" }, function(r) {
             if (!r.error) {
                 var d = r.data || {}; var vp = d.voice || d
                 tab.voiceProfile = vp.voice_id || vp.voice_name || vp.name || "(default)"
@@ -242,7 +242,7 @@ Item {
         tab.callTool("twilio_set_user_number", { phone_number: num }, function(r) { if (!r.error) tab.refresh() })
     }
     function setScreening(enable) {
-        tab.callTool(enable ? "twilio_screening_enable" : "twilio_screening_disable", {}, function(r) { tab.screeningOn = enable })
+        tab.callTool(enable ? "twilio_screening_enable" : "twilio_screening_disable", {}, function(r) { if (!r.error) tab.screeningOn = enable })
     }
     function setTransport(t) {
         var prev = tab.screenTransport; tab.screenTransport = t
@@ -274,8 +274,8 @@ Item {
         })
     }
     function registerAgent(ext, aname, token) {
-        tab.callTool("register_inbound_agent", { extension: ext, name: aname, token: token }, function(r) {
-            _enrollStatus.text = r.error ? ("Error: " + (r.error.message || "?")) : "Agent registered — ext " + ext
+        tab.callHttp("POST", "/api/agents/enroll", { name: aname, requested_extension: ext, adapter_type: "claude" }, function(r) {
+            _enrollStatus.text = r.error ? ("Error: " + (r.error.message || "?")) : "Agent enrolled — ext " + ext
             if (!r.error) tab.refresh()
         })
     }
