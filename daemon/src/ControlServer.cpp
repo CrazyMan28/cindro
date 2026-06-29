@@ -23,7 +23,9 @@
 #include <QNetworkInterface>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QProcess>
 #include <QRandomGenerator>
+#include <QSaveFile>
 #include <QTextStream>
 #include <QTimer>
 #include <QUrl>
@@ -153,6 +155,10 @@ bool ControlServer::start()
     // Contract A v2 stores/registries. SettingsStore loads config.toml prefs +
     // secrets.json; the registries wrap the (now-open) SessionStore tables.
     m_settings.load();
+    // Named cloned-voice library (~/.config/jarvis/voices/voices.json). Seeds a
+    // "Jarvis" entry from the existing jarvice_ref.* clip on first run, so today's
+    // single cloned voice keeps working as the default with nothing lost.
+    m_voiceLib.load();
     // Claude-Code-style lifecycle hooks (~/.config/jarvis/hooks.json). run() is a
     // no-op fast-path when an event has no hooks, so fire points cost ~nothing by
     // default.
@@ -183,7 +189,7 @@ bool ControlServer::start()
     m_plugins->ensureSeeded(); // seed sample manifests if the catalog is empty
 
     // Contract C: load paired devices + ensure the daemon ed25519 identity, and
-    // pick the best available FCM push backend (real if a "baratone" service
+    // pick the best available FCM push backend (real if a "the FCM project" service
     // account is reachable, else a logging stub).
     m_deviceReg.load();
     m_fcm = FcmSender::makeDefault();
@@ -405,6 +411,16 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleVoiceTts(req);
     else if (m == QStringLiteral("voice.list_voices"))
         resp = handleVoiceListVoices(req);
+    else if (m == QStringLiteral("voice.create_clone"))
+        resp = handleVoiceCreateClone(req);
+    else if (m == QStringLiteral("voice.delete_clone"))
+        resp = handleVoiceDeleteClone(req);
+    else if (m == QStringLiteral("voice.set_default"))
+        resp = handleVoiceSetDefault(req);
+    else if (m == QStringLiteral("voice.rename_clone"))
+        resp = handleVoiceRenameClone(req);
+    else if (m == QStringLiteral("voice.preview_clone"))
+        resp = handleVoicePreviewClone(req);
     else if (m == QStringLiteral("file.push"))
         resp = handleFilePush(req);
     else if (m == QStringLiteral("file.get"))
@@ -4167,8 +4183,8 @@ Response ControlServer::handleVoiceListVoices(const Request &req)
     // listing them here is safe.
     struct V { const char *id; const char *label; };
     static const V voices[] = {
-        // The signature cloned voice (Mistral ref_audio) + the product default.
-        { "jarvice",           "Jarvice — cloned voice (default)" },
+        // The user's NAMED cloned voices (incl. the seeded "Jarvis"/jarvice) are
+        // merged in from the VoiceLibrary below, so they are NOT hardcoded here.
         { "en_paul_neutral",   "Paul — neutral (EN)" },
         { "en_emma_neutral",   "Emma — neutral (EN)" },
         { "en_oliver_warm",    "Oliver — warm (EN)" },
@@ -4177,13 +4193,23 @@ Response ControlServer::handleVoiceListVoices(const Request &req)
         { "es_diego_neutral",  "Diego — neutral (ES)" },
     };
 
-    QJsonArray voxtralVoices;
+    QJsonArray stockVoices;
     for (const V &v : voices) {
         QJsonObject o;
         o.insert(QStringLiteral("id"), QString::fromLatin1(v.id));
         o.insert(QStringLiteral("label"), QString::fromLatin1(v.label));
-        voxtralVoices.append(o);
+        o.insert(QStringLiteral("custom"), false);
+        stockVoices.append(o);
     }
+
+    // The user's NAMED cloned voices (record/upload, name) come from the library,
+    // shown FIRST in every picker; the curated stock presets follow.
+    m_voiceLib.load(); // pick up any out-of-band changes (e.g. jarvice_voice.py)
+    QJsonArray voxtralVoices;
+    for (const QJsonValue &c : m_voiceLib.toListJson())
+        voxtralVoices.append(c);
+    for (const QJsonValue &v : stockVoices)
+        voxtralVoices.append(v);
 
     // Provider-aware: the active TTS provider decides which voice list is
     // primary. Explicit param wins, else the persisted setting.
@@ -4212,6 +4238,225 @@ Response ControlServer::handleVoiceListVoices(const Request &req)
                   QStringLiteral("Voxtral preset speakers; if a slug is rejected, "
                                  "voice.tts falls back to en_paul_neutral."));
     return Response::success(req.id, result);
+}
+
+// --- named cloned-voice library (record/upload, name, set-default) ----------
+
+// The effective default voice slug: the tts_voice setting, else the seeded
+// "jarvice" clone (matching handleVoiceTts's resolution).
+static QString effectiveDefaultVoice(const SettingsStore &s)
+{
+    const QString v = s.ttsVoice();
+    return v.isEmpty() ? kCloneVoiceDefault : v;
+}
+
+Response ControlServer::handleVoiceCreateClone(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString().trimmed();
+    if (name.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("name is required"));
+    const QByteArray audio = QByteArray::fromBase64(
+        req.params.value(QStringLiteral("audio_b64")).toString().toLatin1());
+    if (audio.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("audio_b64 is required"));
+    const QString format = req.params.value(QStringLiteral("format")).toString();
+    // clean defaults TRUE (best clone quality); pass clean=false for the raw toggle.
+    const bool clean = req.params.contains(QStringLiteral("clean"))
+                           ? req.params.value(QStringLiteral("clean")).toBool()
+                           : true;
+    QString source = req.params.value(QStringLiteral("source")).toString();
+    if (source != QStringLiteral("record") && source != QStringLiteral("upload"))
+        source = QStringLiteral("upload");
+
+    m_voiceLib.load();
+    const auto entry = m_voiceLib.createClone(name, audio, format, clean, source);
+    if (!entry)
+        return Response::failure(req.id, QStringLiteral("voice_create_failed"),
+                                 m_voiceLib.lastError());
+
+    QJsonObject result;
+    result.insert(QStringLiteral("voice"),
+                  entry->toJson(entry->voiceSlug() == m_voiceLib.defaultSlug()));
+    result.insert(QStringLiteral("voices"), m_voiceLib.toListJson());
+    result.insert(QStringLiteral("default"), effectiveDefaultVoice(m_settings));
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleVoiceDeleteClone(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    if (id.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("id is required"));
+    m_voiceLib.load();
+    const auto victim = m_voiceLib.find(id);
+    const bool wasDefault = victim && victim->voiceSlug() == effectiveDefaultVoice(m_settings);
+    if (!m_voiceLib.removeClone(id))
+        return Response::failure(req.id, QStringLiteral("voice_delete_failed"),
+                                 m_voiceLib.lastError());
+    // If we just deleted the active default, adopt the library's repaired default
+    // and propagate it everywhere (config.toml + phone calls).
+    if (wasDefault) {
+        m_settings.setTtsVoice(m_voiceLib.defaultSlug());
+        m_settings.saveConfig();
+        propagateDefaultVoiceToPhone();
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("voices"), m_voiceLib.toListJson());
+    result.insert(QStringLiteral("default"), effectiveDefaultVoice(m_settings));
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleVoiceSetDefault(const Request &req)
+{
+    QString voice = req.params.value(QStringLiteral("voice")).toString();
+    if (voice.isEmpty())
+        voice = req.params.value(QStringLiteral("id")).toString();
+    if (voice.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("voice (or id) is required"));
+    m_voiceLib.load();
+    // An id that names a library voice resolves to its voice slug; otherwise it's
+    // a stock voice slug (en_paul_neutral, ...) used directly.
+    if (const auto e = m_voiceLib.find(voice))
+        voice = e->voiceSlug();
+    // tts_voice is the REAL default lever; mirror it into the library cache.
+    m_settings.setTtsVoice(voice);
+    if (!m_settings.saveConfig())
+        return Response::failure(req.id, QStringLiteral("save_failed"),
+                                 m_settings.lastError());
+    m_voiceLib.setDefaultSlug(voice);
+    propagateDefaultVoiceToPhone();
+
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("default"), voice);
+    result.insert(QStringLiteral("voices"), m_voiceLib.toListJson());
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleVoiceRenameClone(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const QString name = req.params.value(QStringLiteral("name")).toString().trimmed();
+    if (id.isEmpty() || name.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("id and name are required"));
+    m_voiceLib.load();
+    const auto before = m_voiceLib.find(id);
+    const bool wasDefault = before && before->voiceSlug() == effectiveDefaultVoice(m_settings);
+    if (!m_voiceLib.rename(id, name))
+        return Response::failure(req.id, QStringLiteral("voice_rename_failed"),
+                                 m_voiceLib.lastError());
+    // A rename changes the slug -> the voice slug -> keep the default valid.
+    if (wasDefault) {
+        m_settings.setTtsVoice(m_voiceLib.defaultSlug());
+        m_settings.saveConfig();
+        propagateDefaultVoiceToPhone();
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("voices"), m_voiceLib.toListJson());
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleVoicePreviewClone(const Request &req)
+{
+    QString voice = req.params.value(QStringLiteral("voice")).toString();
+    if (voice.isEmpty())
+        voice = req.params.value(QStringLiteral("id")).toString();
+    m_voiceLib.load();
+    if (const auto e = m_voiceLib.find(voice))
+        voice = e->voiceSlug();
+    QString text = req.params.value(QStringLiteral("text")).toString();
+    if (text.trimmed().isEmpty())
+        text = QStringLiteral("Hello — this is how I'll sound.");
+    // Reuse the full voice.tts path (clone resolution + stock fallback).
+    Request tts = req;
+    tts.method = QStringLiteral("voice.tts");
+    QJsonObject p = req.params;
+    p.insert(QStringLiteral("voice"), voice);
+    p.insert(QStringLiteral("text"), text);
+    tts.params = p;
+    return handleVoiceTts(tts);
+}
+
+void ControlServer::propagateDefaultVoiceToPhone()
+{
+    const QString envPath = Config::configDir() + QStringLiteral("/phone.env");
+    if (!QFile::exists(envPath))
+        return; // phone subsystem not set up -> desktop-only, nothing to do.
+
+    // The default voice's reference clip ("" when the default is a stock voice).
+    const QString clip = m_voiceLib.clipPath(effectiveDefaultVoice(m_settings));
+
+    // Rewrite phone.env preserving every other line: set or remove the
+    // MISTRAL_TTS_REF_AUDIO_FILE key. A clone clip REPLACES the named voice on
+    // calls; clearing it lets calls use the phone server's stock voice id.
+    QStringList out;
+    bool wrote = false;
+    {
+        QFile f(envPath);
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QList<QByteArray> lines = f.readAll().split('\n');
+            f.close();
+            for (const QByteArray &raw : lines) {
+                const QString line = QString::fromUtf8(raw);
+                if (line.trimmed().startsWith(QStringLiteral("MISTRAL_TTS_REF_AUDIO_FILE="))) {
+                    if (!clip.isEmpty() && !wrote) {
+                        out << QStringLiteral("MISTRAL_TTS_REF_AUDIO_FILE=") + clip;
+                        wrote = true;
+                    }
+                    continue; // else drop it (clearing for a stock voice)
+                }
+                out << line;
+            }
+        }
+    }
+    if (!clip.isEmpty() && !wrote)
+        out << QStringLiteral("MISTRAL_TTS_REF_AUDIO_FILE=") + clip;
+    QString body = out.join(QLatin1Char('\n'));
+    while (body.endsWith(QStringLiteral("\n\n")))
+        body.chop(1);
+    if (!body.endsWith(QLatin1Char('\n')))
+        body += QLatin1Char('\n');
+
+    {
+        QSaveFile sf(envPath);
+        if (!sf.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+            qWarning("jarvisd: cannot open phone.env to set default voice");
+            return;
+        }
+        sf.write(body.toUtf8());
+        if (!sf.commit()) {
+            qWarning("jarvisd: failed writing phone.env for default voice: %s",
+                     qPrintable(sf.errorString()));
+            return;
+        }
+        QFile::setPermissions(envPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    }
+
+    // Restart the phone subsystem so it re-reads the ref clip. A default change is
+    // a rare, user-driven Settings action; the ~1-2s blip won't drop a call the
+    // user isn't on. Best-effort — a failure just logs (applies on next restart).
+    QProcess restart;
+    restart.start(QStringLiteral("systemctl"),
+                  {QStringLiteral("--user"), QStringLiteral("restart"),
+                   QStringLiteral("jarvis-phone.service")});
+    if (!restart.waitForStarted(3000)) {
+        qWarning("jarvisd: could not invoke systemctl to restart jarvis-phone.service");
+        return;
+    }
+    restart.waitForFinished(15000);
+    if (restart.exitStatus() != QProcess::NormalExit || restart.exitCode() != 0)
+        qWarning("jarvisd: jarvis-phone.service restart exit=%d (default voice applies "
+                 "on its next restart)", restart.exitCode());
+    else
+        qInfo("jarvisd: default voice -> phone calls (%s); jarvis-phone.service restarted",
+              clip.isEmpty() ? "stock" : qPrintable(clip));
 }
 
 // --- device->phone file push (Contract C) -----------------------------------
@@ -4361,6 +4606,11 @@ bool ControlServer::isConfigMethod(const QString &method)
         QStringLiteral("plugins.set_enabled"), QStringLiteral("plugins.remove"),
         QStringLiteral("voice.stt"),         QStringLiteral("voice.tts"),
         QStringLiteral("voice.list_voices"),
+        // Named cloned-voice library (record/upload, name, set-default) — mirrored
+        // to the phone so the Jarvis app's Settings can manage the default voice.
+        QStringLiteral("voice.create_clone"), QStringLiteral("voice.delete_clone"),
+        QStringLiteral("voice.set_default"),  QStringLiteral("voice.rename_clone"),
+        QStringLiteral("voice.preview_clone"),
         QStringLiteral("take_over.request"), QStringLiteral("file.push"),
         QStringLiteral("file.get"),
         QStringLiteral("devices.pair_start"), QStringLiteral("devices.list"),
@@ -4402,6 +4652,11 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
     if (m == QStringLiteral("voice.stt"))       return handleVoiceStt(req);
     if (m == QStringLiteral("voice.tts"))       return handleVoiceTts(req);
     if (m == QStringLiteral("voice.list_voices")) return handleVoiceListVoices(req);
+    if (m == QStringLiteral("voice.create_clone")) return handleVoiceCreateClone(req);
+    if (m == QStringLiteral("voice.delete_clone")) return handleVoiceDeleteClone(req);
+    if (m == QStringLiteral("voice.set_default")) return handleVoiceSetDefault(req);
+    if (m == QStringLiteral("voice.rename_clone")) return handleVoiceRenameClone(req);
+    if (m == QStringLiteral("voice.preview_clone")) return handleVoicePreviewClone(req);
     if (m == QStringLiteral("take_over.request")) return handleTakeOverRequest(req);
     if (m == QStringLiteral("file.push"))       return handleFilePush(req);
     if (m == QStringLiteral("file.get"))        return handleFileGet(req);

@@ -1,7 +1,7 @@
 #pragma once
 
 // FcmSender — push notifications to paired phones via Firebase Cloud Messaging
-// (project "baratone"). The daemon pushes on "attention" events: an approval is
+// (project "the FCM project"). The daemon pushes on "attention" events: an approval is
 // needed, a queued task finished, or a file is ready.
 //
 // This is an interface with two impls:
@@ -44,7 +44,7 @@ public:
     // True when a real push backend is wired (vs. the logging stub).
     virtual bool isReal() const = 0;
 
-    // Pick the best available sender. Reuses the phone-installer "baratone"
+    // Pick the best available sender. Reuses the phone-installer "the FCM project"
     // service-account pattern when a credentials file is reachable; otherwise a
     // logging stub. Never returns null.
     static std::unique_ptr<FcmSender> makeDefault();

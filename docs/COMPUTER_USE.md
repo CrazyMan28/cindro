@@ -1,7 +1,7 @@
 # Jarvis — Computer Use: what it is, how it works, how it compares
 
-> **File:** `/home/user/projects/computer_use/docs/COMPUTER_USE.md`
-> **Repo root (`pwd`):** `/home/user/projects/computer_use`
+> **File:** `~/jarvis/docs/COMPUTER_USE.md`
+> **Repo root (`pwd`):** `~/jarvis`
 > **Engine on:** `:8794` (computer-use MCP) · per-session nested engines on `:8810+`
 > **Last verified live:** 2026-06-23 (KDE Wayland, 3 monitors, unlocked session)
 

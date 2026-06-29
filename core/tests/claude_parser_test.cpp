@@ -55,7 +55,7 @@ int main(int argc, char **argv)
 #ifdef JARVIS_CLAUDE_SAMPLE
         QStringLiteral(JARVIS_CLAUDE_SAMPLE);
 #else
-        QStringLiteral("/home/user/projects/computer_use/spikes/claude_stream_json_sample.jsonl");
+        QStringLiteral("spikes/claude_stream_json_sample.jsonl");
 #endif
     if (argc > 1)
         path = QString::fromLocal8Bit(argv[1]);

@@ -1,6 +1,7 @@
 #include "jarvis/PluginRegistry.h"
 #include "jarvis/PluginSigner.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -72,7 +73,13 @@ QJsonObject PluginManifest::toJson() const
 
 QString PluginRegistry::defaultCatalogDir()
 {
-    return QStringLiteral("/home/user/projects/computer_use/plugins/catalog");
+    // An explicit override wins; else resolve relative to the executable
+    // (<root>/build/daemon -> <root>/plugins/catalog), so any clone works.
+    const QString fromEnv = qEnvironmentVariable("JARVIS_PLUGIN_CATALOG");
+    if (!fromEnv.isEmpty())
+        return fromEnv;
+    return QDir(QCoreApplication::applicationDirPath())
+        .absoluteFilePath(QStringLiteral("../../plugins/catalog"));
 }
 
 QString PluginRegistry::effectiveDir(const QString &catalogDir) const
