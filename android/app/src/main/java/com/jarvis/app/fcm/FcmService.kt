@@ -6,7 +6,7 @@ import com.google.firebase.messaging.RemoteMessage
 import com.jarvis.app.JarvisApp
 
 /**
- * Receives FCM pushes from jarvisd (project "baratone"). The daemon sends data-only
+ * Receives FCM pushes from jarvisd (project "the FCM project"). The daemon sends data-only
  * messages on events needing attention — approval needed, task done, file ready — with
  * fields {kind, title, body, session_id}. We surface them as notifications via
  * [JarvisNotifier] (no foreground service, no polling: the OS wakes us on news).

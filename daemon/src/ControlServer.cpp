@@ -189,7 +189,7 @@ bool ControlServer::start()
     m_plugins->ensureSeeded(); // seed sample manifests if the catalog is empty
 
     // Contract C: load paired devices + ensure the daemon ed25519 identity, and
-    // pick the best available FCM push backend (real if a "baratone" service
+    // pick the best available FCM push backend (real if a "the FCM project" service
     // account is reachable, else a logging stub).
     m_deviceReg.load();
     m_fcm = FcmSender::makeDefault();

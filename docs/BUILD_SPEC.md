@@ -14,7 +14,7 @@ Qt6 6.11.1 (Core/Gui/Quick/Qml/WebSockets/Sql/Multimedia/Svg), LayerShellQt (cma
 sqlite 3.51.2, cmake 4.3.2, ninja 1.13.2, g++ 16.1.1 (C++20/23 ok), codex 0.135.0, claude 2.1.170,
 gradle+java (sdkman), uv, node/npm. NO sudo available to agents. See spikes/RESULTS.md.
 
-## Monorepo layout (root = /home/user/projects/computer_use, git branch main)
+## Monorepo layout (root = ~/jarvis, git branch main)
 - core/      C++20 static lib `jarvis-core`: SessionStore(SQLite), Brain iface + impls, protocol types, config.
 - daemon/    `jarvisd` exe (QCoreApplication): control WS server, device WS (phone, later), scheduler, push.
 - desktop/   `jarvis-sidebar` exe (QGuiApplication + QtQuick/QML + LayerShellQt): the sidebar UI.
@@ -72,7 +72,7 @@ OpenAI/Anthropic/Ollama loop (port from Android AgentLoop) (Wave 5).
 
 ## CONTRACT C — Device protocol (jarvisd <-> phone) — Wave 3+, summary only
 WebSocket `:8796`, P-256 device-signed handshake + QR pairing + capability tiers — REUSE the design in
-`/home/user/projects/infrastructure/jarvice_log/src/ws.rs` (mirror.start/mirror.frame/input caps,
+`~/projects/infrastructure/jarvice_log/src/ws.rs` (mirror.start/mirror.frame/input caps,
 binary frames for video). Devices store: `~/.config/jarvis/devices.json`. Not in Workflow #1.
 
 ## Config & state
@@ -86,7 +86,7 @@ call `http://127.0.0.1:8794/mcp`.
 - Daemon protocol/pairing design <- infrastructure/jarvice_log/src/{ws.rs,control.rs}
 - computer-use engine <- mcp/computer_use/ (whole), extension <- mcp/computer_use/extension/
 - Android patterns <- mcp/rip_out_gemini/.../com/jarvice/assistant/ (McpConnectionManager.kt, AiProvider, SecretStore, Room entities, AiSettingsScreen, McpServersScreen, TasksScreen)
-- FCM push + APK delivery <- phone-installer MCP (project "baratone")
+- FCM push + APK delivery <- phone-installer MCP (project "the FCM project")
 
 ## Wave plan (execution order via Workflow per wave; verify gate each)
 - Wave 0+2 (Workflow #1, NOW): foundation + desktop vertical slice (see ACCEPTANCE).

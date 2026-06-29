@@ -4,8 +4,8 @@
 //
 // The mutable install/enable state (table plugins) lives in SessionStore. This
 // class owns the catalog side that isn't pure storage:
-//   - reading manifests from
-//     /home/user/projects/computer_use/plugins/catalog/*.toml,
+//   - reading manifests from the plugin catalog dir (<root>/plugins/catalog,
+//     overridable via JARVIS_PLUGIN_CATALOG) *.toml,
 //   - seeding sample manifests if the directory is empty,
 //   - merging the disk catalog with the per-plugin DB state for plugins.catalog.
 
