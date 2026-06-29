@@ -73,7 +73,7 @@
             android:exported="true"
             android:theme="@style/Theme.Jarvis" />
 
-        <!-- FCM receiver: data-only pushes from jarvisd (project "baratone"). -->
+        <!-- FCM receiver: data-only pushes from jarvisd (project "the FCM project"). -->
         <service
             android:name=".fcm.FcmService"
             android:exported="false">

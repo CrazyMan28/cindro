@@ -4,7 +4,7 @@
 Invocation (uses the project venv, avoids host PYTHONPATH):
 
   env -u PYTHONPATH \\
-    /home/user/projects/computer_use/computer-use/.venv/bin/python \\
+    computer-use/.venv/bin/python \\
     scripts/verify_phone_mcp_full.py
 
 Daemon control WS: ws://127.0.0.1:8795/control/ws?token=<control_token>
@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover
     print(
         "FAIL: 'websockets' not in venv. Run via:\n"
         "  env -u PYTHONPATH "
-        "/home/user/projects/computer_use/computer-use/.venv/bin/python "
+        "computer-use/.venv/bin/python "
         "scripts/verify_phone_mcp_full.py",
         file=sys.stderr,
     )

@@ -2,7 +2,7 @@
 
 > **Purpose:** Authoritative source-of-truth for porting agent-phone into Jarvis (desktop app, Android app, Chrome extension) with full feature parity. Derived exclusively from the code and tests — docs in the agent-phone repo are stale and incomplete.
 >
-> **Source tree:** `/home/user/projects/mcp/agent_tts-stt/agent-phone/server/src/`
+> **Source tree:** `~/projects/mcp/agent_tts-stt/agent-phone/server/src/`
 
 ---
 

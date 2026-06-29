@@ -26,7 +26,7 @@ int main(int argc, char **argv) {
     }
 
     view.setSource(QUrl::fromLocalFile(
-        "/home/user/projects/computer_use/spikes/layershell_probe/main.qml"));
+        "spikes/layershell_probe/main.qml"));
     view.show();
 
     QTimer::singleShot(300000, &app, &QGuiApplication::quit);
