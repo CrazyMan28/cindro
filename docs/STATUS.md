@@ -8,7 +8,39 @@ _Last updated: 2026-06-29._
 
 ---
 
-## 🆕 Android = the original phone app verbatim + Jarvis answers inbound (2026-06-29)
+## 🆕 Calls answer + speak (custom voice), brain can call/text, desktop+Chrome parity (2026-06-29)
+
+Inbound calls to the Twilio number now reach Jarvis and **talk back in the user's own
+cloned voice**; the brain can call/text; and the desktop/Chrome phone UIs gained the
+missing call features. All shipped today.
+
+**Call path (the number answers + speaks):**
+- **Instant hang-up** → caller wasn't allow-listed (the handler rejects non-allowlisted
+  callers when screening is off). Fixed by allow-listing the user's number.
+- **Silent call** → Mistral `/audio/speech` now rejects a `speed` field (HTTP 422), so
+  every TTS failed mid-call. Removed `speed` from `phone/server/src/mistral/tts.ts`.
+- **Custom cloned voice** → calls send the user's reference clip as `ref_audio` (zero-shot
+  clone) via `MISTRAL_TTS_REF_AUDIO_FILE`, instead of the stock voice.
+- **Greets by name** → the adapter says "Jarvis here", not "Codex here" (`AGENT_PHONE_NAME`).
+- `:8801` now runs as a managed **`jarvis-phone.service`** (journald + auto-restart).
+
+**Brain can call/text** — the brain is isolated (only sees computer-use), so the phone
+tools are now registered ON the computer-use engine (`computer_use_mcp/tools_phone.py`,
+proxied via `phone.mcp`): 26 explicit (`call_user`, `twilio_call_and_wait`, `device_sms`, …)
+plus a generic `phone_tool`. codex's own CLI MCP servers stay off-by-default.
+
+**Desktop + Chrome parity** (from a 133-feature audit, verified by an adversarial workflow
+that caught + fixed 13 param/type bugs): desktop **call overlay** (accept/reject/mute/end +
+live transcript), inbox response-buttons + reply bar, live diagnostics; Chrome call/screening
+UI (v0.5.3); desktop dialer 400s fixed. (The desktop binary had been **stale** — the 6-tab
+hub is the current build.)
+
+**Android v0.11.1** — clear **Verizon** call-forwarding instructions (`*71`/`*72`/`*73`) in
+Call screening. **`scripts/phone_smoke_test.py`** covers the call-path invariants (ALL PASS).
+
+---
+
+## Android = the original phone app verbatim + Jarvis answers inbound (2026-06-29)
 
 - **Verbatim Android port (Jarvis v0.11.0).** The **entire** original agent-phone Android app
   — all 60 files / ~11,882 lines, package `com.agentphone.*` — is copied **byte-for-byte** into
