@@ -8,6 +8,36 @@ _Last updated: 2026-06-29._
 
 ---
 
+## 🆕 Named voice library: record/upload your own + "set as default" everywhere (2026-06-29)
+
+The single hard-wired `jarvice` clone is now a **managed library of named voices** on every
+surface. Record your own voice or upload a clip, name it, and **set one as the default** —
+used everywhere Jarvis speaks: desktop TTS / voice mode, the phone app's spoken replies, and
+**phone calls** (when it calls you and when it answers). **Nothing removed:** `jarvice` is
+seeded as the default "Jarvis" voice; every prior picker/behavior stays.
+
+- **Daemon owns the library** (`~/.config/jarvis/voices/` clips + a `voices.json` manifest):
+  new core `VoiceLibrary` (CRUD, slug, seed-from-disk, optional ffmpeg clean/trim;
+  `voice_library_test`). Contract A `voice.create_clone` / `delete_clone` / `set_default` /
+  `rename_clone` / `preview_clone` on **control + device** surfaces; `voice.list_voices`
+  merges the named voices ahead of the stock presets.
+- **"Set as default" propagates:** desktop + app key off `tts_voice` (instant); for **calls**
+  the daemon rewrites `MISTRAL_TTS_REF_AUDIO_FILE` in `phone.env` and **restarts
+  `jarvis-phone.service`** (~1–2 s; vendored server otherwise untouched on the global path).
+- **UI in both places:** a "Default Voice" card in **Settings → Voice** on desktop
+  (`SettingsPage.qml` + `Bridge` `pw-record`/upload) and the **Jarvis Android app** (v0.12.0,
+  `SettingsScreen.kt` + `AudioRecorder`/SAF) — list (default · name · source · Preview / Set
+  default / Delete), name, Record/Upload, Auto-clean toggle, Save. **Plus** the vendored
+  agent-phone per-agent picker now sees the named voices (`cloneVoices.ts` → `/api/voices`;
+  `voiceProfiles.set` accepts `clone:<slug>`; `synthesizeForCall` resolves it to `ref_audio`,
+  PSTN included), so a clone can be assigned to a specific agent.
+- **Verified:** core ctest **23/23**, phone-server **172/172** (4 new), engine pytest **423**,
+  desktop `gui_selftest`, Android `assembleDebug`, and a **live throwaway-daemon round-trip**
+  (`scripts/voice_library_smoke.py`: list→create→set-default→preview→delete). See
+  [`VOICE.md`](VOICE.md).
+
+---
+
 ## 🆕 Incoming VOIP works: device stays online + outbound-call (Twilio trial) caveat (2026-06-29)
 
 - **Device (ext 100) now stays online in the background.** The vendored agent-phone

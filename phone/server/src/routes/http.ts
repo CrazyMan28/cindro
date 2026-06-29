@@ -24,6 +24,7 @@ import { ModelConfigService } from "../agents/modelConfig.js";
 import { WarRoomService } from "../messaging/warRoom.js";
 import { listVoices, fetchVoiceSample } from "../mistral/voices.js";
 import { listLocalVoices, getLocalVoice, espeakDataZipPath } from "../voices/localVoices.js";
+import { listCloneVoices } from "../voices/cloneVoices.js";
 import { handleSlashCommand, isSlashCommand, type SlashContext } from "../messaging/slashCommands.js";
 
 export function registerHttpRoutes(app: FastifyInstance, config: AppConfig, db: AppDatabase, audio: AudioGateway, wsHub: WebSocketHub) {
@@ -623,8 +624,11 @@ export function registerHttpRoutes(app: FastifyInstance, config: AppConfig, db: 
   // Voice catalog for the per-agent voice picker: ON-DEVICE models first
   // (synthesized on the phone), then Mistral voices.
   app.get("/api/voices", { preHandler: anyAuth }, async () => {
+    // The user's named cloned voices (record/upload, managed by the Jarvis daemon)
+    // come FIRST, then on-device Piper voices, then the Mistral preset catalog.
+    const clones = listCloneVoices().map((v) => ({ id: v.id, name: v.name }));
     const local = listLocalVoices().map((v) => ({ id: v.id, name: v.name }));
-    return { voices: [...local, ...(await listVoices(config.mistral))] };
+    return { voices: [...clones, ...local, ...(await listVoices(config.mistral))] };
   });
 
   // On-device voice model distribution: the phone downloads the model from

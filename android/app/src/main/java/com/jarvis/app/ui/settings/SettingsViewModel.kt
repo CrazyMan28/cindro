@@ -47,10 +47,24 @@ data class SettingsUiState(
     val wakeEnabled: Boolean = false,
     val readBackEnabled: Boolean = true,
     val ttsVoice: String = "",
+    // Named voice library (record/upload your own + set one as default).
+    val voiceLibrary: List<VoiceItem> = emptyList(),
+    val defaultVoice: String = "",
+    val voiceBusy: Boolean = false,
+    val voiceMsg: String? = null,
     // Haptics
     val hapticsEnabled: Boolean = true,
     // 2FA + fingerprint cross-device unlock: gate the app itself on launch.
     val fingerprintGateEnabled: Boolean = true,
+)
+
+/** One named cloned voice in the library (record/upload). */
+data class VoiceItem(
+    val id: String,        // the voice slug to use ("jarvice" / "clone:<slug>")
+    val label: String,     // display name
+    val isDefault: Boolean,
+    val source: String = "", // "record" | "upload" | "seed"
+    val raw: Boolean = false,
 )
 
 /** Full settings parity: connection, identity, API keys, default brain/model, voice. */
@@ -75,6 +89,7 @@ class SettingsViewModel(
 
     init {
         loadDaemonSettings()
+        loadVoices()
     }
 
     private fun snapshot() = SettingsUiState(
@@ -221,6 +236,75 @@ class SettingsViewModel(
     fun setTtsVoice(voice: String) {
         voiceSettings.ttsVoice = voice
         _uiState.update { it.copy(ttsVoice = voice) }
+    }
+
+    // --- named voice library (record/upload, name, set-default) ------------
+
+    private fun applyVoices(r: JsonObject) {
+        val list = mutableListOf<VoiceItem>()
+        r.getAsJsonArray("voices")?.forEach { el ->
+            val o = el.asJsonObject
+            val custom = o.get("custom")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+            if (!custom) return@forEach // the manager only shows the user's own voices
+            list += VoiceItem(
+                id = o.get("id")?.takeIf { !it.isJsonNull }?.asString.orEmpty(),
+                label = o.get("label")?.takeIf { !it.isJsonNull }?.asString.orEmpty(),
+                isDefault = o.get("is_default")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
+                source = o.get("source")?.takeIf { !it.isJsonNull }?.asString.orEmpty(),
+                raw = o.get("raw")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
+            )
+        }
+        val def = r.get("default")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
+        _uiState.update { it.copy(voiceLibrary = list, defaultVoice = def) }
+    }
+
+    fun loadVoices() {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.voiceListVoices() } }
+                .onSuccess { applyVoices(it) }
+                .onFailure { e -> _uiState.update { it.copy(voiceMsg = e.message) } }
+        }
+    }
+
+    /** Save a recorded/uploaded clip as a named voice. clean=true runs the server
+     *  ffmpeg trim/clean for best clone quality; false stores it raw. */
+    fun createVoiceClone(name: String, audioB64: String, format: String, clean: Boolean, source: String) {
+        if (name.isBlank() || audioB64.isBlank()) {
+            _uiState.update { it.copy(voiceMsg = "Name and a clip are required") }
+            return
+        }
+        _uiState.update { it.copy(voiceBusy = true, voiceMsg = null) }
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.voiceCreateClone(name, audioB64, format, clean, source) } }
+                .onSuccess { applyVoices(it); _uiState.update { s -> s.copy(voiceBusy = false, voiceMsg = "Saved ✓") } }
+                .onFailure { e -> _uiState.update { it.copy(voiceBusy = false, voiceMsg = e.message ?: "failed") } }
+        }
+    }
+
+    fun setDefaultVoice(voice: String) {
+        _uiState.update { it.copy(voiceBusy = true, voiceMsg = null) }
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.voiceSetDefault(voice) } }
+                .onSuccess { applyVoices(it); _uiState.update { s -> s.copy(voiceBusy = false) } }
+                .onFailure { e -> _uiState.update { it.copy(voiceBusy = false, voiceMsg = e.message) } }
+        }
+    }
+
+    fun deleteVoiceClone(id: String) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.voiceDeleteClone(id) } }
+                .onSuccess { applyVoices(it) }
+                .onFailure { e -> _uiState.update { it.copy(voiceMsg = e.message) } }
+        }
+    }
+
+    /** Synthesize + play a short sample in `voice` via the shared TtsPlayer. */
+    fun previewVoice(voice: String) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.voicePreviewClone(voice) } }
+                .onSuccess { pair -> pair?.let { app.ttsPlayer.play(it.first, it.second) } }
+                .onFailure { e -> _uiState.update { it.copy(voiceMsg = e.message) } }
+        }
     }
 
     fun setHapticsEnabled(enabled: Boolean) {

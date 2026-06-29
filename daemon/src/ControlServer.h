@@ -31,6 +31,7 @@
 #include "jarvis/SshAllowList.h"
 #include "jarvis/VoiceProvider.h"
 #include "jarvis/VoiceService.h"
+#include "jarvis/VoiceLibrary.h"
 #include "jarvis/WidgetLeaseRegistry.h"
 
 #include <QHash>
@@ -108,8 +109,22 @@ public:
     Response handleVoiceStt(const Request &req);
     Response handleVoiceTts(const Request &req);
     // Curated list of Mistral Voxtral voice slugs for the TTS picker, plus the
-    // current default (tts_voice setting / en_paul_neutral fallback).
+    // user's NAMED cloned voices (the library) and the current default.
     Response handleVoiceListVoices(const Request &req);
+
+    // Named cloned-voice library CRUD (record/upload, name, set-default). The
+    // library lives in ~/.config/jarvis/voices/ (clips + voices.json manifest).
+    // set-default also propagates the cloned voice to the phone server (calls).
+    Response handleVoiceCreateClone(const Request &req);
+    Response handleVoiceDeleteClone(const Request &req);
+    Response handleVoiceSetDefault(const Request &req);
+    Response handleVoiceRenameClone(const Request &req);
+    Response handleVoicePreviewClone(const Request &req);
+    // Keep tts_voice (the real default) and the library's cached default in sync,
+    // then push the cloned default to the phone server so CALLS speak in it
+    // (rewrites MISTRAL_TTS_REF_AUDIO_FILE in phone.env + restarts the service).
+    // No-op (desktop-only) when the phone subsystem isn't set up.
+    void propagateDefaultVoiceToPhone();
 
     // Wave 8 co-worker ops, mirrored over the device channel (schedule.* +
     // ssh.allow_list/add/remove + ssh.exec + audit.list). ssh.exec and
@@ -447,6 +462,7 @@ private:
     // and own the non-storage behavior (real MCP test, codex injection, catalog
     // parsing). Created in start() once m_store is open.
     SettingsStore m_settings;
+    VoiceLibrary m_voiceLib; // named cloned-voice library (manifest + clips)
     // Live-widget viewer leases (who is watching which live widget) — gates the
     // engine's live-widget supervisor so an unwatched widget stops doing work.
     WidgetLeaseRegistry m_widgetLeases;
