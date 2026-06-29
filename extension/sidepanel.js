@@ -1308,6 +1308,10 @@ async function phoneHttp(method, path, body) {
 // ---- panel / tab state ----
 let phoneOpen = false;
 let phoneTab = "calls"; // "calls" | "inbox" | "settings"
+let callMuted = false;  // banner mute toggle (client-side only)
+// ---- live transcript polling ----
+let _liveTranscriptTimer  = null;
+let _liveTranscriptCallId = null;
 
 function openPhone() {
   phoneOpen = true;
@@ -1390,11 +1394,14 @@ async function loadActiveCalls() {
     const calls = Array.isArray(data) ? data : [];
     renderCallsList(calls);
     updateCallBanner(calls);
+    startLiveTranscript(calls);
   } catch (e) {
     box.innerHTML =
       '<div class="phone-card"><div class="phone-card-meta" style="color:var(--bad)">' +
       escHtml(e.message || String(e)) + '</div></div>';
   }
+  // Screening status is loaded separately so it doesn't block the calls section.
+  updateScreeningLive().catch(() => {});
 }
 
 function renderCallsList(calls) {
@@ -1408,6 +1415,7 @@ function renderCallsList(calls) {
   calls.forEach((c) => {
     const card = document.createElement("div");
     card.className = "phone-card";
+    const callId   = c.id || c.call_id;
     const stateClass =
       (c.state === "active" || c.state === "accepted") ? "ok" :
       (c.state === "ringing") ? "" : "bad";
@@ -1416,18 +1424,57 @@ function renderCallsList(calls) {
         '<span class="phone-card-title">' + escHtml(c.reason || "Call") + '</span>' +
         '<span class="phone-card-badge ' + stateClass + '">' + escHtml(c.state || "?") + '</span>' +
       '</div>' +
-      '<div class="phone-card-meta">id: ' + escHtml(c.id || c.call_id || "?") +
+      '<div class="phone-card-meta">id: ' + escHtml(callId || "?") +
         ' · ext ' + escHtml(String(c.from_extension || "?")) +
         ' → ' + escHtml(String(c.to_extension || "?")) + '</div>';
     const actions = document.createElement("div");
-    actions.style.cssText = "display:flex;gap:6px;margin-top:6px";
-    const endBtn = document.createElement("button");
-    endBtn.className = "phone-sm-btn bad"; endBtn.textContent = "End Call";
-    endBtn.addEventListener("click", () => endPhoneCall(c.id || c.call_id));
+    actions.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-top:6px";
+
+    if (c.state === "ringing") {
+      // Ringing: Accept + Reject
+      const acceptBtn = document.createElement("button");
+      acceptBtn.className = "phone-sm-btn ok"; acceptBtn.textContent = "✓ Accept";
+      acceptBtn.addEventListener("click", async () => {
+        acceptBtn.disabled = true;
+        try { await phoneHttp("POST", "/api/calls/" + callId + "/accept", {}); await loadActiveCalls(); }
+        catch (e) { addSys("Accept: " + (e.message || e)); acceptBtn.disabled = false; }
+      });
+      const rejectBtn = document.createElement("button");
+      rejectBtn.className = "phone-sm-btn bad"; rejectBtn.textContent = "✗ Reject";
+      rejectBtn.addEventListener("click", async () => {
+        rejectBtn.disabled = true;
+        try { await phoneHttp("POST", "/api/calls/" + callId + "/reject", {}); await loadActiveCalls(); }
+        catch (e) { addSys("Reject: " + (e.message || e)); rejectBtn.disabled = false; }
+      });
+      actions.appendChild(acceptBtn);
+      actions.appendChild(rejectBtn);
+    } else if (c.state === "active" || c.state === "accepted") {
+      // Active: Mute toggle (client-side) + End
+      let cardMuted = false;
+      const muteBtn = document.createElement("button");
+      muteBtn.className = "phone-sm-btn"; muteBtn.textContent = "Mute";
+      muteBtn.addEventListener("click", () => {
+        cardMuted = !cardMuted;
+        muteBtn.textContent = cardMuted ? "Unmute" : "Mute";
+        muteBtn.classList.toggle("bad", cardMuted);
+      });
+      const endBtn = document.createElement("button");
+      endBtn.className = "phone-sm-btn bad"; endBtn.textContent = "End Call";
+      endBtn.addEventListener("click", () => endPhoneCall(callId));
+      actions.appendChild(muteBtn);
+      actions.appendChild(endBtn);
+    } else {
+      // Other states: End only
+      const endBtn = document.createElement("button");
+      endBtn.className = "phone-sm-btn bad"; endBtn.textContent = "End Call";
+      endBtn.addEventListener("click", () => endPhoneCall(callId));
+      actions.appendChild(endBtn);
+    }
+
     const txBtn = document.createElement("button");
     txBtn.className = "phone-sm-btn"; txBtn.textContent = "Transcript";
-    txBtn.addEventListener("click", () => loadCallTranscript(c.id || c.call_id));
-    actions.appendChild(endBtn); actions.appendChild(txBtn);
+    txBtn.addEventListener("click", () => loadCallTranscript(callId));
+    actions.appendChild(txBtn);
     card.appendChild(actions);
     box.appendChild(card);
   });
@@ -1445,9 +1492,16 @@ function updateCallBanner(calls) {
       (shown.reason || "") + (shown.from_extension ? "  ext " + shown.from_extension : "");
     banner.dataset.callId = shown.id || shown.call_id || "";
     const acceptBtn = $("phoneBannerAccept");
+    const rejectBtn = $("phoneBannerReject");
+    const muteBtn   = $("phoneBannerMute");
     if (acceptBtn) acceptBtn.style.display = ringing ? "" : "none";
+    if (rejectBtn) rejectBtn.style.display = ringing ? "" : "none";
+    if (muteBtn)   muteBtn.style.display   = active  ? "" : "none";
   } else {
     banner.classList.add("hidden");
+    callMuted = false;
+    const bm = $("phoneBannerMute");
+    if (bm) { bm.textContent = "Mute"; bm.classList.remove("bad"); }
   }
 }
 
@@ -1485,6 +1539,98 @@ async function loadCallTranscript(callId) {
     body.textContent = lines.length ? lines.join("\n") : "No transcript yet.";
   } catch (e) {
     body.textContent = "Error: " + (e.message || e);
+  }
+}
+
+// ================================================================= LIVE TRANSCRIPT POLLING
+// When a call transitions to active, auto-open the transcript wrap and poll every
+// 3 s so the user sees a live read-out without having to press the Transcript button.
+
+function startLiveTranscript(calls) {
+  const active = calls.find((c) => c.state === "active" || c.state === "accepted");
+  const callId = active ? (active.id || active.call_id) : null;
+  if (callId) {
+    if (_liveTranscriptCallId !== callId) {
+      _liveTranscriptCallId = callId;
+      if (_liveTranscriptTimer) { clearInterval(_liveTranscriptTimer); _liveTranscriptTimer = null; }
+      const wrap = $("phoneTranscriptWrap");
+      if (wrap) wrap.classList.remove("hidden");
+      const dot = $("phoneTranscriptLiveDot");
+      if (dot) dot.classList.remove("hidden");
+      refreshLiveTranscript();
+    }
+    if (!_liveTranscriptTimer) {
+      _liveTranscriptTimer = setInterval(() => {
+        if (phoneTab === "calls" && phoneOpen) refreshLiveTranscript();
+      }, 3000);
+    }
+  } else {
+    if (_liveTranscriptTimer) { clearInterval(_liveTranscriptTimer); _liveTranscriptTimer = null; }
+    _liveTranscriptCallId = null;
+    const dot = $("phoneTranscriptLiveDot");
+    if (dot) dot.classList.add("hidden");
+  }
+}
+
+async function refreshLiveTranscript() {
+  if (!_liveTranscriptCallId) return;
+  const body = $("phoneTranscriptBody");
+  if (!body) return;
+  try {
+    const data = await phoneMcp("get_call_transcript", { call_id: String(_liveTranscriptCallId) });
+    const lines = [];
+    if (data.transcripts && data.transcripts.length) {
+      data.transcripts.forEach((t) =>
+        lines.push("[" + (t.speaker || t.from_extension || "?") + "] " + (t.text || "")));
+    }
+    if (data.messages && data.messages.length) {
+      data.messages.forEach((m) => lines.push("[msg] " + (m.content || m.message || "")));
+    }
+    if (data.summary) {
+      lines.push("\n--- Summary ---\n" +
+        (typeof data.summary === "string" ? data.summary : JSON.stringify(data.summary, null, 2)));
+    }
+    body.textContent = lines.length ? lines.join("\n") : "No transcript yet.";
+    body.scrollTop = body.scrollHeight;
+  } catch (e) { /* keep stale transcript on transient error */ }
+}
+
+// ================================================================= LIVE SCREENING STATUS
+// Polls twilio_status.screening to show a live caller transcript and expose the
+// Take Over / End Screening buttons whenever call-screening is active.
+
+async function updateScreeningLive() {
+  const section = $("phoneScreeningLive"); if (!section) return;
+  try {
+    const data = await phoneMcp("twilio_status");
+    const sc = data.screening;
+    if (sc && sc.active) {
+      section.classList.remove("hidden");
+      section.dataset.callId = sc.call_id || "";
+      const info = $("phoneScreeningInfo");
+      if (info) {
+        info.textContent = [
+          sc.caller_number   ? "Caller: "    + sc.caller_number   : null,
+          sc.caller_name     ? "Name: "      + sc.caller_name     : null,
+          sc.agent_extension ? "Agent ext: " + sc.agent_extension : null,
+        ].filter(Boolean).join("\n") || "Screening in progress";
+      }
+      const tx = $("phoneScreeningTranscript");
+      if (tx && Array.isArray(sc.transcript)) {
+        tx.textContent = sc.transcript
+          .map((t) => "[" + (t.speaker || "?") + "] " + (t.text || t.body || ""))
+          .join("\n") || "(no transcript yet)";
+        tx.scrollTop = tx.scrollHeight;
+      }
+      const taBtn = $("phoneScreeningTakeOver");
+      const enBtn = $("phoneScreeningEndBtn");
+      if (taBtn) taBtn.disabled = !sc.call_id;
+      if (enBtn) enBtn.disabled = !sc.call_id;
+    } else {
+      section.classList.add("hidden");
+    }
+  } catch (e) {
+    const sec = $("phoneScreeningLive"); if (sec) sec.classList.add("hidden");
   }
 }
 
@@ -1651,9 +1797,10 @@ async function loadThread(threadId) {
   const body = $("phoneThreadBody");
   if (!wrap || !body) return;
   wrap.classList.remove("hidden");
-  // Switch body to flex-column layout for bubbles.
   body.className = "phone-bubble-wrap";
   body.innerHTML = '<div class="phone-card-meta" style="padding:4px 0">Loading…</div>';
+  const replyBar = $("phoneThreadReplyBar");
+  if (replyBar) replyBar.classList.add("hidden");
   try {
     const data = await phoneMcp("get_thread_messages", { thread_id: threadId });
     const msgs = Array.isArray(data) ? data : (data.messages || data || []);
@@ -1663,26 +1810,95 @@ async function loadThread(threadId) {
     }
     body.innerHTML = "";
     msgs.forEach((m) => {
-      const isOut = String(m.from_extension) === "101";
+      const isOut = String(m.from_extension) === "101" || m.from_type === "agent";
       const bubble = document.createElement("div");
       bubble.className = "phone-bubble " + (isOut ? "out" : "in");
       let inner = "";
       if (m.title) inner += '<div class="phone-bubble-title">' + escHtml(m.title) + '</div>';
       inner += '<div>' + escHtml(m.message || m.body || "") + '</div>';
-      if (m.reply_text)
-        inner += '<div class="phone-bubble-reply">↪ ' + escHtml(m.reply_text) + '</div>';
+      const replyStr = m.reply_text || m.response_text;
+      if (replyStr) inner += '<div class="phone-bubble-reply">↪ ' + escHtml(replyStr) + '</div>';
+      if (m.selected_option) inner += '<div class="phone-bubble-meta" style="color:var(--ok)">✓ ' + escHtml(m.selected_option) + '</div>';
       inner +=
         '<div class="phone-bubble-meta">ext ' +
         escHtml(String(m.from_extension || "?")) + ' → ' +
-        escHtml(String(m.to_extension   || "?")) + '</div>';
+        escHtml(String(m.to_extension   || "?")) +
+        (m.status ? ' · ' + escHtml(m.status) : '') + '</div>';
       bubble.innerHTML = inner;
       body.appendChild(bubble);
     });
     body.scrollTop = body.scrollHeight;
+    // Show reply bar for the most recent pending agent message requiring a response.
+    const pendingMsg = msgs.slice().reverse().find((m) =>
+      m.requires_response && m.status !== "replied" && m.status !== "expired" &&
+      (m.from_type === "agent" || String(m.from_extension) !== "100")
+    );
+    if (pendingMsg) renderThreadReplyBar(pendingMsg, threadId);
   } catch (e) {
     body.innerHTML =
       '<div class="phone-card-meta" style="color:var(--bad);padding:4px 0">Error: ' +
       escHtml(e.message || String(e)) + '</div>';
+  }
+}
+
+// Render the response-option buttons and free-text reply input for a pending message.
+function renderThreadReplyBar(msg, threadId) {
+  const replyBar = $("phoneThreadReplyBar"); if (!replyBar) return;
+  replyBar.classList.remove("hidden");
+  replyBar.dataset.msgId    = msg.id        || "";
+  replyBar.dataset.threadId = threadId      || msg.thread_id || "";
+  const optBox = $("phoneThreadOptions"); if (!optBox) return;
+  optBox.innerHTML = "";
+  const LABELS  = {
+    approve:     "✓ Approve",  deny:      "✗ Deny",
+    call_again:  "📞 Call Back", mute_30_min: "🔕 Mute 30m",
+    yes:         "✓ Yes",      no:        "✗ No",
+    dismiss:     "Dismiss",    got_it:    "Got it"
+  };
+  const CLASSES = { approve:"ok", yes:"ok", deny:"bad", no:"bad", reject:"bad" };
+  const opts = Array.isArray(msg.response_options) ? msg.response_options : [];
+  opts.forEach((opt) => {
+    const btn = document.createElement("button");
+    btn.className = "phone-sm-btn " + (CLASSES[opt] || "");
+    btn.textContent = LABELS[opt] || opt;
+    btn.addEventListener("click", async () => {
+      const mid = replyBar.dataset.msgId;
+      const tid = replyBar.dataset.threadId;
+      if (!mid) return;
+      btn.disabled = true;
+      try {
+        await phoneHttp("POST", "/api/messages/" + mid + "/reply", { selected_option: opt });
+        phoneResult("phoneThreadReplyResult", "✓ " + (LABELS[opt] || opt), "ok");
+        if (tid) setTimeout(() => loadThread(tid), 600);
+      } catch (e) {
+        phoneResult("phoneThreadReplyResult", "✗ " + (e.message || e), "bad");
+        btn.disabled = false;
+      }
+    });
+    optBox.appendChild(btn);
+  });
+  // Replace send button to clear any previous listeners
+  const oldSend = $("phoneThreadReplySend");
+  if (oldSend && oldSend.parentNode) {
+    const newSend = oldSend.cloneNode(true);
+    oldSend.parentNode.replaceChild(newSend, oldSend);
+    newSend.addEventListener("click", async () => {
+      const mid  = replyBar.dataset.msgId;
+      const tid  = replyBar.dataset.threadId;
+      const rtEl = $("phoneThreadReplyText");
+      const text = (rtEl && rtEl.value || "").trim();
+      if (!mid || !text) return;
+      newSend.disabled = true;
+      try {
+        await phoneHttp("POST", "/api/messages/" + mid + "/reply", { response_text: text });
+        phoneResult("phoneThreadReplyResult", "✓ Reply sent", "ok");
+        if (rtEl) rtEl.value = "";
+        if (tid) setTimeout(() => loadThread(tid), 600);
+      } catch (e) {
+        phoneResult("phoneThreadReplyResult", "✗ " + (e.message || e), "bad");
+        newSend.disabled = false;
+      }
+    });
   }
 }
 
@@ -2273,6 +2489,21 @@ async function loadCallHistory() {
         '<div class="phone-card-meta">' +
           escHtml(truncate([c.reason, (c.created_at || "").slice(0, 10)].filter(Boolean).join(" · "), 55)) +
         '</div>';
+      // Missed calls: offer a one-tap "Call Back" that pre-fills the dialer
+      if (missed) {
+        const fromExt = String(c.from_extension || c.from || "");
+        if (fromExt) {
+          const cbBtn = document.createElement("button");
+          cbBtn.className = "phone-sm-btn ok"; cbBtn.style.marginTop = "4px";
+          cbBtn.textContent = "📞 Call Back";
+          cbBtn.addEventListener("click", () => {
+            dialPad_setFull(fromExt);
+            setPhoneTab("calls");
+            addSys("Dialing " + fromExt + "…");
+          });
+          d.appendChild(cbBtn);
+        }
+      }
       box.appendChild(d);
     });
   } catch (e) {
@@ -2582,14 +2813,14 @@ function initPhonePanel() {
   );
 
   // ---- call banner ----
-  // C-4: Accept button now calls phoneMcp("accept_call") instead of a helpless message.
+  // Accept via REST (there is no accept_call MCP tool; HTTP route is the correct path)
   const bAccept = $("phoneBannerAccept");
   if (bAccept) bAccept.addEventListener("click", async () => {
     const cid = $("phoneBanner") && $("phoneBanner").dataset.callId;
     if (!cid) return;
     bAccept.disabled = true;
     try {
-      await phoneMcp("accept_call", { call_id: cid });
+      await phoneHttp("POST", "/api/calls/" + cid + "/accept", {});
       await loadActiveCalls();
     } catch (e) {
       addSys("Accept failed: " + (e.message || e));
@@ -2597,11 +2828,63 @@ function initPhonePanel() {
       bAccept.disabled = false;
     }
   });
+  // Reject an incoming ringing call
+  const bReject = $("phoneBannerReject");
+  if (bReject) bReject.addEventListener("click", async () => {
+    const cid = $("phoneBanner") && $("phoneBanner").dataset.callId;
+    if (!cid) return;
+    bReject.disabled = true;
+    try {
+      await phoneHttp("POST", "/api/calls/" + cid + "/reject", {});
+      await loadActiveCalls();
+    } catch (e) {
+      addSys("Reject failed: " + (e.message || e));
+    } finally {
+      bReject.disabled = false;
+    }
+  });
+  // Mute toggle (client-side microphone state; no backend endpoint exists)
+  const bBannerMute = $("phoneBannerMute");
+  if (bBannerMute) bBannerMute.addEventListener("click", () => {
+    callMuted = !callMuted;
+    bBannerMute.textContent = callMuted ? "Unmute" : "Mute";
+    bBannerMute.classList.toggle("bad", callMuted);
+  });
   const bEnd = $("phoneBannerEnd");
   if (bEnd) bEnd.addEventListener("click", () => {
     const cid = $("phoneBanner") && $("phoneBanner").dataset.callId;
     if (cid) endPhoneCall(cid);
   });
+
+  // ---- SCREENING LIVE (take-over / end / refresh) ----
+  const screenTakeOver = $("phoneScreeningTakeOver");
+  if (screenTakeOver) screenTakeOver.addEventListener("click", async () => {
+    const sec = $("phoneScreeningLive");
+    const callId = sec && sec.dataset.callId;
+    if (!callId) { addSys("No screened call to take over"); return; }
+    screenTakeOver.disabled = true;
+    try {
+      await phoneMcp("twilio_screening_take_over", { call_id: callId });
+      addSys("Taking over screened call — your phone should ring.");
+      await loadActiveCalls();
+    } catch (e) { addSys("Take over: " + (e.message || e)); }
+    finally { screenTakeOver.disabled = false; }
+  });
+  const screenEndBtn = $("phoneScreeningEndBtn");
+  if (screenEndBtn) screenEndBtn.addEventListener("click", async () => {
+    const sec = $("phoneScreeningLive");
+    const callId = sec && sec.dataset.callId;
+    if (!callId) { addSys("No screened call to end"); return; }
+    screenEndBtn.disabled = true;
+    try {
+      await phoneMcp("twilio_screening_end", { call_id: callId });
+      addSys("Screening ended.");
+      await loadActiveCalls();
+    } catch (e) { addSys("End screening: " + (e.message || e)); }
+    finally { screenEndBtn.disabled = false; }
+  });
+  const screenRefresh = $("phoneScreeningRefresh");
+  if (screenRefresh) screenRefresh.addEventListener("click", () => updateScreeningLive().catch(() => {}));
 
   // ---- CALLS TAB ----
   const rc = $("phoneRefreshCalls"); if (rc) rc.addEventListener("click", loadActiveCalls);
