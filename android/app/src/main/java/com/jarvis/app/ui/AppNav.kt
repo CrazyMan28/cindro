@@ -72,8 +72,7 @@ import com.jarvis.app.ui.settings.SettingsScreen
 import com.jarvis.app.ui.settings.SettingsViewModel
 import com.jarvis.app.ui.agents.AgentsScreen
 import com.jarvis.app.ui.agents.AgentsViewModel
-import com.jarvis.app.ui.phone.PhoneScreen
-import com.jarvis.app.ui.phone.PhoneViewModel
+import com.jarvis.app.ui.phone.PhoneLaunchScreen
 import com.jarvis.app.ui.skills.SkillsScreen
 import com.jarvis.app.ui.skills.SkillsViewModel
 import com.jarvis.app.ui.theme.JarvisPalette
@@ -291,9 +290,6 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
     val tabNav = rememberNavController()
     val backStack by tabNav.currentBackStackEntryAsState()
     val current = backStack?.destination
-    // Phone is an immersive full-screen surface with its OWN bottom nav — hide
-    // Jarvis's main nav while it's active so they don't stack (double nav bug).
-    val isPhoneTab = current?.hierarchy?.any { it.route == Routes.PHONE } == true
     val haptics = com.jarvis.app.ui.util.LocalHaptics.current
 
     fun switchTab(route: String) {
@@ -307,7 +303,7 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
     Scaffold(
         containerColor = JarvisPalette.Background,
         bottomBar = {
-            if (!isPhoneTab) NavigationBar(containerColor = JarvisPalette.Surface) {
+            NavigationBar(containerColor = JarvisPalette.Surface) {
                 tabs.forEach { tab ->
                     val selected = current?.hierarchy?.any { it.route == tab.route } == true
                     NavigationBarItem(
@@ -365,8 +361,9 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
                 ComputerScreen(viewModel = vm, activity = activity)
             }
             composable(Routes.PHONE) {
-                val vm: PhoneViewModel = viewModel(factory = PhoneViewModel.factory(app))
-                PhoneScreen(viewModel = vm, onBack = { switchTab(Routes.HOME) })
+                // The full Agent Phone app is vendored into this APK; the Phone tab
+                // launches the real com.agentphone.MainActivity (see PhoneLaunchScreen).
+                PhoneLaunchScreen()
             }
             composable(Routes.SETTINGS) {
                 val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(app))
