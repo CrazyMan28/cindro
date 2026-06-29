@@ -18,7 +18,7 @@ DEFAULT_CONFIG = {
     # 8790 project-tracker, 8791 phone-installer, 8792 phone file server,
     # 8793 intermittently bound by kihi-launcher — hence 8794.
     "port": 8794,
-    "advertise_host": "100.114.201.41",
+    "advertise_host": "127.0.0.1",
     "max_image_width": 1536,
     "ws_command_timeout": 30,
     "screenshot_tool": "auto",  # auto | grim | spectacle

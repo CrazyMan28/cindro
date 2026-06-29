@@ -7,7 +7,7 @@ without going through the daemon WS proxy.
 Invocation (uses the project venv, avoids host PYTHONPATH):
 
   env -u PYTHONPATH \\
-    /home/kihi2024/projects/computer_use/computer-use/.venv/bin/python \\
+    computer-use/.venv/bin/python \\
     scripts/verify_phone_http.py
 
 AGENT_TOKEN is read from ~/.config/jarvis/phone.env — never hardcoded.

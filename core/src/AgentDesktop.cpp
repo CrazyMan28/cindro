@@ -80,7 +80,9 @@ QString AgentDesktop::defaultEngineDir()
                                 .absoluteFilePath(QStringLiteral("../../computer-use"));
     if (QFileInfo::exists(QDir(fromExe).absoluteFilePath(QStringLiteral("pyproject.toml"))))
         return QDir(fromExe).absolutePath();
-    return QStringLiteral("/home/kihi2024/projects/computer_use/computer-use");
+    // Last resort: an explicit override, else the exe-relative guess.
+    const QString fromEnv = qEnvironmentVariable("JARVIS_ENGINE_DIR");
+    return fromEnv.isEmpty() ? QDir(fromExe).absolutePath() : fromEnv;
 }
 
 QString AgentDesktop::genBearer()

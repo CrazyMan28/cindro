@@ -140,8 +140,8 @@ public:
     bool verifyDesktopPin(const QString &pin) const;
 
     // Which claude OAuth account the claude brain spawns against.
-    //   "pro" -> ~/.claude          (ogkihi2024@gmail.com, the default)
-    //   "max" -> ~/.claude-secondary (issac676767@proton.me, uses Max quota)
+    //   "pro" -> ~/.claude          (you@example.com, the default)
+    //   "max" -> ~/.claude-secondary (you-max@example.com, uses Max quota)
     // Anything unrecognized (or unset) is treated as "pro" so the brain never
     // accidentally inherits the Max account.
     QString claudeAccount() const { return m_claudeAccount; }

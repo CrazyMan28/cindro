@@ -91,7 +91,7 @@ class PairingViewModel(
         val endpoint = HostPort.parse(state.hostPort)
         if (endpoint == null) {
             _uiState.update {
-                it.copy(status = PairStatus.ERROR, message = "Enter a valid host:port, e.g. 100.114.201.41:8796")
+                it.copy(status = PairStatus.ERROR, message = "Enter a valid host:port, e.g. 127.0.0.1:8796")
             }
             return
         }

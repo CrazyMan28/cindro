@@ -27,12 +27,17 @@ phone/server/*.sqlite
 phone/server/*.sqlite-*
 phone/server/data/local-voices/
 phone/**/.env
+phone/server/tmp/
+# Per-machine agent config (absolute paths/accounts). Ship agents.config.example.json.
+phone/server/agents.config.json
 
 # --- Android / Gradle ---
 *.apk
 *.aab
 .gradle/
 local.properties
+# Firebase config holds a project API key — keep it local. Ship google-services.json.example.
+android/app/google-services.json
 
 # --- Secrets (NEVER commit) ---
 *.token

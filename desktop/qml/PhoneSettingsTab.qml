@@ -788,7 +788,7 @@ Item {
                                 spacing: 8; Layout.fillWidth: true
                                 Repeater {
                                     model: [
-                                        { lbl: "Set all",    code: "**004*+18449040251#" },
+                                        { lbl: "Set all",    code: "**004*+15551234567#" },
                                         { lbl: "Check",      code: "*#002#" },
                                         { lbl: "Undo",       code: "##002#" }
                                     ]
@@ -811,9 +811,9 @@ Item {
                                 spacing: 8; Layout.fillWidth: true
                                 Repeater {
                                     model: [
-                                        { lbl: "Busy",        code: "**67*+18449040251#" },
-                                        { lbl: "No answer",   code: "**61*+18449040251#" },
-                                        { lbl: "Unreachable", code: "**62*+18449040251#" }
+                                        { lbl: "Busy",        code: "**67*+15551234567#" },
+                                        { lbl: "No answer",   code: "**61*+15551234567#" },
+                                        { lbl: "Unreachable", code: "**62*+15551234567#" }
                                     ]
                                     delegate: Rectangle {
                                         required property var modelData
@@ -839,8 +839,8 @@ Item {
                                 spacing: 8; Layout.fillWidth: true
                                 Repeater {
                                     model: [
-                                        { lbl: "VZ busy/no-ans", code: "*718449040251" },
-                                        { lbl: "VZ all (*72)",   code: "*728449040251" },
+                                        { lbl: "VZ busy/no-ans", code: "*715551234567" },
+                                        { lbl: "VZ all (*72)",   code: "*725551234567" },
                                         { lbl: "VZ off (*73)",   code: "*73" }
                                     ]
                                     delegate: Rectangle {

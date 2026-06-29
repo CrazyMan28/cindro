@@ -51,7 +51,7 @@ seeded as the default "Jarvis" voice; every prior picker/behavior stays.
   carrier readily **spam-filters to voicemail** (a 265s call had zero transcripts = voicemail).
   The account is also **Trial** (adds a "press a key" preamble; outbound only to verified
   numbers). So: prefer the **in-app path** (keep the device online); for the PSTN fallback,
-  save `+18449040251` in contacts + upgrade Twilio out of trial.
+  save `+15551234567` in contacts + upgrade Twilio out of trial.
 - **`phone.mcp` proxy timeout 35s → 300s** so the blocking `*_and_wait` call tools don't time
   out mid-call ("phone server: timeout").
 

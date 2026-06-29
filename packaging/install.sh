@@ -10,7 +10,8 @@
 set -euo pipefail
 
 # --- Paths -------------------------------------------------------------------
-REPO_ROOT="/home/kihi2024/projects/computer_use"
+# Repo root = the parent of this script's packaging/ dir (works from any clone).
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${REPO_ROOT}/build"
 PKG_DIR="${REPO_ROOT}/packaging"
 

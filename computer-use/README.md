@@ -11,7 +11,7 @@ screen, mouse, keyboard, windows, clipboard, browser.
 
 ## Endpoints
 
-- `http://100.114.201.41:8794/mcp` — MCP (streamable HTTP), `Authorization: Bearer <token>`
+- `http://127.0.0.1:8794/mcp` — MCP (streamable HTTP), `Authorization: Bearer <token>`
 - `ws://127.0.0.1:8794/ws/extension?token=<token>` — Chrome extension bridge
 - `http://…:8794/health` — open health check (`active_compositor`, `ydotoold_socket`, `extension_connected`)
 
@@ -107,7 +107,7 @@ loginctl enable-linger $USER
 Register with Claude Code (note: the name `computer-use` is reserved):
 
 ```bash
-claude mcp add -s user -t http desktop-use http://100.114.201.41:8794/mcp \
+claude mcp add -s user -t http desktop-use http://127.0.0.1:8794/mcp \
   -H "Authorization: Bearer $(grep bearer_token ~/.computer-use/config.yaml | awk '{print $2}')"
 ```
 

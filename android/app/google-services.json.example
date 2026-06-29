@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "140105387548",
-    "project_id": "baratone",
-    "storage_bucket": "baratone.firebasestorage.app"
+    "project_number": "YOUR_PROJECT_NUMBER",
+    "project_id": "your-project-id",
+    "storage_bucket": "your-project-id.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:140105387548:android:0a1c2e4f6b8d0e2f1099d9",
+        "mobilesdk_app_id": "1:YOUR_PROJECT_NUMBER:android:YOURAPPIDHASH1",
         "android_client_info": {
           "package_name": "com.jarvis.app"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyAH09prKoqfsgHNCgWylFAlZfpNEiCQRBA"
+          "current_key": "YOUR_FIREBASE_API_KEY"
         }
       ],
       "services": {
@@ -26,7 +26,7 @@
     },
     {
       "client_info": {
-        "mobilesdk_app_id": "1:140105387548:android:1b2d3f5a7c9e1f3a1099d9",
+        "mobilesdk_app_id": "1:YOUR_PROJECT_NUMBER:android:YOURAPPIDHASH2",
         "android_client_info": {
           "package_name": "com.jarvis.app.debug"
         }
@@ -34,7 +34,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyAH09prKoqfsgHNCgWylFAlZfpNEiCQRBA"
+          "current_key": "YOUR_FIREBASE_API_KEY"
         }
       ],
       "services": {

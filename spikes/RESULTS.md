@@ -31,7 +31,7 @@ GOTCHA: MUST redirect stdin from /dev/null or codex blocks on "Reading additiona
 Sample saved: `spikes/codex_jsonl_sample.jsonl`. CodexBrain parses this into normalized brain events.
 
 ## Risk #3: computer-use MCP reachable — RESOLVED
-desktop-use MCP (http://100.114.201.41:8794/mcp) `session_info` OK: active=kde tty2; outputs DP-1
+desktop-use MCP (http://127.0.0.1:8794/mcp) `session_info` OK: active=kde tty2; outputs DP-1
 (0,0 1920x1080), HDMI-A-1 (1920,0 2560x1440), eDP-1 (4480,490 1920x1080); bbox 6400x1570.
 
 ## Deferred to their own waves

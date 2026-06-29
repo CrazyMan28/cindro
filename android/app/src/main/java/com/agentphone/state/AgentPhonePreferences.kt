@@ -114,7 +114,7 @@ object AgentPhonePreferences {
         migrateLegacyPrefs(context)
         val prefs = prefs(context)
         return AgentPhoneSettings(
-            prefs.getString(KEY_SERVER_URL, "http://100.114.201.41:8801") ?: "http://100.114.201.41:8801",
+            prefs.getString(KEY_SERVER_URL, "http://127.0.0.1:8801") ?: "http://127.0.0.1:8801",
             prefs.getString(KEY_TOKEN, "change-me-device-token") ?: "change-me-device-token",
             prefs.getString(KEY_EXTENSION, "100") ?: "100",
             prefs.getString(KEY_AUDIO_FORMAT, "pcm_s16le") ?: "pcm_s16le",

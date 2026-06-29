@@ -48,7 +48,7 @@ public:
     explicit McpRegistry(SessionStore &store) : m_store(store) {}
 
     static QString builtinId() { return QStringLiteral("computer-use"); }
-    static QString builtinEndpoint() { return QStringLiteral("http://100.114.201.41:8794/mcp"); }
+    static QString builtinEndpoint() { return QStringLiteral("http://127.0.0.1:8794/mcp"); }
     // ~/.computer-use/config.yaml -> bearer_token (best-effort; empty if absent).
     static QString computerUseBearer();
 

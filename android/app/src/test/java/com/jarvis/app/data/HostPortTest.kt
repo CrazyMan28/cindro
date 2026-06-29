@@ -15,7 +15,7 @@ class HostPortTest {
     @Test
     fun parsesTailscaleDefault() {
         val hp = HostPort.parse(PairingStore.DEFAULT_HOST_PORT)
-        assertEquals("100.114.201.41", hp?.host)
+        assertEquals("127.0.0.1", hp?.host)
         assertEquals(8796, hp?.port)
     }
 

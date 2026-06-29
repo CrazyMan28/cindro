@@ -35,10 +35,10 @@ import com.agentphone.ui.theme.LocalSemanticColors
 import androidx.compose.ui.unit.dp
 
 /** The Twilio number screened calls are forwarded to. */
-private const val AGENT_NUMBER = "+18449040251"
+private const val AGENT_NUMBER = "+15551234567"
 
 /** Verizon uses its own *7x codes (not GSM **SC*), with a 10-digit number, no #. */
-private const val AGENT_NUMBER_10 = "8449040251"
+private const val AGENT_NUMBER_10 = "5551234567"
 
 /**
  * One-time setup for AI call screening of NATIVE calls:

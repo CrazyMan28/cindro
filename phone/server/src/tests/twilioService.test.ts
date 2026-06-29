@@ -33,18 +33,18 @@ function makeService(overrides: Record<string, string> = {}) {
 describe("normalizeNumber", () => {
   test("US 10-digit gets +1", () => {
     const { service } = makeService();
-    expect(service.normalizeNumber("8449040251")).toBe("+18449040251");
+    expect(service.normalizeNumber("5551234567")).toBe("+15551234567");
   });
 
   test("formatting characters are stripped", () => {
     const { service } = makeService();
-    expect(service.normalizeNumber("(844) 904-0251")).toBe("+18449040251");
-    expect(service.normalizeNumber("1 844 904 0251")).toBe("+18449040251");
+    expect(service.normalizeNumber("(555) 123-4567")).toBe("+15551234567");
+    expect(service.normalizeNumber("1 555 123 4567")).toBe("+15551234567");
   });
 
   test("E.164 passes through", () => {
     const { service } = makeService();
-    expect(service.normalizeNumber("+18449040251")).toBe("+18449040251");
+    expect(service.normalizeNumber("+15551234567")).toBe("+15551234567");
     expect(service.normalizeNumber("+447911123456")).toBe("+447911123456");
   });
 
@@ -59,21 +59,21 @@ describe("normalizeNumber", () => {
 describe("allowlist", () => {
   test("add, list, check, remove round-trip with normalization", () => {
     const { service } = makeService();
-    expect(service.isAllowed("+18449040251")).toBe(false);
-    service.allowlistAdd("844-904-0251", "Kizek");
-    expect(service.isAllowed("+18449040251")).toBe(true);
-    expect(service.isAllowed("(844) 904-0251")).toBe(true);
+    expect(service.isAllowed("+15551234567")).toBe(false);
+    service.allowlistAdd("555-123-4567", "Kizek");
+    expect(service.isAllowed("+15551234567")).toBe(true);
+    expect(service.isAllowed("(555) 123-4567")).toBe(true);
     const list = service.allowlistList();
     expect(list).toHaveLength(1);
-    expect(list[0]).toMatchObject({ phone_number: "+18449040251", label: "Kizek" });
-    expect(service.allowlistRemove("8449040251")).toBe(true);
-    expect(service.isAllowed("+18449040251")).toBe(false);
+    expect(list[0]).toMatchObject({ phone_number: "+15551234567", label: "Kizek" });
+    expect(service.allowlistRemove("5551234567")).toBe(true);
+    expect(service.isAllowed("+15551234567")).toBe(false);
   });
 
   test("duplicate add updates instead of duplicating", () => {
     const { service } = makeService();
-    service.allowlistAdd("+18449040251", "first");
-    service.allowlistAdd("8449040251", "second");
+    service.allowlistAdd("+15551234567", "first");
+    service.allowlistAdd("5551234567", "second");
     const list = service.allowlistList();
     expect(list).toHaveLength(1);
     expect(list[0].label).toBe("second");
@@ -91,20 +91,20 @@ describe("settings", () => {
   test("default user number is normalized and auto-allowlisted", () => {
     const { service } = makeService();
     expect(service.getDefaultUserNumber()).toBeUndefined();
-    service.setDefaultUserNumber("844 904 0251");
-    expect(service.getDefaultUserNumber()).toBe("+18449040251");
-    expect(service.isAllowed("+18449040251")).toBe(true);
+    service.setDefaultUserNumber("555 123 4567");
+    expect(service.getDefaultUserNumber()).toBe("+15551234567");
+    expect(service.isAllowed("+15551234567")).toBe(true);
   });
 });
 
 describe("placeCall", () => {
   test("creates a Twilio call with media-stream TwiML and records it", async () => {
     const { service, api, db } = makeService();
-    service.allowlistAdd("+18449040251");
-    const result = await service.placeCall({ toNumber: "8449040251", internalCallId: "call_abc" });
+    service.allowlistAdd("+15551234567");
+    const result = await service.placeCall({ toNumber: "5551234567", internalCallId: "call_abc" });
     expect(result.callSid).toBe("CA_test_call");
     const params = (api.createCall as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, string>;
-    expect(params.to).toBe("+18449040251");
+    expect(params.to).toBe("+15551234567");
     expect(params.from).toBe("+15550001111");
     expect(params.twiml).toContain("<Connect>");
     expect(params.twiml).toContain("wss://example.ts.net/twilio/media");
@@ -112,7 +112,7 @@ describe("placeCall", () => {
     expect(params.twiml).toContain("call_abc");
     expect(params.statusCallback).toBe("https://example.ts.net/twilio/status");
     const row = db.sqlite.prepare("SELECT * FROM twilio_calls WHERE call_sid = ?").get("CA_test_call") as Record<string, unknown>;
-    expect(row).toMatchObject({ call_id: "call_abc", direction: "outbound", phone_number: "+18449040251" });
+    expect(row).toMatchObject({ call_id: "call_abc", direction: "outbound", phone_number: "+15551234567" });
   });
 
   test("refuses numbers not on the allowlist", async () => {
@@ -123,7 +123,7 @@ describe("placeCall", () => {
 
   test("refuses when twilio is not configured", async () => {
     const { service } = makeService({ TWILIO_ACCOUNT_SID: "", TWILIO_AUTH_TOKEN: "" });
-    await expect(service.placeCall({ toNumber: "+18449040251", internalCallId: "c" })).rejects.toThrow(/twilio_not_configured/);
+    await expect(service.placeCall({ toNumber: "+15551234567", internalCallId: "c" })).rejects.toThrow(/twilio_not_configured/);
   });
 });
 
@@ -138,12 +138,12 @@ describe("hangup", () => {
 describe("sendSms", () => {
   test("sends to an allowlisted number and records it", async () => {
     const { service, api, db } = makeService();
-    service.allowlistAdd("+18449040251");
-    const result = await service.sendSms({ toNumber: "8449040251", body: "build done" });
+    service.allowlistAdd("+15551234567");
+    const result = await service.sendSms({ toNumber: "5551234567", body: "build done" });
     expect(result.sid).toBe("SM_test_msg");
-    expect(api.createMessage).toHaveBeenCalledWith({ to: "+18449040251", from: "+15550001111", body: "build done" });
+    expect(api.createMessage).toHaveBeenCalledWith({ to: "+15551234567", from: "+15550001111", body: "build done" });
     const row = db.sqlite.prepare("SELECT * FROM twilio_sms WHERE sid = ?").get("SM_test_msg") as Record<string, unknown>;
-    expect(row).toMatchObject({ direction: "outbound", phone_number: "+18449040251", body: "build done" });
+    expect(row).toMatchObject({ direction: "outbound", phone_number: "+15551234567", body: "build done" });
   });
 
   test("refuses non-allowlisted numbers", async () => {
@@ -156,8 +156,8 @@ describe("sendSms", () => {
 describe("call records", () => {
   test("status updates and stream linking round-trip", async () => {
     const { service } = makeService();
-    service.allowlistAdd("+18449040251");
-    await service.placeCall({ toNumber: "+18449040251", internalCallId: "call_abc" });
+    service.allowlistAdd("+15551234567");
+    await service.placeCall({ toNumber: "+15551234567", internalCallId: "call_abc" });
     service.recordCallStatus("CA_test_call", "in-progress");
     service.linkStream("CA_test_call", "MZ_stream_1");
     const row = service.findByCallSid("CA_test_call");
@@ -166,10 +166,10 @@ describe("call records", () => {
 
   test("inbound calls can be recorded", () => {
     const { service } = makeService();
-    service.recordInboundCall("CA_inbound", "+18449040251", "call_in_1");
+    service.recordInboundCall("CA_inbound", "+15551234567", "call_in_1");
     expect(service.findByCallSid("CA_inbound")).toMatchObject({
       direction: "inbound",
-      phone_number: "+18449040251",
+      phone_number: "+15551234567",
       call_id: "call_in_1"
     });
   });
@@ -183,7 +183,7 @@ describe("validateWebhook", () => {
 
   test("accepts a correctly signed request", () => {
     const { service } = makeService();
-    const request = signedRequest("/twilio/voice", { CallSid: "CA1", From: "+18449040251" });
+    const request = signedRequest("/twilio/voice", { CallSid: "CA1", From: "+15551234567" });
     expect(service.validateWebhook(request)).toBe(true);
   });
 
