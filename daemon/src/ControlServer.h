@@ -494,6 +494,9 @@ private:
     QHash<QString, QString> m_hookSessionContext;
     // Seed the built-in "internal_docs" capability-catalog skill (once).
     void seedInternalDocsSkill();
+    // Seed the built-in "phone" skill — the playbook for calling/texting the user
+    // and answering when they call/text in. Re-seeds on a version marker bump.
+    void seedPhoneSkill();
     // Seed the native phone subsystem's MCP endpoint (call_user / notify_user /
     // twilio_* etc.) into the brain's registry from ~/.config/jarvis/phone.env, if
     // present. Idempotent; no-op when the phone isn't set up.
