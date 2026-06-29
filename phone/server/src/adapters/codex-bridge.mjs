@@ -24,6 +24,7 @@ const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const CODEX_CWD = process.env.CODEX_CWD || process.cwd();
 const CODEX_SANDBOX = process.env.CODEX_SANDBOX || "read-only"; // read-only | workspace-write | danger-full-access
 const EXTENSION = process.env.AGENT_PHONE_EXTENSION || "";
+const AGENT_NAME = (process.env.AGENT_PHONE_NAME || "").trim();
 const DEFAULT_MODEL = process.env.CODEX_MODEL || ""; // optional override; default = codex default
 const DEFAULT_REASONING = process.env.CODEX_REASONING || "low"; // minimal | low | medium | high
 const MAX_REPLY_CHARS = 1000;
@@ -287,7 +288,7 @@ rl.on("line", (line) => {
     // Only greet on a voice call. A text conversation shouldn't fire an
     // unsolicited "Codex here" — the user's text just gets a direct reply.
     if (channel !== "text") {
-      emit({ action: "speak", text: screening ? "Hello, this is Kizek's assistant. Who's calling, please?" : "Codex here. What can I help you with?" });
+      emit({ action: "speak", text: screening ? "Hello, this is Kizek's assistant. Who's calling, please?" : `${AGENT_NAME ? AGENT_NAME + " here." : "Hey,"} What can I help you with?` });
     }
     return;
   }
