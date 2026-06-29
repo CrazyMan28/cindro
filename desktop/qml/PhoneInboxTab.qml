@@ -31,7 +31,8 @@ Item {
 
     // ---- state ----------------------------------------------------------------
     ListModel { id: threadModel }
-    property string threadText:    ""
+    ListModel { id: messageModel }
+    property string threadText:    ""   // loading/error status only
     property string openThreadId:  ""
     property string threadSubject: ""
     property bool   showNewChat:   false
@@ -50,7 +51,8 @@ Item {
                     "preview": m.preview     !== undefined ? m.preview             : (m.message || ""),
                     "priority":m.priority    !== undefined ? m.priority            : "normal",
                     "unread":  m.unread_count !== undefined ? m.unread_count       : 0,
-                    "ts":      m.created_at  !== undefined ? ("" + m.created_at)  : ""
+                    "ts":      m.created_at  !== undefined ? ("" + m.created_at)  : "",
+                    "relExt":  m.related_extension !== undefined ? ("" + m.related_extension) : ""
                 })
             }
         })
@@ -60,17 +62,21 @@ Item {
         tab.openThreadId  = tid
         tab.threadSubject = subject
         tab.threadText    = "Loading…"
+        messageModel.clear()
         tab.callTool("get_thread_messages", { thread_id: tid }, function(r) {
             if (r.error) { tab.threadText = "Error: " + (r.error.message || "?"); return }
-            var d   = r.data || {}
+            var d    = r.data || {}
             var msgs = d.messages instanceof Array ? d.messages : []
-            var lines = []
+            messageModel.clear()
             for (var i = 0; i < msgs.length; i++) {
-                var m   = msgs[i]
-                var who = m.from_extension !== undefined ? ("ext " + m.from_extension) : "agent"
-                lines.push("[" + who + "] " + (m.message || m.content || m.text || ""))
+                var m = msgs[i]
+                messageModel.append({
+                    "fromExt":   m.from_extension !== undefined ? ("" + m.from_extension) : "",
+                    "body":      m.message || m.content || m.text || "",
+                    "replyEcho": m.response_text || m.selected_option || m.reply_text || ""
+                })
             }
-            tab.threadText = lines.length > 0 ? lines.join("\n") : "(empty thread)"
+            tab.threadText = msgs.length > 0 ? "" : "(empty thread)"
         })
     }
 
@@ -114,8 +120,8 @@ Item {
         // ── thread list ───────────────────────────────────────────────────────
         Item {
             Layout.fillWidth: true
-            Layout.fillHeight: tab.threadText.length === 0
-            Layout.preferredHeight: tab.threadText.length > 0 ? 200 : -1
+            Layout.fillHeight: tab.openThreadId.length === 0
+            Layout.preferredHeight: tab.openThreadId.length > 0 ? 200 : -1
 
             // empty state
             ColumnLayout {
@@ -144,6 +150,7 @@ Item {
                     required property string priority
                     required property int    unread
                     required property string ts
+                    required property string relExt
                     property color _pColor: _tRow.priority === "critical" ? Theme.danger
                                           : _tRow.priority === "urgent"   ? Theme.amber
                                           : _tRow.priority === "low"      ? Theme.textFaint : Theme.accent
@@ -164,7 +171,8 @@ Item {
                             width: 40; height: 40; radius: 20
                             color: Qt.rgba(_tRow._pColor.r, _tRow._pColor.g, _tRow._pColor.b, 0.16)
                             Text {
-                                anchors.centerIn: parent; text: _tRow.tid.slice(0,2).toUpperCase()
+                                anchors.centerIn: parent
+                                text: (_tRow.relExt.length > 0 ? _tRow.relExt.charAt(0) : _tRow.tid.slice(0,2)).toUpperCase()
                                 color: _tRow._pColor; font.family: Theme.fontDisplay; font.pixelSize: 12; font.weight: Font.Bold
                             }
                         }
@@ -214,30 +222,92 @@ Item {
             }
         }
 
-        // ── thread detail panel ───────────────────────────────────────────────
+        // ── thread detail panel (styled chat bubbles) ─────────────────────────
         Rectangle {
             Layout.fillWidth: true
-            height: _threadPanelCol.implicitHeight + 20
-            visible: tab.threadText.length > 0
+            height: 260
+            visible: tab.openThreadId.length > 0
             color: Theme.surface; radius: Theme.radiusSm; border.color: Theme.hairlineSoft; border.width: 1
+
             ColumnLayout {
-                id: _threadPanelCol
-                anchors { left: parent.left; right: parent.right; top: parent.top; margins: 10 }
+                anchors { fill: parent; margins: 10 }
                 spacing: 6
+
+                // header row
                 RowLayout {
                     Layout.fillWidth: true
-                    Text { text: tab.threadSubject.length > 0 ? tab.threadSubject : "Thread"; color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 11; font.weight: Font.Medium; Layout.fillWidth: true }
+                    Text {
+                        text: tab.threadSubject.length > 0 ? tab.threadSubject : "Thread"
+                        color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 11; font.weight: Font.Medium
+                        Layout.fillWidth: true; elide: Text.ElideRight
+                    }
                     Rectangle {
                         width: 22; height: 22; radius: 4
                         color: _closeTrMa.containsMouse ? Qt.rgba(1,1,1,0.08) : "transparent"
                         Text { anchors.centerIn: parent; text: "✕"; color: Theme.textMuted; font.pixelSize: 10 }
-                        MouseArea { id: _closeTrMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { tab.threadText = ""; tab.openThreadId = "" } }
+                        MouseArea {
+                            id: _closeTrMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                            onClicked: { tab.openThreadId = ""; tab.threadSubject = ""; tab.threadText = ""; messageModel.clear() }
+                        }
                     }
                 }
-                Flickable {
-                    Layout.fillWidth: true; height: 90
-                    contentWidth: width; contentHeight: _trTxtInbox.implicitHeight; clip: true
-                    Text { id: _trTxtInbox; width: parent.width; text: tab.threadText; color: Theme.textMuted; font.family: Theme.fontMono; font.pixelSize: 10; wrapMode: Text.WrapAnywhere }
+
+                // loading / error indicator (shown while messageModel is empty)
+                Text {
+                    visible: messageModel.count === 0 && tab.threadText.length > 0
+                    text: tab.threadText
+                    color: Theme.textMuted; font.family: Theme.fontMono; font.pixelSize: 10
+                    Layout.fillWidth: true; wrapMode: Text.WrapAnywhere
+                }
+
+                // chat bubble ListView
+                ListView {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    model: messageModel
+                    spacing: 6; clip: true
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                    delegate: Item {
+                        id: _bubble
+                        required property string fromExt
+                        required property string body
+                        required property string replyEcho
+                        property bool _out: _bubble.fromExt === "101"
+                        width: ListView.view.width
+                        height: _bRect.height + 4
+
+                        Rectangle {
+                            id: _bRect
+                            width: Math.min(_bBody.implicitWidth + 24, parent.width * 0.80)
+                            height: _bCol.implicitHeight + 16
+                            x: _bubble._out ? (parent.width - width) : 0
+                            radius: Theme.radiusXs
+                            color:        _bubble._out ? Theme.accentDim    : Theme.surfaceStrong
+                            border.color: _bubble._out ? Theme.accent        : Theme.hairlineSoft
+                            border.width: 1
+
+                            ColumnLayout {
+                                id: _bCol
+                                anchors { left: parent.left; right: parent.right; top: parent.top; margins: 8 }
+                                spacing: 2
+
+                                Text {
+                                    id: _bBody
+                                    text: _bubble.body
+                                    color: _bubble._out ? Theme.accentBright : Theme.text
+                                    font.family: Theme.fontSans; font.pixelSize: 10
+                                    wrapMode: Text.WordWrap; Layout.fillWidth: true
+                                }
+                                Text {
+                                    visible: _bubble.replyEcho.length > 0
+                                    text: "↪ " + _bubble.replyEcho
+                                    color: Theme.textFaint; font.family: Theme.fontMono; font.pixelSize: 9
+                                    wrapMode: Text.WordWrap; Layout.fillWidth: true
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -310,12 +380,12 @@ Item {
                 if (tab.showNewChat) {
                     parent._agents = []; parent._selected = []
                     _ncMsg.text = ""
-                    tab.callTool("list_extensions", {}, function(r) {
+                    tab.callTool("list_agents", {}, function(r) {
                         var arr = r.data instanceof Array ? r.data : []
                         var out = []
                         for (var i = 0; i < arr.length; i++) {
                             var a = arr[i]
-                            out.push({ ext: ("" + (a.extension || a.ext || "")), nm: (a.name || "Agent") })
+                            out.push({ ext: ("" + (a.extension || "")), nm: (a.name || "Agent") })
                         }
                         parent._agents = out
                         if (out.length > 0) parent._selected = [out[0].ext]
@@ -398,7 +468,7 @@ Item {
                             onClicked: {
                                 var sel = parent.parent.parent.parent._selected
                                 if (sel.length === 0) return
-                                tab.callTool("call_extension", { extension: sel[0] }, function(r) {})
+                                tab.callTool("call_extension", { from_extension: "101", to_extension: sel[0] }, function(r) {})
                                 tab.showNewChat = false
                             }
                         }

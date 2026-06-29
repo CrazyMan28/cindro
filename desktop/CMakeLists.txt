@@ -65,6 +65,7 @@ qt_add_qml_module(jarvis-sidebar
         qml/PhoneInboxTab.qml
         qml/PhoneHudTab.qml
         qml/PhoneSettingsTab.qml
+        qml/PhoneScreeningTab.qml
         qml/SshPage.qml
         qml/ActivityPage.qml
         qml/BrowserPage.qml
