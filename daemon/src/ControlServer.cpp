@@ -456,14 +456,30 @@ static QJsonArray modelsForBrain(const QString &brain)
     } else if (brain == QStringLiteral("claude")) {
         models << QStringLiteral("claude-opus-4-8") << QStringLiteral("claude-opus-4-5")
                << QStringLiteral("claude-sonnet-4-5") << QStringLiteral("claude-haiku-4-5");
-    } else { // api
-        models << QStringLiteral("gpt-5.5") << QStringLiteral("o4-mini")
-               << QStringLiteral("claude-opus-4-8")
-               << QStringLiteral("mistral-large-latest")
+    } else { // api — Mistral first: the recommended default for a CLI-less user.
+        models << QStringLiteral("mistral-large-latest")
                << QStringLiteral("mistral-small-latest")
+               << QStringLiteral("gpt-5.5") << QStringLiteral("o4-mini")
+               << QStringLiteral("claude-opus-4-8")
                << QStringLiteral("qwen2.5:3b");
     }
     return models;
+}
+
+// Which brains are actually usable here: codex/claude need their CLI on PATH;
+// the `api` brain is always present (it's a direct HTTP loop). Drives both the
+// no-CLI fallback and the picker's availability badges.
+static bool cliOnPath(const QString &exe)
+{
+    return !QStandardPaths::findExecutable(exe).isEmpty();
+}
+static QJsonObject brainAvailability()
+{
+    QJsonObject a;
+    a.insert(QStringLiteral("codex"), cliOnPath(QStringLiteral("codex")));
+    a.insert(QStringLiteral("claude"), cliOnPath(QStringLiteral("claude")));
+    a.insert(QStringLiteral("api"), true);
+    return a;
 }
 
 // The default model for a brain when the caller gives none: the FIRST entry of
@@ -494,6 +510,11 @@ Response ControlServer::handleSettingsGet(const Request &req)
     QJsonArray brains;
     brains << QStringLiteral("codex") << QStringLiteral("claude") << QStringLiteral("api");
     s.insert(QStringLiteral("brains"), brains);
+
+    // Which brains are actually usable on this machine (codex/claude need their
+    // CLI on PATH; api is always available). The picker shows availability
+    // badges and a CLI-less user is steered to the api/Mistral brain.
+    s.insert(QStringLiteral("available_brains"), brainAvailability());
 
     // Per-brain "can drive the computer-use nested desktop headless" capability,
     // so the picker can HONESTLY mark which brains drive (no silent swapping).
@@ -1418,6 +1439,27 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     row.agent = agentName;
     row.profile = effProfile.isEmpty() ? QStringLiteral("coder") : effProfile;
     row.brain = effBrain.isEmpty() ? m_config.defaultBrain : effBrain;
+    // NO-CLI FALLBACK: if the brain came from the DEFAULT (the caller didn't ask
+    // for a specific one) and it's a CLI brain that isn't installed, fall back to
+    // the direct API brain so a user with neither codex nor claude can still chat.
+    // Prefer Mistral when that key is present (the recommended CLI-less default).
+    // An EXPLICIT brain request is always honored (it surfaces its own error).
+    if (effBrain.isEmpty() &&
+        (row.brain == QStringLiteral("codex") || row.brain == QStringLiteral("claude")) &&
+        QStandardPaths::findExecutable(row.brain).isEmpty()) {
+        const bool haveMistral = m_settings.hasApiKey(QStringLiteral("mistral"));
+        if (haveMistral || m_settings.hasApiKey(QStringLiteral("openai")) ||
+            m_settings.hasApiKey(QStringLiteral("anthropic"))) {
+            qInfo().noquote() << "[brain] default" << row.brain
+                              << "CLI not found on PATH; falling back to the api brain";
+            row.brain = QStringLiteral("api");
+            if (haveMistral && effModel.isEmpty())
+                effModel = QStringLiteral("mistral-large-latest");
+        }
+        // No api key either: leave the brain as-is. The CLI spawn emits a clear
+        // "<brain> failed to start" error, and the UI's available_brains +
+        // api_keys_set drive the "add a Mistral key" onboarding prompt.
+    }
     // BRAIN DEFAULT FIX: when the caller gives no model, pick the per-brain
     // default (the FIRST entry of modelsForBrain) — a claude brain gets a claude
     // model, an api brain a configured-provider model — NOT the global default
