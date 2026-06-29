@@ -48,6 +48,40 @@ call and it clones the timbre on the fly.
     routes clones straight to the cloud (local piper can't clone); `ControlServer::cloneRefAudioB64`
     resolves the slug → clip; `handleVoiceListVoices` lists Jarvice + reports it as the default.
 
+## Named voice library — record/upload your own + "set as default" (2026-06-29)
+
+`jarvice` generalized into a **managed library of named voices**. Record your own voice
+(mic) or upload a clip, name it, and **set one as the default** — used everywhere Jarvis
+speaks (desktop TTS / voice mode, the phone app's spoken replies, and **phone calls** — when
+it calls you and when it answers). Nothing was removed: `jarvice` is seeded as the initial
+default "Jarvis" voice and all prior behavior/pickers stay.
+
+- **Storage (daemon-owned, single source of truth):** clips stay at
+  `~/.config/jarvis/voices/<slug>_ref.<ext>` (the existing resolver) plus a manifest
+  `~/.config/jarvis/voices/voices.json` (`{default, voices:[{id,name,slug,ext,source,raw,…}]}`).
+  Seeded from any existing `jarvice_ref.*` on first run. Core class `VoiceLibrary`
+  (`voice_library_test` ctest).
+- **Contract A (control + device surfaces):** `voice.list_voices` now merges the named
+  voices (flagged `custom:true`, with `is_default`) ahead of the stock presets;
+  `voice.create_clone {name, audio_b64, format, clean=true, source}` (clean runs the same
+  ffmpeg trim/clean as `jarvice_voice.py build-ref`; a raw toggle stores as-is),
+  `voice.set_default {voice}`, `voice.delete_clone {id}`, `voice.rename_clone`,
+  `voice.preview_clone {voice, text?}` (synths a sample).
+- **"Set as default" propagation:** desktop TTS + the app's speak-replies key off `tts_voice`
+  (instant); for **calls** the daemon rewrites `MISTRAL_TTS_REF_AUDIO_FILE` in
+  `~/.config/jarvis/phone.env` (or clears it for a stock default) and **restarts
+  `jarvis-phone.service`** so the phone server clones the new default.
+- **UI:** a **"Default Voice"** card in **Settings → Voice** on desktop (`SettingsPage.qml`
+  + `Bridge` record via `pw-record` / upload via `FileDialog`) and the **Jarvis Android app**
+  (`SettingsScreen.kt` + `AudioRecorder` / SAF upload) — list (default dot · name · source ·
+  Preview / Set default / Delete), name field, Record/Upload, an Auto-clean toggle, Save.
+- **"Both places" (phone):** the vendored agent-phone per-agent picker also sees the named
+  voices — `phone/server/src/voices/cloneVoices.ts` lists `~/.config/jarvis/voices/` into
+  `GET /api/voices`; `voiceProfiles.set` accepts a `clone:<slug>`/`jarvice` voiceId; and
+  `audioGateway.synthesizeForCall` resolves it to `ref_audio` (works on PSTN too). So a
+  specific clone can be assigned to a specific agent, not just the global default.
+- Live-verified: `scripts/voice_library_smoke.py` (throwaway daemon round-trip).
+
 ## How Jarvis uses it
 - **Daemon-proxied (recommended): the key stays on the laptop.** Add Contract C (device WS) + Contract A
   methods: `voice.stt{audio_b64, lang?} -> {text, words?}` and `voice.tts{text, voice?, format?} ->
