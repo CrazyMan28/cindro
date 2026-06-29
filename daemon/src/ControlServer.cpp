@@ -123,6 +123,7 @@ bool ControlServer::start()
     // Seed the built-in "internal_docs" skill (a capability/feature catalog the
     // model loads when asked what it can do). Idempotent — only writes if missing.
     seedInternalDocsSkill();
+    seedPhoneSkill();
 
     // Wave 8 co-worker ops backend. All share jarvis.db via distinct connection
     // names; each failure is non-fatal (that feature degrades, daemon survives).
@@ -3567,7 +3568,7 @@ void ControlServer::seedInternalDocsSkill()
     // installs pick up new capabilities — but never clobber a user's own skills.
     // If internal_docs exists and already carries the current marker, skip;
     // otherwise (absent OR stale) refresh it.
-    const QString kMarker = QStringLiteral("[catalog v2]");
+    const QString kMarker = QStringLiteral("[catalog v3]");
     if (auto existing = m_skills.get(QStringLiteral("internal_docs"))) {
         QFile f(existing->path);
         if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -3579,7 +3580,7 @@ void ControlServer::seedInternalDocsSkill()
         m_skills.remove(QStringLiteral("internal_docs")); // stale builtin -> refresh
     }
     const QString body = QStringLiteral(
-        "[catalog v2] When the user asks what you can do, your features, how to do "
+        "[catalog v3] When the user asks what you can do, your features, how to do "
         "something with you, or you're unsure you're capable of something, use THIS as "
         "the source of truth for Jarvis's capabilities. Tell them what fits + offer to "
         "do it.\n\n"
@@ -3611,12 +3612,17 @@ void ControlServer::seedInternalDocsSkill()
         "**Files** — send any file to the user's phone/desktop with send_file.\n"
         "**MCP & plugins** — extra MCP tool servers + a plugin marketplace, managed in the "
         "app.\n"
-        "**Phone** — reach the user on their REAL phone: call_user / call_user_and_wait "
-        "(in-app, can escalate to a real call), notify_user / notify_user_and_wait "
-        "(text the user, optionally await a reply), twilio_call_and_wait / twilio_sms / "
-        "device_sms (real PSTN call + SMS), request_approval_by_phone, call screening, "
-        "war room (red_alert), voice profiles. A native phone subsystem in the one repo. "
-        "(docs/PHONE.md)\n"
+        "**Phone** — a native phone subsystem (vendored, in the one repo) lets you reach "
+        "the user on their REAL phone AND lets them reach YOU. Call/text the user "
+        "proactively: call_user / call_user_and_wait (in-app, can escalate to a real call), "
+        "notify_user / notify_user_and_wait (text + optionally await a reply), "
+        "twilio_call_and_wait (real PSTN call), device_sms (FREE SMS off the user's own "
+        "phone SIM) / twilio_sms (PSTN SMS; needs toll-free verification), "
+        "request_approval_by_phone, plus call screening, war room (red_alert), voice "
+        "profiles, group calls, and the inbox — ~56 phone tools in all. INBOUND: when the "
+        "user CALLS or TEXTS the Twilio number, you (Jarvis, extension 101) wake up "
+        "HEADLESSLY and answer — by voice on a call, by reply on a text — and can text or "
+        "call them back with the same tools. (docs/PHONE.md, /phone skill)\n"
         "**Background jobs** — bg_start runs a long command DETACHED and WAKES you with "
         "its exit code + output when it finishes (training, builds, deploys); monitor "
         "watches a condition and wakes you when it trips; wake_me_in sleeps then wakes "
@@ -3641,6 +3647,69 @@ void ControlServer::seedInternalDocsSkill()
     m_skills.create(QStringLiteral("internal_docs"),
                     QStringLiteral("Jarvis's own feature/capability catalog — load this "
                                    "when asked what you can do or when unsure."),
+                    body, QStringLiteral("builtin"));
+}
+
+void ControlServer::seedPhoneSkill()
+{
+    // Builtin "phone" playbook. Versioned like internal_docs so an install picks up
+    // updates, but never clobbers a user's own edits to a same-named skill.
+    const QString kMarker = QStringLiteral("[phone skill v1]");
+    if (auto existing = m_skills.get(QStringLiteral("phone"))) {
+        QFile f(existing->path);
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QString cur = QString::fromUtf8(f.readAll());
+            f.close();
+            if (cur.contains(kMarker))
+                return; // already current
+            if (existing->fm.group != QStringLiteral("builtin"))
+                return; // user-owned skill named "phone" — leave it alone
+        }
+        m_skills.remove(QStringLiteral("phone")); // stale builtin -> refresh
+    }
+    const QString body = QStringLiteral(
+        "[phone skill v1] Use this when calling/texting the user, when they call or text "
+        "you, or when working with the phone subsystem.\n\n"
+        "# Phone — call & text the user, and answer when they reach you\n\n"
+        "Jarvis has a NATIVE phone subsystem (vendored in the repo; MCP gateway on :8801). "
+        "You have ~56 phone tools (server `phone`). Use them to reach the user on their REAL "
+        "phone, and you ANSWER when they call or text the Twilio number.\n\n"
+        "## Reach the user (outbound)\n"
+        "- `notify_user(message)` — send a text/notification; `notify_user_and_wait` awaits a reply.\n"
+        "- `call_user(opening)` — in-app voice call; `call_user_and_wait` places it and waits.\n"
+        "- `twilio_call_and_wait(text)` — a REAL PSTN phone call: speaks `text`, returns what they said.\n"
+        "- `device_sms(number, message)` — FREE SMS from the user's OWN phone SIM (preferred for "
+        "texting a real number; needs the Android app online).\n"
+        "- `twilio_sms(message)` — PSTN SMS via Twilio (blocked until toll-free verification — "
+        "prefer `device_sms`).\n"
+        "- `request_approval` / `request_approval_by_phone` — have the user approve an action by phone.\n"
+        "- `red_alert` — war room: ring everyone at once for something urgent.\n\n"
+        "Pick the channel: a quick FYI -> `notify_user`; need an answer now -> `call_user_and_wait` "
+        "or `twilio_call_and_wait`; texting a phone number -> `device_sms`.\n\n"
+        "## When the user calls or texts YOU (inbound)\n"
+        "You are Jarvis on extension 101 — the registered inbound + SMS agent. When the user "
+        "CALLS the Twilio number you wake HEADLESSLY and talk by VOICE (keep replies short and "
+        "conversational, no markdown — they're spoken aloud). When they TEXT it you wake and reply "
+        "as a text message. You can call/text them back mid-conversation with the tools above. "
+        "Unknown callers are SCREENED first (read-only, talk-only) before reaching you.\n\n"
+        "## Agents & extensions\n"
+        "- `list_extensions` / `list_agents` — who's reachable (101 Jarvis, 102 Codex, 103 Copilot, "
+        "…, 107 screener).\n"
+        "- `call_extension` — ring another agent; `start_group_chat` / `post_group_message` — multi-agent war room.\n"
+        "- `twilio_register_inbound_agent(extension)` — set who answers the number; `twilio_screening_*` — screening.\n"
+        "- `set_voice_profile` / `get_voice_profile` — the voice an extension speaks with.\n\n"
+        "## Calls, inbox & memory\n"
+        "- `list_active_calls` / `get_call_summary` / `get_call_transcript` / `summarize_call` / `end_call`.\n"
+        "- `list_inbox` / `get_message` / `get_thread_messages` / `wait_for_message_reply`.\n"
+        "- `store_memory` / `search_memory` — phone memory that persists across calls AND texts.\n"
+        "- `twilio_allowlist_add/list/remove` — only allow-listed numbers connect; `twilio_set_user_number`.\n\n"
+        "## Surfaces\n"
+        "The same phone lives in the Jarvis Android app (Phone tab = the full app: dialer, inbox, "
+        "agents, HUD, settings, screening), the desktop sidebar (Phone hub: Dialer · Agents · Inbox "
+        "· HUD · Settings · Screening), and the Chrome side panel. See docs/PHONE.md.\n");
+    m_skills.create(QStringLiteral("phone"),
+                    QStringLiteral("Call & text the user, and answer when they call/text in — "
+                                   "the phone subsystem playbook (~56 tools)."),
                     body, QStringLiteral("builtin"));
 }
 

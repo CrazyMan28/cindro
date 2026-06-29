@@ -41,9 +41,24 @@ needed, not hand-edited here.
   creds, DB at `~/.local/share/jarvis/phone.sqlite`. Never in git.
 - **Brain access:** `ControlServer::seedPhoneMcp()` reads the phone env and seeds an enabled,
   **high-risk** `phone` MCP server row into `McpRegistry`, so the co-work brain (codex/claude)
-  gets all phone tools through the normal MCP injection — `call_user`, `notify_user`,
+  gets **all ~56 phone tools** through the normal MCP injection — `call_user`, `notify_user`,
   `twilio_call_and_wait`, `device_sms`, screening, war room, voice profiles, … The co-work
-  system prompt documents when to call vs. text.
+  system prompt documents when to call vs. text, and a builtin **`/phone` skill**
+  (`ControlServer::seedPhoneSkill()`) is the full playbook. The `internal_docs` capability
+  catalog (v3) also covers the phone.
+
+## Inbound — Jarvis wakes up and answers when you call or text
+Jarvis is **extension 101**, registered as both the **inbound call agent** and the **SMS
+agent** on the phone server. When the user calls or texts the Twilio number:
+- The phone server's `AgentRunner` **spawns Jarvis's brain adapter headlessly** (no app/UI
+  needed) — `phone/server/src/adapters/codex-bridge.mjs`, full-access — and bridges the
+  conversation: **voice** on a call (Mistral STT → brain → TTS), a **text reply** on an SMS.
+- The adapter hands the brain the outbound tools mid-conversation, so Jarvis can **call or
+  text the user back** while talking to them (`phone-call.mjs` / `phone-device-sms.mjs` / …).
+- Unknown callers are **screened first** (read-only, talk-only) before reaching Jarvis.
+- Inbound SMS routing is on by default (`POST /api/sms-agent {enabled:true, extension:"101"}`);
+  replies go out free via the **device SIM** (`device_sms`) since Twilio toll-free SMS is
+  A2P-gated.
 - **MCP proxy (every surface):** Contract A method **`phone.mcp`** (`{name, arguments}` →
   `{data|text, tool, error?}`) proxies a tool call to the phone server while keeping the
   bearer inside the daemon. Desktop / Android / Chrome drive all 55 tools over their existing
@@ -73,10 +88,17 @@ no separate app. The Phone section has its own five-tab nav:
 A full-page `PhonePage.qml` added to the sidebar's nav. Tabs load as child pages inside the
 Phone section; the rest of Jarvis's nav remains accessible.
 
-### Android (Compose, v0.10.6+)
-A dedicated **Phone** destination in the bottom nav. When the user enters the Phone section
-Jarvis's main bottom nav is **hidden** (full-screen immersive), replaced by the Phone
-section's own five-tab bar. Backing out of Phone restores the main nav.
+### Android (Compose, v0.11.0+) — the original app, vendored verbatim
+The **entire original agent-phone Android app** is copied **byte-for-byte** into the one
+Jarvis APK — all 60 files / ~11,882 lines, package `com.agentphone.*`, nothing
+reimplemented or removed. The Jarvis **Phone tab** (`ui/phone/PhoneLaunchScreen.kt`) launches
+the real `com.agentphone.MainActivity` → `AppRoot()`, so the user gets the exact original
+look, flow, and **every** screen/setting/button: Calls · Inbox · Agents · HUD · Settings, the
+setup wizard, agent config, call screening, SMS agent, diagnostics, history, enroll, relay
+puck, and the incoming/outgoing/screening call activities + services. Only the wiring is
+Jarvis's: the manifest registers the vendored activities/services (`MainActivity` non-launcher),
+the on-device TTS uses the bundled sherpa-onnx AAR, and the app's server URL defaults to
+**Jarvis's phone server (`:8801`)**, not the original (`:8799`).
 
 ### Chrome extension (MV3)
 A **Phone** panel added to the side-panel router, using the same five-tab layout adapted
@@ -100,8 +122,11 @@ law) — use the voice path or complete toll-free verification for guaranteed SM
 destination once with `twilio_set_user_number(<your cell>)`.
 
 ## Notes
-- A PSTN voice call needs Twilio's webhook to reach the placing instance — the Tailscale
-  funnel's `/twilio` path must point at this server's port.
+- A PSTN voice call needs Twilio's webhook to reach **this** server — the Tailscale funnel's
+  `/twilio` path is pointed at **Jarvis's `:8801`** (real route `/twilio/voice`), so inbound
+  calls/texts to the number are answered by Jarvis (ext 101), not the original `:8799`. Repoint
+  with `tailscale funnel --bg --https=443 --set-path=/twilio http://127.0.0.1:8801/twilio`;
+  the server's `TWILIO_PUBLIC_BASE_URL` must equal the funnel host for signature validation.
 - On-device desktop voice still uses Jarvis's own Voxtral; a phone *line* uses the server
   Mistral voice (a PSTN line can't run the on-device voice).
 - The `phone.http` proxy keeps the admin bearer token exclusively inside `jarvisd` — UI
