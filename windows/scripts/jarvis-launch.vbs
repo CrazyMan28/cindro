@@ -1,4 +1,4 @@
-' Jarvis Windows launcher (HIDDEN) — no terminal window.
+' Jarvis Windows launcher (HIDDEN) - no terminal window.
 '
 ' The Start-menu/desktop shortcuts + autostart run THIS (via wscript) instead of
 ' the .cmd, so jarvisd + the engine (console apps) start HIDDEN (window style 0)
@@ -15,7 +15,7 @@ dir = fso.GetParentFolderName(WScript.ScriptFullName)
 p = dir & "\engine\jarvis-engine.exe"
 If fso.FileExists(p) Then sh.Run """" & p & """", 0, False
 
-' 2. phone server (hidden) — only if the user configured it (phone.env present)
+' 2. phone server (hidden) - only if the user configured it (phone.env present)
 Dim node, server, phoneEnv
 node    = dir & "\node\node.exe"
 server  = dir & "\phone-server\dist\main.js"
@@ -24,7 +24,7 @@ If fso.FileExists(node) And fso.FileExists(server) And fso.FileExists(phoneEnv) 
     sh.Run """" & node & """ """ & server & """", 0, False
 End If
 
-' 3. the daemon (hidden console — this is what used to pop a terminal)
+' 3. the daemon (hidden console - this is what used to pop a terminal)
 p = dir & "\jarvisd.exe"
 If fso.FileExists(p) Then sh.Run """" & p & """", 0, False
 

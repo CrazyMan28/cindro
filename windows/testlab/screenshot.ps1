@@ -1,5 +1,5 @@
 <#
-  screenshot.ps1 — capture the Windows VM's screen to a PNG. Run on the VM (winlab
+  screenshot.ps1 - capture the Windows VM's screen to a PNG. Run on the VM (winlab
   invokes it over SSH, then pulls the PNG back). Captures the FULL virtual desktop
   (all monitors). Usage:  powershell -File screenshot.ps1 -Out C:\jarvis-shot.png
 #>
