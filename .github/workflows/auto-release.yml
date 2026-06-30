@@ -1,20 +1,20 @@
 # Auto-release on merge to main (bump-gated).
 #
-# Flow: a PR merges to main -> this reads JARVIS_VERSION from windows/CMakeLists.txt.
-#   * If v<version> is NOT already tagged -> it creates + pushes that tag, which fires
-#     windows-build + linux-release (their `on: push: tags: v*`) to build and ATTACH the
-#     Jarvis-Setup.exe + AppImage to a new GitHub Release v<version>.
-#   * If the version wasn't bumped (tag already exists) -> it does nothing. So a doc/CI
-#     PR never publishes a release; only a PR that bumps JARVIS_VERSION does.
+# Flow: a PR merges to main -> this reads JARVIS_VERSION from windows/CMakeLists.txt
+# (at the merged commit) and, if v<version> isn't tagged yet, creates that tag, which
+# fires windows-build + linux-release (their `on: push: tags: v*`) to build and ATTACH
+# the Jarvis-Setup.exe + AppImage to a new GitHub Release v<version>. If the version
+# wasn't bumped (tag already exists) -> nothing happens.
 #
-# Why a PAT (secret RELEASE_PAT) and not the default GITHUB_TOKEN:
-#   GitHub deliberately will NOT let a tag pushed by GITHUB_TOKEN trigger other workflows
-#   (anti-recursion). So the tag must be pushed by a real token. One-time setup:
-#     1. Create a token with Contents: write on this repo
-#        (fine-grained PAT -> repo=jarvis, Contents: Read and write; or a classic PAT with `repo`).
-#     2. Repo Settings -> Secrets and variables -> Actions -> New repository secret
-#        -> name: RELEASE_PAT, value: <the token>.
-#   Until it's set, this job no-ops with a warning (it will not tag, so nothing publishes).
+# IMPORTANT — no `actions/checkout` here on purpose: this job runs on the host as the
+# runner user, but linux-ci/linux-release run IN a container as root and leave
+# root-owned files in _work; a checkout's clean step then fails with EACCES. So we do
+# everything through the GitHub REST API (curl) and never touch the work directory.
+#
+# Why a PAT (secret RELEASE_PAT) and not GITHUB_TOKEN: GitHub will not let a tag created
+# by GITHUB_TOKEN trigger other workflows (anti-recursion). The PAT is what lets the new
+# tag fire the release builds. One-time setup: a token with Contents: write on this repo,
+# saved as the repo secret RELEASE_PAT. Until it's set, this job no-ops with a warning.
 #
 # Runs on the self-hosted Linux runner (no GitHub-hosted minutes).
 name: auto-release
@@ -30,38 +30,38 @@ jobs:
   tag:
     runs-on: [self-hosted, Linux, X64]
     steps:
-      - name: Check RELEASE_PAT is configured
-        id: gate
+      - name: Tag v<JARVIS_VERSION> if it is new (via API, no checkout)
         env:
           PAT: ${{ secrets.RELEASE_PAT }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
         run: |
-          if [ -z "$PAT" ]; then
-            echo "::warning::RELEASE_PAT secret not set -> skipping auto-release. Add it so a pushed tag can trigger the release builds (see this file's header)."
-            echo "ok=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ok=true" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [ -z "${PAT:-}" ]; then
+            echo "::warning::RELEASE_PAT secret not set -> skipping auto-release (a pushed tag needs a real token to trigger the release builds)."
+            exit 0
           fi
+          api="https://api.github.com/repos/$REPO"
+          auth="Authorization: token $PAT"
 
-      - name: Checkout (auth as RELEASE_PAT so the tag push triggers the release builds)
-        if: steps.gate.outputs.ok == 'true'
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.RELEASE_PAT }}
-
-      - name: Tag v<JARVIS_VERSION> if it is new
-        if: steps.gate.outputs.ok == 'true'
-        run: |
-          set -e
-          VER=$(grep -oP 'set\(JARVIS_VERSION\s+"\K[0-9]+\.[0-9]+\.[0-9]+' windows/CMakeLists.txt | head -1)
+          # 1. Read JARVIS_VERSION from windows/CMakeLists.txt at the merged commit.
+          VER=$(curl -fsSL -H "$auth" "$api/contents/windows/CMakeLists.txt?ref=$SHA" \
+            | python3 -c "import sys,json,base64,re; c=base64.b64decode(json.load(sys.stdin)['content']).decode(); m=re.search(r'set\(JARVIS_VERSION\s+\"([0-9]+\.[0-9]+\.[0-9]+)', c); print(m.group(1) if m else '')")
           if [ -z "$VER" ]; then echo "::error::could not read JARVIS_VERSION from windows/CMakeLists.txt"; exit 1; fi
           echo "JARVIS_VERSION = $VER"
-          if git ls-remote --tags origin "refs/tags/v$VER" | grep -q .; then
+
+          # 2. Already released? (tag ref exists -> 200)
+          code=$(curl -s -o /dev/null -w "%{http_code}" -H "$auth" "$api/git/ref/tags/v$VER")
+          if [ "$code" = "200" ]; then
             echo "v$VER already released -> nothing to do (bump JARVIS_VERSION in a PR to publish)."
             exit 0
           fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v$VER" -m "Release v$VER"
-          git push origin "v$VER"
-          echo "Tagged + pushed v$VER -> windows-build + linux-release will build and publish Release v$VER."
+
+          # 3. Create the tag ref at the merged commit (PAT -> triggers windows-build + linux-release).
+          resp=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST -H "$auth" \
+            "$api/git/refs" -d "{\"ref\":\"refs/tags/v$VER\",\"sha\":\"$SHA\"}")
+          if [ "$resp" = "201" ]; then
+            echo "Tagged v$VER at $SHA -> release builds will publish Release v$VER."
+          else
+            echo "::error::failed to create tag v$VER (HTTP $resp):"; cat /tmp/resp.json; exit 1
+          fi
