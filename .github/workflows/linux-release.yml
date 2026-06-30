@@ -23,13 +23,17 @@ permissions:
 jobs:
   appimage:
     runs-on: [self-hosted, Linux, X64]
-    container: fedora:44
+    container:
+      image: fedora:44
+      # Persistent package cache on the runner host -> download deps ONCE, reuse.
+      volumes:
+        - /var/cache/jarvis-dnf:/var/cache/dnf
     steps:
       # git/tar/gzip are needed by actions/checkout + upload-artifact inside the
       # container; curl/file/findutils by build-appimage.sh + linuxdeploy.
       - name: Install deps (dnf)
         run: |
-          dnf -y install \
+          dnf -y --setopt=keepcache=1 install \
             gcc-c++ cmake ninja-build pkgconf-pkg-config git tar gzip xz \
             curl file findutils which patchelf \
             qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtquickcontrols2-devel \

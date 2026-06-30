@@ -1,7 +1,11 @@
 # Linux regression gate: build the UNTOUCHED root project (core + jarvisd +
 # jarvis-sidebar with LayerShellQt), run its ctest suite offscreen, and run the
-# computer-use engine's pytest suite. This is what proves the Windows work left the
-# Linux/Sway+KDE build byte-for-byte green.
+# computer-use engine's pytest suite. Proves the Windows work left the Linux build green.
+#
+# Runs in a fedora:44 container (Qt 6.11 + layer-shell-qt 6.7, like the dev box —
+# Ubuntu 24.04's apt Qt 6.4.2 is too old). The container mounts a PERSISTENT dnf
+# cache from the self-hosted runner, so packages download ONCE and are reused every
+# build instead of re-pulling ~hundreds of MB each run.
 name: linux-ci
 
 on:
@@ -14,46 +18,26 @@ on:
 jobs:
   build-test:
     runs-on: [self-hosted, Linux, X64]
+    container:
+      image: fedora:44
+      # Persistent package cache on the runner host -> no re-downloads.
+      volumes:
+        - /var/cache/jarvis-dnf:/var/cache/dnf
 
     steps:
+      # git first (checkout needs it), keepcache=1 keeps the RPMs in the mounted cache.
+      - name: Install deps (dnf, cached)
+        run: |
+          dnf -y --setopt=keepcache=1 --setopt=install_weak_deps=False install \
+            gcc-c++ cmake ninja-build pkgconf-pkg-config git tar gzip \
+            qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtquickcontrols2-devel \
+            qt6-qtwebsockets-devel qt6-qtmultimedia-devel qt6-qtsvg-devel \
+            qt6-qtwayland qt6-qtwayland-devel layer-shell-qt-devel \
+            extra-cmake-modules libsodium-devel qrencode-devel \
+            python3 python3-pip python3-devel \
+            mesa-libGL-devel mesa-libEGL-devel xcb-util-cursor
+
       - uses: actions/checkout@v4
-
-      - name: Install build deps (Qt6 + libsodium + qrencode + ninja)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build pkg-config extra-cmake-modules \
-            qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-declarative-dev-tools \
-            qt6-multimedia-dev qt6-websockets-dev qt6-wayland qt6-wayland-dev \
-            libqrencode-dev libsodium-dev \
-            qml6-module-qtquick qml6-module-qtquick-window qml6-module-qtquick-layouts \
-            qml6-module-qtquick-controls qml6-module-qtquick-templates \
-            qml6-module-qtquick-shapes qml6-module-qtquick-effects \
-            qml6-module-qtqml-workerscript qml6-module-qtmultimedia \
-            qml6-module-qt-labs-platform qml6-module-qt5compat-graphicaleffects || true
-          # Re-run without `|| true` masking a hard failure on the core set.
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build pkg-config extra-cmake-modules \
-            qt6-base-dev qt6-declarative-dev qt6-multimedia-dev qt6-websockets-dev \
-            libqrencode-dev libsodium-dev
-
-      # LayerShellQt (Qt6) provides the `LayerShellQt` CMake package the desktop
-      # target REQUIREs. Prefer a distro package; otherwise build it from source.
-      - name: Provide LayerShellQt
-        run: |
-          PKG=$(apt-cache search layershell 2>/dev/null | awk '{print $1}' | grep -- '-dev' | head -1 || true)
-          if [ -n "$PKG" ]; then
-            echo "Installing distro package: $PKG"
-            sudo apt-get install -y --no-install-recommends "$PKG"
-          else
-            echo "No distro LayerShellQt; building from source (KDE)."
-            sudo apt-get install -y --no-install-recommends git qt6-wayland-dev qt6-declarative-dev
-            git clone --depth 1 https://invent.kde.org/plasma/layer-shell-qt.git
-            cmake -S layer-shell-qt -B layer-shell-qt/build -G Ninja \
-              -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
-            cmake --build layer-shell-qt/build
-            sudo cmake --install layer-shell-qt/build
-          fi
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -64,12 +48,8 @@ jobs:
       - name: Test (ctest, offscreen)
         run: QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - name: Engine pytest (regression gate)
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ./computer-use
-          python -m pytest computer-use/tests -q
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e ./computer-use
+          python3 -m pytest computer-use/tests -q
