@@ -163,7 +163,7 @@ target_compile_options(jarvis-core PRIVATE ${FORCE_INCLUDE_FLAGS})
 # Version stamp (matches core/CMakeLists.txt): the Updater compares the running
 # SHA/version to `main`. PUBLIC so jarvisd + the sidebar inherit it. SHA resolved
 # at configure time against the shared repo, "unknown" outside a checkout.
-set(JARVIS_VERSION "0.12.0")
+set(JARVIS_VERSION "0.12.1")
 execute_process(
     COMMAND git -C "${REPO_ROOT}" rev-parse --short HEAD
     OUTPUT_VARIABLE JARVIS_GIT_SHA
