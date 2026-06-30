@@ -31,15 +31,10 @@ jobs:
             echo "version=0.1.0-$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
           fi
 
-      # MSVC toolchain (cl/link on PATH) for the C++ daemon + Qt shell.
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      # Ninja generator used by build.ps1 (-G Ninja). Present on most images, but
-      # install defensively so the build never fails on a missing generator.
-      - name: Install Ninja
-        uses: seanmiddleditch/gha-setup-ninja@v5
+      # NOTE: no msvc-dev-cmd / vcvars here ON PURPOSE — build.ps1 uses the
+      # "Visual Studio 17 2022" CMake generator, which locates MSVC itself via
+      # vswhere. An active vcvars env actually BREAKS the VS generator's detection
+      # ("could not find any instance of Visual Studio"), so the env is left clean.
 
       # Qt 6 (MSVC) — Core/Gui/Quick/Qml/QuickControls2/Network/Sql are in the base
       # install; WebSockets + Multimedia are add-on modules.
