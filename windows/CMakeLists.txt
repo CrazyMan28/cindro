@@ -228,6 +228,11 @@ endforeach()
 qt_add_qml_module(jarvis-sidebar
     URI JarvisSidebar
     VERSION 1.0
+    # The QML lives OUTSIDE this build dir (../desktop/qml), so qmlcachegen derives
+    # an output path with a ".." segment ninja can't mkdir. NO_CACHEGEN skips the
+    # AOT bytecode cache — the QML is still embedded in the resource + loaded at
+    # runtime (marginally slower first load; correct + reliable for the Win build).
+    NO_CACHEGEN
     QML_FILES
         ${DESKTOP_DIR}/qml/Main.qml
         ${DESKTOP_DIR}/qml/AppShell.qml
