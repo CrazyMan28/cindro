@@ -231,97 +231,44 @@ qt_add_executable(jarvis-sidebar
     ${DESKTOP_DIR}/src/FrameProvider.h
 )
 
-# QML singletons (must be flagged so the generated qmldir registers them as one).
-set_source_files_properties(${DESKTOP_DIR}/qml/Theme.qml
-    PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
-set_source_files_properties(${DESKTOP_DIR}/qml/Widgets.qml
-    PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
-
-# The QML files live in ../desktop/qml (OUTSIDE this dir), so they resolve to
-# ABSOLUTE paths — Qt's resource system rejects absolute-path QML sources unless
-# each carries a QT_RESOURCE_ALIAS. Set it to the same "qml/<name>" in-module path
-# the Linux build uses (desktop/CMakeLists.txt lists them relative as qml/<name>),
-# so the resource layout + loadFromModule("JarvisSidebar","Main") are identical.
+# ── shared QML, AOT-compiled by qmlcachegen (the fix for the Qt6Qml.dll crash) ──
+# The shared UI lives in ../desktop/qml (OUTSIDE this build dir). Referencing it
+# there forced NO_CACHEGEN — qmlcachegen's output path got a ".." segment ninja
+# can't mkdir — so the QML was parsed at RUNTIME by Qt6Qml.dll, which CRASHES on
+# Windows (access violation c0000005 -> no window: the sister's v0.12.5 bug). The
+# Linux build AOT-compiles these exact files and is rock solid. Fix: COPY every
+# .qml into the build tree (no ".." path) and let qmlcachegen compile them,
+# identical to Linux. ArcReactor.qml's `var long` is renamed in the copy (a no-op
+# under cachegen, but kept so a future NO_CACHEGEN fallback still parses).
+set(_qml_src_dir "${CMAKE_CURRENT_BINARY_DIR}/qml-src")
+file(MAKE_DIRECTORY "${_qml_src_dir}")
 file(GLOB _jarvis_qml CONFIGURE_DEPENDS ${DESKTOP_DIR}/qml/*.qml)
+set(_jarvis_qml_copied "")
 foreach(_q IN LISTS _jarvis_qml)
     get_filename_component(_qn "${_q}" NAME)
-    set_source_files_properties("${_q}" PROPERTIES QT_RESOURCE_ALIAS "qml/${_qn}")
+    set(_dst "${_qml_src_dir}/${_qn}")
+    if(_qn STREQUAL "ArcReactor.qml")
+        file(READ "${_q}" _src)
+        string(REPLACE "var long =" "var lng =" _src "${_src}")
+        string(REPLACE "(long ?"    "(lng ?"    _src "${_src}")
+        file(WRITE "${_dst}" "${_src}")
+    else()
+        configure_file("${_q}" "${_dst}" COPYONLY)
+    endif()
+    # Same in-module path the Linux build uses, so loadFromModule("JarvisSidebar","Main") is identical.
+    set_source_files_properties("${_dst}" PROPERTIES QT_RESOURCE_ALIAS "qml/${_qn}")
+    if(_qn STREQUAL "Theme.qml" OR _qn STREQUAL "Widgets.qml")
+        set_source_files_properties("${_dst}" PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+    endif()
+    list(APPEND _jarvis_qml_copied "${_dst}")
 endforeach()
 
-# ArcReactor.qml has `var long` (lines 64-65). `long` is a reserved word in Qt's
-# runtime QML/JS parser (rejected on <= 6.8). The Linux build is fine because
-# qmlcachegen AOT-compiles the QML, but THIS build uses NO_CACHEGEN (below) so the
-# QML is parsed RAW at runtime -> the whole UI tree fails to load ("ArcReactor.qml:
-# Expected token 'identifier'", which bricked v0.12.4 on a clean box). We never edit
-# desktop/qml — generate a renamed copy at configure time and use it instead.
-set(_arc_patched "${CMAKE_CURRENT_BINARY_DIR}/qml-patched/ArcReactor.qml")
-file(READ "${DESKTOP_DIR}/qml/ArcReactor.qml" _arc_src)
-string(REPLACE "var long =" "var lng =" _arc_src "${_arc_src}")
-string(REPLACE "(long ?"    "(lng ?"    _arc_src "${_arc_src}")
-file(WRITE "${_arc_patched}" "${_arc_src}")
-set_source_files_properties("${_arc_patched}" PROPERTIES QT_RESOURCE_ALIAS "qml/ArcReactor.qml")
-
-# Reuse the shared UI verbatim — same URI ("JarvisSidebar") + same file list as
-# desktop/CMakeLists.txt, referenced read-only from ../desktop/qml.
+# Reuse the shared UI verbatim — same URI + same files as the Linux build, now
+# AOT-compiled (NO_CACHEGEN removed). loadFromModule("JarvisSidebar","Main").
 qt_add_qml_module(jarvis-sidebar
     URI JarvisSidebar
     VERSION 1.0
-    # The QML lives OUTSIDE this build dir (../desktop/qml), so qmlcachegen derives
-    # an output path with a ".." segment ninja can't mkdir. NO_CACHEGEN skips the
-    # AOT bytecode cache — the QML is still embedded in the resource + loaded at
-    # runtime (marginally slower first load; correct + reliable for the Win build).
-    NO_CACHEGEN
-    QML_FILES
-        ${DESKTOP_DIR}/qml/Main.qml
-        ${DESKTOP_DIR}/qml/AppShell.qml
-        ${DESKTOP_DIR}/qml/HomePage.qml
-        ${DESKTOP_DIR}/qml/AgentPeek.qml
-        ${DESKTOP_DIR}/qml/NavRail.qml
-        ${DESKTOP_DIR}/qml/CommandPalette.qml
-        ${DESKTOP_DIR}/qml/PageHeader.qml
-        ${DESKTOP_DIR}/qml/Widgets.qml
-        ${DESKTOP_DIR}/qml/JarvisPanel.qml
-        ${DESKTOP_DIR}/qml/ChatDelegate.qml
-        ${DESKTOP_DIR}/qml/SessionsPage.qml
-        ${DESKTOP_DIR}/qml/SettingsPage.qml
-        ${DESKTOP_DIR}/qml/SetupWizard.qml
-        ${DESKTOP_DIR}/qml/McpPage.qml
-        ${DESKTOP_DIR}/qml/PluginsPage.qml
-        ${DESKTOP_DIR}/qml/MemoryPage.qml
-        ${DESKTOP_DIR}/qml/SkillsPage.qml
-        ${DESKTOP_DIR}/qml/AgentsPage.qml
-        ${DESKTOP_DIR}/qml/SlashPalette.qml
-        ${DESKTOP_DIR}/qml/TodayBriefing.qml
-        ${DESKTOP_DIR}/qml/ComputerPage.qml
-        ${DESKTOP_DIR}/qml/CanvasPage.qml
-        ${DESKTOP_DIR}/qml/WidgetsPage.qml
-        ${DESKTOP_DIR}/qml/VoiceMode.qml
-        ${DESKTOP_DIR}/qml/WidgetRenderer.qml
-        ${DESKTOP_DIR}/qml/StandaloneWidget.qml
-        ${DESKTOP_DIR}/qml/FloatingWidgetLayer.qml
-        ${DESKTOP_DIR}/qml/SchedulesPage.qml
-        ${DESKTOP_DIR}/qml/PhonePage.qml
-        ${DESKTOP_DIR}/qml/PhoneDialerTab.qml
-        ${DESKTOP_DIR}/qml/PhoneAgentsTab.qml
-        ${DESKTOP_DIR}/qml/PhoneInboxTab.qml
-        ${DESKTOP_DIR}/qml/PhoneHudTab.qml
-        ${DESKTOP_DIR}/qml/PhoneSettingsTab.qml
-        ${DESKTOP_DIR}/qml/PhoneScreeningTab.qml
-        ${DESKTOP_DIR}/qml/PhoneCallOverlay.qml
-        ${DESKTOP_DIR}/qml/SshPage.qml
-        ${DESKTOP_DIR}/qml/ActivityPage.qml
-        ${DESKTOP_DIR}/qml/BrowserPage.qml
-        ${DESKTOP_DIR}/qml/SubAgentTree.qml
-        ${DESKTOP_DIR}/qml/DiffReviewPanel.qml
-        ${DESKTOP_DIR}/qml/DrivingOverlay.qml
-        ${DESKTOP_DIR}/qml/GlowCursor.qml
-        ${DESKTOP_DIR}/qml/LockGate.qml
-        ${DESKTOP_DIR}/qml/TitleBar.qml
-        ${DESKTOP_DIR}/qml/Theme.qml
-        ${_arc_patched}
-        ${DESKTOP_DIR}/qml/HudFx.qml
-        ${DESKTOP_DIR}/qml/HudStatusStrip.qml
-        ${DESKTOP_DIR}/qml/HudFrame.qml
+    QML_FILES ${_jarvis_qml_copied}
 )
 
 # The generated QML type-registration unit includes the QML_ELEMENT headers by
