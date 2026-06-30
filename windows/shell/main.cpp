@@ -135,8 +135,15 @@ int main(int argc, char **argv)
     qmlRegisterSingletonInstance("JarvisSidebar", 1, 0, "WindowController", windowController);
 
     engine.loadFromModule(QStringLiteral("JarvisSidebar"), QStringLiteral("Main"));
-    if (engine.rootObjects().isEmpty())
+    if (engine.rootObjects().isEmpty()) {
+        // Windows: a silent exit looks like "nothing happened". Surface it.
+        // (windows.h / MessageBoxW come from the force-included posix_compat.h.)
+        ::MessageBoxW(nullptr,
+            L"Jarvis UI failed to load (QML).\n\nThis usually means a missing Qt "
+            L"plugin/DLL next to jarvis-sidebar.exe. Please report it.",
+            L"Jarvis", MB_OK | MB_ICONERROR);
         return -1;
+    }
 
     // --selftest: the UI loaded with a non-empty root tree. Let it settle (so
     // Component.onCompleted across all pages runs and any load-time error surfaces),
@@ -219,6 +226,12 @@ int main(int argc, char **argv)
     // after the QML tree is up so Main.qml's onDrivingChanged maps the overlay.
     if (parser.isSet(drivingDemoOpt))
         QTimer::singleShot(0, bridge, &Bridge::startDrivingDemo);
+
+    // Windows: force-show the window on first launch (belt-and-suspenders in case
+    // the QML onCompleted show path hiccuped) so the GUI always appears.
+    QTimer::singleShot(0, windowController, [windowController]() {
+        windowController->present();
+    });
 
     return app.exec();
 }

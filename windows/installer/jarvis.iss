@@ -49,20 +49,21 @@ Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubd
 
 [Icons]
 ; The shortcut launches the WHOLE stack (engine + phone + daemon + UI) via the
-; launcher, with the Jarvis icon. Closing the UI leaves the daemon+engine in tray.
-Name: "{group}\{#MyAppName}"; Filename: "{app}\jarvis-start.cmd"; IconFilename: "{app}\{#MyAppExeName}"; Flags: runminimized
+; HIDDEN VBS launcher (wscript) — so jarvisd + the engine start with NO console
+; window; only jarvis-sidebar (the GUI) appears. Jarvis icon kept.
+Name: "{group}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\jarvis-start.cmd"; IconFilename: "{app}\{#MyAppExeName}"; Flags: runminimized; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; Bring up the full stack: computer-use engine (all MCP tools) + phone server +
-; daemon + UI (first run shows the setup wizard). One launcher = everything works.
-Filename: "{app}\jarvis-start.cmd"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait runminimized postinstall skipifsilent
+; Bring up the full stack with NO terminal: engine + phone + daemon (all hidden) +
+; the UI (first run shows the setup wizard).
+Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
 [Registry]
-; Optional autostart for the whole stack (per-user Run key).
+; Optional autostart for the whole stack (per-user Run key) — hidden launcher.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; \
-  ValueName: "Jarvis"; ValueData: """{app}\jarvis-start.cmd"""; Tasks: autostart; Flags: uninsdeletevalue
+  ValueName: "Jarvis"; ValueData: """{sys}\wscript.exe"" ""{app}\jarvis-launch.vbs"""; Tasks: autostart; Flags: uninsdeletevalue
 
 [UninstallDelete]
 ; Leave %APPDATA%\Jarvis (user config/keys) in place on uninstall by default.
