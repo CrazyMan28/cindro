@@ -48,6 +48,9 @@ Copy-Item (Join-Path $build "jarvis-sidebar.exe") $payload
 Copy-Item (Join-Path $repo "LICENSE") (Join-Path $payload "LICENSE.txt")
 # The launcher that brings up the WHOLE stack on Windows (no systemd).
 Copy-Item (Join-Path $win "scripts\jarvis-start.cmd") $payload
+# The Chrome/Edge extension (unpacked) — staged so the in-app guide can point
+# Chrome at {app}\extension (chrome://extensions -> Developer mode -> Load unpacked).
+Copy-Item -Recurse (Join-Path $repo "extension") (Join-Path $payload "extension")
 # Qt runtime + the MSVC C/C++ runtime DLLs next to the exes (app-local deploy:
 # --compiler-runtime ships vcruntime/msvcp so a BARE machine with no Visual C++
 # Redistributable still runs Jarvis). Target both exes so jarvisd's deps land too.
