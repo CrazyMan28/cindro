@@ -34,7 +34,9 @@ jobs:
       - name: Install Qt 6.8
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.8.1'
+          # Match the Fedora dev box (6.11.1): satisfies LayerShellQt master's
+          # Qt >= 6.10 floor and is the exact version the app/QML was built on.
+          version: '6.11.1'
           host: linux
           target: desktop
           arch: linux_gcc_64
