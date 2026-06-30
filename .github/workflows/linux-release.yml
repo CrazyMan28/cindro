@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   appimage:
-    runs-on: ubuntu-24.04
+    runs-on: [self-hosted, Linux, X64]
     container: fedora:44
     steps:
       # git/tar/gzip are needed by actions/checkout + upload-artifact inside the

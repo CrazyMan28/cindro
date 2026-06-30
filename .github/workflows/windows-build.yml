@@ -44,15 +44,19 @@ jobs:
       - name: Install Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
 
-      # Qt 6 (MSVC) — Core/Gui/Quick/Qml/QuickControls2/Network/Sql are in the base
-      # install; WebSockets + Multimedia are add-on modules.
+      # Qt 6 (MSVC) — must be >= 6.7, NOT the old 6.6. The app's QML uses syntax the
+      # 6.6 parser rejects: `var long` (ArcReactor.qml) — `long` was a reserved word
+      # until Qt 6.7 un-reserved it. On 6.6 the whole UI tree fails to load at runtime
+      # ("Type AppShell unavailable" -> ArcReactor.qml: Expected token 'identifier'),
+      # which is what bricked v0.12.4's UI on a clean box. 6.8 (dev/Linux uses 6.11).
+      # Core/Gui/Quick/Qml/QuickControls2/Network/Sql are in the base install.
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.6.*"
+          version: "6.8.1"
           host: windows
           target: desktop
-          arch: win64_msvc2019_64
+          arch: win64_msvc2022_64
           modules: qtwebsockets qtmultimedia
           cache: true
 
