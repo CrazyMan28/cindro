@@ -78,6 +78,28 @@ if (Get-Command windeployqt -ErrorAction SilentlyContinue) {
   windeployqt --release --compiler-runtime (Join-Path $payload "jarvisd.exe")
 } else { Write-Warning "windeployqt not found; Qt + MSVC runtime DLLs must be staged manually." }
 
+# windeployqt --compiler-runtime ships vc_redist.x64.exe (an INSTALLER), not the
+# loose CRT DLLs — so on a bare machine that never runs the redist, jarvisd.exe dies
+# at launch with "MSVCP140.dll was not found" (confirmed on a clean Win11 Pro VM).
+# Copy the actual CRT DLLs (msvcp140*.dll, vcruntime140*.dll, concrt140.dll) next to
+# the exes so the app is truly self-contained.
+$crtRoots = @()
+if ($env:VCToolsRedistDir) { $crtRoots += (Join-Path $env:VCToolsRedistDir "x64") }
+$crtRoots += (Get-ChildItem "C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64" `
+                -Directory -ErrorAction SilentlyContinue | Select-Object -Expand FullName)
+$crt = $crtRoots | ForEach-Object {
+         Get-ChildItem $_ -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue
+       } | Sort-Object FullName | Select-Object -Last 1
+if ($crt) {
+  Get-ChildItem $crt.FullName -Filter *.dll | ForEach-Object { Copy-Item $_.FullName $payload -Force }
+  Write-Host "    bundled MSVC CRT DLLs from $($crt.FullName)" -ForegroundColor Green
+} else {
+  Write-Warning "MSVC CRT redist dir not found — MSVCP140/VCRUNTIME140 NOT bundled."
+}
+if (-not (Test-Path (Join-Path $payload "MSVCP140.dll"))) {
+  throw "MSVCP140.dll missing from payload after CRT copy — jarvisd.exe would fail to start on a bare machine. Aborting build."
+}
+
 # Third-party vcpkg runtime DLLs (libsodium.dll, qrencode.dll, + their deps) next
 # to the exes. windeployqt only handles Qt + the MSVC runtime — NOT these — so
 # jarvisd.exe (which links jarvis-core -> libsodium/qrencode) failed at launch with
