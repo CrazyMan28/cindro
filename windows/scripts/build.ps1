@@ -76,6 +76,22 @@ if (Get-Command windeployqt -ErrorAction SilentlyContinue) {
   windeployqt --release --compiler-runtime (Join-Path $payload "jarvisd.exe")
 } else { Write-Warning "windeployqt not found; Qt + MSVC runtime DLLs must be staged manually." }
 
+# Third-party vcpkg runtime DLLs (libsodium.dll, qrencode.dll, + their deps) next
+# to the exes. windeployqt only handles Qt + the MSVC runtime — NOT these — so
+# jarvisd.exe (which links jarvis-core -> libsodium/qrencode) failed at launch with
+# "libsodium.dll was not found". Copy the whole vcpkg dynamic bin dir.
+$vcpkgBin = Join-Path $VcpkgRoot "installed\x64-windows\bin"
+if (Test-Path $vcpkgBin) {
+  Get-ChildItem $vcpkgBin -Filter *.dll | ForEach-Object { Copy-Item $_.FullName $payload -Force }
+  Write-Host "    bundled vcpkg DLLs from $vcpkgBin" -ForegroundColor Green
+} else {
+  Write-Warning "vcpkg bin dir not found ($vcpkgBin) — libsodium/qrencode DLLs NOT bundled; jarvisd will fail to start."
+}
+# Sanity: libsodium.dll MUST be present next to jarvisd.exe.
+if (-not (Test-Path (Join-Path $payload "libsodium.dll"))) {
+  throw "libsodium.dll missing from the payload — jarvisd would fail at launch. Aborting."
+}
+
 # Portable Node RUNTIME so the phone server runs with NOTHING installed by the user.
 Write-Host "==> bundling a portable Node runtime (no Node install required)" -ForegroundColor Cyan
 $nodeVer = "v20.18.1"
