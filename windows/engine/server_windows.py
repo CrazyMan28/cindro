@@ -28,6 +28,51 @@ import sys
 if sys.platform == "win32" and not hasattr(os, "getuid"):
     os.getuid = lambda: 0  # type: ignore[attr-defined]
 
+# The engine imports Linux-only modules at MODULE-LOAD time on the desktop-tools path
+# (dbus_fast via kwin_bridge.py, evdev via input.py, pywayland, ...). They aren't
+# installed on Windows and PyInstaller excludes them, so the import chain
+# ModuleNotFoundErrors before our Win32 backend patches can take effect (observed:
+# kwin_bridge.py -> `import dbus_fast`). Install a meta-path finder that fabricates a
+# lazy stub for any of those roots and their submodules, so the imports succeed. The
+# Win32 backend is monkeypatched over the primitives that actually run, so these stubs
+# are import-satisfiers only — never edited under computer-use/.
+if sys.platform == "win32":
+    import importlib.abc as _ilabc
+    import importlib.machinery as _ilmach
+    import types as _types
+
+    _LINUX_ONLY_ROOTS = {
+        "dbus_fast", "evdev", "pywayland", "pydbus", "gi", "Xlib", "uinput",
+        "dbus_next", "jeepney",
+    }
+
+    class _StubModule(_types.ModuleType):
+        __path__: list = []  # marks it as a package so submodule imports proceed
+
+        def __getattr__(self, name):
+            if name.startswith("__") and name.endswith("__"):
+                raise AttributeError(name)
+            v = _StubModule(f"{self.__name__}.{name}")
+            setattr(self, name, v)
+            return v
+
+        def __call__(self, *a, **k):
+            return _StubModule(self.__name__ + "()")
+
+    class _StubFinder(_ilabc.MetaPathFinder, _ilabc.Loader):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname.split(".")[0] in _LINUX_ONLY_ROOTS:
+                return _ilmach.ModuleSpec(fullname, self, is_package=True)
+            return None
+
+        def create_module(self, spec):
+            return _StubModule(spec.name)
+
+        def exec_module(self, module):
+            pass
+
+    sys.meta_path.insert(0, _StubFinder())
+
 # Make `import backend_windows` work no matter the cwd.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
