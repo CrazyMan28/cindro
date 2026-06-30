@@ -93,10 +93,17 @@ Copy-Item (Join-Path $build "node-extract\node-$nodeVer-win-x64\node.exe") $node
 # 3. Python engine (PyInstaller one-folder) ------------------------------------
 Write-Host "==> bundling computer-use engine" -ForegroundColor Cyan
 $venv = Join-Path $win "engine\.venv-win"
+$venvPy = Join-Path $venv "Scripts\python.exe"
 if (-not (Test-Path $venv)) { python -m venv $venv }
-& (Join-Path $venv "Scripts\python.exe") -m pip install --upgrade pip pyinstaller | Out-Null
-& (Join-Path $venv "Scripts\python.exe") -m pip install -e (Join-Path $repo "computer-use") | Out-Null
-& (Join-Path $venv "Scripts\python.exe") -m pip install -r (Join-Path $win "engine\requirements-windows.txt") | Out-Null
+& $venvPy -m pip install --upgrade pip pyinstaller
+if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed" }
+# --no-deps: install the engine PACKAGE only — its pyproject.toml deps include the
+# Linux-only evdev/dbus-fast/pywayland which can't build on Windows. The actual
+# cross-platform runtime deps (+ pywin32/mss) come from requirements-windows.txt.
+& $venvPy -m pip install -e (Join-Path $repo "computer-use") --no-deps
+if ($LASTEXITCODE -ne 0) { throw "pip install engine (--no-deps) failed" }
+& $venvPy -m pip install -r (Join-Path $win "engine\requirements-windows.txt")
+if ($LASTEXITCODE -ne 0) { throw "pip install windows requirements failed" }
 # --collect-submodules computer_use_mcp guarantees EVERY tool module ships
 # (tools_desktop/browser/widgets/todo/bg/phone/jarvis_ops); --collect-all mss/PIL
 # + the win32 hidden-imports cover the Windows backend's lazy imports.
@@ -106,15 +113,26 @@ if (-not (Test-Path $venv)) { python -m venv $venv }
   --hidden-import win32api --hidden-import win32gui --hidden-import win32con `
   --hidden-import win32process --hidden-import pywintypes `
   --paths (Join-Path $win "engine") (Join-Path $win "engine\server_windows.py")
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller (engine) failed" }
 
-# 4. Node phone server ---------------------------------------------------------
-Write-Host "==> staging phone server" -ForegroundColor Cyan
-Push-Location (Join-Path $repo "phone\server")
-npm ci --omit=dev
-npm run build
-Pop-Location
-Copy-Item -Recurse (Join-Path $repo "phone\server\dist") (Join-Path $payload "phone-server\dist")
-Copy-Item -Recurse (Join-Path $repo "phone\server\node_modules") (Join-Path $payload "phone-server\node_modules")
+# 4. Node phone server (OPTIONAL) ----------------------------------------------
+# Resilient: better-sqlite3 native builds can be finicky on CI. If it fails the
+# installer still ships every other feature; the phone subsystem can be added later.
+Write-Host "==> staging phone server (optional)" -ForegroundColor Cyan
+try {
+  Push-Location (Join-Path $repo "phone\server")
+  npm ci --omit=dev
+  if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+  npm run build
+  if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
+  Pop-Location
+  Copy-Item -Recurse (Join-Path $repo "phone\server\dist")         (Join-Path $payload "phone-server\dist")
+  Copy-Item -Recurse (Join-Path $repo "phone\server\node_modules") (Join-Path $payload "phone-server\node_modules")
+  Write-Host "    phone server bundled." -ForegroundColor Green
+} catch {
+  Pop-Location -ErrorAction SilentlyContinue
+  Write-Warning "phone server bundling skipped ($_). The installer ships without the phone subsystem; it can be added later."
+}
 
 # 5. Installer -----------------------------------------------------------------
 Write-Host "==> building installer" -ForegroundColor Cyan
