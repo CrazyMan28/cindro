@@ -4,7 +4,38 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-06-29._
+_Last updated: 2026-06-30._
+
+---
+
+## 🆕 Windows edition VM-verified + winlab test harness (2026-06-30)
+
+Stood up **`windows/testlab/winlab.py`** — a local "GitHub Actions" that drives a real **Windows 11
+Pro** VM from the Linux box over SSH (build / install / launch / **screenshot** / PowerShell), closing
+the loop CI can't (CI compiles but never *runs* the GUI). `winlab shot`/`launch` run inside the
+**interactive console session** (transient scheduled task, Interactive principal) — SSH session 0 can't
+see the desktop. Using it, three real shipping bugs in the Windows `.exe` were caught **and fixed**, each
+re-verified on the VM:
+
+- **`MSVCP140.dll` not found** — `windeployqt --compiler-runtime` ships `vc_redist.exe` (an installer
+  the setup never ran), not the loose CRT DLLs. `build.ps1` now copies `msvcp140*/vcruntime140*/concrt140`
+  next to the exes (hard-fails the build if `MSVCP140.dll` is missing). → jarvisd/sidebar now launch +
+  **serve on 8795/8796**, no error dialog.
+- **Engine crashed on launch** (`ModuleNotFoundError: dbus_fast`) — the shared import chain pulls in
+  Linux-only modules (`kwin_bridge`→`dbus_fast`, `evdev`, …). `server_windows.py` now installs a
+  meta-path **stub finder** (handles import + class-base + decorator + constructor use) so the import
+  succeeds; the Win32 backend is monkeypatched over the real primitives. → the engine **binds
+  `0.0.0.0:8794`** (all MCP tools).
+- **Engine never auto-started** — `jarvis-launch.vbs`/`jarvis-start.cmd` looked for `engine\jarvis-engine.exe`
+  but PyInstaller nests it at `engine\jarvis-engine\jarvis-engine.exe`. Fixed both launcher paths.
+
+**Linux AppImage** (`packaging/build-appimage.sh` + `linux-release.yml`): now **builds** in a `fedora:44`
+container (Qt 6.11 / LayerShellQt 6.7 / libwayland all consistent — the ubuntu path fought Qt 6.4.2
+qmlcachegen segfaults and `wl_fixes` skew). **Not yet shippable**: the bundled binaries segfault at
+runtime where the system ones don't (jarvisd in QtWebSockets; sidebar in QtMultimedia/PipeWire teardown
+— bundled-Qt symbol interposition). The CI stays **selftest-gated** so it auto-attaches once cracked.
+Windows **v2** isolated "beside-you" desktop (Sandbox tier) is implemented + committed but can't be
+validated on the VM (no SLAT exposed → Sandbox can't run; daemon falls back to v1 take-over).
 
 ---
 
