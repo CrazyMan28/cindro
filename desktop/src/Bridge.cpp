@@ -515,6 +515,16 @@ void Bridge::saveSettings(const QVariantMap &patch)
     request(QStringLiteral("settings.set"), params);
 }
 
+void Bridge::checkForUpdates()
+{
+    request(QStringLiteral("update.check"), {});
+}
+
+void Bridge::applyUpdate()
+{
+    request(QStringLiteral("update.apply"), {});
+}
+
 void Bridge::setAgentMode(const QString &mode)
 {
     QString m = mode;
@@ -3337,6 +3347,16 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         emit settingsLoaded(result);
     } else if (method == QStringLiteral("settings.set")) {
         emit settingsSaved();
+    } else if (method == QStringLiteral("update.check")) {
+        emit updateChecked(result.value(QStringLiteral("current")).toString(),
+                           result.value(QStringLiteral("latest")).toString(),
+                           result.value(QStringLiteral("behind")).toBool(),
+                           result.value(QStringLiteral("version")).toString(),
+                           result.value(QStringLiteral("reason")).toString());
+    } else if (method == QStringLiteral("update.apply")) {
+        emit updateApplied(result.value(QStringLiteral("updated")).toBool(),
+                           result.value(QStringLiteral("to")).toString(),
+                           result.value(QStringLiteral("reason")).toString());
     } else if (method == QStringLiteral("auth.request")) {
         // FAIL-OPEN is folded into the result: paired=false + state="approved"
         // means no phone is paired, so the LockGate unlocks immediately.

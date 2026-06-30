@@ -174,6 +174,14 @@ public:
     Q_INVOKABLE void loadSettings();
     // settings.set { patch } -> settingsSaved(); api key values are write-only.
     Q_INVOKABLE void saveSettings(const QVariantMap &patch);
+
+    // ---- Auto-updater (update.* Contract A) --------------------------------
+    // update.check -> updateChecked(current,latest,behind,version,reason). The
+    // Settings "Check for updates" button calls this.
+    Q_INVOKABLE void checkForUpdates();
+    // update.apply -> updateApplied(updated,to,reason). Called from the "Update
+    // now" affordance after a check reports an available update.
+    Q_INVOKABLE void applyUpdate();
     // Persist + locally apply the agent mode (plan|build|coworker). Doubles as the
     // agentMode property WRITE so QML can two-way bind or call it directly.
     Q_INVOKABLE void setAgentMode(const QString &mode);
@@ -563,6 +571,10 @@ signals:
     // ---- Contract A v2 results ---------------------------------------------
     void settingsLoaded(const QVariantMap &settings);
     void settingsSaved();
+    // update.check / update.apply results for the Settings "Updates" section.
+    void updateChecked(const QString &current, const QString &latest,
+                       bool behind, const QString &version, const QString &reason);
+    void updateApplied(bool updated, const QString &to, const QString &reason);
     void mcpListed(const QVariantList &servers);
     void mcpTested(const QString &id, bool ok, int toolsCount, const QString &error);
     void mcpChanged();   // emitted after add/remove/set_enabled so the UI refreshes

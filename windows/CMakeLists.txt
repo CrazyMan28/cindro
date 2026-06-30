@@ -108,6 +108,7 @@ add_library(jarvis-core STATIC
     ${SHELL_DIR}/AgentDesktop.cpp            # COPY (nested-Sway -> Windows stub)
     ${CORE_DIR}/src/VoiceService.cpp
     ${CORE_DIR}/src/VoiceProvider.cpp
+    ${CORE_DIR}/src/Updater.cpp
     ${CORE_DIR}/src/VoiceLibrary.cpp
     ${CORE_DIR}/src/Scheduler.cpp
     ${CORE_DIR}/src/SshAllowList.cpp
@@ -142,6 +143,7 @@ add_library(jarvis-core STATIC
     ${CORE_DIR}/include/jarvis/AgentDesktop.h
     ${CORE_DIR}/include/jarvis/VoiceService.h
     ${CORE_DIR}/include/jarvis/VoiceProvider.h
+    ${CORE_DIR}/include/jarvis/Updater.h
     ${CORE_DIR}/include/jarvis/VoiceLibrary.h
     ${CORE_DIR}/include/jarvis/Scheduler.h
     ${CORE_DIR}/include/jarvis/SshAllowList.h
@@ -157,6 +159,22 @@ target_link_libraries(jarvis-core
     PRIVATE ${SODIUM_TARGET} jarvis_qrencode)
 target_compile_features(jarvis-core PUBLIC cxx_std_20)
 target_compile_options(jarvis-core PRIVATE ${FORCE_INCLUDE_FLAGS})
+
+# Version stamp (matches core/CMakeLists.txt): the Updater compares the running
+# SHA/version to `main`. PUBLIC so jarvisd + the sidebar inherit it. SHA resolved
+# at configure time against the shared repo, "unknown" outside a checkout.
+set(JARVIS_VERSION "0.12.0")
+execute_process(
+    COMMAND git -C "${REPO_ROOT}" rev-parse --short HEAD
+    OUTPUT_VARIABLE JARVIS_GIT_SHA
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT JARVIS_GIT_SHA)
+    set(JARVIS_GIT_SHA "unknown")
+endif()
+target_compile_definitions(jarvis-core PUBLIC
+    JARVIS_VERSION="${JARVIS_VERSION}"
+    JARVIS_GIT_SHA="${JARVIS_GIT_SHA}")
 
 # ── jarvisd.exe (headless daemon) ───────────────────────────────────────────
 # Daemon sources are referenced read-only — they use systemctl/sway only via
@@ -212,6 +230,7 @@ qt_add_qml_module(jarvis-sidebar
         ${DESKTOP_DIR}/qml/ChatDelegate.qml
         ${DESKTOP_DIR}/qml/SessionsPage.qml
         ${DESKTOP_DIR}/qml/SettingsPage.qml
+        ${DESKTOP_DIR}/qml/SetupWizard.qml
         ${DESKTOP_DIR}/qml/McpPage.qml
         ${DESKTOP_DIR}/qml/PluginsPage.qml
         ${DESKTOP_DIR}/qml/MemoryPage.qml

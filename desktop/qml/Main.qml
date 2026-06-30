@@ -37,6 +37,13 @@ Window {
     property bool locked: false
     property bool authChecked: false
 
+    // ---- first-launch SETUP WIZARD -----------------------------------------
+    // Shown (modal overlay) until settings report setup_complete=true. Defaults
+    // FALSE so a fresh install (and the offscreen gui_selftest, where no daemon
+    // ever answers settings.get) instantiates the wizard; a configured install
+    // flips it true on the first settings load, hiding it.
+    property bool setupComplete: false
+
     function applyLock(enabled) {
         // Only arm the gate ONCE per launch (never re-lock mid-session on a
         // settings refresh).
@@ -50,6 +57,8 @@ Window {
         target: bridge
         function onSettingsLoaded(s) {
             floatWin.applyLock(s.auth_lock_enabled === true)
+            // Drop the wizard once the daemon confirms setup is done.
+            floatWin.setupComplete = (s.setup_complete === true)
         }
         function onConnectedChanged() {
             if (bridge.connected)
@@ -175,6 +184,16 @@ Window {
                 onUnlocked: floatWin.locked = false
             }
         }
+
+        // ---- SetupWizard overlay (first-launch; below the LockGate) --------
+        Loader {
+            anchors.fill: parent
+            active: !floatWin.setupComplete && WindowController.mode !== "dock"
+            z: 9998
+            sourceComponent: SetupWizard {
+                onFinished: floatWin.setupComplete = true
+            }
+        }
     }
 
     // ====================================================================
@@ -245,6 +264,16 @@ Window {
                 sourceComponent: LockGate {
                     origin: "desktop"
                     onUnlocked: floatWin.locked = false
+                }
+            }
+
+            // ---- SetupWizard overlay (docked surface) ----------------------
+            Loader {
+                anchors.fill: parent
+                active: !floatWin.setupComplete && WindowController.mode === "dock"
+                z: 9998
+                sourceComponent: SetupWizard {
+                    onFinished: floatWin.setupComplete = true
                 }
             }
         }

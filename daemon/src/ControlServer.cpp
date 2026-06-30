@@ -7,6 +7,7 @@
 #include "jarvis/Connectors.h"
 #include "jarvis/InjectionGuard.h"
 #include "jarvis/PluginSigner.h"
+#include "jarvis/Updater.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -182,6 +183,26 @@ bool ControlServer::start()
     // Keep the in-memory config in sync with persisted prefs.
     m_config.defaultBrain = m_settings.defaultBrain();
     m_config.defaultModel = m_settings.defaultModel();
+
+    // AUTO-UPDATER: periodic background check of `main` on the auto_update interval
+    // (default 6h, default ON). On "behind" we NOTIFY + audit only — never apply
+    // automatically (the user confirms via Settings → "Check for updates").
+    connect(&m_updater, &Updater::updateAvailable, this,
+            [this](const UpdateStatus &st) {
+                m_notify.notify(QStringLiteral("Jarvis update available"),
+                                QStringLiteral("A newer version is on main (%1). "
+                                               "Open Settings → Updates to update.")
+                                    .arg(st.latest.left(12)),
+                                NotifyService::Urgency::Normal,
+                                QStringLiteral("jarvis.update"));
+                m_audit.record(QStringLiteral("update.available"), true,
+                               QStringLiteral("low"),
+                               QStringLiteral("update available: %1 -> %2")
+                                   .arg(st.current.left(12), st.latest.left(12)));
+            });
+    m_updater.configureAuto(m_settings.autoUpdate(),
+                            m_settings.autoUpdateIntervalHours());
+
     m_mcp = std::make_unique<McpRegistry>(m_store);
     // Native phone subsystem: expose its MCP tools to the brain if configured.
     seedPhoneMcp();
@@ -425,6 +446,10 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleFilePush(req);
     else if (m == QStringLiteral("file.get"))
         resp = handleFileGet(req);
+    else if (m == QStringLiteral("update.check"))
+        resp = handleUpdateCheck(req);
+    else if (m == QStringLiteral("update.apply"))
+        resp = handleUpdateApply(req);
     else if (isMemoryOrSkillMethod(m))
         resp = dispatchMemoryOrSkill(req);
     else if (isOpsMethod(m))
@@ -498,6 +523,19 @@ Response ControlServer::handleSettingsGet(const Request &req)
     s.insert(QStringLiteral("default_model"), m_settings.defaultModel());
     s.insert(QStringLiteral("claude_account"), m_settings.claudeAccount());
     s.insert(QStringLiteral("tts_voice"), m_settings.ttsVoice());
+
+    // First-launch SETUP WIZARD state + the chosen assistant name. The desktop
+    // shows SetupWizard.qml on load when setup_complete is false.
+    s.insert(QStringLiteral("setup_complete"), m_settings.setupComplete());
+    s.insert(QStringLiteral("assistant_name"), m_settings.assistantName());
+
+    // AUTO-UPDATER: the toggle (default ON) + the check cadence, plus the running
+    // build identity (stamped at compile time) so the UI can show the version.
+    s.insert(QStringLiteral("auto_update"), m_settings.autoUpdate());
+    s.insert(QStringLiteral("auto_update_interval_hours"),
+             m_settings.autoUpdateIntervalHours());
+    s.insert(QStringLiteral("version"), Updater::runningVersion());
+    s.insert(QStringLiteral("git_sha"), Updater::runningSha());
 
     // Pluggable STT/TTS providers (default "voxtral"). Ship the availability
     // lists too so the picker can show-but-disable local providers when their
@@ -652,8 +690,32 @@ Response ControlServer::handleSettingsSet(const Request &req)
         m_settings.setTtsProvider(patch.value(QStringLiteral("tts_provider")).toString());
         prefsTouched = true;
     }
+    if (patch.contains(QStringLiteral("setup_complete"))) {
+        m_settings.setSetupComplete(patch.value(QStringLiteral("setup_complete")).toBool());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("assistant_name"))) {
+        m_settings.setAssistantName(patch.value(QStringLiteral("assistant_name")).toString());
+        prefsTouched = true;
+    }
+    bool autoUpdateChanged = false;
+    if (patch.contains(QStringLiteral("auto_update"))) {
+        m_settings.setAutoUpdate(patch.value(QStringLiteral("auto_update")).toBool());
+        prefsTouched = true;
+        autoUpdateChanged = true;
+    }
+    if (patch.contains(QStringLiteral("auto_update_interval_hours"))) {
+        m_settings.setAutoUpdateIntervalHours(
+            patch.value(QStringLiteral("auto_update_interval_hours")).toInt());
+        prefsTouched = true;
+        autoUpdateChanged = true;
+    }
     if (prefsTouched)
         m_settings.saveConfig();
+    // Re-arm the auto-update timer when its settings changed (toggle / interval).
+    if (autoUpdateChanged)
+        m_updater.configureAuto(m_settings.autoUpdate(),
+                                m_settings.autoUpdateIntervalHours());
 
     // API keys are WRITE-ONLY: persist to secrets.json (0600), never echoed.
     if (patch.contains(QStringLiteral("api_keys"))) {
@@ -666,6 +728,36 @@ Response ControlServer::handleSettingsSet(const Request &req)
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
+}
+
+// update.check — run the platform self-update script in check-mode and report
+// {current, latest, behind, version}. Blocks on a git fetch (bounded timeout).
+Response ControlServer::handleUpdateCheck(const Request &req)
+{
+    const UpdateStatus st = m_updater.checkNow();
+    QJsonObject r;
+    r.insert(QStringLiteral("current"), st.current);
+    r.insert(QStringLiteral("latest"), st.latest);
+    r.insert(QStringLiteral("behind"), st.behind);
+    r.insert(QStringLiteral("version"), st.version);
+    r.insert(QStringLiteral("ok"), st.ok);
+    if (!st.reason.isEmpty())
+        r.insert(QStringLiteral("reason"), st.reason);
+    return Response::success(req.id, r);
+}
+
+// update.apply — user-confirmed: run the script in apply-mode (pull+rebuild on
+// Linux, installer on Windows) and return its {updated, to, ...}. Audited HIGH.
+Response ControlServer::handleUpdateApply(const Request &req)
+{
+    const QJsonObject r = m_updater.applyNow();
+    const bool updated = r.value(QStringLiteral("updated")).toBool();
+    m_audit.record(QStringLiteral("update.apply"), updated, QStringLiteral("high"),
+                   updated ? QStringLiteral("updated to %1")
+                                 .arg(r.value(QStringLiteral("to")).toString())
+                           : QStringLiteral("no update applied (%1)")
+                                 .arg(r.value(QStringLiteral("reason")).toString()));
+    return Response::success(req.id, r);
 }
 
 Response ControlServer::handleHooksList(const Request &req)
