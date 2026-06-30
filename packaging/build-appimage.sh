@@ -127,11 +127,44 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 # on Fedora 44+), which aborts the run. Skip stripping — bigger but reliable.
 export NO_STRIP=1
 say "Running linuxdeploy (bundling Qt + LayerShellQt + deps)..."
+# Bundle into the AppDir but DON'T package yet (no --output): we must prune first.
 "$LD" --appdir "$APPDIR" --plugin qt \
   --executable "$APPDIR/usr/bin/jarvisd" \
   --executable "$APPDIR/usr/bin/jarvis-sidebar" \
-  --desktop-file "$APPDIR/jarvis.desktop" --icon-file "$APPDIR/jarvis.svg" \
-  --output appimage
+  --desktop-file "$APPDIR/jarvis.desktop" --icon-file "$APPDIR/jarvis.svg"
+
+# Prune host-provided libs. linuxdeploy-plugin-qt over-bundles Qt's transitive deps,
+# including libs that MUST come from the host: client libs that talk to a running host
+# daemon (libpipewire/libpulse/libasound — wrong version crashes on connect/disconnect)
+# and ABI-sensitive system libs (glib/gio, GL/EGL/GLX, X/xcb, wayland, drm/gbm, dbus,
+# systemd, ...). Bundling them clashes with the host copies and corrupts Qt at runtime
+# (observed on a clean box: jarvisd SEGV in QtWebSockets::QWebSocketFrame::clear, and
+# jarvis-sidebar SEGV in pw_stream_disconnect on audio teardown). This is exactly what
+# the AppImage "excludelist" is for — fetch it and delete every matching lib, so they
+# resolve from the host at runtime.
+say "Pruning host-provided libs (AppImage excludelist)..."
+EXCL="$TOOLS/excludelist"
+[ -s "$EXCL" ] || curl -fsSL "https://raw.githubusercontent.com/AppImage/pkg2appimage/master/excludelist" -o "$EXCL" || true
+pruned=0
+if [ -s "$EXCL" ]; then
+  while IFS= read -r line; do
+    name="${line%%#*}"; name="$(echo "$name" | tr -d '[:space:]')"
+    [ -z "$name" ] && continue
+    for f in "$APPDIR"/usr/lib/"$name"*; do
+      [ -e "$f" ] && { rm -f "$f"; pruned=$((pruned+1)); }
+    done
+  done < "$EXCL"
+fi
+# Belt-and-suspenders: the audio client libs are the confirmed crashers; ensure they're
+# gone even if the excludelist lags a version.
+for n in libpipewire-0.3 libpulse libpulsecommon libasound; do
+  for f in "$APPDIR"/usr/lib/"$n"*; do [ -e "$f" ] && { rm -f "$f"; pruned=$((pruned+1)); }; done
+done
+say "pruned $pruned host-provided libs"
+
+# Package the pruned AppDir with appimagetool.
+say "Packaging with appimagetool..."
+AT="$(fetch appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ARCH}.AppImage")"
 mkdir -p "$DIST"
-mv -f "$OUTPUT" "$DIST/$OUTPUT"
+ARCH="$ARCH" "$AT" "$APPDIR" "$DIST/$OUTPUT"
 say "done: dist/$OUTPUT"
