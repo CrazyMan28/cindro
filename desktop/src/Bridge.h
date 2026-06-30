@@ -182,6 +182,16 @@ public:
     // update.apply -> updateApplied(updated,to,reason). Called from the "Update
     // now" affordance after a check reports an available update.
     Q_INVOKABLE void applyUpdate();
+
+    // ---- Browser-extension guide -------------------------------------------
+    // Chrome blocks silently installing an unpacked extension, so we ship it at a
+    // known path and the Settings → "Add the Chrome extension" guide gives
+    // one-click helpers to load it (chrome://extensions → Load unpacked).
+    Q_INVOKABLE QString extensionPath() const;
+    Q_INVOKABLE void openExtensionsPage();   // launch a Chromium browser at chrome://extensions
+    Q_INVOKABLE void openExtensionFolder();  // open the bundled extension dir
+    Q_INVOKABLE void copyToClipboard(const QString &text);
+
     // Persist + locally apply the agent mode (plan|build|coworker). Doubles as the
     // agentMode property WRITE so QML can two-way bind or call it directly.
     Q_INVOKABLE void setAgentMode(const QString &mode);

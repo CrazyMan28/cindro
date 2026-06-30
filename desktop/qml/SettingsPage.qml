@@ -1325,6 +1325,90 @@ Item {
                 }
             }
 
+            // ===== Browser extension =======================================
+            Text {
+                text: "// BROWSER EXTENSION"
+                color: Theme.accent
+                font.family: Theme.fontDisplay
+                font.pixelSize: 11
+                font.letterSpacing: Theme.trackMid
+                font.weight: Font.DemiBold
+                Layout.topMargin: 2
+                Layout.leftMargin: 2
+            }
+
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+                ColumnLayout {
+                    id: extCol
+                    property bool extCopied: false
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    Text {
+                        text: "Add the Jarvis extension to Chrome or Edge for the in-browser agent + side panel. It ships with Jarvis at the folder below — Chrome blocks one-click installs of unpacked extensions, so load it once:"
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 13
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        text: "1.  Open  chrome://extensions       2.  Enable \"Developer mode\" (top-right)       3.  Click \"Load unpacked\" and pick this folder:"
+                        color: Theme.textMuted
+                        font.family: Theme.fontSans
+                        font.pixelSize: 11
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        radius: 6
+                        color: "#0C141D"
+                        border.color: Theme.hairlineSoft
+                        border.width: 1
+                        implicitHeight: extPathText.implicitHeight + 16
+                        Text {
+                            id: extPathText
+                            anchors.fill: parent
+                            anchors.margins: 8
+                            text: bridge.extensionPath()
+                            color: Theme.text
+                            font.family: Theme.fontMono
+                            font.pixelSize: 12
+                            wrapMode: Text.WrapAnywhere
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Widgets.PillButton {
+                            label: "Open chrome://extensions"
+                            primary: true
+                            enabledBtn: bridge.connected
+                            onClicked: bridge.openExtensionsPage()
+                        }
+                        Widgets.PillButton {
+                            label: "Open folder"
+                            enabledBtn: bridge.connected
+                            onClicked: bridge.openExtensionFolder()
+                        }
+                        Widgets.PillButton {
+                            label: extCol.extCopied ? "Copied ✓" : "Copy path"
+                            enabledBtn: bridge.connected
+                            onClicked: {
+                                bridge.copyToClipboard(bridge.extensionPath())
+                                extCol.extCopied = true
+                                extCopyReset.restart()
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    Timer { id: extCopyReset; interval: 1500; onTriggered: extCol.extCopied = false }
+                }
+            }
+
             // ===== Connectors ==============================================
             Text {
                 text: "// CONNECTORS"
