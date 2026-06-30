@@ -422,7 +422,7 @@ Item {
 
                 // Per-brain "can drive the computer-use desktop" indicator — the
                 // choice is HONORED; no silent substitution. codex + claude can
-                // drive headless; the api brain only with an OpenAI/Anthropic key.
+                // drive headless; the api brain only with an OpenAI/Mistral key.
                 Text {
                     Layout.fillWidth: true
                     Layout.topMargin: 2
@@ -430,7 +430,7 @@ Item {
                         var cd = page.canDrive[page.defaultBrain]
                         if (cd === true) return "✓ " + page.defaultBrain + " can drive the computer-use desktop"
                         if (page.defaultBrain === "api")
-                            return "⚠ api can't drive without an OpenAI/Anthropic key — pick codex or claude, or set a key below"
+                            return "⚠ api can't drive without an OpenAI/Mistral key — pick codex or claude, or set a key below"
                         return "⚠ " + page.defaultBrain + " can't drive the computer-use desktop headless"
                     }
                     color: (page.canDrive[page.defaultBrain] === true) ? Theme.ok : Theme.amber

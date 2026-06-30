@@ -520,13 +520,15 @@ Response ControlServer::handleSettingsGet(const Request &req)
     // so the picker can HONESTLY mark which brains drive (no silent swapping).
     //   claude -> yes (bypassPermissions for coworker+agent)
     //   codex  -> yes (danger-full-access on the isolated nested desktop)
-    //   api    -> only when an OpenAI/Anthropic key is set (tool-calling brain)
+    //   api    -> only when an OpenAI/Mistral key is set: the function-calling
+    //            (computer-use tool) loop covers the OpenAI-compatible providers
+    //            (openai/mistral). Anthropic stays chat-only (no tool loop).
     QJsonObject canDrive;
     canDrive.insert(QStringLiteral("claude"), true);
     canDrive.insert(QStringLiteral("codex"), true);
     canDrive.insert(QStringLiteral("api"),
                     m_settings.hasApiKey(QStringLiteral("openai")) ||
-                        m_settings.hasApiKey(QStringLiteral("anthropic")));
+                        m_settings.hasApiKey(QStringLiteral("mistral")));
     s.insert(QStringLiteral("can_drive"), canDrive);
 
     QJsonObject byBrain;
@@ -1030,6 +1032,24 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         else if (provider == QStringLiteral("openai"))
             opts.apiKey = m_settings.apiKey(QStringLiteral("openai"));
         // ollama: no key.
+        // FUNCTION-CALLING (computer-use) loop — the OpenAI-compatible providers
+        // (openai/mistral/ollama) get the computer-use MCP tools wired the SAME
+        // way codex/claude do: a coworker+agent or auto-spawned session drives its
+        // OWN nested per-session engine (desk.mcpUrl/bearer, never the user's real
+        // screen); a plain coworker session uses the global built-in :8794 engine.
+        // Anthropic uses a different tool format and stays chat-only. We detect the
+        // nested engine via the live AgentDesktopInfo so this also works on the
+        // resume path (where agentMcpOverrides is empty but the desktop is up).
+        if (provider != QStringLiteral("anthropic")) {
+            const AgentDesktopInfo desk = m_agentDesktops.info(row.id);
+            if (desk.up) {
+                opts.mcpEndpoint = desk.mcpUrl;
+                opts.mcpBearer = desk.bearer;
+            } else if (row.profile == QStringLiteral("coworker")) {
+                opts.mcpEndpoint = McpRegistry::builtinEndpoint();
+                opts.mcpBearer = McpRegistry::computerUseBearer();
+            }
+        }
         auto *brain = new ApiBrain(opts, this);
         brain->setSessionId(row.id);
         return brain;
@@ -1507,8 +1527,10 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     // still works, it just can't use the computer). A coworker+agent session
     // always provisions (its whole point); target="real" take-over uses the
     // global engine, not a nested desktop, so it is never auto-provisioned here.
+    // The api brain drives via the OpenAI-compatible function-calling loop, which
+    // covers the openai/mistral providers (anthropic stays chat-only).
     const bool apiCanDrive = m_settings.hasApiKey(QStringLiteral("openai")) ||
-                             m_settings.hasApiKey(QStringLiteral("anthropic"));
+                             m_settings.hasApiKey(QStringLiteral("mistral"));
     const bool brainCanDrive =
         row.brain == QStringLiteral("codex") || row.brain == QStringLiteral("claude") ||
         (row.brain == QStringLiteral("api") && apiCanDrive);
@@ -1532,7 +1554,7 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
             if (err)
                 *err = QStringLiteral(
                     "the 'api' brain can't drive the computer-use desktop without "
-                    "an OpenAI or Anthropic API key — pick the codex or claude "
+                    "an OpenAI or Mistral API key — pick the codex or claude "
                     "brain, or set an API key in Settings");
             return QString();
         }

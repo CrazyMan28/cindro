@@ -1,5 +1,6 @@
 #include "jarvis/ApiBrain.h"
 
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -10,6 +11,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRandomGenerator>
+#include <QTimer>
 #include <QUrl>
 
 namespace jarvis {
@@ -23,6 +25,91 @@ QString genThreadId()
     return QStringLiteral("api_%1").arg(a, 0, 16);
 }
 
+// --- MCP JSON-RPC request builders (mirror McpRegistry.cpp) -----------------
+
+QByteArray mcpInitializeRequest(int id)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("protocolVersion"), QStringLiteral("2025-06-18"));
+    params.insert(QStringLiteral("capabilities"), QJsonObject{});
+    QJsonObject clientInfo;
+    clientInfo.insert(QStringLiteral("name"), QStringLiteral("jarvis-api-brain"));
+    clientInfo.insert(QStringLiteral("version"), QStringLiteral("1.0"));
+    params.insert(QStringLiteral("clientInfo"), clientInfo);
+    QJsonObject req;
+    req.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
+    req.insert(QStringLiteral("id"), id);
+    req.insert(QStringLiteral("method"), QStringLiteral("initialize"));
+    req.insert(QStringLiteral("params"), params);
+    return QJsonDocument(req).toJson(QJsonDocument::Compact);
+}
+
+QByteArray mcpInitializedNotification()
+{
+    QJsonObject req;
+    req.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
+    req.insert(QStringLiteral("method"), QStringLiteral("notifications/initialized"));
+    return QJsonDocument(req).toJson(QJsonDocument::Compact);
+}
+
+QByteArray mcpToolsListRequest(int id)
+{
+    QJsonObject req;
+    req.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
+    req.insert(QStringLiteral("id"), id);
+    req.insert(QStringLiteral("method"), QStringLiteral("tools/list"));
+    req.insert(QStringLiteral("params"), QJsonObject{});
+    return QJsonDocument(req).toJson(QJsonDocument::Compact);
+}
+
+QByteArray mcpToolsCallRequest(int id, const QString &name, const QJsonObject &args)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("name"), name);
+    params.insert(QStringLiteral("arguments"), args);
+    QJsonObject req;
+    req.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
+    req.insert(QStringLiteral("id"), id);
+    req.insert(QStringLiteral("method"), QStringLiteral("tools/call"));
+    req.insert(QStringLiteral("params"), params);
+    return QJsonDocument(req).toJson(QJsonDocument::Compact);
+}
+
+// Pull a JSON-RPC result object out of a body that may be raw JSON or SSE
+// ("data: {json}"). Matches `wantId` (or any result if wantId<0). Mirrors
+// McpRegistry's extractRpcResult.
+std::optional<QJsonObject> mcpExtractRpcResult(const QByteArray &body, int wantId)
+{
+    auto tryParse = [&](const QByteArray &chunk) -> std::optional<QJsonObject> {
+        QJsonParseError perr{};
+        const QJsonDocument d = QJsonDocument::fromJson(chunk, &perr);
+        if (perr.error != QJsonParseError::NoError || !d.isObject())
+            return std::nullopt;
+        const QJsonObject o = d.object();
+        if (!o.contains(QStringLiteral("result")) && !o.contains(QStringLiteral("error")))
+            return std::nullopt;
+        if (wantId >= 0 && o.value(QStringLiteral("id")).toInt(-9999) != wantId)
+            return std::nullopt;
+        return o;
+    };
+    if (auto r = tryParse(body.trimmed()))
+        return r;
+    for (const QByteArray &raw : body.split('\n')) {
+        QByteArray line = raw.trimmed();
+        if (!line.startsWith("data:"))
+            continue;
+        if (auto r = tryParse(line.mid(5).trimmed()))
+            return r;
+    }
+    return std::nullopt;
+}
+
+// Per-tool MCP call budget. Generous: a blocking computer-use tool (agent_wait)
+// can take a while, and codex gives these a 7200s timeout (see McpRegistry).
+constexpr int kMcpTimeoutMs = 7200 * 1000;
+// Max tool-loop iterations per turn before we stop and tell the user.
+constexpr int kMaxToolIterations = 12;
+
 } // namespace
 
 ApiBrain::ApiBrain(Options opts, QObject *parent)
@@ -30,6 +117,11 @@ ApiBrain::ApiBrain(Options opts, QObject *parent)
 {
     m_nam = new QNetworkAccessManager(this);
     m_provider = resolveProvider(m_opts);
+    // The function-calling loop covers the OpenAI-compatible providers
+    // (openai/mistral/ollama). Anthropic uses a different tool format and stays
+    // chat-only; ollama with no key still works (the loop is endpoint-gated).
+    m_toolsEnabled = !m_opts.mcpEndpoint.isEmpty() &&
+                     m_provider != QStringLiteral("anthropic");
 }
 
 ApiBrain::~ApiBrain()
@@ -81,6 +173,95 @@ QString ApiBrain::defaultBaseUrl(const QString &provider)
     if (provider == QStringLiteral("mistral"))
         return QStringLiteral("https://api.mistral.ai/v1");
     return QStringLiteral("https://api.openai.com/v1");
+}
+
+// --- pure tool-loop helpers (unit-tested) -----------------------------------
+
+QJsonArray ApiBrain::mcpToolsToOpenAiTools(const QJsonArray &mcpTools)
+{
+    QJsonArray out;
+    for (const QJsonValue &tv : mcpTools) {
+        const QJsonObject t = tv.toObject();
+        const QString name = t.value(QStringLiteral("name")).toString();
+        if (name.isEmpty())
+            continue;
+        QJsonObject fn;
+        fn.insert(QStringLiteral("name"), name);
+        const QString desc = t.value(QStringLiteral("description")).toString();
+        if (!desc.isEmpty())
+            fn.insert(QStringLiteral("description"), desc);
+        // OpenAI `parameters` IS the MCP `inputSchema` (both JSON Schema objects).
+        const QJsonValue schema = t.value(QStringLiteral("inputSchema"));
+        if (schema.isObject()) {
+            fn.insert(QStringLiteral("parameters"), schema.toObject());
+        } else {
+            QJsonObject empty;
+            empty.insert(QStringLiteral("type"), QStringLiteral("object"));
+            empty.insert(QStringLiteral("properties"), QJsonObject{});
+            fn.insert(QStringLiteral("parameters"), empty);
+        }
+        QJsonObject tool;
+        tool.insert(QStringLiteral("type"), QStringLiteral("function"));
+        tool.insert(QStringLiteral("function"), fn);
+        out.append(tool);
+    }
+    return out;
+}
+
+void ApiBrain::accumulateToolCallDeltas(QMap<int, StreamedToolCall> &acc,
+                                        const QJsonArray &deltaToolCalls)
+{
+    for (const QJsonValue &dv : deltaToolCalls) {
+        const QJsonObject d = dv.toObject();
+        // OpenAI + Mistral stream tool_calls with a stable per-call `index`.
+        const int index = d.value(QStringLiteral("index")).toInt(0);
+        StreamedToolCall &slot = acc[index];
+        const QString id = d.value(QStringLiteral("id")).toString();
+        if (!id.isEmpty())
+            slot.id = id;
+        const QString type = d.value(QStringLiteral("type")).toString();
+        if (!type.isEmpty())
+            slot.type = type;
+        const QJsonObject fn = d.value(QStringLiteral("function")).toObject();
+        const QString name = fn.value(QStringLiteral("name")).toString();
+        if (!name.isEmpty())
+            slot.name = name;
+        if (fn.contains(QStringLiteral("arguments")))
+            slot.arguments += fn.value(QStringLiteral("arguments")).toString();
+    }
+}
+
+QJsonArray ApiBrain::finalizeToolCalls(const QMap<int, StreamedToolCall> &acc)
+{
+    QJsonArray out;
+    // QMap iterates in ascending key (index) order — preserve the model's order.
+    for (auto it = acc.constBegin(); it != acc.constEnd(); ++it) {
+        const StreamedToolCall &tc = it.value();
+        if (tc.id.isEmpty() && tc.name.isEmpty())
+            continue;
+        QJsonObject fn;
+        fn.insert(QStringLiteral("name"), tc.name);
+        fn.insert(QStringLiteral("arguments"),
+                  tc.arguments.isEmpty() ? QStringLiteral("{}") : tc.arguments);
+        QJsonObject o;
+        o.insert(QStringLiteral("id"), tc.id);
+        o.insert(QStringLiteral("type"),
+                 tc.type.isEmpty() ? QStringLiteral("function") : tc.type);
+        o.insert(QStringLiteral("function"), fn);
+        out.append(o);
+    }
+    return out;
+}
+
+QString ApiBrain::finishReasonFromChunk(const QJsonObject &chunk)
+{
+    const QJsonArray choices = chunk.value(QStringLiteral("choices")).toArray();
+    for (const QJsonValue &cv : choices) {
+        const QString fr = cv.toObject().value(QStringLiteral("finish_reason")).toString();
+        if (!fr.isEmpty())
+            return fr;
+    }
+    return QString();
 }
 
 QJsonValue ApiBrain::userContent(const QString &text, const QStringList &images) const
@@ -144,8 +325,14 @@ void ApiBrain::send(const QString &text, const QStringList &images)
     m_busy = true;
     m_emittedFinal = false;
     m_anySent = false;
+    m_cancelled = false;
     m_buf.clear();
     m_lastUsage = QJsonObject();
+    // Reset per-turn tool-loop state (the tools/list catalog + MCP session are
+    // cached across turns; the streamed-call accumulator + counters are not).
+    m_toolAccum.clear();
+    m_finishReason.clear();
+    m_toolIterations = 0;
 
     // Synthetic thread id on the first turn so the UI/history has a thread.
     if (m_history.isEmpty())
@@ -190,6 +377,15 @@ void ApiBrain::startOpenAi(const QString &text)
     body.insert(QStringLiteral("model"), m_opts.model);
     body.insert(QStringLiteral("messages"), messages);
     body.insert(QStringLiteral("stream"), true);
+    // Advertise the computer-use tool catalog so the model can call it. Fetched +
+    // converted once (cached on the brain); only when the tool loop is enabled
+    // (mcpEndpoint set, OpenAI-compatible provider). An empty/failed catalog just
+    // omits `tools`, degrading to pure chat.
+    if (m_toolsEnabled) {
+        const QJsonArray tools = fetchMcpTools();
+        if (!tools.isEmpty())
+            body.insert(QStringLiteral("tools"), tools);
+    }
     // Ask for usage in the final SSE chunk (OpenAI streaming option). Mistral
     // (and other strict OpenAI-compatible backends) reject unknown fields, so
     // only attach it for the canonical openai provider.
@@ -320,6 +516,18 @@ void ApiBrain::handleSseData(const QByteArray &data)
         const QString reasoning = delta.value(QStringLiteral("reasoning_content")).toString();
         if (!reasoning.isEmpty())
             emitEvent(NormalizedBrainEvent::thinking(reasoning));
+        // Streamed function calls: accumulate `delta.tool_calls` fragments per
+        // index (the agentic loop runs in onFinished when finish_reason fires).
+        if (m_toolsEnabled) {
+            const QJsonArray tcs = delta.value(QStringLiteral("tool_calls")).toArray();
+            if (!tcs.isEmpty())
+                accumulateToolCallDeltas(m_toolAccum, tcs);
+        }
+    }
+    if (m_toolsEnabled) {
+        const QString fr = finishReasonFromChunk(obj);
+        if (!fr.isEmpty())
+            m_finishReason = fr;
     }
     const QJsonObject usage = obj.value(QStringLiteral("usage")).toObject();
     if (!usage.isEmpty())
@@ -328,6 +536,7 @@ void ApiBrain::handleSseData(const QByteArray &data)
 
 void ApiBrain::onFinished()
 {
+    bool hadError = false;
     if (m_reply) {
         if (m_reply->error() != QNetworkReply::NoError && !m_anySent && !m_emittedFinal) {
             const QByteArray body = m_reply->readAll();
@@ -341,6 +550,7 @@ void ApiBrain::onFinished()
             }
             emitEvent(NormalizedBrainEvent::error(
                 QStringLiteral("api request failed: ") + msg));
+            hadError = true;
         } else {
             // Drain any trailing buffered SSE.
             m_buf += m_reply->readAll();
@@ -349,7 +559,96 @@ void ApiBrain::onFinished()
         m_reply->deleteLater();
         m_reply = nullptr;
     }
+    // Function-calling loop: the model asked to call tools. Execute them and
+    // re-issue the chat request (handled entirely in runToolCallsAndContinue,
+    // which either re-posts — no final yet — or finishTurn()s at the cap).
+    if (!hadError && !m_cancelled && m_toolsEnabled &&
+        m_finishReason == QStringLiteral("tool_calls") && !m_toolAccum.isEmpty()) {
+        runToolCallsAndContinue();
+        return;
+    }
     finishTurn();
+}
+
+void ApiBrain::runToolCallsAndContinue()
+{
+    const QJsonArray toolCalls = finalizeToolCalls(m_toolAccum);
+    if (toolCalls.isEmpty()) {
+        finishTurn();
+        return;
+    }
+
+    // Append the assistant turn carrying the tool_calls. If the model also
+    // streamed text, emitEvent() already appended a {role:assistant,content:text}
+    // entry — attach tool_calls to it; otherwise add a fresh assistant message
+    // with content:null (OpenAI/Mistral require content or tool_calls).
+    QJsonObject assistantMsg;
+    bool replaceLast = false;
+    if (!m_history.isEmpty()) {
+        const QJsonObject last = m_history.last().toObject();
+        if (last.value(QStringLiteral("role")).toString() == QStringLiteral("assistant") &&
+            !last.contains(QStringLiteral("tool_calls"))) {
+            assistantMsg = last;
+            replaceLast = true;
+        }
+    }
+    if (!replaceLast)
+        assistantMsg.insert(QStringLiteral("role"), QStringLiteral("assistant"));
+    if (assistantMsg.value(QStringLiteral("content")).toString().isEmpty())
+        assistantMsg.insert(QStringLiteral("content"), QJsonValue(QJsonValue::Null));
+    assistantMsg.insert(QStringLiteral("tool_calls"), toolCalls);
+    if (replaceLast)
+        m_history.replace(m_history.size() - 1, assistantMsg);
+    else
+        m_history.append(assistantMsg);
+
+    // Execute each call against the computer-use MCP endpoint, threading results
+    // back into history as {role:"tool",tool_call_id,content}.
+    for (const QJsonValue &tcv : toolCalls) {
+        if (m_cancelled)
+            return;
+        const QJsonObject tc = tcv.toObject();
+        const QString id = tc.value(QStringLiteral("id")).toString();
+        const QJsonObject fn = tc.value(QStringLiteral("function")).toObject();
+        const QString name = fn.value(QStringLiteral("name")).toString();
+        const QString argStr = fn.value(QStringLiteral("arguments")).toString();
+        QJsonParseError perr{};
+        const QJsonDocument argDoc = QJsonDocument::fromJson(argStr.toUtf8(), &perr);
+        const QJsonObject args = argDoc.isObject() ? argDoc.object() : QJsonObject{};
+
+        emitEvent(NormalizedBrainEvent::toolCall(id, name, args,
+                                                 QStringLiteral("computer-use")));
+        QString output;
+        const bool ok = callMcpTool(name, args, &output);
+        if (m_cancelled)
+            return; // cancel() raced in during the (blocking) MCP call
+        emitEvent(NormalizedBrainEvent::toolResult(id, ok, output, name, args,
+                                                   QStringLiteral("computer-use")));
+
+        QJsonObject toolMsg;
+        toolMsg.insert(QStringLiteral("role"), QStringLiteral("tool"));
+        toolMsg.insert(QStringLiteral("tool_call_id"), id);
+        toolMsg.insert(QStringLiteral("content"), output);
+        m_history.append(toolMsg);
+    }
+
+    // Iteration cap: stop runaway loops.
+    if (++m_toolIterations >= kMaxToolIterations) {
+        emitEvent(NormalizedBrainEvent::message(
+            QStringLiteral("assistant"),
+            QStringLiteral("\n[stopped: reached the %1-iteration tool-call limit for this turn]")
+                .arg(kMaxToolIterations)));
+        finishTurn();
+        return;
+    }
+
+    // Re-issue the chat request with the updated history (new tool round). Reset
+    // per-request stream state; the turn is NOT finished yet.
+    m_finishReason.clear();
+    m_toolAccum.clear();
+    m_buf.clear();
+    m_anySent = false;
+    startOpenAi(QString());
 }
 
 void ApiBrain::finishTurn()
@@ -377,14 +676,144 @@ void ApiBrain::finishTurn()
     emit turnFinished(m_sessionId);
 }
 
+// --- synchronous MCP HTTP client (mirrors McpRegistry::testHttp) -------------
+
+bool ApiBrain::mcpPost(const QByteArray &body, int wantId, std::optional<QJsonObject> *out)
+{
+    QNetworkRequest req{QUrl(m_opts.mcpEndpoint)};
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QByteArray("application/json"));
+    req.setRawHeader("Accept", "application/json, text/event-stream");
+    if (!m_opts.mcpBearer.isEmpty())
+        req.setRawHeader("Authorization", QByteArray("Bearer ") + m_opts.mcpBearer.toUtf8());
+    if (!m_mcpSessionId.isEmpty())
+        req.setRawHeader("Mcp-Session-Id", m_mcpSessionId.toUtf8());
+
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    QNetworkReply *reply = m_nam->post(req, body);
+    m_mcpReply = reply;
+    m_mcpLoop = &loop;
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
+        reply->abort();
+        loop.quit();
+    });
+    timer.start(kMcpTimeoutMs);
+    loop.exec();
+    timer.stop();
+    m_mcpReply = nullptr;
+    m_mcpLoop = nullptr;
+
+    if (reply->error() != QNetworkReply::NoError &&
+        reply->error() != QNetworkReply::OperationCanceledError) {
+        reply->deleteLater();
+        return false;
+    }
+    const QByteArray sid = reply->rawHeader("Mcp-Session-Id");
+    if (!sid.isEmpty())
+        m_mcpSessionId = QString::fromUtf8(sid);
+    const QByteArray payload = reply->readAll();
+    reply->deleteLater();
+    if (out)
+        *out = mcpExtractRpcResult(payload, wantId);
+    return true;
+}
+
+bool ApiBrain::ensureMcpInitialized()
+{
+    if (m_mcpInitDone)
+        return true;
+    if (m_opts.mcpEndpoint.isEmpty())
+        return false;
+    std::optional<QJsonObject> initResult;
+    const int id = ++m_mcpRpcId;
+    if (!mcpPost(mcpInitializeRequest(id), id, &initResult))
+        return false;
+    if (!initResult || initResult->contains(QStringLiteral("error")))
+        return false;
+    std::optional<QJsonObject> ignore;
+    mcpPost(mcpInitializedNotification(), -1, &ignore);
+    m_mcpInitDone = true;
+    return true;
+}
+
+QJsonArray ApiBrain::fetchMcpTools()
+{
+    if (m_toolsFetched)
+        return m_toolsCatalog; // cached (attempted once, success or not)
+    m_toolsFetched = true;
+    if (!ensureMcpInitialized())
+        return m_toolsCatalog; // empty
+    std::optional<QJsonObject> toolsResult;
+    const int id = ++m_mcpRpcId;
+    if (!mcpPost(mcpToolsListRequest(id), id, &toolsResult))
+        return m_toolsCatalog;
+    if (!toolsResult || toolsResult->contains(QStringLiteral("error")))
+        return m_toolsCatalog;
+    const QJsonArray mcpTools = toolsResult->value(QStringLiteral("result"))
+                                    .toObject()
+                                    .value(QStringLiteral("tools"))
+                                    .toArray();
+    m_toolsCatalog = mcpToolsToOpenAiTools(mcpTools);
+    return m_toolsCatalog;
+}
+
+bool ApiBrain::callMcpTool(const QString &name, const QJsonObject &args, QString *output)
+{
+    if (!ensureMcpInitialized()) {
+        if (output)
+            *output = QStringLiteral("computer-use MCP endpoint is not available");
+        return false;
+    }
+    std::optional<QJsonObject> result;
+    const int id = ++m_mcpRpcId;
+    if (!mcpPost(mcpToolsCallRequest(id, name, args), id, &result)) {
+        if (output)
+            *output = QStringLiteral("tool call request failed");
+        return false;
+    }
+    if (!result) {
+        if (output)
+            *output = QStringLiteral("no JSON-RPC result for tools/call");
+        return false;
+    }
+    if (result->contains(QStringLiteral("error"))) {
+        if (output)
+            *output = result->value(QStringLiteral("error"))
+                          .toObject()
+                          .value(QStringLiteral("message"))
+                          .toString(QStringLiteral("tool error"));
+        return false;
+    }
+    const QJsonObject r = result->value(QStringLiteral("result")).toObject();
+    // Concatenate the text parts of the MCP content[] block.
+    QString text;
+    for (const QJsonValue &cv : r.value(QStringLiteral("content")).toArray()) {
+        const QJsonObject c = cv.toObject();
+        if (c.value(QStringLiteral("type")).toString() == QStringLiteral("text"))
+            text += c.value(QStringLiteral("text")).toString();
+    }
+    if (output)
+        *output = text;
+    // MCP marks a tool-level failure with isError:true (result still 200/no error).
+    return !r.value(QStringLiteral("isError")).toBool(false);
+}
+
 void ApiBrain::cancel()
 {
+    m_cancelled = true;
     if (m_reply) {
         m_reply->disconnect(this);
         m_reply->abort();
         m_reply->deleteLater();
         m_reply = nullptr;
     }
+    // Unblock any in-flight synchronous MCP call so the tool loop can bail out.
+    if (m_mcpReply)
+        m_mcpReply->abort();
+    if (m_mcpLoop)
+        m_mcpLoop->quit();
     if (m_busy && !m_emittedFinal) {
         m_emittedFinal = true;
         m_busy = false;

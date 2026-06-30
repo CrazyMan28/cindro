@@ -176,6 +176,15 @@ add_executable(codex_buildargs_test tests/codex_buildargs_test.cpp)
 target_link_libraries(codex_buildargs_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME codex_buildargs_test COMMAND codex_buildargs_test)
 
+# ApiBrain function-calling (agentic tool) loop — PURE LOGIC of the OpenAI-
+# compatible (openai/mistral/ollama) tool loop with no live engine: MCP
+# tools/list -> OpenAI tools[] conversion, streamed tool_calls accumulation
+# across fragmented SSE deltas -> a complete {id,name,arguments}, and
+# finish_reason detection.
+add_executable(api_brain_tools_test tests/api_brain_tools_test.cpp)
+target_link_libraries(api_brain_tools_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME api_brain_tools_test COMMAND api_brain_tools_test)
+
 # MemoryStore: add + FTS5 search + replace + remove roundtrip (temp DB).
 add_executable(memory_store_test tests/memory_store_test.cpp)
 target_link_libraries(memory_store_test PRIVATE jarvis-core Qt6::Core Qt6::Sql)
