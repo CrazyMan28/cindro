@@ -24,7 +24,7 @@ mkdir -p "$DIST" "$TOOLS"
 # 1. Build the C++ superbuild --------------------------------------------------
 say "Building jarvisd + jarvis-sidebar..."
 env -u PYTHONPATH cmake -S "$REPO" -B "$BUILD" -G Ninja >/dev/null
-env -u PYTHONPATH cmake --build "$BUILD" >/dev/null
+env -u PYTHONPATH cmake --build "$BUILD"   # not silenced: build errors must surface in CI logs
 
 # 2. AppDir skeleton -----------------------------------------------------------
 say "Staging the AppDir..."
@@ -109,7 +109,11 @@ export VERSION="$VER"
 # (Sway/KDE) + uses --selftest (offscreen), so also bundle the offscreen + wayland
 # QPA plugins + wayland integration plugins. Names differ by distro (Fedora:
 # libqwayland.so; Ubuntu/upstream: libqwayland-generic.so), so pick what EXISTS.
-QTPLUGDIR="$(ls -d /usr/lib*/qt6/plugins 2>/dev/null | head -1)"
+# Plugin dir + qmake from whatever Qt is active (aqt Qt 6.8 on CI under $QT_ROOT_DIR;
+# distro /usr/lib*/qt6 locally) — ask qmake, don't hard-code a path.
+QMAKE_BIN="$(command -v qmake6 || command -v qmake || true)"
+[ -n "$QMAKE_BIN" ] && export QMAKE="$QMAKE_BIN"          # linuxdeploy-plugin-qt uses $QMAKE
+QTPLUGDIR="$("${QMAKE_BIN:-qmake6}" -query QT_INSTALL_PLUGINS 2>/dev/null || ls -d /usr/lib*/qt6/plugins 2>/dev/null | head -1)"
 _plats=""; for p in libqoffscreen.so libqwayland.so libqwayland-generic.so libqwayland-egl.so; do
   [ -e "$QTPLUGDIR/platforms/$p" ] && _plats="$_plats${_plats:+;}$p"; done
 _qtpl=""; for d in wayland-shell-integration wayland-graphics-integration-client wayland-decoration-client; do

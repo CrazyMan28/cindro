@@ -27,36 +27,38 @@ jobs:
             echo "version=0.0.0-$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Install build deps (Qt6, LayerShellQt, libsodium, AppImage runtime)
+      # The app REQUIRES Qt >= 6.5 (desktop/CMakeLists.txt: qt_standard_project_setup
+      # REQUIRES 6.5; the UI imports QtQuick.Effects/MultiEffect). Ubuntu 24.04 apt
+      # ships Qt 6.4.2, on which qmlcachegen SEGFAULTS (CI exit 139). Install a real
+      # Qt 6.8 instead and build everything against it.
+      - name: Install Qt 6.8
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.1'
+          host: linux
+          target: desktop
+          arch: linux_gcc_64
+          modules: 'qtwebsockets qtmultimedia qtimageformats'
+          cache: true
+
+      - name: Install non-Qt build deps + LayerShellQt (built against Qt 6.8)
         run: |
           sudo apt-get update
-          # Hard compile deps (must succeed). On Ubuntu 24.04 the QuickControls2
-          # dev/cmake config ships INSIDE qt6-declarative-dev — there is no
-          # qt6-quickcontrols2-dev package (that name fails apt on noble).
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config \
-            qt6-base-dev qt6-declarative-dev \
-            qt6-websockets-dev qt6-multimedia-dev qt6-svg-dev \
             libsodium-dev libqrencode-dev python3 python3-venv python3-pip \
-            libfuse2 libxcb-cursor0 desktop-file-utils
-          # Runtime QML modules the UI imports (QtQuick, Controls.Basic, Layouts,
-          # Effects, Window, Shapes, Dialogs) — needed so linuxdeploy-plugin-qt
-          # bundles them and the offscreen --selftest can load the full UI.
-          # Best-effort per-module so one renamed package can't sink the build.
-          for m in qml6-module-qtquick qml6-module-qtquick-controls \
-                   qml6-module-qtquick-layouts qml6-module-qtquick-window \
-                   qml6-module-qtquick-templates qml6-module-qtquick-shapes \
-                   qml6-module-qtquick-effects qml6-module-qtquick-dialogs \
-                   qml6-module-qtqml-workerscript qml6-module-qtmultimedia; do
-            sudo apt-get install -y --no-install-recommends "$m" || echo "skip $m"
-          done
-          # LayerShellQt dev (jarvis-sidebar links it): distro pkg, else build from KDE.
-          if ! sudo apt-get install -y liblayershellqtinterface-dev 2>/dev/null; then
-            git clone --depth 1 https://invent.kde.org/plasma/layer-shell-qt.git /tmp/lsq
-            cmake -S /tmp/lsq -B /tmp/lsq/b -G Ninja -DCMAKE_INSTALL_PREFIX=/usr \
-              -DBUILD_TESTING=OFF -DQT_MAJOR_VERSION=6
-            sudo cmake --build /tmp/lsq/b --target install
-          fi
+            libfuse2 libxcb-cursor0 desktop-file-utils \
+            extra-cmake-modules libwayland-dev libwayland-bin wayland-protocols \
+            libxkbcommon-dev libgl1-mesa-dev libegl1-mesa-dev
+          # jarvis-sidebar links LayerShellQt. The apt package links Qt 6.4.2 (ABI-
+          # incompatible with our Qt 6.8), so build it from source against the aqt Qt
+          # and install into the same prefix so find_package(LayerShellQt) resolves it.
+          git clone --depth 1 https://invent.kde.org/plasma/layer-shell-qt.git /tmp/lsq
+          cmake -S /tmp/lsq -B /tmp/lsq/b -G Ninja \
+            -DCMAKE_PREFIX_PATH="$QT_ROOT_DIR" -DCMAKE_INSTALL_PREFIX="$QT_ROOT_DIR" \
+            -DBUILD_TESTING=OFF -DQT_MAJOR_VERSION=6
+          cmake --build /tmp/lsq/b
+          cmake --install /tmp/lsq/b
 
       - name: Build the AppImage
         run: packaging/build-appimage.sh "${{ steps.ver.outputs.version }}"
