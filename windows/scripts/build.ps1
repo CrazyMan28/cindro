@@ -35,12 +35,20 @@ Write-Host "==> Jarvis Windows build  (repo=$repo  version=$Version)" -Foregroun
 # windows/shell/ copies for the POSIX-only ones. The Linux dirs are never touched.
 if (-not $VcpkgRoot) { throw "Set VCPKG_ROOT (vcpkg provides libsodium/libqrencode for Windows)." }
 $toolchain = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
+if (-not (Test-Path $toolchain)) { throw "vcpkg toolchain file not found: $toolchain" }
 # Use the Visual Studio generator: it locates MSVC itself (via vswhere), so the
 # build doesn't depend on a vcvars/MSVC env being active in this shell — the most
 # reliable setup on CI. (Multi-config: exes land under <build>\<Config>\.)
-cmake -S $win -B $build -G "Visual Studio 17 2022" -A x64 `
-  -DCMAKE_TOOLCHAIN_FILE=$toolchain
+# Splat the args (the -D value is a double-quoted string so $toolchain expands).
+$cfgArgs = @(
+  '-S', $win, '-B', $build,
+  '-G', 'Visual Studio 17 2022', '-A', 'x64',
+  "-DCMAKE_TOOLCHAIN_FILE=$toolchain"
+)
+cmake @cfgArgs
+if ($LASTEXITCODE -ne 0) { throw "cmake configure failed (exit $LASTEXITCODE)" }
 cmake --build $build --config $Config
+if ($LASTEXITCODE -ne 0) { throw "cmake build failed (exit $LASTEXITCODE)" }
 
 # 2. Stage payload -------------------------------------------------------------
 if (Test-Path $payload) { Remove-Item -Recurse -Force $payload }
