@@ -64,6 +64,7 @@ android/app/libs/*.aar
 
 # --- Windows edition build artifacts (re-creatable via windows/scripts/build.ps1) ---
 windows/dist/
+windows/build-win/
 windows/engine/.venv-win/
 /dist/
 
