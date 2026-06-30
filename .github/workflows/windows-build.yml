@@ -14,6 +14,10 @@ on:
     branches: [dev, main]
   workflow_dispatch:
 
+# Needed so the tag build can CREATE the GitHub Release + attach Jarvis-Setup.exe.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
