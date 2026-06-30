@@ -2,8 +2,10 @@
   build.ps1 — one-shot Windows build + package for Jarvis.
 
   Steps:
-    1. Configure + build the C++ daemon and Windows Qt shell (MSVC + Qt6 + vcpkg),
-       with -DWINDOWS_BUILD=ON (gates off LayerShellQt; stubs the nested-Sway desktop).
+    1. Configure + build the C++ daemon and Windows Qt shell from the SELF-CONTAINED
+       windows/ CMake project (MSVC + Qt6 + vcpkg). It references the shared
+       core/daemon/desktop sources read-only and compiles windows/shell/ copies for the
+       POSIX-only ones (no LayerShellQt; the nested-Sway desktop is a Windows stub).
     2. Bundle the Python computer-use engine with PyInstaller (one-folder), including
        windows\engine\backend_windows.py + server_windows.py and the shared
        computer_use_mcp package + requirements-windows.txt deps.
@@ -28,17 +30,21 @@ $payload= Join-Path $win "dist\payload"
 Write-Host "==> Jarvis Windows build  (repo=$repo  version=$Version)" -ForegroundColor Cyan
 
 # 1. C++ daemon + Windows shell ------------------------------------------------
+# Configure the SELF-CONTAINED windows/ project (NOT the repo root) — it references
+# the shared ../core, ../daemon, ../desktop sources read-only and compiles the
+# windows/shell/ copies for the POSIX-only ones. The Linux dirs are never touched.
 if (-not $VcpkgRoot) { throw "Set VCPKG_ROOT (vcpkg provides libsodium/libqrencode for Windows)." }
 $toolchain = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
-cmake -S $repo -B $build -G "Ninja" -DCMAKE_BUILD_TYPE=$Config `
-  -DCMAKE_TOOLCHAIN_FILE=$toolchain -DWINDOWS_BUILD=ON
+cmake -S $win -B $build -G "Ninja" -DCMAKE_BUILD_TYPE=$Config `
+  -DCMAKE_TOOLCHAIN_FILE=$toolchain
 cmake --build $build --config $Config
 
 # 2. Stage payload -------------------------------------------------------------
+# windows/CMakeLists.txt emits both exes at the build-win ROOT (RUNTIME_OUTPUT_DIRECTORY).
 if (Test-Path $payload) { Remove-Item -Recurse -Force $payload }
 New-Item -ItemType Directory -Force -Path $payload | Out-Null
-Copy-Item (Join-Path $build "daemon\jarvisd.exe")        $payload
-Copy-Item (Join-Path $build "desktop\jarvis-sidebar.exe") $payload
+Copy-Item (Join-Path $build "jarvisd.exe")        $payload
+Copy-Item (Join-Path $build "jarvis-sidebar.exe") $payload
 Copy-Item (Join-Path $repo "LICENSE") (Join-Path $payload "LICENSE.txt")
 # Qt runtime + the MSVC C/C++ runtime DLLs next to the exes (app-local deploy:
 # --compiler-runtime ships vcruntime/msvcp so a BARE machine with no Visual C++

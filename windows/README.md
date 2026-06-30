@@ -25,22 +25,33 @@ windows/
   `session.get_session`/… to the Win32 backend at startup (the engine calls these by
   module attribute, so the swap is total). Windows deps live in
   `engine/requirements-windows.txt`, not the shared `pyproject.toml`.
-- **Daemon/shell (C++):** the shared `jarvisd`/`core` compile on Windows via Qt6 + vcpkg
-  (libsodium/libqrencode). The only Linux-only desktop piece (LayerShellQt + the layer-shell
-  `WindowController`) is gated behind `if(UNIX AND NOT APPLE)` in `desktop/CMakeLists.txt`;
-  the Windows window controller in `windows/shell/` is gated behind `if(WIN32)`. The nested
-  agent-desktop (`core/src/AgentDesktop.cpp`, headless Sway) is stubbed under
-  `#ifdef Q_OS_WINDOWS`. These are additive guards — the Linux path is never removed.
+- **Daemon/shell (C++):** a SELF-CONTAINED CMake project, `windows/CMakeLists.txt`
+  (`cmake -S windows -B build-win`), builds `jarvisd.exe` + `jarvis-sidebar.exe` on Windows via
+  Qt6 + vcpkg (libsodium/libqrencode). It NEVER edits `core/`, `daemon/`, `desktop/`, or the root
+  `CMakeLists.txt`:
+  - It **references the unmodified shared sources read-only** by their Linux path (all of
+    `core/src/*` except two, the `daemon/src/*`, the desktop `Bridge`/`FrameProvider`, and the
+    entire `desktop/qml/*` UI via `qt_add_qml_module`).
+  - For the handful of POSIX-only sources it compiles a **copy under `windows/shell/`** and
+    excludes the original: `AgentDesktop.cpp` (nested headless Sway → "not available on Windows
+    (v2)" stub), `PluginSandbox.cpp` (systemd-run → consent-gated QProcess fallback),
+    `main.cpp` (selects the Windows controller via include order), and
+    `WindowController.{h,cpp}` (tray + global hotkey, **no LayerShellQt**).
+  - `windows/shell/posix_compat.h` is **force-included** (`/FI`) into every Windows target so the
+    referenced-as-is sources find `getuid`/`kill`/`SIGTERM`/`SIGKILL`/`pid_t` under MSVC — the
+    C++ analogue of the engine's `os.getuid` shim. (The daemon's `systemctl`/`sway` calls go
+    through `QProcess` at runtime, so they compile clean and simply no-op on Windows.)
 
 ## Build (Windows)
 
 Prereqs: Visual Studio 2022 (or MinGW-w64), CMake 3.24+, vcpkg, Qt 6.5+ (MSVC), Python 3.12, Node 18+.
 
 ```powershell
-cmake -S .. -B ..\build-win -G Ninja `
-  -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DWINDOWS_BUILD=ON
-cmake --build ..\build-win --config Release
-.\scripts\build.ps1     # bundles engine + node + makes windows\dist\Jarvis-Setup-x.y.z.exe
+# Self-contained: configure windows/, NOT the repo root.
+cmake -S ..\..\windows -B ..\..\build-win -G Ninja `
+  -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake --build ..\..\build-win --config Release
+.\build.ps1     # bundles engine + node + makes windows\dist\Jarvis-Setup-x.y.z.exe
 ```
 
 ## Honest limits on Windows (no Win32 equivalent)
