@@ -46,6 +46,8 @@ New-Item -ItemType Directory -Force -Path $payload | Out-Null
 Copy-Item (Join-Path $build "jarvisd.exe")        $payload
 Copy-Item (Join-Path $build "jarvis-sidebar.exe") $payload
 Copy-Item (Join-Path $repo "LICENSE") (Join-Path $payload "LICENSE.txt")
+# The launcher that brings up the WHOLE stack on Windows (no systemd).
+Copy-Item (Join-Path $win "scripts\jarvis-start.cmd") $payload
 # Qt runtime + the MSVC C/C++ runtime DLLs next to the exes (app-local deploy:
 # --compiler-runtime ships vcruntime/msvcp so a BARE machine with no Visual C++
 # Redistributable still runs Jarvis). Target both exes so jarvisd's deps land too.
@@ -76,8 +78,14 @@ if (-not (Test-Path $venv)) { python -m venv $venv }
 & (Join-Path $venv "Scripts\python.exe") -m pip install --upgrade pip pyinstaller | Out-Null
 & (Join-Path $venv "Scripts\python.exe") -m pip install -e (Join-Path $repo "computer-use") | Out-Null
 & (Join-Path $venv "Scripts\python.exe") -m pip install -r (Join-Path $win "engine\requirements-windows.txt") | Out-Null
+# --collect-submodules computer_use_mcp guarantees EVERY tool module ships
+# (tools_desktop/browser/widgets/todo/bg/phone/jarvis_ops); --collect-all mss/PIL
+# + the win32 hidden-imports cover the Windows backend's lazy imports.
 & (Join-Path $venv "Scripts\pyinstaller.exe") --noconfirm --name jarvis-engine `
   --distpath (Join-Path $payload "engine") --workpath (Join-Path $build "pyi") `
+  --collect-submodules computer_use_mcp --collect-all mss --collect-all PIL `
+  --hidden-import win32api --hidden-import win32gui --hidden-import win32con `
+  --hidden-import win32process --hidden-import pywintypes `
   --paths (Join-Path $win "engine") (Join-Path $win "engine\server_windows.py")
 
 # 4. Node phone server ---------------------------------------------------------

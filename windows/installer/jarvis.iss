@@ -48,19 +48,21 @@ Name: "autostart"; Description: "Start the Jarvis daemon when I sign in"; GroupD
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+; The shortcut launches the WHOLE stack (engine + phone + daemon + UI) via the
+; launcher, with the Jarvis icon. Closing the UI leaves the daemon+engine in tray.
+Name: "{group}\{#MyAppName}"; Filename: "{app}\jarvis-start.cmd"; IconFilename: "{app}\{#MyAppExeName}"; Flags: runminimized
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\jarvis-start.cmd"; IconFilename: "{app}\{#MyAppExeName}"; Flags: runminimized; Tasks: desktopicon
 
 [Run]
-; Start the daemon, then launch the UI (which shows the first-run setup wizard).
-Filename: "{app}\{#MyDaemonExeName}"; Description: "Start Jarvis daemon"; Flags: nowait runhidden
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+; Bring up the full stack: computer-use engine (all MCP tools) + phone server +
+; daemon + UI (first run shows the setup wizard). One launcher = everything works.
+Filename: "{app}\jarvis-start.cmd"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait runminimized postinstall skipifsilent
 
 [Registry]
-; Optional autostart for the daemon (per-user Run key).
+; Optional autostart for the whole stack (per-user Run key).
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; \
-  ValueName: "JarvisDaemon"; ValueData: """{app}\{#MyDaemonExeName}"""; Tasks: autostart; Flags: uninsdeletevalue
+  ValueName: "Jarvis"; ValueData: """{app}\jarvis-start.cmd"""; Tasks: autostart; Flags: uninsdeletevalue
 
 [UninstallDelete]
 ; Leave %APPDATA%\Jarvis (user config/keys) in place on uninstall by default.

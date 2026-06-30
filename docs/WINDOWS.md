@@ -73,6 +73,20 @@ LayerShellQt, libsodium, libqrencode, Python, Node, and the computer-use runtime
 grim/spectacle/ydotool/wl-clipboard), sets up the engine venv + phone server, builds, and
 installs — then `systemctl --user start jarvisd` + launch `jarvis-sidebar`.
 
+### How the whole stack starts (Windows has no systemd)
+
+On Linux the computer-use engine and phone server run as **systemd user services**. Windows has
+none, so a single launcher — **`jarvis-start.cmd`** (what the Start-menu shortcut + autostart
+point at) — brings up everything so **every feature works**: (1) the **computer-use engine**
+(`jarvis-engine.exe`) on `127.0.0.1:8794` serving **all** MCP tools, (2) the **phone server**
+(bundled Node) on `:8801` if you've configured it, (3) **`jarvisd.exe`** (sessions, skills,
+schedules, subagents, hooks, memory, voice, plugins, connectors, the phone proxy, and the
+device/pairing channel), and (4) **`jarvis-sidebar.exe`** (the UI). The engine self-creates
+`%USERPROFILE%\.computer-use\config.yaml` (random bearer) on first run and `jarvisd` reads the
+same file, so they agree with no setup. *(Known v1 limitation: the per-session **nested** agent
+desktop is Linux-only, so on Windows computer-use drives the real screen; and the daemon's
+`systemctl`-based phone-restart on a voice-default change no-ops on Windows.)*
+
 ## Build from source (Windows)
 
 Prereqs: **Visual Studio 2022** (or MinGW-w64), **CMake 3.24+**, **vcpkg** (for
