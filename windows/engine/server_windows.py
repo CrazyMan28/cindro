@@ -28,6 +28,86 @@ import sys
 if sys.platform == "win32" and not hasattr(os, "getuid"):
     os.getuid = lambda: 0  # type: ignore[attr-defined]
 
+# The engine imports Linux-only modules at MODULE-LOAD time on the desktop-tools path
+# (dbus_fast via kwin_bridge.py, evdev via input.py, pywayland, ...). They aren't
+# installed on Windows and PyInstaller excludes them, so the import chain
+# ModuleNotFoundErrors before our Win32 backend patches can take effect (observed:
+# kwin_bridge.py -> `import dbus_fast`). Install a meta-path finder that fabricates a
+# lazy stub for any of those roots and their submodules, so the imports succeed. The
+# Win32 backend is monkeypatched over the primitives that actually run, so these stubs
+# are import-satisfiers only — never edited under computer-use/.
+if sys.platform == "win32":
+    import importlib.abc as _ilabc
+    import importlib.machinery as _ilmach
+    import types as _types
+
+    _LINUX_ONLY_ROOTS = {
+        "dbus_fast", "evdev", "pywayland", "pydbus", "gi", "Xlib", "uinput",
+        "dbus_next", "jeepney",
+    }
+
+    def _is_dunder(name):
+        return name.startswith("__") and name.endswith("__")
+
+    # A stub that works in every way the engine's Linux modules use these symbols:
+    # as a class (used as a base, e.g. `class X(dbus_fast.service.ServiceInterface)`),
+    # as a constructor (`MessageBus(...)`), as a decorator factory (`@method()`), and
+    # as an attribute chain (`dbus_fast.aio.MessageBus`). The metaclass routes
+    # attribute access to fresh stub classes and makes `Stub(callable)` a no-op
+    # decorator passthrough; instances accept any __init__ args (for super().__init__).
+    class _StubMeta(type):
+        def __getattr__(cls, name):
+            if _is_dunder(name):
+                raise AttributeError(name)
+            return _stub_class(f"{cls.__name__}.{name}")
+
+        def __call__(cls, *a, **k):
+            if len(a) == 1 and callable(a[0]) and not k:  # @decorator() -> fn
+                return a[0]
+            return super().__call__(*a, **k)
+
+    def _inst_init(self, *a, **k):
+        pass
+
+    def _inst_getattr(self, name):
+        if _is_dunder(name):
+            raise AttributeError(name)
+        return _stub_class(name)
+
+    def _inst_call(self, *a, **k):
+        if len(a) == 1 and callable(a[0]) and not k:
+            return a[0]
+        return _stub_class("stub")()
+
+    def _stub_class(name):
+        return _StubMeta(name, (), {
+            "__init__": _inst_init,
+            "__getattr__": _inst_getattr,
+            "__call__": _inst_call,
+        })
+
+    class _StubModule(_types.ModuleType):
+        __path__: list = []  # marks it as a package so submodule imports proceed
+
+        def __getattr__(self, name):
+            if _is_dunder(name):
+                raise AttributeError(name)
+            return _stub_class(f"{self.__name__}.{name}")
+
+    class _StubFinder(_ilabc.MetaPathFinder, _ilabc.Loader):
+        def find_spec(self, fullname, path=None, target=None):
+            if fullname.split(".")[0] in _LINUX_ONLY_ROOTS:
+                return _ilmach.ModuleSpec(fullname, self, is_package=True)
+            return None
+
+        def create_module(self, spec):
+            return _StubModule(spec.name)
+
+        def exec_module(self, module):
+            pass
+
+    sys.meta_path.insert(0, _StubFinder())
+
 # Make `import backend_windows` work no matter the cwd.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

@@ -11,8 +11,9 @@ Set sh  = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 dir = fso.GetParentFolderName(WScript.ScriptFullName)
 
-' 1. computer-use engine (hidden)
-p = dir & "\engine\jarvis-engine.exe"
+' 1. computer-use engine (hidden). PyInstaller one-dir nests it:
+'    engine\jarvis-engine\jarvis-engine.exe (with _internal\ beside it).
+p = dir & "\engine\jarvis-engine\jarvis-engine.exe"
 If fso.FileExists(p) Then sh.Run """" & p & """", 0, False
 
 ' 2. phone server (hidden) - only if the user configured it (phone.env present)

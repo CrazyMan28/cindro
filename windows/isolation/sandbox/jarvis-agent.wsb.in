@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  jarvis-agent.wsb.in -- Windows Sandbox config TEMPLATE for the v2 agent desktop.
+
+  AgentDesktop::ensure() (windows/shell/AgentDesktop.cpp) renders this per session
+  by substituting the @TOKENS@ and writes the result to a per-session temp .wsb,
+  then launches it with WindowsSandbox.exe. Inside the disposable Hyper-V micro-VM
+  the LogonCommand runs bootstrap.ps1, which starts the computer-use engine bound
+  to 0.0.0.0:@PORT@ with our bearer, plus the reverse-tunnel dialer that makes the
+  engine reachable from the host at 127.0.0.1:@PORT@.
+
+  Tokens (substituted on the host):
+    @ENGINEDIR@   host folder holding jarvis-engine.exe + jarvis-relay.exe +
+                  bootstrap.ps1 (mapped READ-ONLY to C:\engine).
+    @PORT@        per-session engine port (host loopback + in-box bind).
+    @BEARER@      per-session engine bearer token.
+    @RENDEZVOUS@  host rendezvous port the in-box dialer dials OUT to.
+    @HOSTIP@      host gateway as seen from the box, or "auto" (bootstrap resolves
+                  the default gateway).
+    @SESSION@     owning coworker session id (diagnostics marker).
+-->
+<Configuration>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>@ENGINEDIR@</HostFolder>
+      <SandboxFolder>C:\engine</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <Networking>Enable</Networking>
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\engine\bootstrap.ps1 -Port @PORT@ -Bearer @BEARER@ -Rendezvous @RENDEZVOUS@ -HostIp @HOSTIP@ -Session @SESSION@</Command>
+  </LogonCommand>
+</Configuration>

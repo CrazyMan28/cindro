@@ -24,14 +24,24 @@ the test-suite) with no Win32 present. The engine dataclasses
 ``screen.Rect`` / ``screen.LAST_SHOT`` are imported from the engine and reused
 verbatim -- imported, never modified.
 
-NOT portable to Windows (Linux-only, a Windows v2 item):
-  * the nested headless "agent" desktop (``which='agent'``) -- raises RuntimeError.
-  * KWin multi-seat (the agent's own cursor/keyboard seat).
+Windows v2 -- the isolated "beside-you" agent desktop (see windows/isolation/):
+  * ``which='agent'`` is the agent's OWN isolated Windows desktop (a Windows
+    Sandbox / RDP child session / Hyper-V guest), NOT the user's real screen.
+    The engine runs INSIDE that isolated desktop, so its ``SendInput`` injection
+    and ``mss`` capture are scoped to it by the OS boundary -- the Windows
+    realization of Linux's nested-Sway seat. The engine signals "I am the
+    in-sandbox instance" via the env flag ``JARVIS_AGENT_INSANDBOX=1`` (set by
+    ``bootstrap.ps1`` inside the box). With it set, ``get_session('agent')``
+    returns THIS desktop (``detect()['active']``-equivalent); without it the
+    'agent' session raises (v1 = host drives the real screen via take-over).
+  * KWin multi-seat (the agent's own cursor/keyboard seat) stays Linux-only --
+    on Windows the seat isolation comes from the Sandbox/session/VM boundary.
 """
 
 from __future__ import annotations
 
 import io
+import os
 import sys
 import time
 
@@ -498,9 +508,13 @@ def take_screenshot(output: str | None = None, region: dict | None = None,
 
 def grab_jpeg_frame(which: str = "agent", *, width: int | None = None,
                     quality: int = 70, include_cursor: bool = False) -> bytes:
-    """Single JPEG frame of the session (mss + Pillow). NB: the default
-    which='agent' has no Windows equivalent and will raise (nested desktop is
-    Linux-only); pass which='active'."""
+    """Single JPEG frame of the session (mss + Pillow).
+
+    The default which='agent' resolves through ``get_session('agent')``: INSIDE
+    the isolated agent desktop (``JARVIS_AGENT_INSANDBOX=1``) that is THIS
+    desktop, so the daemon's /video/mjpeg pump (which defaults to which='agent')
+    streams the agent box. OUTSIDE a sandbox 'agent' raises (Linux-only nested
+    desktop); pass which='active' for the host's real screen."""
     from PIL import Image as PILImage
 
     info = get_session(which)
@@ -566,15 +580,44 @@ def detect(refresh: bool = False) -> dict:
     return result
 
 
-def get_session(which: str = "active") -> SessionInfo:
-    """Resolve a session. Windows has ONE session ('windows'/'active').
+def in_sandbox() -> bool:
+    """True when this engine runs INSIDE the isolated agent desktop.
 
-    'agent' (the nested headless co-worker desktop) is Linux-only and raises a
-    clear RuntimeError (a Windows v2 item)."""
+    Set by ``windows/isolation/sandbox/bootstrap.ps1`` (env
+    ``JARVIS_AGENT_INSANDBOX=1``) when the engine is launched inside a Windows
+    Sandbox / RDP child session / Hyper-V guest. When true, the 'agent' session
+    IS this desktop (the engine's SendInput + mss are scoped to it by the OS
+    boundary). Truthy values: anything other than unset / "" / "0" / "false".
+    """
+    val = os.environ.get("JARVIS_AGENT_INSANDBOX", "").strip().lower()
+    return val not in ("", "0", "false", "no", "off")
+
+
+def get_session(which: str = "active") -> SessionInfo:
+    """Resolve a session.
+
+    Windows exposes ONE OS desktop per process ('windows'/'active'). 'agent' is
+    the isolated "beside-you" co-worker desktop:
+
+      * INSIDE the isolated desktop (``JARVIS_AGENT_INSANDBOX=1``) the 'agent'
+        session IS this desktop -- return ``detect()['active']``-equivalent. The
+        engine's SendInput/mss hit only this box (Sandbox/session/VM boundary),
+        so input isolation is a property of the OS, not a cursor trick. This is
+        what the daemon's /video/mjpeg pump (default which='agent') and the
+        which='agent' tools target.
+      * OUTSIDE a sandbox (the host engine, v1) 'agent' raises -- the nested
+        headless desktop is Linux-only; the host drives the real screen via the
+        take-over path (which='active').
+    """
     if which == "agent":
+        if in_sandbox():
+            return detect()["active"]
         raise RuntimeError(
-            "The nested 'agent' desktop is Linux-only (headless Sway); Windows "
-            "exposes a single 'windows' session. This is a Windows v2 item."
+            "The 'agent' desktop requires the isolated Windows agent box "
+            "(JARVIS_AGENT_INSANDBOX): the engine must run INSIDE a Windows "
+            "Sandbox / RDP child session / Hyper-V guest (see windows/isolation). "
+            "On the host engine only the real-screen 'windows'/'active' session "
+            "exists (v1 take-over)."
         )
     if which in ("active", "windows"):
         return detect()["active"]

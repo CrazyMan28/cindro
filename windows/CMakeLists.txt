@@ -37,6 +37,11 @@ set(CORE_DIR    "${REPO_ROOT}/core")
 set(DAEMON_DIR  "${REPO_ROOT}/daemon")
 set(DESKTOP_DIR "${REPO_ROOT}/desktop")
 set(SHELL_DIR   "${CMAKE_CURRENT_SOURCE_DIR}/shell")
+# Windows v2 isolation (the "beside-you" agent desktop): the reverse tunnel that
+# re-exposes the in-sandbox engine on the host, plus the .wsb/.ps1 orchestration
+# assets. Entirely under windows/ (the HARD isolation rule). See isolation/DESIGN.md.
+set(ISOLATION_DIR "${CMAKE_CURRENT_SOURCE_DIR}/isolation")
+set(RELAY_DIR     "${ISOLATION_DIR}/relay")
 
 # Both exes land at the build-win root so windows/scripts/build.ps1 can stage them.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
@@ -105,7 +110,9 @@ add_library(jarvis-core STATIC
     ${CORE_DIR}/src/PairingManager.cpp
     ${CORE_DIR}/src/AuthChallengeStore.cpp
     ${CORE_DIR}/src/FcmSender.cpp
-    ${SHELL_DIR}/AgentDesktop.cpp            # COPY (nested-Sway -> Windows stub)
+    ${SHELL_DIR}/AgentDesktop.cpp            # COPY (nested-Sway -> Windows Sandbox v2)
+    ${RELAY_DIR}/ReverseTunnel.cpp           # v2 gap #2 reverse tunnel (host side)
+    ${RELAY_DIR}/ReverseTunnel.h
     ${CORE_DIR}/src/VoiceService.cpp
     ${CORE_DIR}/src/VoiceProvider.cpp
     ${CORE_DIR}/src/Updater.cpp
@@ -153,7 +160,9 @@ add_library(jarvis-core STATIC
     ${CORE_DIR}/include/jarvis/WidgetLeaseRegistry.h
 )
 
-target_include_directories(jarvis-core PUBLIC ${CORE_DIR}/include)
+target_include_directories(jarvis-core
+    PUBLIC  ${CORE_DIR}/include
+    PRIVATE ${RELAY_DIR})            # windows/shell/AgentDesktop.cpp -> ReverseTunnel.h
 target_link_libraries(jarvis-core
     PUBLIC  Qt6::Core Qt6::Sql Qt6::WebSockets Qt6::Network
     PRIVATE ${SODIUM_TARGET} jarvis_qrencode)
@@ -163,7 +172,7 @@ target_compile_options(jarvis-core PRIVATE ${FORCE_INCLUDE_FLAGS})
 # Version stamp (matches core/CMakeLists.txt): the Updater compares the running
 # SHA/version to `main`. PUBLIC so jarvisd + the sidebar inherit it. SHA resolved
 # at configure time against the shared repo, "unknown" outside a checkout.
-set(JARVIS_VERSION "0.12.2")
+set(JARVIS_VERSION "0.12.4")
 execute_process(
     COMMAND git -C "${REPO_ROOT}" rev-parse --short HEAD
     OUTPUT_VARIABLE JARVIS_GIT_SHA
@@ -192,6 +201,22 @@ target_link_libraries(jarvisd PRIVATE
     jarvis-core Qt6::Core Qt6::Network Qt6::Sql Qt6::WebSockets ${SODIUM_TARGET})
 target_compile_features(jarvisd PRIVATE cxx_std_20)
 target_compile_options(jarvisd PRIVATE ${FORCE_INCLUDE_FLAGS})
+
+# ── jarvis-relay.exe (Windows v2 reverse tunnel) ────────────────────────────
+# Standalone reverse-tunnel CLI. The daemon runs ReverseTunnel IN-PROCESS (host
+# side, compiled into jarvis-core), but this exe is staged next to jarvis-engine.exe
+# so the read-only MappedFolder exposes it at C:\engine\jarvis-relay.exe inside the
+# sandbox, where bootstrap.ps1 runs it in `dial` mode (gap #2). Pure Qt Core+Network;
+# console subsystem (bootstrap launches it hidden via Start-Process -WindowStyle Hidden).
+qt_add_executable(jarvis-relay
+    ${RELAY_DIR}/relay_main.cpp
+    ${RELAY_DIR}/ReverseTunnel.cpp
+    ${RELAY_DIR}/ReverseTunnel.h
+)
+target_include_directories(jarvis-relay PRIVATE ${RELAY_DIR})
+target_link_libraries(jarvis-relay PRIVATE Qt6::Core Qt6::Network)
+target_compile_features(jarvis-relay PRIVATE cxx_std_20)
+target_compile_options(jarvis-relay PRIVATE ${FORCE_INCLUDE_FLAGS})
 
 # ── jarvis-sidebar.exe (native Qt shell) ────────────────────────────────────
 # Sources: the windows/shell copies of main.cpp + WindowController.{h,cpp} PLUS

@@ -24,7 +24,7 @@ mkdir -p "$DIST" "$TOOLS"
 # 1. Build the C++ superbuild --------------------------------------------------
 say "Building jarvisd + jarvis-sidebar..."
 env -u PYTHONPATH cmake -S "$REPO" -B "$BUILD" -G Ninja >/dev/null
-env -u PYTHONPATH cmake --build "$BUILD" >/dev/null
+env -u PYTHONPATH cmake --build "$BUILD"   # not silenced: build errors must surface in CI logs
 
 # 2. AppDir skeleton -----------------------------------------------------------
 say "Staging the AppDir..."
@@ -109,7 +109,11 @@ export VERSION="$VER"
 # (Sway/KDE) + uses --selftest (offscreen), so also bundle the offscreen + wayland
 # QPA plugins + wayland integration plugins. Names differ by distro (Fedora:
 # libqwayland.so; Ubuntu/upstream: libqwayland-generic.so), so pick what EXISTS.
-QTPLUGDIR="$(ls -d /usr/lib*/qt6/plugins 2>/dev/null | head -1)"
+# Plugin dir + qmake from whatever Qt is active (aqt Qt 6.8 on CI under $QT_ROOT_DIR;
+# distro /usr/lib*/qt6 locally) — ask qmake, don't hard-code a path.
+QMAKE_BIN="$(command -v qmake6 || command -v qmake || true)"
+[ -n "$QMAKE_BIN" ] && export QMAKE="$QMAKE_BIN"          # linuxdeploy-plugin-qt uses $QMAKE
+QTPLUGDIR="$("${QMAKE_BIN:-qmake6}" -query QT_INSTALL_PLUGINS 2>/dev/null || ls -d /usr/lib*/qt6/plugins 2>/dev/null | head -1)"
 _plats=""; for p in libqoffscreen.so libqwayland.so libqwayland-generic.so libqwayland-egl.so; do
   [ -e "$QTPLUGDIR/platforms/$p" ] && _plats="$_plats${_plats:+;}$p"; done
 _qtpl=""; for d in wayland-shell-integration wayland-graphics-integration-client wayland-decoration-client; do
@@ -123,11 +127,44 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 # on Fedora 44+), which aborts the run. Skip stripping — bigger but reliable.
 export NO_STRIP=1
 say "Running linuxdeploy (bundling Qt + LayerShellQt + deps)..."
+# Bundle into the AppDir but DON'T package yet (no --output): we must prune first.
 "$LD" --appdir "$APPDIR" --plugin qt \
   --executable "$APPDIR/usr/bin/jarvisd" \
   --executable "$APPDIR/usr/bin/jarvis-sidebar" \
-  --desktop-file "$APPDIR/jarvis.desktop" --icon-file "$APPDIR/jarvis.svg" \
-  --output appimage
+  --desktop-file "$APPDIR/jarvis.desktop" --icon-file "$APPDIR/jarvis.svg"
+
+# Prune host-provided libs. linuxdeploy-plugin-qt over-bundles Qt's transitive deps,
+# including libs that MUST come from the host: client libs that talk to a running host
+# daemon (libpipewire/libpulse/libasound — wrong version crashes on connect/disconnect)
+# and ABI-sensitive system libs (glib/gio, GL/EGL/GLX, X/xcb, wayland, drm/gbm, dbus,
+# systemd, ...). Bundling them clashes with the host copies and corrupts Qt at runtime
+# (observed on a clean box: jarvisd SEGV in QtWebSockets::QWebSocketFrame::clear, and
+# jarvis-sidebar SEGV in pw_stream_disconnect on audio teardown). This is exactly what
+# the AppImage "excludelist" is for — fetch it and delete every matching lib, so they
+# resolve from the host at runtime.
+say "Pruning host-provided libs (AppImage excludelist)..."
+EXCL="$TOOLS/excludelist"
+[ -s "$EXCL" ] || curl -fsSL "https://raw.githubusercontent.com/AppImage/pkg2appimage/master/excludelist" -o "$EXCL" || true
+pruned=0
+if [ -s "$EXCL" ]; then
+  while IFS= read -r line; do
+    name="${line%%#*}"; name="$(echo "$name" | tr -d '[:space:]')"
+    [ -z "$name" ] && continue
+    for f in "$APPDIR"/usr/lib/"$name"*; do
+      [ -e "$f" ] && { rm -f "$f"; pruned=$((pruned+1)); }
+    done
+  done < "$EXCL"
+fi
+# Belt-and-suspenders: the audio client libs are the confirmed crashers; ensure they're
+# gone even if the excludelist lags a version.
+for n in libpipewire-0.3 libpulse libpulsecommon libasound; do
+  for f in "$APPDIR"/usr/lib/"$n"*; do [ -e "$f" ] && { rm -f "$f"; pruned=$((pruned+1)); }; done
+done
+say "pruned $pruned host-provided libs"
+
+# Package the pruned AppDir with appimagetool.
+say "Packaging with appimagetool..."
+AT="$(fetch appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ARCH}.AppImage")"
 mkdir -p "$DIST"
-mv -f "$OUTPUT" "$DIST/$OUTPUT"
+ARCH="$ARCH" "$AT" "$APPDIR" "$DIST/$OUTPUT"
 say "done: dist/$OUTPUT"
