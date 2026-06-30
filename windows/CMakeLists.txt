@@ -212,11 +212,27 @@ set_source_files_properties(${DESKTOP_DIR}/qml/Theme.qml
 set_source_files_properties(${DESKTOP_DIR}/qml/Widgets.qml
     PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
+# The QML files live in ../desktop/qml (OUTSIDE this dir), so they resolve to
+# ABSOLUTE paths — Qt's resource system rejects absolute-path QML sources unless
+# each carries a QT_RESOURCE_ALIAS. Set it to the same "qml/<name>" in-module path
+# the Linux build uses (desktop/CMakeLists.txt lists them relative as qml/<name>),
+# so the resource layout + loadFromModule("JarvisSidebar","Main") are identical.
+file(GLOB _jarvis_qml CONFIGURE_DEPENDS ${DESKTOP_DIR}/qml/*.qml)
+foreach(_q IN LISTS _jarvis_qml)
+    get_filename_component(_qn "${_q}" NAME)
+    set_source_files_properties("${_q}" PROPERTIES QT_RESOURCE_ALIAS "qml/${_qn}")
+endforeach()
+
 # Reuse the shared UI verbatim — same URI ("JarvisSidebar") + same file list as
 # desktop/CMakeLists.txt, referenced read-only from ../desktop/qml.
 qt_add_qml_module(jarvis-sidebar
     URI JarvisSidebar
     VERSION 1.0
+    # The QML lives OUTSIDE this build dir (../desktop/qml), so qmlcachegen derives
+    # an output path with a ".." segment ninja can't mkdir. NO_CACHEGEN skips the
+    # AOT bytecode cache — the QML is still embedded in the resource + loaded at
+    # runtime (marginally slower first load; correct + reliable for the Win build).
+    NO_CACHEGEN
     QML_FILES
         ${DESKTOP_DIR}/qml/Main.qml
         ${DESKTOP_DIR}/qml/AppShell.qml

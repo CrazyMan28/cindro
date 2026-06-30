@@ -31,13 +31,12 @@ jobs:
             echo "version=0.1.0-$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
           fi
 
-      # MSVC toolchain (cl/link on PATH) for the C++ daemon + Qt shell.
+      # MSVC toolchain (cl + ninja on PATH) for the Ninja generator that build.ps1
+      # uses. msvc-dev-cmd finds VS via vswhere and exports the env to later steps.
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      # Ninja generator used by build.ps1 (-G Ninja). Present on most images, but
-      # install defensively so the build never fails on a missing generator.
       - name: Install Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
 
