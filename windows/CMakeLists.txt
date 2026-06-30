@@ -248,6 +248,19 @@ foreach(_q IN LISTS _jarvis_qml)
     set_source_files_properties("${_q}" PROPERTIES QT_RESOURCE_ALIAS "qml/${_qn}")
 endforeach()
 
+# ArcReactor.qml has `var long` (lines 64-65). `long` is a reserved word in Qt's
+# runtime QML/JS parser (rejected on <= 6.8). The Linux build is fine because
+# qmlcachegen AOT-compiles the QML, but THIS build uses NO_CACHEGEN (below) so the
+# QML is parsed RAW at runtime -> the whole UI tree fails to load ("ArcReactor.qml:
+# Expected token 'identifier'", which bricked v0.12.4 on a clean box). We never edit
+# desktop/qml — generate a renamed copy at configure time and use it instead.
+set(_arc_patched "${CMAKE_CURRENT_BINARY_DIR}/qml-patched/ArcReactor.qml")
+file(READ "${DESKTOP_DIR}/qml/ArcReactor.qml" _arc_src)
+string(REPLACE "var long =" "var lng =" _arc_src "${_arc_src}")
+string(REPLACE "(long ?"    "(lng ?"    _arc_src "${_arc_src}")
+file(WRITE "${_arc_patched}" "${_arc_src}")
+set_source_files_properties("${_arc_patched}" PROPERTIES QT_RESOURCE_ALIAS "qml/ArcReactor.qml")
+
 # Reuse the shared UI verbatim — same URI ("JarvisSidebar") + same file list as
 # desktop/CMakeLists.txt, referenced read-only from ../desktop/qml.
 qt_add_qml_module(jarvis-sidebar
@@ -305,7 +318,7 @@ qt_add_qml_module(jarvis-sidebar
         ${DESKTOP_DIR}/qml/LockGate.qml
         ${DESKTOP_DIR}/qml/TitleBar.qml
         ${DESKTOP_DIR}/qml/Theme.qml
-        ${DESKTOP_DIR}/qml/ArcReactor.qml
+        ${_arc_patched}
         ${DESKTOP_DIR}/qml/HudFx.qml
         ${DESKTOP_DIR}/qml/HudStatusStrip.qml
         ${DESKTOP_DIR}/qml/HudFrame.qml
