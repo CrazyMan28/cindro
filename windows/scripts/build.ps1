@@ -35,16 +35,24 @@ Write-Host "==> Jarvis Windows build  (repo=$repo  version=$Version)" -Foregroun
 # windows/shell/ copies for the POSIX-only ones. The Linux dirs are never touched.
 if (-not $VcpkgRoot) { throw "Set VCPKG_ROOT (vcpkg provides libsodium/libqrencode for Windows)." }
 $toolchain = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
-cmake -S $win -B $build -G "Ninja" -DCMAKE_BUILD_TYPE=$Config `
+# Use the Visual Studio generator: it locates MSVC itself (via vswhere), so the
+# build doesn't depend on a vcvars/MSVC env being active in this shell — the most
+# reliable setup on CI. (Multi-config: exes land under <build>\<Config>\.)
+cmake -S $win -B $build -G "Visual Studio 17 2022" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE=$toolchain
 cmake --build $build --config $Config
 
 # 2. Stage payload -------------------------------------------------------------
-# windows/CMakeLists.txt emits both exes at the build-win ROOT (RUNTIME_OUTPUT_DIRECTORY).
 if (Test-Path $payload) { Remove-Item -Recurse -Force $payload }
 New-Item -ItemType Directory -Force -Path $payload | Out-Null
-Copy-Item (Join-Path $build "jarvisd.exe")        $payload
-Copy-Item (Join-Path $build "jarvis-sidebar.exe") $payload
+# Find the exes wherever the generator put them (build root for Ninja, <Config>\
+# for the multi-config VS generator).
+$jarvisdExe = (Get-ChildItem -Path $build -Recurse -Filter "jarvisd.exe"       | Select-Object -First 1).FullName
+$sidebarExe = (Get-ChildItem -Path $build -Recurse -Filter "jarvis-sidebar.exe" | Select-Object -First 1).FullName
+if (-not $jarvisdExe) { throw "jarvisd.exe not found under $build" }
+if (-not $sidebarExe) { throw "jarvis-sidebar.exe not found under $build" }
+Copy-Item $jarvisdExe $payload
+Copy-Item $sidebarExe $payload
 Copy-Item (Join-Path $repo "LICENSE") (Join-Path $payload "LICENSE.txt")
 # The launcher that brings up the WHOLE stack on Windows (no systemd).
 Copy-Item (Join-Path $win "scripts\jarvis-start.cmd") $payload
