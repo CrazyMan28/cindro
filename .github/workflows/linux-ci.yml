@@ -21,8 +21,10 @@ jobs:
     container:
       image: fedora:44
       # Persistent package cache on the runner host -> no re-downloads.
+      # fedora:44 ships dnf5, whose cachedir is /var/cache/libdnf5 (NOT the old
+      # dnf4 /var/cache/dnf) — mount the host dir THERE or keepcache caches nothing.
       volumes:
-        - /var/cache/jarvis-dnf:/var/cache/dnf
+        - /var/cache/jarvis-dnf:/var/cache/libdnf5
 
     steps:
       # git first (checkout needs it), keepcache=1 keeps the RPMs in the mounted cache.

@@ -26,8 +26,10 @@ jobs:
     container:
       image: fedora:44
       # Persistent package cache on the runner host -> download deps ONCE, reuse.
+      # fedora:44 ships dnf5, whose cachedir is /var/cache/libdnf5 (NOT the old
+      # dnf4 /var/cache/dnf) — mount the host dir THERE or keepcache caches nothing.
       volumes:
-        - /var/cache/jarvis-dnf:/var/cache/dnf
+        - /var/cache/jarvis-dnf:/var/cache/libdnf5
     steps:
       # git/tar/gzip are needed by actions/checkout + upload-artifact inside the
       # container; curl/file/findutils by build-appimage.sh + linuxdeploy.
