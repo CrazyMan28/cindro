@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================================
-rem  Jarvis Windows launcher — starts the WHOLE stack (no systemd on Windows).
+rem  Jarvis Windows launcher - starts the WHOLE stack (no systemd on Windows).
 rem
 rem  On Linux these run as systemd user services; on Windows this one launcher
 rem  brings them all up so EVERY feature works:
@@ -22,7 +22,7 @@ if exist "engine\jarvis-engine.exe" (
   start "jarvis-engine" /b "engine\jarvis-engine.exe"
 )
 
-rem 2. phone server — only if the user configured it (phone.env present)
+rem 2. phone server - only if the user configured it (phone.env present)
 if exist "%USERPROFILE%\.config\jarvis\phone.env" (
   if exist "node\node.exe" if exist "phone-server\dist\main.js" (
     start "jarvis-phone" /b "node\node.exe" "phone-server\dist\main.js"
