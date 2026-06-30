@@ -61,3 +61,7 @@ computer-use/.venv_test/
 
 # Android: vendored sherpa-onnx AAR (on-device TTS, ~56MB, re-fetch locally)
 android/app/libs/*.aar
+
+# --- Windows edition build artifacts (re-creatable via windows/scripts/build.ps1) ---
+windows/dist/
+windows/engine/.venv-win/
