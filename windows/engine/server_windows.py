@@ -46,18 +46,53 @@ if sys.platform == "win32":
         "dbus_next", "jeepney",
     }
 
+    def _is_dunder(name):
+        return name.startswith("__") and name.endswith("__")
+
+    # A stub that works in every way the engine's Linux modules use these symbols:
+    # as a class (used as a base, e.g. `class X(dbus_fast.service.ServiceInterface)`),
+    # as a constructor (`MessageBus(...)`), as a decorator factory (`@method()`), and
+    # as an attribute chain (`dbus_fast.aio.MessageBus`). The metaclass routes
+    # attribute access to fresh stub classes and makes `Stub(callable)` a no-op
+    # decorator passthrough; instances accept any __init__ args (for super().__init__).
+    class _StubMeta(type):
+        def __getattr__(cls, name):
+            if _is_dunder(name):
+                raise AttributeError(name)
+            return _stub_class(f"{cls.__name__}.{name}")
+
+        def __call__(cls, *a, **k):
+            if len(a) == 1 and callable(a[0]) and not k:  # @decorator() -> fn
+                return a[0]
+            return super().__call__(*a, **k)
+
+    def _inst_init(self, *a, **k):
+        pass
+
+    def _inst_getattr(self, name):
+        if _is_dunder(name):
+            raise AttributeError(name)
+        return _stub_class(name)
+
+    def _inst_call(self, *a, **k):
+        if len(a) == 1 and callable(a[0]) and not k:
+            return a[0]
+        return _stub_class("stub")()
+
+    def _stub_class(name):
+        return _StubMeta(name, (), {
+            "__init__": _inst_init,
+            "__getattr__": _inst_getattr,
+            "__call__": _inst_call,
+        })
+
     class _StubModule(_types.ModuleType):
         __path__: list = []  # marks it as a package so submodule imports proceed
 
         def __getattr__(self, name):
-            if name.startswith("__") and name.endswith("__"):
+            if _is_dunder(name):
                 raise AttributeError(name)
-            v = _StubModule(f"{self.__name__}.{name}")
-            setattr(self, name, v)
-            return v
-
-        def __call__(self, *a, **k):
-            return _StubModule(self.__name__ + "()")
+            return _stub_class(f"{self.__name__}.{name}")
 
     class _StubFinder(_ilabc.MetaPathFinder, _ilabc.Loader):
         def find_spec(self, fullname, path=None, target=None):
