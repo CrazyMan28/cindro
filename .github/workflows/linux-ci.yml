@@ -2,10 +2,12 @@
 # jarvis-sidebar with LayerShellQt), run its ctest suite offscreen, and run the
 # computer-use engine's pytest suite. Proves the Windows work left the Linux build green.
 #
-# Runs in a fedora:44 container (Qt 6.11 + layer-shell-qt 6.7, like the dev box —
-# Ubuntu 24.04's apt Qt 6.4.2 is too old). The container mounts a PERSISTENT dnf
-# cache from the self-hosted runner, so packages download ONCE and are reused every
-# build instead of re-pulling ~hundreds of MB each run.
+# Runs in a PREBUILT image (Qt 6.11 + layer-shell-qt 6.7, like the dev box —
+# Ubuntu 24.04's apt Qt 6.4.2 is too old). All build deps are baked into the image
+# (infra/ci-image/Dockerfile), hosted in the runner's local registry. So a run does
+# NO per-build package download AND no per-build install/extract — the container
+# starts with everything already present. Rebuild the image only when deps change:
+#   infra/ci-image/build.sh   (build -> push to localhost:5000/jarvis-ci:latest)
 name: linux-ci
 
 on:
@@ -18,26 +20,18 @@ on:
 jobs:
   build-test:
     runs-on: [self-hosted, Linux, X64]
+    # Prebuilt: all deps baked in. The local registry on the runner host serves it,
+    # so the "pull" is instant + layer-cached (no 550MB download, no 533-pkg install).
     container:
-      image: fedora:44
-      # Persistent package cache on the runner host -> no re-downloads.
-      # fedora:44 ships dnf5, whose cachedir is /var/cache/libdnf5 (NOT the old
-      # dnf4 /var/cache/dnf) — mount the host dir THERE or keepcache caches nothing.
-      volumes:
-        - /var/cache/jarvis-dnf:/var/cache/libdnf5
+      image: localhost:5000/jarvis-ci:latest
 
     steps:
-      # git first (checkout needs it), keepcache=1 keeps the RPMs in the mounted cache.
-      - name: Install deps (dnf, cached)
+      # Deps are in the image — just assert the toolchain is present (fails fast +
+      # clearly if the image is stale/broken) instead of installing anything.
+      - name: Verify toolchain (baked into the image)
         run: |
-          dnf -y --setopt=keepcache=1 --setopt=install_weak_deps=False install \
-            gcc-c++ cmake ninja-build pkgconf-pkg-config git tar gzip \
-            qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtquickcontrols2-devel \
-            qt6-qtwebsockets-devel qt6-qtmultimedia-devel qt6-qtsvg-devel \
-            qt6-qtwayland qt6-qtwayland-devel layer-shell-qt-devel \
-            extra-cmake-modules libsodium-devel qrencode-devel \
-            python3 python3-pip python3-devel \
-            mesa-libGL-devel mesa-libEGL-devel xcb-util-cursor
+          cmake --version && ninja --version && qmake6 --version
+          test -d /usr/lib64/cmake/Qt6 && echo "Qt6 + toolchain present"
 
       - uses: actions/checkout@v4
 

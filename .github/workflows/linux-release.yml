@@ -2,13 +2,14 @@
 # jarvis-sidebar + Qt6 + LayerShellQt + the computer-use engine). On a v* tag it is
 # attached to the GitHub Release next to the Windows Jarvis-Setup.exe.
 #
-# Built INSIDE a fedora:44 container — the exact environment the local build
-# succeeds in: Qt 6.11, layer-shell-qt 6.7, and a matching libwayland all come from
-# one consistent distro package set. The earlier ubuntu-24.04 path fought endless
-# version skew (apt Qt 6.4.2 segfaulted qmlcachegen; a binary Qt 6.11 then needed
-# ECM 6 + LayerShellQt from source and hit `wl_fixes` because noble's libwayland was
-# too old). The distro container sidesteps all of it. Trade-off: the AppImage needs
-# a reasonably recent glibc (fedora:44 -> 2.41); older systems use the install script.
+# Built INSIDE a PREBUILT image (Qt 6.11, layer-shell-qt 6.7, matching libwayland —
+# the exact environment the local build succeeds in). All deps are baked into the
+# image (infra/ci-image/Dockerfile, served from the runner's local registry), so a
+# run does NO per-build package download or install. The earlier ubuntu-24.04 path
+# fought endless version skew (apt Qt 6.4.2 segfaulted qmlcachegen); the distro image
+# sidesteps it. Trade-off: the AppImage needs a recent glibc (fedora:44 -> 2.41);
+# older systems use the install script. Rebuild the image when deps change:
+#   infra/ci-image/build.sh
 name: linux-release
 
 on:
@@ -23,28 +24,18 @@ permissions:
 jobs:
   appimage:
     runs-on: [self-hosted, Linux, X64]
+    # Prebuilt: all deps (incl. curl/file/findutils/patchelf/fuse for linuxdeploy)
+    # baked into the image and served from the runner's local registry — instant pull,
+    # no 550MB download, no per-build install.
     container:
-      image: fedora:44
-      # Persistent package cache on the runner host -> download deps ONCE, reuse.
-      # fedora:44 ships dnf5, whose cachedir is /var/cache/libdnf5 (NOT the old
-      # dnf4 /var/cache/dnf) — mount the host dir THERE or keepcache caches nothing.
-      volumes:
-        - /var/cache/jarvis-dnf:/var/cache/libdnf5
+      image: localhost:5000/jarvis-ci:latest
     steps:
-      # git/tar/gzip are needed by actions/checkout + upload-artifact inside the
-      # container; curl/file/findutils by build-appimage.sh + linuxdeploy.
-      - name: Install deps (dnf)
+      # Deps are in the image — assert the toolchain + AppImage tooling are present.
+      - name: Verify toolchain (baked into the image)
         run: |
-          dnf -y --setopt=keepcache=1 install \
-            gcc-c++ cmake ninja-build pkgconf-pkg-config git tar gzip xz \
-            curl file findutils which patchelf \
-            qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtquickcontrols2-devel \
-            qt6-qtwebsockets-devel qt6-qtmultimedia-devel qt6-qtsvg-devel \
-            qt6-qtwayland qt6-qtwayland-devel layer-shell-qt-devel \
-            libsodium-devel qrencode-devel \
-            python3 python3-pip python3-devel \
-            desktop-file-utils fuse fuse-libs xcb-util-cursor \
-            mesa-libGL-devel mesa-libEGL-devel
+          cmake --version && ninja --version && qmake6 --version
+          command -v patchelf file curl && test -d /usr/lib64/cmake/Qt6
+          echo "toolchain + AppImage tooling present"
 
       - uses: actions/checkout@v4
 
