@@ -38,7 +38,9 @@ jobs:
           host: linux
           target: desktop
           arch: linux_gcc_64
-          modules: 'qtwebsockets qtmultimedia qtimageformats qtwayland'
+          # qtwayland is NOT a separate aqt module on 6.8 — it ships in the base
+          # linux desktop install (provides Qt6WaylandClient for LayerShellQt).
+          modules: 'qtwebsockets qtmultimedia qtimageformats'
           cache: true
 
       - name: Install non-Qt build deps + ECM 6 + LayerShellQt (built against Qt 6.8)
