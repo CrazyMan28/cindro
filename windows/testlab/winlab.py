@@ -79,12 +79,53 @@ def _run_ps(c, script, label="powershell"):
     return r
 
 
+# A scheduled-task wrapper that runs a PowerShell snippet in the INTERACTIVE console
+# session of the logged-on user. SSH commands land in a service session (session 0)
+# with no visible desktop, so GUI apps launched there are invisible and screen
+# capture comes back blank. An "Interactive" principal needs no password when the
+# SSH user is the console user (kizek here), so winlab launch/shot use this.
+_SESSION_RUNNER = r"""
+$ErrorActionPreference='Stop'
+$tmp='C:\Windows\Temp\jarvis-winlab-task.ps1'
+$log='C:\Windows\Temp\jarvis-winlab-session.log'
+if (Test-Path $log) { Remove-Item $log -Force }
+$body = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('__B64BODY__'))
+[IO.File]::WriteAllText($tmp, $body, [Text.Encoding]::Unicode)
+$act  = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $tmp + '"')
+# Use the authoritative current identity (e.g. CODEX\kizek) — env-var forms don't
+# always resolve to a SID in the SSH service session ("No mapping between account
+# names and security IDs").
+$me   = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$prin = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Highest
+Register-ScheduledTask -TaskName 'JarvisWinlab' -Action $act -Principal $prin -Force | Out-Null
+Start-ScheduledTask -TaskName 'JarvisWinlab'
+$deadline=(Get-Date).AddSeconds(__WAIT__)
+do { Start-Sleep -Milliseconds 600; $t=Get-ScheduledTask -TaskName 'JarvisWinlab' } while ($t.State -eq 'Running' -and (Get-Date) -lt $deadline)
+$res=(Get-ScheduledTaskInfo -TaskName 'JarvisWinlab').LastTaskResult
+Unregister-ScheduledTask -TaskName 'JarvisWinlab' -Confirm:$false
+if (Test-Path $log) { Get-Content $log }
+Write-Output ('session-task result=' + $res)
+"""
+
+
+def run_in_session(c, inner_ps: str, label="session", timeout=180):
+    """Run inner_ps in the interactive console session; return the wrapper's result.
+    inner_ps output is tee'd through a transcript log and surfaced here."""
+    body = ("Start-Transcript -Path 'C:\\Windows\\Temp\\jarvis-winlab-session.log' -Force | Out-Null\n"
+            "try {\n" + inner_ps + "\n} finally { Stop-Transcript | Out-Null }\n")
+    b64 = base64.b64encode(body.encode("utf-16-le")).decode()
+    wrapper = (_SESSION_RUNNER.replace("__B64BODY__", b64)
+                              .replace("__WAIT__", str(max(10, timeout - 20))))
+    return _run_ps(c, wrapper, label)
+
+
 # ---- commands --------------------------------------------------------------
 
 def cmd_doctor(c, _):
-    r = ssh_raw(c, "powershell -NoProfile -Command "
-                   '"$o=Get-CimInstance Win32_OperatingSystem; '
-                   "Write-Output ('OK ' + $o.Caption + ' ' + $o.Version)\"", timeout=20)
+    # Use the EncodedCommand path (ps): the Windows DefaultShell is PowerShell, so a
+    # raw `powershell -Command "$o=..."` gets its $vars eaten by the outer shell.
+    r = ps(c, "$o=Get-CimInstance Win32_OperatingSystem; "
+              "Write-Output ('OK ' + $o.Caption + ' ' + $o.Version)", timeout=20)
     print((r.stdout or r.stderr).strip())
     sys.exit(r.returncode)
 
@@ -98,9 +139,14 @@ def cmd_shot(c, args):
     ART.mkdir(parents=True, exist_ok=True)
     if not local:
         local = str(ART / f"shot-{int(time.time())}.png")
-    remote = "C:/Windows/Temp/jarvis-shot.png"
+    remote = "C:/Windows/Temp/jarvis-shot.png"   # fwd slashes: PowerShell + scp both accept
     shot_ps = (Path(__file__).parent / "screenshot.ps1").read_text()
-    r = ps(c, shot_ps.replace('$env:TEMP\\jarvis-shot.png', remote))
+    # Run the capture IN the interactive session — a CopyFromScreen from the SSH
+    # service session returns a blank desktop. Strip the screenshot.ps1 param block
+    # (the scheduled task can't pass -Out) and hard-set the output path.
+    inner = "$Out='%s'\n" % remote + "\n".join(
+        ln for ln in shot_ps.splitlines() if not ln.strip().startswith("param("))
+    r = run_in_session(c, inner, "shot", timeout=60)
     if r.returncode != 0:
         sys.exit(f"screenshot failed: {r.stderr.strip()}")
     scp(c, f'{_target(c)}:{remote}', local)
@@ -147,7 +193,8 @@ Write-Output "installed v$ver"
 
 def cmd_launch(c, _):
     # The installer puts Jarvis under %ProgramFiles%\Jarvis (per-machine) or
-    # %LocalAppData%\Programs\Jarvis (per-user). Find the launcher + run it.
+    # %LocalAppData%\Programs\Jarvis (per-user). Find the launcher + run it IN the
+    # interactive session so the GUI appears on the real desktop (not session 0).
     script = r"""
 $cands = @("$env:ProgramFiles\Jarvis","${env:ProgramFiles(x86)}\Jarvis",
            "$env:LocalAppData\Programs\Jarvis")
@@ -156,7 +203,7 @@ if (-not $dir) { throw "Jarvis install not found in $($cands -join ', ')" }
 Write-Output "launching from $dir"
 Start-Process wscript.exe -ArgumentList "`"$dir\jarvis-launch.vbs`""
 """
-    _run_ps(c, script, "launch")
+    run_in_session(c, script, "launch", timeout=40)
 
 
 def cmd_kill(c, _):

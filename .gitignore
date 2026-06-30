@@ -66,3 +66,8 @@ android/app/libs/*.aar
 windows/dist/
 windows/engine/.venv-win/
 /dist/
+
+# Local Linux AppImage build artifacts (packaging/build-appimage.sh)
+squashfs-root/
+jarvis-engine.spec
+/dist/

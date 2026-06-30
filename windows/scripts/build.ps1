@@ -78,6 +78,28 @@ if (Get-Command windeployqt -ErrorAction SilentlyContinue) {
   windeployqt --release --compiler-runtime (Join-Path $payload "jarvisd.exe")
 } else { Write-Warning "windeployqt not found; Qt + MSVC runtime DLLs must be staged manually." }
 
+# windeployqt --compiler-runtime ships vc_redist.x64.exe (an INSTALLER), not the
+# loose CRT DLLs — so on a bare machine that never runs the redist, jarvisd.exe dies
+# at launch with "MSVCP140.dll was not found" (confirmed on a clean Win11 Pro VM).
+# Copy the actual CRT DLLs (msvcp140*.dll, vcruntime140*.dll, concrt140.dll) next to
+# the exes so the app is truly self-contained.
+$crtRoots = @()
+if ($env:VCToolsRedistDir) { $crtRoots += (Join-Path $env:VCToolsRedistDir "x64") }
+$crtRoots += (Get-ChildItem "C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64" `
+                -Directory -ErrorAction SilentlyContinue | Select-Object -Expand FullName)
+$crt = $crtRoots | ForEach-Object {
+         Get-ChildItem $_ -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue
+       } | Sort-Object FullName | Select-Object -Last 1
+if ($crt) {
+  Get-ChildItem $crt.FullName -Filter *.dll | ForEach-Object { Copy-Item $_.FullName $payload -Force }
+  Write-Host "    bundled MSVC CRT DLLs from $($crt.FullName)" -ForegroundColor Green
+} else {
+  Write-Warning "MSVC CRT redist dir not found — MSVCP140/VCRUNTIME140 NOT bundled."
+}
+if (-not (Test-Path (Join-Path $payload "MSVCP140.dll"))) {
+  throw "MSVCP140.dll missing from payload after CRT copy — jarvisd.exe would fail to start on a bare machine. Aborting build."
+}
+
 # Third-party vcpkg runtime DLLs (libsodium.dll, qrencode.dll, + their deps) next
 # to the exes. windeployqt only handles Qt + the MSVC runtime — NOT these — so
 # jarvisd.exe (which links jarvis-core -> libsodium/qrencode) failed at launch with
@@ -132,6 +154,35 @@ if ($LASTEXITCODE -ne 0) { throw "pip install windows requirements failed" }
   --hidden-import win32process --hidden-import pywintypes `
   --paths (Join-Path $win "engine") (Join-Path $win "engine\server_windows.py")
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller (engine) failed" }
+
+# 3b. Windows v2 isolation assets ----------------------------------------------
+# The "beside-you" agent desktop (windows/isolation). Two destinations:
+#   {app}\isolation : the .wsb template + bootstrap.ps1 + detect.ps1 (AgentDesktop
+#                     renders the .wsb; detect.ps1 picks the isolation mode).
+#   {app}\engine    : jarvis-relay.exe + bootstrap.ps1 land NEXT TO jarvis-engine.exe
+#                     so the read-only MappedFolder exposes them at C:\engine inside
+#                     the sandbox (bootstrap runs the relay + engine in there).
+Write-Host "==> staging Windows v2 isolation assets" -ForegroundColor Cyan
+$isoSrc = Join-Path $win "isolation"
+$isoDst = Join-Path $payload "isolation"
+New-Item -ItemType Directory -Force -Path (Join-Path $isoDst "sandbox") | Out-Null
+Copy-Item (Join-Path $isoSrc "sandbox\jarvis-agent.wsb.in") (Join-Path $isoDst "sandbox") -Force
+Copy-Item (Join-Path $isoSrc "sandbox\bootstrap.ps1")       (Join-Path $isoDst "sandbox") -Force
+Copy-Item (Join-Path $isoSrc "detect.ps1")                  $isoDst -Force
+# The reverse-tunnel exe + bootstrap inside the engine payload (-> C:\engine).
+$engineDst = Join-Path $payload "engine"
+$relayExe = (Get-ChildItem -Path $build -Recurse -Filter "jarvis-relay.exe" | Select-Object -First 1).FullName
+if ($relayExe) {
+  Copy-Item $relayExe $engineDst -Force
+  Copy-Item (Join-Path $isoSrc "sandbox\bootstrap.ps1") $engineDst -Force
+  # jarvis-relay.exe runs INSIDE the sandbox (no Qt installed there) -- stage its
+  # Qt Core+Network DLLs + MSVC runtime next to it so it is self-contained.
+  if (Get-Command windeployqt -ErrorAction SilentlyContinue) {
+    windeployqt --release --compiler-runtime --no-translations (Join-Path $engineDst "jarvis-relay.exe")
+  } else { Write-Warning "windeployqt not found; jarvis-relay.exe Qt DLLs must be staged manually." }
+} else {
+  Write-Warning "jarvis-relay.exe not found under $build -- the sandbox reverse tunnel will be unavailable."
+}
 
 # 4. Node phone server (OPTIONAL) ----------------------------------------------
 # Resilient: better-sqlite3 native builds can be finicky on CI. If it fails the

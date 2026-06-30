@@ -17,9 +17,10 @@ rem ============================================================================
 setlocal
 cd /d "%~dp0"
 
-rem 1. computer-use engine (real-screen Win32 backend; serves ALL MCP tools)
-if exist "engine\jarvis-engine.exe" (
-  start "jarvis-engine" /b "engine\jarvis-engine.exe"
+rem 1. computer-use engine (real-screen Win32 backend; serves ALL MCP tools).
+rem    PyInstaller one-dir nests it: engine\jarvis-engine\jarvis-engine.exe
+if exist "engine\jarvis-engine\jarvis-engine.exe" (
+  start "jarvis-engine" /b "engine\jarvis-engine\jarvis-engine.exe"
 )
 
 rem 2. phone server - only if the user configured it (phone.env present)
