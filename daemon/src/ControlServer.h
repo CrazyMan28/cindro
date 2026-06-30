@@ -29,6 +29,7 @@
 #include "jarvis/SkillStore.h"
 #include "jarvis/HookStore.h"
 #include "jarvis/SshAllowList.h"
+#include "jarvis/Updater.h"
 #include "jarvis/VoiceProvider.h"
 #include "jarvis/VoiceService.h"
 #include "jarvis/VoiceLibrary.h"
@@ -243,6 +244,10 @@ private:
     Response handlePing(const Request &req);
     Response handleSettingsGet(const Request &req);
     Response handleSettingsSet(const Request &req);
+    // Cross-platform self-update (update.* Contract A): check reports
+    // {current,latest,behind,version}; apply runs the platform script's apply-mode.
+    Response handleUpdateCheck(const Request &req);
+    Response handleUpdateApply(const Request &req);
     Response handleModelList(const Request &req);
     Response handleSessionCreate(const Request &req);
     Response handleSessionSend(const Request &req);
@@ -463,6 +468,10 @@ private:
     // parsing). Created in start() once m_store is open.
     SettingsStore m_settings;
     VoiceLibrary m_voiceLib; // named cloned-voice library (manifest + clips)
+    // Cross-platform self-update: runs packaging/update.sh / windows/update.ps1
+    // and parses their JSON. A QTimer re-checks `main` on the auto_update interval
+    // and NOTIFIES on "behind" (never auto-applies). Configured in start().
+    Updater m_updater;
     // Live-widget viewer leases (who is watching which live widget) — gates the
     // engine's live-widget supervisor so an unwatched widget stops doing work.
     WidgetLeaseRegistry m_widgetLeases;

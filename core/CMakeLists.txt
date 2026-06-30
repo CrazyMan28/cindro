@@ -48,6 +48,9 @@ add_library(jarvis-core STATIC
     src/AgentDesktop.cpp
     src/VoiceService.cpp
     src/VoiceProvider.cpp
+    # Cross-platform self-update: runs packaging/update.sh (Linux) /
+    # windows/scripts/update.ps1 (Windows) and parses their check/apply JSON.
+    src/Updater.cpp
     # Named cloned-voice library (record/upload, name, set-default) — the manifest
     # + reference clips under ~/.config/jarvis/voices/.
     src/VoiceLibrary.cpp
@@ -89,6 +92,7 @@ add_library(jarvis-core STATIC
     include/jarvis/AgentDesktop.h
     include/jarvis/VoiceService.h
     include/jarvis/VoiceProvider.h
+    include/jarvis/Updater.h
     include/jarvis/VoiceLibrary.h
     include/jarvis/Scheduler.h
     include/jarvis/SshAllowList.h
@@ -117,6 +121,24 @@ target_link_libraries(jarvis-core
 )
 
 target_compile_features(jarvis-core PUBLIC cxx_std_20)
+
+# --- version stamp --------------------------------------------------------
+# JARVIS_VERSION + JARVIS_GIT_SHA compile constants: the Updater compares the
+# running SHA/version to `main`. PUBLIC so jarvisd, the desktop, and the unit
+# tests all inherit the same identity. The SHA is resolved at configure time
+# (falls back to "unknown" outside a git checkout).
+set(JARVIS_VERSION "0.12.0")
+execute_process(
+    COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}" rev-parse --short HEAD
+    OUTPUT_VARIABLE JARVIS_GIT_SHA
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT JARVIS_GIT_SHA)
+    set(JARVIS_GIT_SHA "unknown")
+endif()
+target_compile_definitions(jarvis-core PUBLIC
+    JARVIS_VERSION="${JARVIS_VERSION}"
+    JARVIS_GIT_SHA="${JARVIS_GIT_SHA}")
 
 # --- tests ----------------------------------------------------------------
 enable_testing()
@@ -175,6 +197,15 @@ add_test(NAME claude_buildargs_test COMMAND claude_buildargs_test)
 add_executable(codex_buildargs_test tests/codex_buildargs_test.cpp)
 target_link_libraries(codex_buildargs_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME codex_buildargs_test COMMAND codex_buildargs_test)
+
+# ApiBrain function-calling (agentic tool) loop — PURE LOGIC of the OpenAI-
+# compatible (openai/mistral/ollama) tool loop with no live engine: MCP
+# tools/list -> OpenAI tools[] conversion, streamed tool_calls accumulation
+# across fragmented SSE deltas -> a complete {id,name,arguments}, and
+# finish_reason detection.
+add_executable(api_brain_tools_test tests/api_brain_tools_test.cpp)
+target_link_libraries(api_brain_tools_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME api_brain_tools_test COMMAND api_brain_tools_test)
 
 # MemoryStore: add + FTS5 search + replace + remove roundtrip (temp DB).
 add_executable(memory_store_test tests/memory_store_test.cpp)
@@ -273,6 +304,13 @@ target_link_libraries(hook_store_comprehensive_test
     PRIVATE jarvis-core Qt6::Core)
 add_test(NAME hook_store_comprehensive_test
          COMMAND hook_store_comprehensive_test)
+
+# Updater PURE LOGIC: parse the platform script's check JSON {current,latest,
+# behind} and the version/SHA compare (behind vs up-to-date), incl. null fields,
+# the script-behind override, and runningSha fallback. No process/network.
+add_executable(updater_test tests/updater_test.cpp)
+target_link_libraries(updater_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME updater_test COMMAND updater_test)
 
 # Comprehensive SettingsStore test: agent_mode/wake_notify/permission_level
 # (plan/build/coworker, silent/ping/always, high/medium/low) + invalid->default

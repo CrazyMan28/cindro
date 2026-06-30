@@ -1,0 +1,96 @@
+# Builds the REAL Windows artifact: jarvisd.exe + jarvis-sidebar.exe, the bundled
+# computer-use engine + Node phone server, packaged into Jarvis-Setup-<ver>.exe.
+#
+# Everything is driven by the self-contained windows/ build (windows/CMakeLists.txt
+# via windows/scripts/build.ps1) — the Linux dirs (core/daemon/desktop) are never
+# touched. On a tag (v*) the installer is also attached to the GitHub Release.
+name: windows-build
+
+on:
+  push:
+    branches: [dev, main]
+    tags: ["v*"]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.1.0-$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
+          fi
+
+      # MSVC toolchain (cl/link on PATH) for the C++ daemon + Qt shell.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Ninja generator used by build.ps1 (-G Ninja). Present on most images, but
+      # install defensively so the build never fails on a missing generator.
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      # Qt 6 (MSVC) — Core/Gui/Quick/Qml/QuickControls2/Network/Sql are in the base
+      # install; WebSockets + Multimedia are add-on modules.
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.6.*"
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          modules: qtwebsockets qtmultimedia
+          cache: true
+
+      # libsodium + libqrencode via the runner's preinstalled vcpkg.
+      - name: Install vcpkg deps
+        shell: pwsh
+        run: |
+          $vcpkg = $env:VCPKG_INSTALLATION_ROOT
+          & "$vcpkg\vcpkg.exe" install libsodium libqrencode --triplet x64-windows
+          "VCPKG_ROOT=$vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      # Inno Setup 6 (iscc) — packages the staged payload into the installer.
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # One-shot: build the daemon + shell, bundle engine + node, make the installer.
+      - name: Build Jarvis (Windows)
+        shell: pwsh
+        run: .\windows\scripts\build.ps1 -Version ${{ steps.ver.outputs.version }} -VcpkgRoot $env:VCPKG_ROOT
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Jarvis-Setup-${{ steps.ver.outputs.version }}
+          path: windows/dist/Jarvis-Setup-*.exe
+          if-no-files-found: error
+
+      # On a version tag, attach the installer to the Release.
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: windows/dist/Jarvis-Setup-*.exe

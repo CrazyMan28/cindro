@@ -51,6 +51,15 @@ Item {
     property bool dirty: false
     property bool saving: false
 
+    // ---- Updates (auto-updater) --------------------------------------------
+    property bool autoUpdate: true               // periodic auto-update-check
+    property string appVersion: ""               // running JARVIS_VERSION (settings.get)
+    property bool updateChecking: false          // a update.check is in flight
+    property bool updateApplying: false          // a update.apply is in flight
+    property bool updateBehind: false            // the last check found an update
+    property string updateLatest: ""             // the available version/SHA
+    property string updateStatus: ""             // human status line under the row
+
     // Google connectors (connectors.list rows: {id,name,service,enabled,risk,...}).
     property var connectors: []
     // The four known Google services, in display order.
@@ -167,6 +176,8 @@ Item {
                               ? s.wake_notify : "ping"
             page.hasDesktopPin = (s.has_desktop_pin === true)
             page.pendingPin = ""
+            page.autoUpdate = (s.auto_update === undefined) ? true : (s.auto_update === true)
+            page.appVersion = s.version !== undefined ? s.version : ""
             if (s.theme !== undefined) {
                 page.glow = s.theme.glow !== undefined ? s.theme.glow : true
                 page.compact = s.theme.compact !== undefined ? s.theme.compact : false
@@ -220,6 +231,30 @@ Item {
             page.dirty = false
             // re-pull so api_keys_set badges flip to "saved"
             page.load()
+        }
+        // ---- Auto-updater results ------------------------------------------
+        function onUpdateChecked(current, latest, behind, version, reason) {
+            page.updateChecking = false
+            page.updateBehind = behind === true
+            page.updateLatest = latest !== undefined ? latest : ""
+            if (version !== undefined && version.length) page.appVersion = version
+            if (behind === true)
+                page.updateStatus = "Update available (" + (page.updateLatest.length
+                    ? page.updateLatest : "newer") + ")"
+            else if (reason !== undefined && reason.length)
+                page.updateStatus = reason
+            else
+                page.updateStatus = "Up to date"
+        }
+        function onUpdateApplied(updated, to, reason) {
+            page.updateApplying = false
+            if (updated === true) {
+                page.updateBehind = false
+                page.updateStatus = "Updated to " + (to && to.length ? to : "latest")
+                    + " — Jarvis is restarting…"
+            } else {
+                page.updateStatus = (reason && reason.length) ? reason : "No update applied"
+            }
         }
         function onConnectorsListed(connectors) {
             page.connectors = connectors !== undefined ? connectors : []
@@ -317,6 +352,7 @@ Item {
             "permission_level": page.permissionLevel,
             "agent_mode": page.agentMode,
             "wake_notify": page.wakeNotify,
+            "auto_update": page.autoUpdate,
             "theme": { "glow": page.glow, "compact": page.compact }
         }
         // PIN is write-only: only send when the user typed/cleared one.
@@ -422,7 +458,7 @@ Item {
 
                 // Per-brain "can drive the computer-use desktop" indicator — the
                 // choice is HONORED; no silent substitution. codex + claude can
-                // drive headless; the api brain only with an OpenAI/Anthropic key.
+                // drive headless; the api brain only with an OpenAI/Mistral key.
                 Text {
                     Layout.fillWidth: true
                     Layout.topMargin: 2
@@ -430,7 +466,7 @@ Item {
                         var cd = page.canDrive[page.defaultBrain]
                         if (cd === true) return "✓ " + page.defaultBrain + " can drive the computer-use desktop"
                         if (page.defaultBrain === "api")
-                            return "⚠ api can't drive without an OpenAI/Anthropic key — pick codex or claude, or set a key below"
+                            return "⚠ api can't drive without an OpenAI/Mistral key — pick codex or claude, or set a key below"
                         return "⚠ " + page.defaultBrain + " can't drive the computer-use desktop headless"
                     }
                     color: (page.canDrive[page.defaultBrain] === true) ? Theme.ok : Theme.amber
@@ -1184,6 +1220,192 @@ Item {
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
                     }
+                }
+            }
+
+            // ===== Updates =================================================
+            Text {
+                text: "// UPDATES"
+                color: Theme.accent
+                font.family: Theme.fontDisplay
+                font.pixelSize: 11
+                font.letterSpacing: Theme.trackMid
+                font.weight: Font.DemiBold
+                Layout.topMargin: 2
+                Layout.leftMargin: 2
+            }
+
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+
+                    // Auto-update toggle (default ON) + the running version.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            Text {
+                                text: "Automatic updates"
+                                color: Theme.text
+                                font.family: Theme.fontSans
+                                font.pixelSize: 13
+                                Layout.fillWidth: true
+                            }
+                            Text {
+                                text: "Check the main branch periodically and notify you when an update is ready. Updates are never installed without your confirmation."
+                                color: Theme.textMuted
+                                font.family: Theme.fontSans
+                                font.pixelSize: 11
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                        Widgets.StyledSwitch {
+                            checked: page.autoUpdate
+                            onToggled: function(v) { page.autoUpdate = v; page.dirty = true }
+                        }
+                    }
+
+                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairlineSoft }
+
+                    // Manual check + the result line + an "Update now" affordance.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            Text {
+                                text: "Current version: " + (page.appVersion.length ? page.appVersion : "unknown")
+                                color: Theme.text
+                                font.family: Theme.fontMono
+                                font.pixelSize: 12
+                                Layout.fillWidth: true
+                            }
+                            Text {
+                                visible: page.updateStatus.length > 0
+                                text: page.updateStatus
+                                color: page.updateBehind ? Theme.amber
+                                       : (page.updateStatus.indexOf("Up to date") === 0 ? Theme.ok : Theme.textMuted)
+                                font.family: Theme.fontSans
+                                font.pixelSize: 12
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                        Widgets.PillButton {
+                            label: page.updateChecking ? "Checking…" : "Check for updates"
+                            busy: page.updateChecking
+                            enabledBtn: bridge.connected && !page.updateChecking && !page.updateApplying
+                            Layout.alignment: Qt.AlignVCenter
+                            onClicked: {
+                                page.updateChecking = true
+                                page.updateStatus = "Checking for updates…"
+                                bridge.checkForUpdates()
+                            }
+                        }
+                        Widgets.PillButton {
+                            visible: page.updateBehind
+                            label: page.updateApplying ? "Updating…" : "Update now"
+                            primary: true
+                            busy: page.updateApplying
+                            enabledBtn: bridge.connected && !page.updateApplying
+                            Layout.alignment: Qt.AlignVCenter
+                            onClicked: {
+                                page.updateApplying = true
+                                page.updateStatus = "Downloading + installing the update…"
+                                bridge.applyUpdate()
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ===== Browser extension =======================================
+            Text {
+                text: "// BROWSER EXTENSION"
+                color: Theme.accent
+                font.family: Theme.fontDisplay
+                font.pixelSize: 11
+                font.letterSpacing: Theme.trackMid
+                font.weight: Font.DemiBold
+                Layout.topMargin: 2
+                Layout.leftMargin: 2
+            }
+
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+                ColumnLayout {
+                    id: extCol
+                    property bool extCopied: false
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    Text {
+                        text: "Add the Jarvis extension to Chrome or Edge for the in-browser agent + side panel. It ships with Jarvis at the folder below — Chrome blocks one-click installs of unpacked extensions, so load it once:"
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 13
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        text: "1.  Open  chrome://extensions       2.  Enable \"Developer mode\" (top-right)       3.  Click \"Load unpacked\" and pick this folder:"
+                        color: Theme.textMuted
+                        font.family: Theme.fontSans
+                        font.pixelSize: 11
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                    }
+                    Rectangle {
+                        Layout.fillWidth: true
+                        radius: 6
+                        color: "#0C141D"
+                        border.color: Theme.hairlineSoft
+                        border.width: 1
+                        implicitHeight: extPathText.implicitHeight + 16
+                        Text {
+                            id: extPathText
+                            anchors.fill: parent
+                            anchors.margins: 8
+                            text: bridge.extensionPath()
+                            color: Theme.text
+                            font.family: Theme.fontMono
+                            font.pixelSize: 12
+                            wrapMode: Text.WrapAnywhere
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Widgets.PillButton {
+                            label: "Open chrome://extensions"
+                            primary: true
+                            enabledBtn: bridge.connected
+                            onClicked: bridge.openExtensionsPage()
+                        }
+                        Widgets.PillButton {
+                            label: "Open folder"
+                            enabledBtn: bridge.connected
+                            onClicked: bridge.openExtensionFolder()
+                        }
+                        Widgets.PillButton {
+                            label: extCol.extCopied ? "Copied ✓" : "Copy path"
+                            enabledBtn: bridge.connected
+                            onClicked: {
+                                bridge.copyToClipboard(bridge.extensionPath())
+                                extCol.extCopied = true
+                                extCopyReset.restart()
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    Timer { id: extCopyReset; interval: 1500; onTriggered: extCol.extCopied = false }
                 }
             }
 

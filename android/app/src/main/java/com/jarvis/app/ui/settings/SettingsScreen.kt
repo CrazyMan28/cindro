@@ -245,6 +245,16 @@ fun SettingsScreen(
                 }
             }
 
+            // TODO(auto-updater): add an "Automatic updates" ToggleRow here,
+            //   mirroring the letJarvisUseComputer pattern below:
+            //     - SettingsUiState: add `autoUpdate: Boolean = true`, parsed from
+            //       settings.get `auto_update` (default true) in the daemon snapshot.
+            //     - SettingsViewModel: add `setAutoUpdate(enabled)` that pushes
+            //       settings.set { auto_update } (same shape as setLetJarvisUseComputer).
+            //     - This screen: a ToggleRow bound to state.autoUpdate.
+            //   The daemon side (settings.get/set auto_update + update.check/apply)
+            //   already exists; this is only the Android surface.
+
             // --- Let Jarvis use a computer/browser (auto-spawn) ---
             GlowCard(modifier = Modifier.fillMaxWidth()) {
                 ToggleRow(
