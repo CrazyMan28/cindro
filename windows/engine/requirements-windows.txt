@@ -1,0 +1,10 @@
+# Windows-only runtime deps for the Jarvis computer-use engine.
+# Installed ON TOP of the engine package (pip install -e ../../computer-use),
+# which already provides pillow + the MCP/server stack. Keeping these here means
+# computer-use/pyproject.toml is never touched.
+
+pywin32        # Win32 access (optional helper alongside the ctypes SendInput path)
+mss            # fast multi-monitor screen capture (EnumDisplayMonitors + BitBlt)
+
+# pillow is pulled in by the engine (computer-use/pyproject.toml) — do NOT pin it
+# here; reuse the engine's version.

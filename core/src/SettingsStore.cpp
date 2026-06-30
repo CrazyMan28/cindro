@@ -89,6 +89,10 @@ void SettingsStore::load()
     m_ttsVoice.clear();
     m_sttProvider = QStringLiteral("voxtral");
     m_ttsProvider = QStringLiteral("voxtral");
+    m_setupComplete = false;          // wizard not done until config says so
+    m_assistantName = QStringLiteral("Jarvis");
+    m_autoUpdate = true;              // default ON (only an explicit false/0 disables)
+    m_autoUpdateIntervalHours = 6;
     m_theme = QJsonObject();
     {
         QFile f(Config::configFilePath());
@@ -201,6 +205,48 @@ void SettingsStore::load()
                     }
                     continue;
                 }
+                if (line.startsWith(QStringLiteral("setup_complete"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        const QString v = line.mid(eq + 1).trimmed().toLower();
+                        // Default OFF; only an explicit true/1 marks the wizard done.
+                        m_setupComplete =
+                            (v == QStringLiteral("true") || v == QStringLiteral("1"));
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("assistant_name"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        QString v = line.mid(eq + 1).trimmed();
+                        if (v.size() >= 2 &&
+                            ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
+                             (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
+                            v = v.mid(1, v.size() - 2);
+                        setAssistantName(v); // empty -> "Jarvis"
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("auto_update_interval_hours"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        bool okNum = false;
+                        const int h = line.mid(eq + 1).trimmed().toInt(&okNum);
+                        if (okNum)
+                            setAutoUpdateIntervalHours(h); // clamps to >=1
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("auto_update"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        const QString v = line.mid(eq + 1).trimmed().toLower();
+                        // Default ON; only an explicit false/0 turns it OFF.
+                        m_autoUpdate =
+                            !(v == QStringLiteral("false") || v == QStringLiteral("0"));
+                    }
+                    continue;
+                }
                 if (!line.startsWith(QStringLiteral("theme_json")))
                     continue;
                 const int eq = line.indexOf(QLatin1Char('='));
@@ -289,6 +335,9 @@ bool SettingsStore::saveConfig()
                     t.startsWith(QStringLiteral("tts_voice")) ||
                     t.startsWith(QStringLiteral("stt_provider")) ||
                     t.startsWith(QStringLiteral("tts_provider")) ||
+                    t.startsWith(QStringLiteral("setup_complete")) ||
+                    t.startsWith(QStringLiteral("assistant_name")) ||
+                    t.startsWith(QStringLiteral("auto_update")) ||
                     t.startsWith(QStringLiteral("theme_json")))
                     continue;
                 preserved << raw;
@@ -312,6 +361,10 @@ bool SettingsStore::saveConfig()
         ts << "tts_voice = \"" << m_ttsVoice << "\"\n";
     ts << "stt_provider = \"" << m_sttProvider << "\"\n";
     ts << "tts_provider = \"" << m_ttsProvider << "\"\n";
+    ts << "setup_complete = " << (m_setupComplete ? "true" : "false") << "\n";
+    ts << "assistant_name = \"" << m_assistantName << "\"\n";
+    ts << "auto_update = " << (m_autoUpdate ? "true" : "false") << "\n";
+    ts << "auto_update_interval_hours = " << m_autoUpdateIntervalHours << "\n";
     if (!m_theme.isEmpty()) {
         const QByteArray tj = QJsonDocument(m_theme).toJson(QJsonDocument::Compact);
         ts << "theme_json = '" << QString::fromUtf8(tj) << "'\n";

@@ -8,6 +8,34 @@ _Last updated: 2026-06-29._
 
 ---
 
+## 🆕 Public release + Mistral-as-first-class-brain + a Windows edition (2026-06-29)
+
+- **Repo is PUBLIC** (`github.com/CrazyMan28/jarvis`) after a full secret scrub **+ git-history
+  rewrite** (filter-repo purged the Firebase key, tailnet IP, demo phone number, emails, and home
+  paths from *every* commit; clean `dev`/`qa`/`main` force-pushed). Tracked secrets are gone; real
+  keys stay in `~/.config/jarvis/` + gitignored `*.env`. *(Owner TODO: rotate the Firebase key.)*
+- **Mistral is now a first-class brain** for users with **no Codex/Claude CLI**: the daemon
+  auto-detects the CLIs (`available_brains`), falls back to the **api/Mistral** brain when neither
+  is installed, lists Mistral first, and — the real win — `ApiBrain` gained an **OpenAI-style
+  function-calling loop**, so Mistral (and OpenAI/Ollama) **drive computer-use/agents/todo**, not
+  just chat. `can_drive` now honors a Mistral key. **ctest 24/24.** See [`MISTRAL_SETUP.md`](MISTRAL_SETUP.md).
+- **Windows edition (experimental, second-tier)** — *all* Windows code is isolated in **`windows/`**
+  with **zero edits to the Linux build** (the rule: copy a Linux file into `windows/` and edit the
+  copy; never touch `core/`/`daemon/`/`desktop/`). The engine backend (`windows/engine/`, Win32
+  `SendInput`/`mss`, monkeypatch injection) reuses the unchanged engine; the daemon + the ~60 QML
+  pages compile via a self-contained `windows/` CMake build (Qt6 + vcpkg, no LayerShellQt). Ships as
+  a **self-contained `Jarvis-Setup.exe`** (Inno Setup) bundling Qt + MSVC runtime + a frozen Python
+  engine + a portable Node — **the user needs nothing pre-installed**. A GitHub Actions
+  `windows-build.yml` produces the `.exe` on `windows-latest`. See [`WINDOWS.md`](WINDOWS.md).
+- **Bare-machine installers** — `packaging/bootstrap-install.sh` installs *every* dependency on a
+  fresh Linux box (dnf/apt/pacman/zypper) + venv + node + build + install.
+- **In progress:** a first-launch **setup wizard** (name/voice/key) for Linux + Windows, and an
+  **auto-updater** that watches `main` (default-on toggle + a manual "Check for updates" button;
+  Linux pulls+rebuilds+restarts, Windows pulls the latest release installer).
+- **Priority, explicit:** **Linux + Android first, Windows second** (maybe more later).
+
+---
+
 ## 🆕 Named voice library: record/upload your own + "set as default" everywhere (2026-06-29)
 
 The single hard-wired `jarvice` clone is now a **managed library of named voices** on every

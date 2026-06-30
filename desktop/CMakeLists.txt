@@ -44,6 +44,7 @@ qt_add_qml_module(jarvis-sidebar
         qml/ChatDelegate.qml
         qml/SessionsPage.qml
         qml/SettingsPage.qml
+        qml/SetupWizard.qml
         qml/McpPage.qml
         qml/PluginsPage.qml
         qml/MemoryPage.qml

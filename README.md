@@ -168,6 +168,20 @@ cd android && ./gradlew :app:assembleDebug
 
 **Chrome extension** — load `extension/` unpacked at `chrome://extensions` (Developer mode).
 
+**Bare-machine install (installs everything)**
+```bash
+./packaging/bootstrap-install.sh     # detects dnf/apt/pacman/zypper, installs ALL deps, builds, installs
+```
+
+**Windows (experimental — second-tier)** — a native edition lives entirely in `windows/`
+(zero changes to the Linux build). It reuses the same daemon + the ~60 QML pages + the Python
+engine via a Win32 backend; ships as a **self-contained `Jarvis-Setup.exe`** that bundles Qt, the
+MSVC runtime, a frozen Python engine, and a portable Node — the user needs nothing pre-installed.
+**Priority is Linux + Android first; Windows tracks them and may lag.** See [`docs/WINDOWS.md`](docs/WINDOWS.md).
+
+**No Codex/Claude CLI?** Jarvis falls back to a direct **Mistral** brain (chat + voice + a full
+function-calling loop so it drives the computer too). See [`docs/MISTRAL_SETUP.md`](docs/MISTRAL_SETUP.md).
+
 > ⚠️ Always run Python/builds with `env -u PYTHONPATH` (a user site-packages `PYTHONPATH` leak
 > breaks the engine venv). Never broad-kill `foot` / `sway` / `kwin`; stop processes by PID/unit.
 
@@ -208,6 +222,7 @@ Honest about the rough edges (full status in [`docs/STATUS.md`](docs/STATUS.md))
 - [`docs/WIDGETS_CANVAS.md`](docs/WIDGETS_CANVAS.md) — canvases, widgets, `pager`, Home pins, home-screen widgets
 - [`docs/JARVIS_VOICE_AND_RENDERER.md`](docs/JARVIS_VOICE_AND_RENDERER.md) / [`docs/VOICE.md`](docs/VOICE.md) — voice + generative renderer
 - [`docs/SCHEDULES.md`](docs/SCHEDULES.md) · [`docs/HERMES_FEATURES.md`](docs/HERMES_FEATURES.md) · [`docs/JARVIS_GOOGLE_CONNECTORS.md`](docs/JARVIS_GOOGLE_CONNECTORS.md) · [`docs/TAKEOVER_UX.md`](docs/TAKEOVER_UX.md) · [`docs/KWIN_MULTISEAT_FORK.md`](docs/KWIN_MULTISEAT_FORK.md)
+- [`docs/WINDOWS.md`](docs/WINDOWS.md) — the **Windows edition** (parity matrix, what's not portable, install/build) · [`docs/MISTRAL_SETUP.md`](docs/MISTRAL_SETUP.md) — **Jarvis without Codex/Claude** (chat + drive with Mistral)
 - [`AGENTS.md`](AGENTS.md) — **read this first if you're an AI working on the repo**
 
 ---

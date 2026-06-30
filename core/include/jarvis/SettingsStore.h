@@ -45,6 +45,28 @@ public:
     QString ttsVoice() const { return m_ttsVoice; }
     void setTtsVoice(const QString &v) { m_ttsVoice = v; }
 
+    // First-launch SETUP WIZARD state. setup_complete defaults FALSE so a fresh
+    // install shows the wizard once; the wizard's Finish sets it true. The
+    // assistant's friendly name (default "Jarvis") is chosen in the wizard and
+    // shown across the UI. Both round-trip in config.toml as flat keys
+    // `setup_complete = true|false` / `assistant_name = "..."`.
+    bool setupComplete() const { return m_setupComplete; }
+    void setSetupComplete(bool v) { m_setupComplete = v; }
+    QString assistantName() const { return m_assistantName; }
+    void setAssistantName(const QString &n)
+    {
+        m_assistantName = n.trimmed().isEmpty() ? QStringLiteral("Jarvis") : n.trimmed();
+    }
+
+    // AUTO-UPDATER prefs. auto_update defaults TRUE (the daemon checks `main` on
+    // the interval and NOTIFIES on "behind" — it never auto-applies silently).
+    // auto_update_interval_hours defaults 6 (clamped to >=1). Round-trip in
+    // config.toml as `auto_update = true|false` / `auto_update_interval_hours = N`.
+    bool autoUpdate() const { return m_autoUpdate; }
+    void setAutoUpdate(bool v) { m_autoUpdate = v; }
+    int autoUpdateIntervalHours() const { return m_autoUpdateIntervalHours; }
+    void setAutoUpdateIntervalHours(int h) { m_autoUpdateIntervalHours = h >= 1 ? h : 6; }
+
     // Pluggable STT/TTS provider ids (default "voxtral" = Mistral cloud). The
     // local providers are "whisper" (STT) and "piper" (TTS); the daemon degrades
     // to voxtral at call time if the local binary/model is absent. Round-tripped
@@ -182,6 +204,10 @@ private:
     QString m_ttsVoice;                 // preferred TTS voice slug (empty = default)
     QString m_sttProvider = QStringLiteral("voxtral"); // STT provider id
     QString m_ttsProvider = QStringLiteral("voxtral"); // TTS provider id
+    bool m_setupComplete = false;       // first-launch wizard done? (default: no)
+    QString m_assistantName = QStringLiteral("Jarvis"); // friendly assistant name
+    bool m_autoUpdate = true;           // periodic auto update-check (default ON)
+    int m_autoUpdateIntervalHours = 6;  // auto-check cadence (hours, >=1)
     QJsonObject m_theme;
     QJsonObject m_apiKeys; // provider -> value
     QString m_lastError;

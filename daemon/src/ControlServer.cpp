@@ -7,6 +7,7 @@
 #include "jarvis/Connectors.h"
 #include "jarvis/InjectionGuard.h"
 #include "jarvis/PluginSigner.h"
+#include "jarvis/Updater.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -182,6 +183,26 @@ bool ControlServer::start()
     // Keep the in-memory config in sync with persisted prefs.
     m_config.defaultBrain = m_settings.defaultBrain();
     m_config.defaultModel = m_settings.defaultModel();
+
+    // AUTO-UPDATER: periodic background check of `main` on the auto_update interval
+    // (default 6h, default ON). On "behind" we NOTIFY + audit only — never apply
+    // automatically (the user confirms via Settings → "Check for updates").
+    connect(&m_updater, &Updater::updateAvailable, this,
+            [this](const UpdateStatus &st) {
+                m_notify.notify(QStringLiteral("Jarvis update available"),
+                                QStringLiteral("A newer version is on main (%1). "
+                                               "Open Settings → Updates to update.")
+                                    .arg(st.latest.left(12)),
+                                NotifyService::Urgency::Normal,
+                                QStringLiteral("jarvis.update"));
+                m_audit.record(QStringLiteral("update.available"), true,
+                               QStringLiteral("low"),
+                               QStringLiteral("update available: %1 -> %2")
+                                   .arg(st.current.left(12), st.latest.left(12)));
+            });
+    m_updater.configureAuto(m_settings.autoUpdate(),
+                            m_settings.autoUpdateIntervalHours());
+
     m_mcp = std::make_unique<McpRegistry>(m_store);
     // Native phone subsystem: expose its MCP tools to the brain if configured.
     seedPhoneMcp();
@@ -425,6 +446,10 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleFilePush(req);
     else if (m == QStringLiteral("file.get"))
         resp = handleFileGet(req);
+    else if (m == QStringLiteral("update.check"))
+        resp = handleUpdateCheck(req);
+    else if (m == QStringLiteral("update.apply"))
+        resp = handleUpdateApply(req);
     else if (isMemoryOrSkillMethod(m))
         resp = dispatchMemoryOrSkill(req);
     else if (isOpsMethod(m))
@@ -456,14 +481,30 @@ static QJsonArray modelsForBrain(const QString &brain)
     } else if (brain == QStringLiteral("claude")) {
         models << QStringLiteral("claude-opus-4-8") << QStringLiteral("claude-opus-4-5")
                << QStringLiteral("claude-sonnet-4-5") << QStringLiteral("claude-haiku-4-5");
-    } else { // api
-        models << QStringLiteral("gpt-5.5") << QStringLiteral("o4-mini")
-               << QStringLiteral("claude-opus-4-8")
-               << QStringLiteral("mistral-large-latest")
+    } else { // api — Mistral first: the recommended default for a CLI-less user.
+        models << QStringLiteral("mistral-large-latest")
                << QStringLiteral("mistral-small-latest")
+               << QStringLiteral("gpt-5.5") << QStringLiteral("o4-mini")
+               << QStringLiteral("claude-opus-4-8")
                << QStringLiteral("qwen2.5:3b");
     }
     return models;
+}
+
+// Which brains are actually usable here: codex/claude need their CLI on PATH;
+// the `api` brain is always present (it's a direct HTTP loop). Drives both the
+// no-CLI fallback and the picker's availability badges.
+static bool cliOnPath(const QString &exe)
+{
+    return !QStandardPaths::findExecutable(exe).isEmpty();
+}
+static QJsonObject brainAvailability()
+{
+    QJsonObject a;
+    a.insert(QStringLiteral("codex"), cliOnPath(QStringLiteral("codex")));
+    a.insert(QStringLiteral("claude"), cliOnPath(QStringLiteral("claude")));
+    a.insert(QStringLiteral("api"), true);
+    return a;
 }
 
 // The default model for a brain when the caller gives none: the FIRST entry of
@@ -483,6 +524,19 @@ Response ControlServer::handleSettingsGet(const Request &req)
     s.insert(QStringLiteral("claude_account"), m_settings.claudeAccount());
     s.insert(QStringLiteral("tts_voice"), m_settings.ttsVoice());
 
+    // First-launch SETUP WIZARD state + the chosen assistant name. The desktop
+    // shows SetupWizard.qml on load when setup_complete is false.
+    s.insert(QStringLiteral("setup_complete"), m_settings.setupComplete());
+    s.insert(QStringLiteral("assistant_name"), m_settings.assistantName());
+
+    // AUTO-UPDATER: the toggle (default ON) + the check cadence, plus the running
+    // build identity (stamped at compile time) so the UI can show the version.
+    s.insert(QStringLiteral("auto_update"), m_settings.autoUpdate());
+    s.insert(QStringLiteral("auto_update_interval_hours"),
+             m_settings.autoUpdateIntervalHours());
+    s.insert(QStringLiteral("version"), Updater::runningVersion());
+    s.insert(QStringLiteral("git_sha"), Updater::runningSha());
+
     // Pluggable STT/TTS providers (default "voxtral"). Ship the availability
     // lists too so the picker can show-but-disable local providers when their
     // binary is absent.
@@ -495,17 +549,24 @@ Response ControlServer::handleSettingsGet(const Request &req)
     brains << QStringLiteral("codex") << QStringLiteral("claude") << QStringLiteral("api");
     s.insert(QStringLiteral("brains"), brains);
 
+    // Which brains are actually usable on this machine (codex/claude need their
+    // CLI on PATH; api is always available). The picker shows availability
+    // badges and a CLI-less user is steered to the api/Mistral brain.
+    s.insert(QStringLiteral("available_brains"), brainAvailability());
+
     // Per-brain "can drive the computer-use nested desktop headless" capability,
     // so the picker can HONESTLY mark which brains drive (no silent swapping).
     //   claude -> yes (bypassPermissions for coworker+agent)
     //   codex  -> yes (danger-full-access on the isolated nested desktop)
-    //   api    -> only when an OpenAI/Anthropic key is set (tool-calling brain)
+    //   api    -> only when an OpenAI/Mistral key is set: the function-calling
+    //            (computer-use tool) loop covers the OpenAI-compatible providers
+    //            (openai/mistral). Anthropic stays chat-only (no tool loop).
     QJsonObject canDrive;
     canDrive.insert(QStringLiteral("claude"), true);
     canDrive.insert(QStringLiteral("codex"), true);
     canDrive.insert(QStringLiteral("api"),
                     m_settings.hasApiKey(QStringLiteral("openai")) ||
-                        m_settings.hasApiKey(QStringLiteral("anthropic")));
+                        m_settings.hasApiKey(QStringLiteral("mistral")));
     s.insert(QStringLiteral("can_drive"), canDrive);
 
     QJsonObject byBrain;
@@ -629,8 +690,32 @@ Response ControlServer::handleSettingsSet(const Request &req)
         m_settings.setTtsProvider(patch.value(QStringLiteral("tts_provider")).toString());
         prefsTouched = true;
     }
+    if (patch.contains(QStringLiteral("setup_complete"))) {
+        m_settings.setSetupComplete(patch.value(QStringLiteral("setup_complete")).toBool());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("assistant_name"))) {
+        m_settings.setAssistantName(patch.value(QStringLiteral("assistant_name")).toString());
+        prefsTouched = true;
+    }
+    bool autoUpdateChanged = false;
+    if (patch.contains(QStringLiteral("auto_update"))) {
+        m_settings.setAutoUpdate(patch.value(QStringLiteral("auto_update")).toBool());
+        prefsTouched = true;
+        autoUpdateChanged = true;
+    }
+    if (patch.contains(QStringLiteral("auto_update_interval_hours"))) {
+        m_settings.setAutoUpdateIntervalHours(
+            patch.value(QStringLiteral("auto_update_interval_hours")).toInt());
+        prefsTouched = true;
+        autoUpdateChanged = true;
+    }
     if (prefsTouched)
         m_settings.saveConfig();
+    // Re-arm the auto-update timer when its settings changed (toggle / interval).
+    if (autoUpdateChanged)
+        m_updater.configureAuto(m_settings.autoUpdate(),
+                                m_settings.autoUpdateIntervalHours());
 
     // API keys are WRITE-ONLY: persist to secrets.json (0600), never echoed.
     if (patch.contains(QStringLiteral("api_keys"))) {
@@ -643,6 +728,36 @@ Response ControlServer::handleSettingsSet(const Request &req)
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
+}
+
+// update.check — run the platform self-update script in check-mode and report
+// {current, latest, behind, version}. Blocks on a git fetch (bounded timeout).
+Response ControlServer::handleUpdateCheck(const Request &req)
+{
+    const UpdateStatus st = m_updater.checkNow();
+    QJsonObject r;
+    r.insert(QStringLiteral("current"), st.current);
+    r.insert(QStringLiteral("latest"), st.latest);
+    r.insert(QStringLiteral("behind"), st.behind);
+    r.insert(QStringLiteral("version"), st.version);
+    r.insert(QStringLiteral("ok"), st.ok);
+    if (!st.reason.isEmpty())
+        r.insert(QStringLiteral("reason"), st.reason);
+    return Response::success(req.id, r);
+}
+
+// update.apply — user-confirmed: run the script in apply-mode (pull+rebuild on
+// Linux, installer on Windows) and return its {updated, to, ...}. Audited HIGH.
+Response ControlServer::handleUpdateApply(const Request &req)
+{
+    const QJsonObject r = m_updater.applyNow();
+    const bool updated = r.value(QStringLiteral("updated")).toBool();
+    m_audit.record(QStringLiteral("update.apply"), updated, QStringLiteral("high"),
+                   updated ? QStringLiteral("updated to %1")
+                                 .arg(r.value(QStringLiteral("to")).toString())
+                           : QStringLiteral("no update applied (%1)")
+                                 .arg(r.value(QStringLiteral("reason")).toString()));
+    return Response::success(req.id, r);
 }
 
 Response ControlServer::handleHooksList(const Request &req)
@@ -1009,6 +1124,24 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         else if (provider == QStringLiteral("openai"))
             opts.apiKey = m_settings.apiKey(QStringLiteral("openai"));
         // ollama: no key.
+        // FUNCTION-CALLING (computer-use) loop — the OpenAI-compatible providers
+        // (openai/mistral/ollama) get the computer-use MCP tools wired the SAME
+        // way codex/claude do: a coworker+agent or auto-spawned session drives its
+        // OWN nested per-session engine (desk.mcpUrl/bearer, never the user's real
+        // screen); a plain coworker session uses the global built-in :8794 engine.
+        // Anthropic uses a different tool format and stays chat-only. We detect the
+        // nested engine via the live AgentDesktopInfo so this also works on the
+        // resume path (where agentMcpOverrides is empty but the desktop is up).
+        if (provider != QStringLiteral("anthropic")) {
+            const AgentDesktopInfo desk = m_agentDesktops.info(row.id);
+            if (desk.up) {
+                opts.mcpEndpoint = desk.mcpUrl;
+                opts.mcpBearer = desk.bearer;
+            } else if (row.profile == QStringLiteral("coworker")) {
+                opts.mcpEndpoint = McpRegistry::builtinEndpoint();
+                opts.mcpBearer = McpRegistry::computerUseBearer();
+            }
+        }
         auto *brain = new ApiBrain(opts, this);
         brain->setSessionId(row.id);
         return brain;
@@ -1418,6 +1551,27 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     row.agent = agentName;
     row.profile = effProfile.isEmpty() ? QStringLiteral("coder") : effProfile;
     row.brain = effBrain.isEmpty() ? m_config.defaultBrain : effBrain;
+    // NO-CLI FALLBACK: if the brain came from the DEFAULT (the caller didn't ask
+    // for a specific one) and it's a CLI brain that isn't installed, fall back to
+    // the direct API brain so a user with neither codex nor claude can still chat.
+    // Prefer Mistral when that key is present (the recommended CLI-less default).
+    // An EXPLICIT brain request is always honored (it surfaces its own error).
+    if (effBrain.isEmpty() &&
+        (row.brain == QStringLiteral("codex") || row.brain == QStringLiteral("claude")) &&
+        QStandardPaths::findExecutable(row.brain).isEmpty()) {
+        const bool haveMistral = m_settings.hasApiKey(QStringLiteral("mistral"));
+        if (haveMistral || m_settings.hasApiKey(QStringLiteral("openai")) ||
+            m_settings.hasApiKey(QStringLiteral("anthropic"))) {
+            qInfo().noquote() << "[brain] default" << row.brain
+                              << "CLI not found on PATH; falling back to the api brain";
+            row.brain = QStringLiteral("api");
+            if (haveMistral && effModel.isEmpty())
+                effModel = QStringLiteral("mistral-large-latest");
+        }
+        // No api key either: leave the brain as-is. The CLI spawn emits a clear
+        // "<brain> failed to start" error, and the UI's available_brains +
+        // api_keys_set drive the "add a Mistral key" onboarding prompt.
+    }
     // BRAIN DEFAULT FIX: when the caller gives no model, pick the per-brain
     // default (the FIRST entry of modelsForBrain) — a claude brain gets a claude
     // model, an api brain a configured-provider model — NOT the global default
@@ -1465,8 +1619,10 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     // still works, it just can't use the computer). A coworker+agent session
     // always provisions (its whole point); target="real" take-over uses the
     // global engine, not a nested desktop, so it is never auto-provisioned here.
+    // The api brain drives via the OpenAI-compatible function-calling loop, which
+    // covers the openai/mistral providers (anthropic stays chat-only).
     const bool apiCanDrive = m_settings.hasApiKey(QStringLiteral("openai")) ||
-                             m_settings.hasApiKey(QStringLiteral("anthropic"));
+                             m_settings.hasApiKey(QStringLiteral("mistral"));
     const bool brainCanDrive =
         row.brain == QStringLiteral("codex") || row.brain == QStringLiteral("claude") ||
         (row.brain == QStringLiteral("api") && apiCanDrive);
@@ -1490,7 +1646,7 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
             if (err)
                 *err = QStringLiteral(
                     "the 'api' brain can't drive the computer-use desktop without "
-                    "an OpenAI or Anthropic API key — pick the codex or claude "
+                    "an OpenAI or Mistral API key — pick the codex or claude "
                     "brain, or set an API key in Settings");
             return QString();
         }

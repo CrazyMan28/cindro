@@ -26,6 +26,9 @@
 #include <QGuiApplication>
 #include <QScreen>
 #include <QBuffer>
+#include <QCoreApplication>
+#include <QDesktopServices>
+#include <QClipboard>
 #include <QDataStream>
 #include <QAudioSource>
 #include <QAudioFormat>
@@ -513,6 +516,64 @@ void Bridge::saveSettings(const QVariantMap &patch)
     QVariantMap params;
     params.insert(QStringLiteral("patch"), patch);
     request(QStringLiteral("settings.set"), params);
+}
+
+void Bridge::checkForUpdates()
+{
+    request(QStringLiteral("update.check"), {});
+}
+
+void Bridge::applyUpdate()
+{
+    request(QStringLiteral("update.apply"), {});
+}
+
+QString Bridge::extensionPath() const
+{
+#ifdef Q_OS_WIN
+    // Installed next to the app: %ProgramFiles%\Jarvis\extension
+    return QDir::toNativeSeparators(
+        QCoreApplication::applicationDirPath() + QStringLiteral("/extension"));
+#else
+    // Staged by packaging/install.sh
+    return QDir::homePath() + QStringLiteral("/.local/share/jarvis/extension");
+#endif
+}
+
+void Bridge::openExtensionsPage()
+{
+    // Launch a Chromium-family browser straight at chrome://extensions (xdg-open
+    // can't route a chrome:// URL, so we exec the browser with it directly).
+    static const QStringList cands = {
+#ifdef Q_OS_WIN
+        QStringLiteral("chrome"), QStringLiteral("msedge"), QStringLiteral("brave"),
+#else
+        QStringLiteral("google-chrome"), QStringLiteral("google-chrome-stable"),
+        QStringLiteral("chromium"), QStringLiteral("chromium-browser"),
+        QStringLiteral("brave-browser"), QStringLiteral("microsoft-edge"),
+        QStringLiteral("msedge"),
+#endif
+    };
+    for (const QString &c : cands) {
+        const QString exe = QStandardPaths::findExecutable(c);
+        if (!exe.isEmpty()) {
+            QProcess::startDetached(exe, {QStringLiteral("chrome://extensions")});
+            return;
+        }
+    }
+    // No Chromium browser found — open the folder so the user can drag it in.
+    openExtensionFolder();
+}
+
+void Bridge::openExtensionFolder()
+{
+    QDesktopServices::openUrl(QUrl::fromLocalFile(extensionPath()));
+}
+
+void Bridge::copyToClipboard(const QString &text)
+{
+    if (QClipboard *cb = QGuiApplication::clipboard())
+        cb->setText(text);
 }
 
 void Bridge::setAgentMode(const QString &mode)
@@ -3337,6 +3398,16 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         emit settingsLoaded(result);
     } else if (method == QStringLiteral("settings.set")) {
         emit settingsSaved();
+    } else if (method == QStringLiteral("update.check")) {
+        emit updateChecked(result.value(QStringLiteral("current")).toString(),
+                           result.value(QStringLiteral("latest")).toString(),
+                           result.value(QStringLiteral("behind")).toBool(),
+                           result.value(QStringLiteral("version")).toString(),
+                           result.value(QStringLiteral("reason")).toString());
+    } else if (method == QStringLiteral("update.apply")) {
+        emit updateApplied(result.value(QStringLiteral("updated")).toBool(),
+                           result.value(QStringLiteral("to")).toString(),
+                           result.value(QStringLiteral("reason")).toString());
     } else if (method == QStringLiteral("auth.request")) {
         // FAIL-OPEN is folded into the result: paired=false + state="approved"
         // means no phone is paired, so the LockGate unlocks immediately.

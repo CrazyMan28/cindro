@@ -65,6 +65,15 @@ cat > "${SWAY_CONF_D}/90-jarvis.conf" <<'EOF'
 bindsym $mod+j exec ~/.local/bin/jarvis-sidebar --toggle
 EOF
 
+# --- 6b. Install the Chrome/Edge extension (unpacked) -----------------------
+# Chrome blocks silent installs of unpacked extensions, so we stage it at a
+# stable path and the in-app "Add the Chrome extension" guide walks you through
+# loading it (chrome://extensions → Developer mode → Load unpacked → this folder).
+EXT_DIR="${HOME}/.local/share/jarvis/extension"
+log "Installing the Chrome extension into ${EXT_DIR}..."
+mkdir -p "${EXT_DIR}"
+cp -r "${REPO_ROOT}/extension/." "${EXT_DIR}/"
+
 # --- 7. Next steps -----------------------------------------------------------
 cat <<EOF
 
@@ -73,6 +82,11 @@ $(log "Jarvis installed.")
 Next steps:
   1. Start the daemon (and enable it at login):
        systemctl --user enable --now jarvisd
+
+  Chrome/Edge extension (optional — for the in-browser agent + side panel):
+       open chrome://extensions  →  enable "Developer mode"  →  "Load unpacked"
+       →  select:  ${EXT_DIR}
+     (The Jarvis app also shows this under Settings → "Add the Chrome extension".)
 
   2. Sway: reload your config to pick up the \$mod+j keybind:
        swaymsg reload
