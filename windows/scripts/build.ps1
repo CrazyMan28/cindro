@@ -62,7 +62,9 @@ if (-not $sidebarExe) { throw "jarvis-sidebar.exe not found under $build" }
 Copy-Item $jarvisdExe $payload
 Copy-Item $sidebarExe $payload
 Copy-Item (Join-Path $repo "LICENSE") (Join-Path $payload "LICENSE.txt")
-# The launcher that brings up the WHOLE stack on Windows (no systemd).
+# The launchers: jarvis-launch.vbs (HIDDEN — what the shortcuts use, no terminal)
+# + jarvis-start.cmd (visible, for manual/debug use).
+Copy-Item (Join-Path $win "scripts\jarvis-launch.vbs") $payload
 Copy-Item (Join-Path $win "scripts\jarvis-start.cmd") $payload
 # The Chrome/Edge extension (unpacked) — staged so the in-app guide can point
 # Chrome at {app}\extension (chrome://extensions -> Developer mode -> Load unpacked).
