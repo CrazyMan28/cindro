@@ -31,10 +31,14 @@ jobs:
             echo "version=0.1.0-$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
           fi
 
-      # NOTE: no msvc-dev-cmd / vcvars here ON PURPOSE — build.ps1 uses the
-      # "Visual Studio 17 2022" CMake generator, which locates MSVC itself via
-      # vswhere. An active vcvars env actually BREAKS the VS generator's detection
-      # ("could not find any instance of Visual Studio"), so the env is left clean.
+      # MSVC toolchain (cl + ninja on PATH) for the Ninja generator that build.ps1
+      # uses. msvc-dev-cmd finds VS via vswhere and exports the env to later steps.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
 
       # Qt 6 (MSVC) — Core/Gui/Quick/Qml/QuickControls2/Network/Sql are in the base
       # install; WebSockets + Multimedia are add-on modules.

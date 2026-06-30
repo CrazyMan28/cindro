@@ -36,13 +36,13 @@ Write-Host "==> Jarvis Windows build  (repo=$repo  version=$Version)" -Foregroun
 if (-not $VcpkgRoot) { throw "Set VCPKG_ROOT (vcpkg provides libsodium/libqrencode for Windows)." }
 $toolchain = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
 if (-not (Test-Path $toolchain)) { throw "vcpkg toolchain file not found: $toolchain" }
-# Use the Visual Studio generator: it locates MSVC itself (via vswhere), so the
-# build doesn't depend on a vcvars/MSVC env being active in this shell — the most
-# reliable setup on CI. (Multi-config: exes land under <build>\<Config>\.)
-# Splat the args (the -D value is a double-quoted string so $toolchain expands).
+# Ninja generator + the MSVC env that the CI's msvc-dev-cmd step provides (cl +
+# ninja on PATH). Splat the args (the -D value is a double-quoted string so
+# $toolchain expands — passing it bare made cmake see the literal "$toolchain").
 $cfgArgs = @(
   '-S', $win, '-B', $build,
-  '-G', 'Visual Studio 17 2022', '-A', 'x64',
+  '-G', 'Ninja',
+  "-DCMAKE_BUILD_TYPE=$Config",
   "-DCMAKE_TOOLCHAIN_FILE=$toolchain"
 )
 cmake @cfgArgs
