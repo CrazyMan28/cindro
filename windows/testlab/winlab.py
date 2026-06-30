@@ -82,9 +82,10 @@ def _run_ps(c, script, label="powershell"):
 # ---- commands --------------------------------------------------------------
 
 def cmd_doctor(c, _):
-    r = ssh_raw(c, "powershell -NoProfile -Command "
-                   '"$o=Get-CimInstance Win32_OperatingSystem; '
-                   "Write-Output ('OK ' + $o.Caption + ' ' + $o.Version)\"", timeout=20)
+    # Use the EncodedCommand path (ps): the Windows DefaultShell is PowerShell, so a
+    # raw `powershell -Command "$o=..."` gets its $vars eaten by the outer shell.
+    r = ps(c, "$o=Get-CimInstance Win32_OperatingSystem; "
+              "Write-Output ('OK ' + $o.Caption + ' ' + $o.Version)", timeout=20)
     print((r.stdout or r.stderr).strip())
     sys.exit(r.returncode)
 
