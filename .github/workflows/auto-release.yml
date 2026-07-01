@@ -30,9 +30,17 @@ on:
 permissions:
   contents: write
 
+# Serialize auto-release runs so two quick merges don't race on "highest tag + 1".
+# Do NOT cancel in progress — a tagging op must finish; the next run then sees the new
+# tag and bumps from it.
+concurrency:
+  group: auto-release-main
+  cancel-in-progress: false
+
 jobs:
   tag:
     runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 10
     steps:
       - name: Auto-bump patch + tag (via API, no checkout)
         env:
