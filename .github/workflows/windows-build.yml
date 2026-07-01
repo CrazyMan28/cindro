@@ -30,15 +30,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # PowerShell (not bash): the self-hosted Windows runner has no git-bash on
+      # PATH for Actions' `shell: bash`, and the Windows/WSL bash stub errors out.
       - name: Derive version
         id: ver
-        shell: bash
+        shell: pwsh
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=0.1.0-$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
-          fi
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $v = $env:GITHUB_REF_NAME -replace '^v', ''
+          } else {
+            $v = "0.1.0-" + $env:GITHUB_SHA.Substring(0, 7)
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       # MSVC toolchain (cl + ninja on PATH) for the Ninja generator that build.ps1
       # uses. msvc-dev-cmd finds VS via vswhere and exports the env to later steps.
