@@ -602,6 +602,54 @@ void Bridge::setAgentMode(const QString &mode)
     saveSettings(patch);
 }
 
+// --- Trust policies (jarvis#71) ---------------------------------------------
+
+void Bridge::policyList()
+{
+    request(QStringLiteral("policy.list"), {});
+}
+
+void Bridge::policyAdd(const QString &tool, const QString &app,
+                       const QString &action, const QString &note)
+{
+    QVariantMap p;
+    p.insert(QStringLiteral("tool"), tool);
+    p.insert(QStringLiteral("app"), app);
+    p.insert(QStringLiteral("action"), action);
+    p.insert(QStringLiteral("note"), note);
+    request(QStringLiteral("policy.add"), p);
+}
+
+void Bridge::policyUpdate(const QString &id, const QString &action)
+{
+    QVariantMap p;
+    p.insert(QStringLiteral("id"), id);
+    p.insert(QStringLiteral("action"), action);
+    request(QStringLiteral("policy.update"), p);
+}
+
+void Bridge::policyRemove(const QString &id)
+{
+    QVariantMap p;
+    p.insert(QStringLiteral("id"), id);
+    request(QStringLiteral("policy.remove"), p);
+}
+
+void Bridge::policySetDefault(const QString &action)
+{
+    QVariantMap p;
+    p.insert(QStringLiteral("action"), action);
+    request(QStringLiteral("policy.set_default"), p);
+}
+
+void Bridge::policyTest(const QString &tool, const QString &app)
+{
+    QVariantMap p;
+    p.insert(QStringLiteral("tool"), tool);
+    p.insert(QStringLiteral("app"), app);
+    request(QStringLiteral("policy.test"), p);
+}
+
 void Bridge::listMcp()
 {
     request(QStringLiteral("mcp.list"), {});
@@ -3478,6 +3526,18 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         // too so the LockGate clears instantly.
         emit authStateChanged(result.value(QStringLiteral("challenge_id")).toString(),
                               QStringLiteral("approved"));
+    } else if (method == QStringLiteral("policy.list")) {
+        emit policyListed(result);
+    } else if (method == QStringLiteral("policy.add")
+               || method == QStringLiteral("policy.update")
+               || method == QStringLiteral("policy.remove")
+               || method == QStringLiteral("policy.set_default")) {
+        emit policyChanged();
+        policyList(); // refresh the Settings card after a mutation
+    } else if (method == QStringLiteral("policy.test")) {
+        emit policyTested(result.value(QStringLiteral("action")).toString(),
+                          result.value(QStringLiteral("rule_id")).toString(),
+                          result.value(QStringLiteral("note")).toString());
     } else if (method == QStringLiteral("mcp.list")) {
         emit mcpListed(result.value(QStringLiteral("servers")).toList());
     } else if (method == QStringLiteral("mcp.add")

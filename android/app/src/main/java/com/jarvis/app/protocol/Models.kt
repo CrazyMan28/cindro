@@ -44,6 +44,25 @@ data class Session(
     }
 }
 
+/** One trust-policy rule (jarvis#71): per-tool/per-app allow|ask|deny guardrail. */
+data class TrustRule(
+    val id: String,
+    val tool: String,
+    val app: String,
+    val action: String,
+    val note: String?,
+) {
+    companion object {
+        fun from(o: JsonObject): TrustRule = TrustRule(
+            id = o.get("id")?.asString.orEmpty(),
+            tool = o.get("tool")?.takeIf { !it.isJsonNull }?.asString ?: "*",
+            app = o.get("app")?.takeIf { !it.isJsonNull }?.asString ?: "*",
+            action = o.get("action")?.takeIf { !it.isJsonNull }?.asString ?: "allow",
+            note = o.get("note")?.takeIf { !it.isJsonNull }?.asString,
+        )
+    }
+}
+
 /** A queued task from task.list. */
 data class QueuedTask(
     val id: String,

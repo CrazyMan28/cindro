@@ -1369,6 +1369,249 @@ Item {
                 }
             }
 
+            // ---- Trust policies (jarvis#71): per-tool/per-app guardrails,
+            // ENFORCED at the tool layer by the computer-use engine ----------
+            Widgets.SectionCard {
+                id: trustCard
+                Layout.fillWidth: true
+
+                property var rules: []
+                property string defaultAction: "allow"
+                property string newAction: "ask"
+
+                function refresh() { if (bridge.connected) bridge.policyList() }
+                Component.onCompleted: refresh()
+                Connections {
+                    target: bridge
+                    function onConnectedChanged() { if (bridge.connected) trustCard.refresh() }
+                    function onPolicyListed(doc) {
+                        trustCard.rules = doc.rules !== undefined ? doc.rules : []
+                        trustCard.defaultAction = doc["default"] !== undefined ? doc["default"] : "allow"
+                    }
+                }
+                function actionColor(a) {
+                    return a === "deny" ? Theme.danger
+                         : a === "ask" ? Theme.warn : Theme.success
+                }
+                function nextAction(a) {
+                    return a === "allow" ? "ask" : (a === "ask" ? "deny" : "allow")
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text {
+                            text: "Trust policies — per-tool / per-app rules"
+                            color: Theme.text
+                            font.family: Theme.fontSans
+                            font.pixelSize: 13
+                            Layout.fillWidth: true
+                        }
+                        Text {
+                            text: "ENFORCED"
+                            color: Theme.success
+                            font.family: Theme.fontDisplay
+                            font.pixelSize: 9
+                            font.letterSpacing: Theme.trackMid
+                            font.weight: Font.DemiBold
+                        }
+                    }
+                    Text {
+                        text: "Unlike the level above (advice to the model), these rules are enforced on every tool call: DENY fails the call, ASK pops an approval on desktop + phone. Most specific rule wins. Globs: browser_* on app *bank* → ask."
+                        color: Theme.textMuted
+                        font.family: Theme.fontSans
+                        font.pixelSize: 11
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                    }
+
+                    // Default action for tools no rule matches.
+                    RowLayout {
+                        spacing: 8
+                        Text {
+                            text: "DEFAULT (no rule matches):"
+                            color: Theme.textMuted
+                            font.family: Theme.fontDisplay
+                            font.pixelSize: 9
+                            font.letterSpacing: Theme.trackMid
+                        }
+                        Repeater {
+                            model: ["allow", "ask", "deny"]
+                            delegate: Rectangle {
+                                required property string modelData
+                                readonly property bool sel: trustCard.defaultAction === modelData
+                                radius: 6
+                                implicitWidth: defTxt.implicitWidth + 18
+                                implicitHeight: 20
+                                color: sel ? Qt.alpha(trustCard.actionColor(modelData), 0.18) : "transparent"
+                                border.width: 1
+                                border.color: sel ? trustCard.actionColor(modelData) : Theme.hairlineSoft
+                                Text {
+                                    id: defTxt
+                                    anchors.centerIn: parent
+                                    text: parent.modelData.toUpperCase()
+                                    color: parent.sel ? trustCard.actionColor(parent.modelData) : Theme.textMuted
+                                    font.family: Theme.fontDisplay
+                                    font.pixelSize: 9
+                                    font.letterSpacing: Theme.trackTight
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: bridge.policySetDefault(parent.modelData)
+                                }
+                            }
+                        }
+                    }
+
+                    // Existing rules.
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Repeater {
+                            model: trustCard.rules
+                            delegate: Rectangle {
+                                id: ruleRow
+                                required property var modelData
+                                Layout.fillWidth: true
+                                implicitHeight: 40
+                                radius: Theme.radiusSm
+                                color: Theme.surface
+                                border.width: 1
+                                border.color: Theme.hairlineSoft
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 10
+                                    anchors.rightMargin: 10
+                                    spacing: 10
+                                    // action pill — click to cycle allow→ask→deny
+                                    Rectangle {
+                                        radius: 6
+                                        implicitWidth: actTxt.implicitWidth + 16
+                                        implicitHeight: 20
+                                        color: Qt.alpha(trustCard.actionColor(ruleRow.modelData.action), 0.16)
+                                        border.width: 1
+                                        border.color: trustCard.actionColor(ruleRow.modelData.action)
+                                        Text {
+                                            id: actTxt
+                                            anchors.centerIn: parent
+                                            text: ("" + ruleRow.modelData.action).toUpperCase()
+                                            color: trustCard.actionColor(ruleRow.modelData.action)
+                                            font.family: Theme.fontDisplay
+                                            font.pixelSize: 9
+                                            font.letterSpacing: Theme.trackTight
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: bridge.policyUpdate(ruleRow.modelData.id,
+                                                trustCard.nextAction(ruleRow.modelData.action))
+                                        }
+                                    }
+                                    Text {
+                                        text: ruleRow.modelData.tool
+                                        color: Theme.text
+                                        font.family: Theme.fontMono
+                                        font.pixelSize: 12
+                                        elide: Text.ElideRight
+                                    }
+                                    Text {
+                                        visible: ("" + ruleRow.modelData.app) !== "*"
+                                        text: "on " + ruleRow.modelData.app
+                                        color: Theme.accent
+                                        font.family: Theme.fontMono
+                                        font.pixelSize: 11
+                                        elide: Text.ElideRight
+                                    }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: ruleRow.modelData.note !== undefined ? ruleRow.modelData.note : ""
+                                        color: Theme.textMuted
+                                        font.family: Theme.fontSans
+                                        font.pixelSize: 11
+                                        elide: Text.ElideRight
+                                    }
+                                    Text {
+                                        text: "✕"
+                                        color: Theme.textMuted
+                                        font.pixelSize: 12
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            anchors.margins: -6
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: bridge.policyRemove(ruleRow.modelData.id)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Text {
+                            visible: trustCard.rules.length === 0
+                            text: "No rules yet — everything falls through to the default above."
+                            color: Theme.textFaint
+                            font.family: Theme.fontSans
+                            font.pixelSize: 11
+                        }
+                    }
+
+                    // Add a rule.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Widgets.StyledField {
+                            id: newTool
+                            Layout.preferredWidth: 150
+                            placeholder: "tool glob (browser_*)"
+                        }
+                        Widgets.StyledField {
+                            id: newApp
+                            Layout.preferredWidth: 130
+                            placeholder: "app glob (* = any)"
+                        }
+                        Widgets.StyledField {
+                            id: newNote
+                            Layout.fillWidth: true
+                            placeholder: "note (why)"
+                        }
+                        Rectangle {
+                            radius: 6
+                            implicitWidth: newActTxt.implicitWidth + 18
+                            implicitHeight: 24
+                            color: Qt.alpha(trustCard.actionColor(trustCard.newAction), 0.16)
+                            border.width: 1
+                            border.color: trustCard.actionColor(trustCard.newAction)
+                            Text {
+                                id: newActTxt
+                                anchors.centerIn: parent
+                                text: trustCard.newAction.toUpperCase()
+                                color: trustCard.actionColor(trustCard.newAction)
+                                font.family: Theme.fontDisplay
+                                font.pixelSize: 9
+                                font.letterSpacing: Theme.trackTight
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: trustCard.newAction = trustCard.nextAction(trustCard.newAction)
+                            }
+                        }
+                        Widgets.PillButton {
+                            label: "+ ADD RULE"
+                            onClicked: {
+                                if (newTool.text.trim().length === 0 && newApp.text.trim().length === 0)
+                                    return
+                                bridge.policyAdd(newTool.text.trim(), newApp.text.trim(),
+                                                 trustCard.newAction, newNote.text.trim())
+                                newTool.text = ""; newApp.text = ""; newNote.text = ""
+                            }
+                        }
+                    }
+                }
+            }
+
             // ===== Updates =================================================
             Text {
                 text: "// UPDATES"

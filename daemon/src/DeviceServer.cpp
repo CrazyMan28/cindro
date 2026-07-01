@@ -429,6 +429,9 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("schedule.list") ||
         method == QStringLiteral("ssh.allow_list") ||
         method == QStringLiteral("audit.list") ||
+        // Trust-policy reads/previews (jarvis#71).
+        method == QStringLiteral("policy.list") ||
+        method == QStringLiteral("policy.test") ||
         // Full config surface — reads are read tier.
         method == QStringLiteral("settings.get") ||
         method == QStringLiteral("model.list") ||
@@ -488,6 +491,11 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("settings.set") ||
         method == QStringLiteral("mcp.add") ||
         method == QStringLiteral("devices.revoke") ||
+        // Editing the permission guardrails is itself security-sensitive.
+        method == QStringLiteral("policy.add") ||
+        method == QStringLiteral("policy.update") ||
+        method == QStringLiteral("policy.remove") ||
+        method == QStringLiteral("policy.set_default") ||
         method == QStringLiteral("take_over.request") ||
         // Wave 8: a scheduled job runs unattended, and ssh.exec runs a remote
         // command — both are biometric-tier on the phone.
@@ -555,6 +563,10 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("voice.create_clone"), QStringLiteral("voice.delete_clone"),
         QStringLiteral("voice.set_default"),  QStringLiteral("voice.rename_clone"),
         QStringLiteral("voice.preview_clone"),
+        // Trust policies (jarvis#71): the phone edits the same guardrails.
+        QStringLiteral("policy.list"),     QStringLiteral("policy.add"),
+        QStringLiteral("policy.update"),   QStringLiteral("policy.remove"),
+        QStringLiteral("policy.set_default"), QStringLiteral("policy.test"),
         QStringLiteral("file.push"),       QStringLiteral("file.get"),
         // Live-widget viewer leases + home-screen widget pin/unpin.
         QStringLiteral("widget.viewing"),  QStringLiteral("widget.pin"),

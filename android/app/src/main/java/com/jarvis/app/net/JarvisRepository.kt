@@ -23,6 +23,7 @@ import com.jarvis.app.protocol.SessionOpened
 import com.jarvis.app.protocol.Skill
 import com.jarvis.app.protocol.Tier
 import com.jarvis.app.protocol.TodayItem
+import com.jarvis.app.protocol.TrustRule
 import com.jarvis.app.protocol.WsResponse
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharedFlow
@@ -100,6 +101,35 @@ class JarvisRepository(
     suspend fun listTasks(): List<QueuedTask> {
         val r = client.request("task.list").orThrow()
         return r.getAsJsonArray("tasks")?.toObjects()?.map(QueuedTask::from) ?: emptyList()
+    }
+
+    // --- Trust policies (jarvis#71) -----------------------------------------
+
+    data class TrustPolicies(val default: String, val rules: List<TrustRule>)
+
+    suspend fun policyList(): TrustPolicies {
+        val r = client.request("policy.list").orThrow()
+        val rules = r.getAsJsonArray("rules")?.toObjects()?.map(TrustRule::from) ?: emptyList()
+        return TrustPolicies(r.get("default")?.asString ?: "allow", rules)
+    }
+
+    suspend fun policyAdd(tool: String, app: String, action: String, note: String) {
+        client.request(
+            "policy.add",
+            Params.of("tool" to tool, "app" to app, "action" to action, "note" to note),
+        ).orThrow()
+    }
+
+    suspend fun policyUpdate(id: String, action: String) {
+        client.request("policy.update", Params.of("id" to id, "action" to action)).orThrow()
+    }
+
+    suspend fun policyRemove(id: String) {
+        client.request("policy.remove", Params.of("id" to id)).orThrow()
+    }
+
+    suspend fun policySetDefault(action: String) {
+        client.request("policy.set_default", Params.of("action" to action)).orThrow()
     }
 
     // --- action tier -------------------------------------------------------

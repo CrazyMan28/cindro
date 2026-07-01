@@ -25,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -34,6 +35,7 @@ import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -336,6 +338,195 @@ fun SettingsScreen(
                         "Jarvis calls ask_user (you approve here or on the laptop) before any action above your line. It's a policy, not the sandbox.",
                         style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary,
                     )
+                }
+            }
+
+            // --- Trust policies (jarvis#71): per-tool/per-app guardrails, ENFORCED ---
+            GlowCard(modifier = Modifier.fillMaxWidth()) {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Trust policies",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = JarvisPalette.TextPrimary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "ENFORCED",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = JarvisPalette.Success,
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Per-tool / per-app rules enforced on every tool call: DENY fails the call, ASK pops an approval. Most specific rule wins. Globs work: browser_* on app *bank* → ask. Tap a rule's action to cycle it.",
+                        style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary,
+                    )
+                    Spacer(Modifier.height(10.dp))
+
+                    fun actionColor(a: String) = when (a) {
+                        "deny" -> JarvisPalette.Error
+                        "ask" -> JarvisPalette.Warning
+                        else -> JarvisPalette.Success
+                    }
+
+                    // Default action for tools no rule matches.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "DEFAULT",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = JarvisPalette.TextSecondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        listOf("allow", "ask", "deny").forEach { a ->
+                            val sel = state.trustDefault == a
+                            Surface(
+                                onClick = {
+                                    scope.launch {
+                                        if (Biometric.authenticate(activity, "Set default policy", a)) {
+                                            viewModel.setPolicyDefault(a)
+                                        }
+                                    }
+                                },
+                                shape = MaterialTheme.shapes.small,
+                                color = if (sel) actionColor(a).copy(alpha = 0.18f) else JarvisPalette.SurfaceVariant,
+                                border = if (sel) BorderStroke(1.dp, actionColor(a)) else null,
+                                modifier = Modifier.padding(start = 6.dp),
+                            ) {
+                                Text(
+                                    a.uppercase(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (sel) actionColor(a) else JarvisPalette.TextSecondary,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                )
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+
+                    if (state.trustRules.isEmpty()) {
+                        Text(
+                            "No rules yet — everything falls through to the default.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = JarvisPalette.TextSecondary,
+                        )
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        state.trustRules.forEach { rule ->
+                            Surface(
+                                shape = MaterialTheme.shapes.medium,
+                                color = JarvisPalette.SurfaceVariant,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                ) {
+                                    Surface(
+                                        onClick = {
+                                            scope.launch {
+                                                if (Biometric.authenticate(activity, "Change rule", rule.tool)) {
+                                                    viewModel.cyclePolicy(rule)
+                                                }
+                                            }
+                                        },
+                                        shape = MaterialTheme.shapes.small,
+                                        color = actionColor(rule.action).copy(alpha = 0.16f),
+                                        border = BorderStroke(1.dp, actionColor(rule.action)),
+                                    ) {
+                                        Text(
+                                            rule.action.uppercase(),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = actionColor(rule.action),
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        )
+                                    }
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            rule.tool + if (rule.app != "*") "  on ${rule.app}" else "",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = JarvisPalette.TextPrimary,
+                                        )
+                                        if (!rule.note.isNullOrBlank()) {
+                                            Text(
+                                                rule.note,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = JarvisPalette.TextSecondary,
+                                            )
+                                        }
+                                    }
+                                    IconButton(onClick = {
+                                        scope.launch {
+                                            if (Biometric.authenticate(activity, "Remove rule", rule.tool)) {
+                                                viewModel.removePolicy(rule.id)
+                                            }
+                                        }
+                                    }) {
+                                        Icon(
+                                            Icons.Filled.Close,
+                                            contentDescription = "Remove rule",
+                                            tint = JarvisPalette.TextSecondary,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+
+                    // Add a rule.
+                    var newTool by remember { mutableStateOf("") }
+                    var newApp by remember { mutableStateOf("") }
+                    var newNote by remember { mutableStateOf("") }
+                    var newAction by remember { mutableStateOf("ask") }
+                    OutlinedTextField(
+                        value = newTool, onValueChange = { newTool = it },
+                        label = { Text("Tool glob (browser_*)") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = newApp, onValueChange = { newApp = it },
+                        label = { Text("App glob (* = any)") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    OutlinedTextField(
+                        value = newNote, onValueChange = { newNote = it },
+                        label = { Text("Note (why)") },
+                        singleLine = true, modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(
+                            onClick = {
+                                newAction = when (newAction) { "allow" -> "ask"; "ask" -> "deny"; else -> "allow" }
+                            },
+                            shape = MaterialTheme.shapes.small,
+                            color = actionColor(newAction).copy(alpha = 0.16f),
+                            border = BorderStroke(1.dp, actionColor(newAction)),
+                        ) {
+                            Text(
+                                newAction.uppercase(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = actionColor(newAction),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            )
+                        }
+                        Spacer(Modifier.weight(1f))
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    if (newTool.isBlank() && newApp.isBlank()) return@launch
+                                    if (Biometric.authenticate(activity, "Add trust rule", newTool.ifBlank { "*" })) {
+                                        viewModel.addPolicy(newTool.trim(), newApp.trim(), newAction, newNote.trim())
+                                        newTool = ""; newApp = ""; newNote = ""
+                                    }
+                                }
+                            },
+                        ) { Text("Add rule") }
+                    }
                 }
             }
 

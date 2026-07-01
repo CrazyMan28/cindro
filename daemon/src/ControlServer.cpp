@@ -368,6 +368,18 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleHooksRemove(req);
     else if (m == QStringLiteral("hooks.test"))
         resp = handleHooksTest(req);
+    else if (m == QStringLiteral("policy.list"))
+        resp = handlePolicyList(req);
+    else if (m == QStringLiteral("policy.add"))
+        resp = handlePolicyAdd(req);
+    else if (m == QStringLiteral("policy.update"))
+        resp = handlePolicyUpdate(req);
+    else if (m == QStringLiteral("policy.remove"))
+        resp = handlePolicyRemove(req);
+    else if (m == QStringLiteral("policy.set_default"))
+        resp = handlePolicySetDefault(req);
+    else if (m == QStringLiteral("policy.test"))
+        resp = handlePolicyTest(req);
     else if (m == QStringLiteral("phone.mcp"))
         resp = handlePhoneMcp(req);
     else if (m == QStringLiteral("phone.http"))
@@ -871,6 +883,78 @@ Response ControlServer::handleHooksTest(const Request &req)
     result.insert(QStringLiteral("block_reason"), o.blockReason);
     result.insert(QStringLiteral("injected_context"), o.injectedContext);
     result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(o.notes));
+    return Response::success(req.id, result);
+}
+
+// --- Trust policies (jarvis#71) ---------------------------------------------
+// The daemon owns trust_policies.json; the computer-use engine's policy gate
+// enforces it on every tool call. Mutations reload-then-save so concurrent
+// editors (desktop + phone) can't clobber each other's rules.
+
+Response ControlServer::handlePolicyList(const Request &req)
+{
+    m_trustPolicies.load();
+    return Response::success(req.id, m_trustPolicies.toJson());
+}
+
+Response ControlServer::handlePolicyAdd(const Request &req)
+{
+    m_trustPolicies.load();
+    const QString id = m_trustPolicies.addRule(
+        req.params.value(QStringLiteral("tool")).toString(),
+        req.params.value(QStringLiteral("app")).toString(),
+        req.params.value(QStringLiteral("action")).toString(),
+        req.params.value(QStringLiteral("note")).toString(),
+        req.params.value(QStringLiteral("id")).toString());
+    if (id.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 m_trustPolicies.lastError());
+    QJsonObject result;
+    result.insert(QStringLiteral("id"), id);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handlePolicyUpdate(const Request &req)
+{
+    m_trustPolicies.load();
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    QJsonObject fields = req.params;
+    fields.remove(QStringLiteral("id"));
+    if (!m_trustPolicies.updateRule(id, fields))
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 m_trustPolicies.lastError());
+    return Response::success(req.id, {});
+}
+
+Response ControlServer::handlePolicyRemove(const Request &req)
+{
+    m_trustPolicies.load();
+    if (!m_trustPolicies.removeRule(req.params.value(QStringLiteral("id")).toString()))
+        return Response::failure(req.id, QStringLiteral("not_found"),
+                                 QStringLiteral("no such rule"));
+    return Response::success(req.id, {});
+}
+
+Response ControlServer::handlePolicySetDefault(const Request &req)
+{
+    m_trustPolicies.load();
+    if (!m_trustPolicies.setDefaultAction(
+            req.params.value(QStringLiteral("action")).toString()))
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 m_trustPolicies.lastError());
+    return Response::success(req.id, {});
+}
+
+Response ControlServer::handlePolicyTest(const Request &req)
+{
+    m_trustPolicies.load();
+    const TrustDecision d = m_trustPolicies.evaluate(
+        req.params.value(QStringLiteral("tool")).toString(),
+        req.params.value(QStringLiteral("app")).toString());
+    QJsonObject result;
+    result.insert(QStringLiteral("action"), d.action);
+    result.insert(QStringLiteral("rule_id"), d.ruleId);
+    result.insert(QStringLiteral("note"), d.note);
     return Response::success(req.id, result);
 }
 
@@ -2242,7 +2326,13 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "shell hooks that fire on your lifecycle events (Claude-Code style).\n"
             "• MODES — the user selects plan / build / co-worker in Settings; follow "
             "the mode clause appended below.");
+        // Trust policies (jarvis#71): tell the model the enforced rules up
+        // front so it plans around them instead of discovering them by being
+        // blocked at the tool layer. Reload first — the file is edited live
+        // from Settings on any surface.
+        m_trustPolicies.load();
         effectiveText = guide + permissionPolicyClause() + modePolicyClause() +
+                        m_trustPolicies.preambleClause() +
                         QStringLiteral("\n---\n") + effectiveText;
     }
 
@@ -4923,6 +5013,10 @@ bool ControlServer::isConfigMethod(const QString &method)
         QStringLiteral("voice.create_clone"), QStringLiteral("voice.delete_clone"),
         QStringLiteral("voice.set_default"),  QStringLiteral("voice.rename_clone"),
         QStringLiteral("voice.preview_clone"),
+        // Trust policies (jarvis#71) — mirrored to the phone (Settings → Permissions).
+        QStringLiteral("policy.list"),       QStringLiteral("policy.add"),
+        QStringLiteral("policy.update"),     QStringLiteral("policy.remove"),
+        QStringLiteral("policy.set_default"), QStringLiteral("policy.test"),
         QStringLiteral("take_over.request"), QStringLiteral("file.push"),
         QStringLiteral("file.get"),
         QStringLiteral("devices.pair_start"), QStringLiteral("devices.list"),
@@ -4951,6 +5045,12 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
     if (m == QStringLiteral("hooks.add"))       return handleHooksAdd(req);
     if (m == QStringLiteral("hooks.remove"))    return handleHooksRemove(req);
     if (m == QStringLiteral("hooks.test"))      return handleHooksTest(req);
+    if (m == QStringLiteral("policy.list"))     return handlePolicyList(req);
+    if (m == QStringLiteral("policy.add"))      return handlePolicyAdd(req);
+    if (m == QStringLiteral("policy.update"))   return handlePolicyUpdate(req);
+    if (m == QStringLiteral("policy.remove"))   return handlePolicyRemove(req);
+    if (m == QStringLiteral("policy.set_default")) return handlePolicySetDefault(req);
+    if (m == QStringLiteral("policy.test"))     return handlePolicyTest(req);
     if (m == QStringLiteral("model.list"))      return handleModelList(req);
     if (m == QStringLiteral("mcp.list"))        return handleMcpList(req);
     if (m == QStringLiteral("mcp.add"))         return handleMcpAdd(req);

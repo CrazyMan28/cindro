@@ -11,6 +11,7 @@ import com.jarvis.app.data.VoiceSettings
 import com.jarvis.app.net.DeviceClient
 import com.jarvis.app.net.JarvisRepository
 import com.jarvis.app.protocol.ModelInfo
+import com.jarvis.app.protocol.TrustRule
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -41,6 +42,9 @@ data class SettingsUiState(
     // every chat can drive a computer/Chrome on demand with no manual co-work.
     val letJarvisUseComputer: Boolean = true,
     val permissionLevel: String = "medium", // ask-before-risky: high|medium|low
+    // Trust policies (jarvis#71): enforced per-tool/per-app guardrails.
+    val trustRules: List<TrustRule> = emptyList(),
+    val trustDefault: String = "allow",
     val loadingDaemon: Boolean = false,
     val daemonError: String? = null,
     // Voice
@@ -144,8 +148,51 @@ class SettingsViewModel(
                         )
                     }
                     loadModels(brain)
+                    loadPolicies()
                 }
                 .onFailure { e -> _uiState.update { it.copy(loadingDaemon = false, daemonError = e.message) } }
+        }
+    }
+
+    // --- Trust policies (jarvis#71) -----------------------------------------
+
+    fun loadPolicies() {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.policyList() } }
+                .onSuccess { p ->
+                    _uiState.update { it.copy(trustRules = p.rules, trustDefault = p.default) }
+                }
+            // Failures stay silent: a daemon predating policy.* just hides the card's rows.
+        }
+    }
+
+    fun addPolicy(tool: String, app: String, action: String, note: String) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.policyAdd(tool, app, action, note) } }
+            loadPolicies()
+        }
+    }
+
+    /** Cycle a rule allow→ask→deny (same gesture as the desktop card). */
+    fun cyclePolicy(rule: TrustRule) {
+        val next = when (rule.action) { "allow" -> "ask"; "ask" -> "deny"; else -> "allow" }
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.policyUpdate(rule.id, next) } }
+            loadPolicies()
+        }
+    }
+
+    fun removePolicy(id: String) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.policyRemove(id) } }
+            loadPolicies()
+        }
+    }
+
+    fun setPolicyDefault(action: String) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.policySetDefault(action) } }
+            loadPolicies()
         }
     }
 

@@ -40,6 +40,7 @@ add_library(jarvis-core STATIC
     src/MemoryStore.cpp
     src/SkillStore.cpp
     src/HookStore.cpp
+    src/TrustPolicyStore.cpp
     src/AgentStore.cpp
     src/DeviceRegistry.cpp
     src/PairingManager.cpp
@@ -236,6 +237,13 @@ add_test(NAME voice_provider_test COMMAND voice_provider_test)
 # seed-from-disk (jarvice_ref.* -> "Jarvis" default), create/list/set-default,
 # slug + create-or-replace by slug, removal repairs the default, raw (no-ffmpeg)
 # storage, and clip-path resolution. Hermetic (raw .wav bytes; no ffmpeg/network).
+# TrustPolicyStore (jarvis#71): CRUD persistence + the evaluation mirror of the
+# engine's policy gate (most-specific-wins, tie->earliest, case-insensitive app
+# globs, corrupt-file fail-open) against a QTemporaryDir root. Hermetic.
+add_executable(trust_policy_test tests/trust_policy_test.cpp)
+target_link_libraries(trust_policy_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME trust_policy_test COMMAND trust_policy_test)
+
 add_executable(voice_library_test tests/voice_library_test.cpp)
 target_link_libraries(voice_library_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME voice_library_test COMMAND voice_library_test)

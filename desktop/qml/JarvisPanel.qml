@@ -455,8 +455,11 @@ Item {
                 return
             }
             // Genuine switch (open another / delete current / + New / coworker /
-            // voice / cleared): the transcript no longer belongs here — wipe it.
+            // voice / cleared): the transcript no longer belongs here — wipe it,
+            // INCLUDING the old session's PLAN card (it's per-session; a stale
+            // plan haunting a fresh chat was part of the jarvis#72 leak).
             chatModel.clear()
+            panel.todoSpec = ""
             panel.thinking = false
             panel.busy = false
             panel.pendingNewSession = false
