@@ -20,7 +20,12 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # Self-hosted Windows runner (win-runner-1 on the pve/winvm box) — ZERO GitHub
+    # minutes. Toolchain provisioned by windows/scripts/setup-runner-tools.ps1
+    # (git + vcpkg + Inno Setup; VS Build Tools 2022 already present). Qt / Ninja /
+    # Python / Node come from the setup actions below and persist in the runner's
+    # tool cache across runs. If the runner is offline the job queues until it's back.
+    runs-on: [self-hosted, windows, jarvis-win]
 
     steps:
       - uses: actions/checkout@v4
@@ -61,11 +66,14 @@ jobs:
           modules: qtwebsockets qtmultimedia
           cache: true
 
-      # libsodium + libqrencode via the runner's preinstalled vcpkg.
+      # libsodium + libqrencode via vcpkg. On the self-hosted runner vcpkg lives at
+      # C:\vcpkg (VCPKG_INSTALLATION_ROOT, set by setup-runner-tools.ps1) and the
+      # packages are prebuilt, so this install is a near-instant cache hit.
       - name: Install vcpkg deps
         shell: pwsh
         run: |
           $vcpkg = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkg) { $vcpkg = "C:\vcpkg" }
           & "$vcpkg\vcpkg.exe" install libsodium libqrencode --triplet x64-windows
           "VCPKG_ROOT=$vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
 
@@ -78,11 +86,16 @@ jobs:
           node-version: "18"
 
       # Inno Setup 6 (iscc) — packages the staged payload into the installer.
-      - name: Install Inno Setup
+      # Pre-installed on the self-hosted runner by setup-runner-tools.ps1 (no choco);
+      # this just puts it on PATH and fails loudly if the runner wasn't provisioned.
+      - name: Ensure Inno Setup on PATH
         shell: pwsh
         run: |
-          choco install innosetup --no-progress -y
-          "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Append
+          $inno = "C:\Program Files (x86)\Inno Setup 6"
+          if (-not (Test-Path "$inno\ISCC.exe")) {
+            throw "Inno Setup not found on the runner — run windows/scripts/setup-runner-tools.ps1"
+          }
+          $inno | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # One-shot: build the daemon + shell, bundle engine + node, make the installer.
       - name: Build Jarvis (Windows)
