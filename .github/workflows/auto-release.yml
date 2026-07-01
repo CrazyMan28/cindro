@@ -1,27 +1,31 @@
-# Auto-release on merge to main (bump-gated).
+# Auto-release on merge to main (AUTO-BUMP — merge = a new release, no manual step).
 #
-# Flow: a PR merges to main -> this reads JARVIS_VERSION from windows/CMakeLists.txt
-# (at the merged commit) and, if v<version> isn't tagged yet, creates that tag, which
-# fires windows-build + linux-release (their `on: push: tags: v*`) to build and ATTACH
-# the Jarvis-Setup.exe + AppImage to a new GitHub Release v<version>. If the version
-# wasn't bumped (tag already exists) -> nothing happens.
+# Old behavior (the gotcha): this only tagged when JARVIS_VERSION in the code was
+# bumped. Merging fixes WITHOUT bumping that number → auto-release saw the same
+# version, thought it was already released, and did nothing. So "merge to main" did
+# NOT publish a release unless you also hand-edited the version. Fixed here.
 #
-# IMPORTANT — no `actions/checkout` here on purpose: this job runs on the host as the
-# runner user, but linux-ci/linux-release run IN a container as root and leave
-# root-owned files in _work; a checkout's clean step then fails with EACCES. So we do
-# everything through the GitHub REST API (curl) and never touch the work directory.
+# New behavior: on every push to main (a merge), find the highest existing vX.Y.Z
+# tag, bump the PATCH (v0.12.7 -> v0.12.8), and create that tag. The pushed tag fires
+# windows-build + linux-release (their `on: push: tags: v*`) which build and ATTACH
+# Jarvis-Setup-<ver>.exe + the AppImage to a new GitHub Release. No version number to
+# touch by hand — merging is the release. (Want a minor/major bump instead? cut the
+# tag yourself, e.g. `gh release create v0.13.0`; the next auto-bump continues from it.)
 #
-# Why a PAT (secret RELEASE_PAT) and not GITHUB_TOKEN: GitHub will not let a tag created
-# by GITHUB_TOKEN trigger other workflows (anti-recursion). The PAT is what lets the new
-# tag fire the release builds. One-time setup: a token with Contents: write on this repo,
-# saved as the repo secret RELEASE_PAT. Until it's set, this job no-ops with a warning.
+# No `actions/checkout` (linux-ci runs in a root container and leaves root-owned files
+# in _work → a checkout clean step EACCESes). Everything via the REST API (curl).
 #
-# Runs on the self-hosted Linux runner (no GitHub-hosted minutes).
+# RELEASE_PAT (repo secret, Contents: write): GitHub won't let a GITHUB_TOKEN-created
+# tag trigger other workflows (anti-recursion); the PAT is what lets the new tag fire
+# the release builds. Until it's set, this job no-ops with a warning.
+#
+# Runs on the self-hosted Linux runner (no GitHub-hosted minutes). Manual trigger too.
 name: auto-release
 
 on:
   push:
     branches: [main]
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -30,7 +34,7 @@ jobs:
   tag:
     runs-on: [self-hosted, Linux, X64]
     steps:
-      - name: Tag v<JARVIS_VERSION> if it is new (via API, no checkout)
+      - name: Auto-bump patch + tag (via API, no checkout)
         env:
           PAT: ${{ secrets.RELEASE_PAT }}
           REPO: ${{ github.repository }}
@@ -44,24 +48,30 @@ jobs:
           api="https://api.github.com/repos/$REPO"
           auth="Authorization: token $PAT"
 
-          # 1. Read JARVIS_VERSION from windows/CMakeLists.txt at the merged commit.
-          VER=$(curl -fsSL -H "$auth" "$api/contents/windows/CMakeLists.txt?ref=$SHA" \
-            | python3 -c "import sys,json,base64,re; c=base64.b64decode(json.load(sys.stdin)['content']).decode(); m=re.search(r'set\(JARVIS_VERSION\s+\"([0-9]+\.[0-9]+\.[0-9]+)', c); print(m.group(1) if m else '')")
-          if [ -z "$VER" ]; then echo "::error::could not read JARVIS_VERSION from windows/CMakeLists.txt"; exit 1; fi
-          echo "JARVIS_VERSION = $VER"
+          # 1. Highest existing vX.Y.Z tag (version-sorted; ignores non-semver tags).
+          latest=$(curl -fsSL -H "$auth" "$api/tags?per_page=100" \
+            | python3 -c "import sys,json;print(chr(10).join(t['name'] for t in json.load(sys.stdin)))" \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          latest="${latest#v}"
+          [ -z "$latest" ] && latest="0.0.0"
+          echo "latest release tag = v$latest"
 
-          # 2. Already released? (tag ref exists -> 200)
-          code=$(curl -s -o /dev/null -w "%{http_code}" -H "$auth" "$api/git/ref/tags/v$VER")
+          # 2. Bump the PATCH.
+          next=$(python3 -c "a,b,c='$latest'.split('.');print('%d.%d.%d'%(int(a),int(b),int(c)+1))")
+          echo "next = v$next (at $SHA)"
+
+          # 3. Guard: if v$next somehow already exists (re-run), skip cleanly.
+          code=$(curl -s -o /dev/null -w "%{http_code}" -H "$auth" "$api/git/ref/tags/v$next")
           if [ "$code" = "200" ]; then
-            echo "v$VER already released -> nothing to do (bump JARVIS_VERSION in a PR to publish)."
+            echo "v$next already exists -> nothing to do."
             exit 0
           fi
 
-          # 3. Create the tag ref at the merged commit (PAT -> triggers windows-build + linux-release).
+          # 4. Create the tag ref at the merged commit (PAT -> triggers release builds).
           resp=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST -H "$auth" \
-            "$api/git/refs" -d "{\"ref\":\"refs/tags/v$VER\",\"sha\":\"$SHA\"}")
+            "$api/git/refs" -d "{\"ref\":\"refs/tags/v$next\",\"sha\":\"$SHA\"}")
           if [ "$resp" = "201" ]; then
-            echo "Tagged v$VER at $SHA -> release builds will publish Release v$VER."
+            echo "::notice::Tagged v$next at $SHA -> windows-build + linux-release will publish Release v$next."
           else
-            echo "::error::failed to create tag v$VER (HTTP $resp):"; cat /tmp/resp.json; exit 1
+            echo "::error::failed to create tag v$next (HTTP $resp):"; cat /tmp/resp.json; exit 1
           fi
