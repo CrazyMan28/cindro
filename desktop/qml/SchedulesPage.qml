@@ -13,13 +13,30 @@ Item {
 
     ListModel { id: schedModel }
     property bool composing: false
+    property var availableBrains: ({})
+
+    onAvailableBrainsChanged: brainCombo.model = brainOptions()
+
+    function brainOptions() {
+        var out = []
+        if (page.availableBrains.codex === true) out.push("codex")
+        if (page.availableBrains.claude === true) out.push("claude")
+        out.push("api")
+        return out
+    }
 
     function refresh() { if (bridge.connected) bridge.scheduleList() }
-    Component.onCompleted: refresh()
+    Component.onCompleted: {
+        refresh()
+        if (bridge.connected) bridge.loadSettings()
+    }
 
     Connections {
         target: bridge
-        function onConnectedChanged() { if (bridge.connected) page.refresh() }
+        function onConnectedChanged() { if (bridge.connected) { page.refresh(); bridge.loadSettings() } }
+        function onSettingsLoaded(s) {
+            page.availableBrains = s.available_brains !== undefined ? s.available_brains : ({})
+        }
         function onSchedulesListed(schedules) {
             schedModel.clear()
             for (var i = 0; i < schedules.length; i++) {
@@ -132,7 +149,7 @@ Item {
                     Widgets.StyledCombo {
                         id: brainCombo
                         Layout.preferredWidth: 150
-                        model: ["codex", "claude", "api"]
+                        model: page.brainOptions()
                     }
                 }
                 ColumnLayout {

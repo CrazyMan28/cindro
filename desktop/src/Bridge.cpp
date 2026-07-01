@@ -393,7 +393,10 @@ void Bridge::createSession(const QString &profile, const QString &brain, const Q
 {
     QVariantMap params;
     params.insert(QStringLiteral("profile"), profile.isEmpty() ? QStringLiteral("coder") : profile);
-    params.insert(QStringLiteral("brain"), brain.isEmpty() ? QStringLiteral("codex") : brain);
+    // Omit brain when unspecified so the daemon applies its configured default_brain
+    // (from settings / config.toml) instead of the desktop hardcoding a value.
+    if (!brain.isEmpty())
+        params.insert(QStringLiteral("brain"), brain);
     if (!model.isEmpty())
         params.insert(QStringLiteral("model"), model);
     m_creatingSession = true;  // ignore our own session.opened echo until the reply
@@ -454,7 +457,9 @@ void Bridge::respondApproval(const QString &approvalId, const QString &decision)
 void Bridge::listModels(const QString &brain)
 {
     QVariantMap params;
-    params.insert(QStringLiteral("brain"), brain.isEmpty() ? QStringLiteral("codex") : brain);
+    // Omit brain when unspecified so the daemon applies its configured default_brain.
+    if (!brain.isEmpty())
+        params.insert(QStringLiteral("brain"), brain);
     request(QStringLiteral("model.list"), params);
 }
 
@@ -2111,7 +2116,9 @@ void Bridge::startCoworker(const QString &brain, const QString &model)
 {
     QVariantMap params;
     params.insert(QStringLiteral("profile"), QStringLiteral("coworker"));
-    params.insert(QStringLiteral("brain"), brain.isEmpty() ? QStringLiteral("codex") : brain);
+    // Omit brain when unspecified so the daemon applies its configured default_brain.
+    if (!brain.isEmpty())
+        params.insert(QStringLiteral("brain"), brain);
     params.insert(QStringLiteral("target"), QStringLiteral("agent"));
     if (!model.isEmpty())
         params.insert(QStringLiteral("model"), model);
@@ -2136,7 +2143,9 @@ void Bridge::takeOver(const QString &brain, const QString &model)
 {
     QVariantMap params;
     params.insert(QStringLiteral("profile"), QStringLiteral("coworker"));
-    params.insert(QStringLiteral("brain"), brain.isEmpty() ? QStringLiteral("codex") : brain);
+    // Omit brain when unspecified so the daemon applies its configured default_brain.
+    if (!brain.isEmpty())
+        params.insert(QStringLiteral("brain"), brain);
     params.insert(QStringLiteral("target"), QStringLiteral("real"));
     if (!model.isEmpty())
         params.insert(QStringLiteral("model"), model);

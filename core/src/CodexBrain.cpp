@@ -1,5 +1,6 @@
 #include "jarvis/CodexBrain.h"
 
+#include "jarvis/CliResolve.h"
 #include "jarvis/CodexParser.h"
 
 #include <QProcessEnvironment>
@@ -187,8 +188,11 @@ void CodexBrain::send(const QString &text, const QStringList &images)
     m_busy = true;
 
     m_proc = new QProcess(this);
-    m_proc->setProgram(m_opts.program);
-    m_proc->setArguments(buildArgs(text, images));
+    QString program = m_opts.program;
+    QStringList args = buildArgs(text, images);
+    jarvis::resolveCliLaunch(program, args);
+    m_proc->setProgram(program);
+    m_proc->setArguments(args);
     m_proc->setProcessChannelMode(QProcess::SeparateChannels);
     // Export MCP bearer tokens that the `-c ...bearer_token_env_var=<NAME>`
     // overrides reference, plus an isolated CODEX_HOME when set (so codex can't
