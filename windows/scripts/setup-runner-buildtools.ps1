@@ -58,11 +58,23 @@ if (-not (Test-Path "$nodeDir\node.exe")) {
 }
 if (Test-Path "$nodeDir\node.exe") { Log ("Node OK: " + (& "$nodeDir\node.exe" --version)) } else { Log "NODE INSTALL FAILED" }
 
+# ---- 4b. CMake ------------------------------------------------------------
+$cmake = "C:\Program Files\CMake\bin\cmake.exe"
+if (-not (Test-Path $cmake)) {
+    $url = "https://github.com/Kitware/CMake/releases/download/v4.3.3/cmake-4.3.3-windows-x86_64.msi"
+    $o = "$env:TEMP\cmake.msi"
+    Log "downloading CMake 4.3.3..."
+    Invoke-WebRequest -Uri $url -OutFile $o
+    Log ("installing CMake (" + (Get-Item $o).Length + " bytes)...")
+    Start-Process msiexec.exe -ArgumentList '/i', "`"$o`"", '/qn', '/norestart', 'ADD_CMAKE_TO_PATH=System' -Wait
+}
+if (Test-Path $cmake) { Log ("cmake OK: " + (& $cmake --version | Select-Object -First 1)) } else { Log "CMAKE INSTALL FAILED" }
+
 # ---- 5. machine env: CMAKE_PREFIX_PATH + PATH -----------------------------
 [Environment]::SetEnvironmentVariable("CMAKE_PREFIX_PATH", $qtDir, "Machine")
 [Environment]::SetEnvironmentVariable("Qt6_DIR", "$qtDir\lib\cmake\Qt6", "Machine")
 $machPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-foreach ($d in @("$qtDir\bin", $ninjaDir, $nodeDir, "C:\Program Files\Python312", "C:\Program Files\Python312\Scripts")) {
+foreach ($d in @("$qtDir\bin", $ninjaDir, $nodeDir, "C:\Program Files\CMake\bin", "C:\Program Files\Python312", "C:\Program Files\Python312\Scripts")) {
     if ((Test-Path $d) -and ($machPath -notlike "*$d*")) { $machPath = "$machPath;$d"; Log "PATH += $d" }
 }
 [Environment]::SetEnvironmentVariable("Path", $machPath, "Machine")
