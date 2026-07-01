@@ -57,6 +57,12 @@ public:
     {
         m_assistantName = n.trimmed().isEmpty() ? QStringLiteral("Jarvis") : n.trimmed();
     }
+    // The human's name, collected in the wizard. Unlike the assistant name there
+    // is NO default — empty just means "not provided". Round-trips in config.toml
+    // as `user_name = "..."` and is also mirrored into long-term memory by the
+    // daemon so brains can address the user by name.
+    QString userName() const { return m_userName; }
+    void setUserName(const QString &n) { m_userName = n.trimmed(); }
 
     // AUTO-UPDATER prefs. auto_update defaults TRUE (the daemon checks `main` on
     // the interval and NOTIFIES on "behind" — it never auto-applies silently).
@@ -206,6 +212,7 @@ private:
     QString m_ttsProvider = QStringLiteral("voxtral"); // TTS provider id
     bool m_setupComplete = false;       // first-launch wizard done? (default: no)
     QString m_assistantName = QStringLiteral("Jarvis"); // friendly assistant name
+    QString m_userName;                                 // the human's name ("" = unset)
     bool m_autoUpdate = true;           // periodic auto update-check (default ON)
     int m_autoUpdateIntervalHours = 6;  // auto-check cadence (hours, >=1)
     QJsonObject m_theme;

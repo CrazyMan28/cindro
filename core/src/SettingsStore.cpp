@@ -91,6 +91,7 @@ void SettingsStore::load()
     m_ttsProvider = QStringLiteral("voxtral");
     m_setupComplete = false;          // wizard not done until config says so
     m_assistantName = QStringLiteral("Jarvis");
+    m_userName.clear();               // the human's name; empty until the wizard sets it
     m_autoUpdate = true;              // default ON (only an explicit false/0 disables)
     m_autoUpdateIntervalHours = 6;
     m_theme = QJsonObject();
@@ -227,6 +228,18 @@ void SettingsStore::load()
                     }
                     continue;
                 }
+                if (line.startsWith(QStringLiteral("user_name"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        QString v = line.mid(eq + 1).trimmed();
+                        if (v.size() >= 2 &&
+                            ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
+                             (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
+                            v = v.mid(1, v.size() - 2);
+                        setUserName(v); // empty stays empty (no default)
+                    }
+                    continue;
+                }
                 if (line.startsWith(QStringLiteral("auto_update_interval_hours"))) {
                     const int eq = line.indexOf(QLatin1Char('='));
                     if (eq >= 0) {
@@ -337,6 +350,7 @@ bool SettingsStore::saveConfig()
                     t.startsWith(QStringLiteral("tts_provider")) ||
                     t.startsWith(QStringLiteral("setup_complete")) ||
                     t.startsWith(QStringLiteral("assistant_name")) ||
+                    t.startsWith(QStringLiteral("user_name")) ||
                     t.startsWith(QStringLiteral("auto_update")) ||
                     t.startsWith(QStringLiteral("theme_json")))
                     continue;
@@ -363,6 +377,8 @@ bool SettingsStore::saveConfig()
     ts << "tts_provider = \"" << m_ttsProvider << "\"\n";
     ts << "setup_complete = " << (m_setupComplete ? "true" : "false") << "\n";
     ts << "assistant_name = \"" << m_assistantName << "\"\n";
+    if (!m_userName.isEmpty())
+        ts << "user_name = \"" << m_userName << "\"\n";
     ts << "auto_update = " << (m_autoUpdate ? "true" : "false") << "\n";
     ts << "auto_update_interval_hours = " << m_autoUpdateIntervalHours << "\n";
     if (!m_theme.isEmpty()) {
