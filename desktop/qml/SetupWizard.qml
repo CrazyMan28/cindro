@@ -26,6 +26,7 @@ Item {
     property int step: 0
     readonly property int stepCount: 4
     property string assistantName: "Jarvis"
+    property string userName: ""                  // the human's name — saved as a memory
     property string ttsVoice: ""                 // "" => daemon default voice
     property var voiceList: []                    // [{id,label}] from voice.list_voices
     property string permissionLevel: "medium"     // high | medium | low
@@ -51,6 +52,8 @@ Item {
             wiz.mistralKeySet = (s.api_keys_set !== undefined) && (s.api_keys_set.mistral === true)
             if (s.assistant_name !== undefined && ("" + s.assistant_name).length)
                 wiz.assistantName = "" + s.assistant_name
+            if (s.user_name !== undefined && ("" + s.user_name).length)
+                wiz.userName = "" + s.user_name
             if (s.tts_voice !== undefined) wiz.ttsVoice = "" + s.tts_voice
             wiz.permissionLevel = (s.permission_level === "high" || s.permission_level === "low")
                                   ? s.permission_level : "medium"
@@ -89,12 +92,15 @@ Item {
         var patch = {
             "setup_complete": true,
             "assistant_name": name.length ? name : "Jarvis",
+            "user_name": wiz.userName.trim(),
             "tts_voice": wiz.ttsVoice,
             "permission_level": wiz.permissionLevel,
             "auto_update": wiz.autoUpdate
         }
-        // Only when the user actually entered a Mistral key (no CLI path).
-        if (!wiz.hasCli && !wiz.mistralKeySet && wiz.mistralKey.trim().length > 0)
+        // Persist a Mistral key whenever one was entered and none is set yet. Needed
+        // both for the api brain (no-CLI path) AND for Voxtral voice/STT-TTS even when
+        // codex/claude drive chat — so we no longer gate it on !hasCli.
+        if (!wiz.mistralKeySet && wiz.mistralKey.trim().length > 0)
             patch["api_keys"] = { "mistral": wiz.mistralKey.trim() }
         if (bridge && bridge.connected)
             bridge.saveSettings(patch)
@@ -219,6 +225,28 @@ Item {
                         font.pixelSize: 11
                         wrapMode: Text.WordWrap
                     }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairlineSoft; Layout.topMargin: 4 }
+                    Text {
+                        text: "And what should I call you?"
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 13
+                    }
+                    Widgets.StyledField {
+                        id: userNameField
+                        Layout.fillWidth: true
+                        text: wiz.userName
+                        placeholder: "Your name (optional)"
+                        onTextChanged: wiz.userName = text
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Saved as a memory so I can address you by name. Optional — leave blank to skip."
+                        color: Theme.textFaint
+                        font.family: Theme.fontSans
+                        font.pixelSize: 11
+                        wrapMode: Text.WordWrap
+                    }
                     Item { Layout.fillHeight: true }
                 }
 
@@ -264,7 +292,7 @@ Item {
                 // (iii) Brain / key ------------------------------------------
                 ColumnLayout {
                     spacing: 14
-                    // CLI present: nothing to do.
+                    // CLI present: chat is covered — but voice/vision still want a key.
                     ColumnLayout {
                         visible: wiz.hasCli
                         Layout.fillWidth: true
@@ -279,29 +307,35 @@ Item {
                         }
                         Text {
                             Layout.fillWidth: true
-                            text: "You're ready to go with the smartest brains. No API key needed."
+                            text: "Chat is ready with the smartest brains. Voice, vision and STT/TTS use Voxtral (Mistral) — add a key below to enable them."
                             color: Theme.textMuted
                             font.family: Theme.fontSans
                             font.pixelSize: 12
                             wrapMode: Text.WordWrap
                         }
                     }
-                    // No CLI: Mistral key onboarding.
+                    // Mistral key — required for the api brain (no CLI) AND for Voxtral
+                    // voice / STT-TTS even when a CLI drives chat. Offered until set.
                     ColumnLayout {
-                        visible: !wiz.hasCli
                         Layout.fillWidth: true
                         spacing: 10
                         Text {
                             Layout.fillWidth: true
-                            text: wiz.mistralKeySet ? "✓ Mistral API key already set" : "No Codex or Claude CLI found"
-                            color: wiz.mistralKeySet ? Theme.ok : Theme.amber
+                            text: wiz.mistralKeySet
+                                  ? "✓ Mistral API key already set"
+                                  : (wiz.hasCli ? "Add a Mistral key for voice + vision (optional)"
+                                                : "No Codex or Claude CLI found")
+                            color: wiz.mistralKeySet ? Theme.ok : (wiz.hasCli ? Theme.text : Theme.amber)
                             font.family: Theme.fontSans
                             font.pixelSize: 14
                             font.weight: Font.Medium
                         }
                         Text {
+                            visible: !wiz.mistralKeySet
                             Layout.fillWidth: true
-                            text: "Add a Mistral API key and Jarvis works right away — chat, voice, vision, and computer use via the function-calling loop."
+                            text: wiz.hasCli
+                                  ? "Powers spoken replies + voice input (Voxtral) and image understanding. Skip it and Jarvis still chats via your CLI."
+                                  : "Add a Mistral API key and Jarvis works right away — chat, voice, vision, and computer use via the function-calling loop."
                             color: Theme.textMuted
                             font.family: Theme.fontSans
                             font.pixelSize: 12
@@ -315,6 +349,7 @@ Item {
                             onTextChanged: wiz.mistralKey = text
                         }
                         Text {
+                            visible: !wiz.mistralKeySet
                             Layout.fillWidth: true
                             text: "Get a key at console.mistral.ai →"
                             color: Theme.accent
@@ -327,6 +362,7 @@ Item {
                             }
                         }
                         Text {
+                            visible: !wiz.mistralKeySet
                             Layout.fillWidth: true
                             text: "Stored locally (0600), never in git. See docs/MISTRAL_SETUP.md. You can skip this and add a key later in Settings."
                             color: Theme.textFaint

@@ -126,6 +126,19 @@ export APPIMAGE_EXTRACT_AND_RUN=1
 # linuxdeploy's bundled `strip` can't parse modern .relr.dyn sections (new binutils
 # on Fedora 44+), which aborts the run. Skip stripping — bigger but reliable.
 export NO_STRIP=1
+# linuxdeploy's bundled patchelf (0.15; also confirmed in 0.18) FATALLY corrupts the
+# ELF shared libs it rewrites on Fedora 44 (glibc 2.41 / binutils 2.43). To inject the
+# $ORIGIN RUNPATH when PT_DYNAMIC has no slack, it carves a new LOAD segment and moves
+# .init/.plt/.dynstr/.dynamic into it — but leaves DT_INIT pointing at the OLD .init
+# VirtAddr (now stale NOTE bytes), marks the new segment RW instead of RX, and doesn't
+# fix RIP-relative displacements inside the moved .init code. Result: ld.so calls a
+# stale/garbage DT_INIT and jarvisd SEGVs in libudev's _init before main() — the exact
+# crash that failed the --selftest gate on every linux-release. Fedora system/Qt libs
+# carry NO RPATH/RUNPATH of their own (they resolve via ldconfig), so the $ORIGIN
+# injection buys zero portability; PATCHELF=/bin/true skips it entirely. The libs are
+# still COPIED into AppDir/usr/lib intact, and AppRun's LD_LIBRARY_PATH=$HERE/usr/lib
+# makes ld.so prefer the bundled copies for direct + transitive deps. (VM-verified fix.)
+export PATCHELF=/bin/true
 say "Running linuxdeploy (bundling Qt + LayerShellQt + deps)..."
 # Bundle into the AppDir but DON'T package yet (no --output): we must prune first.
 "$LD" --appdir "$APPDIR" --plugin qt \
@@ -156,8 +169,10 @@ if [ -s "$EXCL" ]; then
   done < "$EXCL"
 fi
 # Belt-and-suspenders: the audio client libs are the confirmed crashers; ensure they're
-# gone even if the excludelist lags a version.
-for n in libpipewire-0.3 libpulse libpulsecommon libasound; do
+# gone even if the excludelist lags a version. libudev/libsystemd are host-daemon
+# interface libs that must resolve from the host anyway (version skew), and were the
+# first to fault in the dl-init chain — drop them too.
+for n in libpipewire-0.3 libpulse libpulsecommon libasound libudev libsystemd; do
   for f in "$APPDIR"/usr/lib/"$n"*; do [ -e "$f" ] && { rm -f "$f"; pruned=$((pruned+1)); }; done
 done
 say "pruned $pruned host-provided libs"

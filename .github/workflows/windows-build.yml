@@ -20,20 +20,28 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    # Self-hosted Windows runner (win-runner-1 on the pve/winvm box) — ZERO GitHub
+    # minutes. Toolchain provisioned by windows/scripts/setup-runner-tools.ps1
+    # (git + vcpkg + Inno Setup; VS Build Tools 2022 already present). Qt / Ninja /
+    # Python / Node come from the setup actions below and persist in the runner's
+    # tool cache across runs. If the runner is offline the job queues until it's back.
+    runs-on: [self-hosted, windows, jarvis-win]
 
     steps:
       - uses: actions/checkout@v4
 
+      # PowerShell (not bash): the self-hosted Windows runner has no git-bash on
+      # PATH for Actions' `shell: bash`, and the Windows/WSL bash stub errors out.
       - name: Derive version
         id: ver
-        shell: bash
+        shell: pwsh
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=0.1.0-$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
-          fi
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $v = $env:GITHUB_REF_NAME -replace '^v', ''
+          } else {
+            $v = "0.1.0-" + $env:GITHUB_SHA.Substring(0, 7)
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       # MSVC toolchain (cl + ninja on PATH) for the Ninja generator that build.ps1
       # uses. msvc-dev-cmd finds VS via vswhere and exports the env to later steps.
@@ -41,48 +49,53 @@ jobs:
         with:
           arch: x64
 
-      - name: Install Ninja
-        uses: seanmiddleditch/gha-setup-ninja@v5
+      # Ninja, Qt 6.10.3 (win64_msvc2022_64 + qtwebsockets + qtmultimedia), Python 3.12
+      # and Node 20 are PRE-INSTALLED on the runner by setup-runner-buildtools.ps1 and
+      # exposed via machine env (CMAKE_PREFIX_PATH + PATH) — NO per-run downloads, just
+      # like the Linux prebuilt CI image. Assert they're present so a mis-provisioned
+      # runner fails loudly here instead of halfway through build.ps1.
+      # (Qt is pinned to 6.10.3 on the runner: it fixes the Qt6Qml.dll access-violation
+      #  that crashed the sidebar on 6.8.1/6.9.1 — headless, no window.)
+      - name: Verify prebuilt toolchain
+        shell: pwsh
+        run: |
+          $ok = $true
+          function Need($name, $cmd) {
+            $c = Get-Command $cmd -ErrorAction SilentlyContinue
+            if ($c) { Write-Host "OK   $name -> $($c.Source)" } else { Write-Host "MISSING  $name ($cmd)"; $script:ok = $false }
+          }
+          Need "ninja"       ninja
+          Need "python"      python
+          Need "node"        node
+          Need "npm"         npm
+          Need "windeployqt" windeployqt
+          if (-not $env:CMAKE_PREFIX_PATH -or -not (Test-Path "$env:CMAKE_PREFIX_PATH")) {
+            Write-Host "MISSING  CMAKE_PREFIX_PATH ($env:CMAKE_PREFIX_PATH)"; $ok = $false
+          } else { Write-Host "OK   Qt   -> $env:CMAKE_PREFIX_PATH" }
+          if (-not $ok) { throw "Runner not fully provisioned — run windows/scripts/setup-runner-buildtools.ps1" }
 
-      # Qt 6.11.1 — MATCH the Linux build's Qt (6.11), which is rock solid. On 6.8.1
-      # AND 6.9.1, jarvis-sidebar.exe crashed at runtime with an ACCESS VIOLATION
-      # deep inside Qt6Qml.dll's JS engine while evaluating a QML binding during
-      # scene-graph rendering (WER c0000005; the full crash dump's stack is 100% Qt,
-      # zero of our code — confirmed not threading, not GPU, not our C++). So it ran
-      # headless with NO window (the sister's bug). It reproduced on a real laptop +
-      # a VM. Bumping to the exact Linux Qt line (6.11) is the fix.
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: "6.10.3"
-          host: windows
-          target: desktop
-          arch: win64_msvc2022_64
-          modules: qtwebsockets qtmultimedia
-          cache: true
-
-      # libsodium + libqrencode via the runner's preinstalled vcpkg.
+      # libsodium + libqrencode via vcpkg. On the self-hosted runner vcpkg lives at
+      # C:\vcpkg (VCPKG_INSTALLATION_ROOT, set by setup-runner-tools.ps1) and the
+      # packages are prebuilt, so this install is a near-instant cache hit.
       - name: Install vcpkg deps
         shell: pwsh
         run: |
           $vcpkg = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkg) { $vcpkg = "C:\vcpkg" }
           & "$vcpkg\vcpkg.exe" install libsodium libqrencode --triplet x64-windows
           "VCPKG_ROOT=$vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "18"
-
       # Inno Setup 6 (iscc) — packages the staged payload into the installer.
-      - name: Install Inno Setup
+      # Pre-installed on the self-hosted runner by setup-runner-tools.ps1 (no choco);
+      # this just puts it on PATH and fails loudly if the runner wasn't provisioned.
+      - name: Ensure Inno Setup on PATH
         shell: pwsh
         run: |
-          choco install innosetup --no-progress -y
-          "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Append
+          $inno = "C:\Program Files (x86)\Inno Setup 6"
+          if (-not (Test-Path "$inno\ISCC.exe")) {
+            throw "Inno Setup not found on the runner — run windows/scripts/setup-runner-tools.ps1"
+          }
+          $inno | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # One-shot: build the daemon + shell, bundle engine + node, make the installer.
       - name: Build Jarvis (Windows)

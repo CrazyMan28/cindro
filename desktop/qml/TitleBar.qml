@@ -123,6 +123,17 @@ Item {
             onClicked: bar.win.showMinimized()
         }
 
+        // Maximize / Restore (floating window only — the docked surface owns its
+        // exclusive zone, so maximizing only makes sense for the free-floating HUD,
+        // e.g. the Windows edition where there's no layer-shell dock).
+        TitleButton {
+            visible: !bar.dockedSurface
+            property bool maximized: bar.win.visibility === Window.Maximized
+            glyphType: maximized ? "restore" : "max"
+            tip: maximized ? "Restore" : "Maximize"
+            onClicked: maximized ? bar.win.showNormal() : bar.win.showMaximized()
+        }
+
         // Close
         TitleButton {
             glyphType: "close"
@@ -203,6 +214,15 @@ Item {
                         // chevrons pointing right (tuck away)
                         ctx.beginPath(); ctx.moveTo(3,3); ctx.lineTo(w-5,h/2); ctx.lineTo(3,h-3)
                         ctx.moveTo(7,3); ctx.lineTo(w-1,h/2); ctx.lineTo(7,h-3); ctx.stroke(); break
+                    case "max":
+                        // single square outline
+                        ctx.strokeRect(2.5,2.5,w-5,h-5); break
+                    case "restore":
+                        // two offset windows (front square + exposed back edges)
+                        ctx.strokeRect(2,4.5,7,7)
+                        ctx.beginPath()
+                        ctx.moveTo(4.5,4.5); ctx.lineTo(4.5,2); ctx.lineTo(11.5,2)
+                        ctx.lineTo(11.5,9); ctx.lineTo(9,9); ctx.stroke(); break
                     }
                 }
             }

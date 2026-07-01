@@ -528,6 +528,7 @@ Response ControlServer::handleSettingsGet(const Request &req)
     // shows SetupWizard.qml on load when setup_complete is false.
     s.insert(QStringLiteral("setup_complete"), m_settings.setupComplete());
     s.insert(QStringLiteral("assistant_name"), m_settings.assistantName());
+    s.insert(QStringLiteral("user_name"), m_settings.userName());
 
     // AUTO-UPDATER: the toggle (default ON) + the check cadence, plus the running
     // build identity (stamped at compile time) so the UI can show the version.
@@ -697,6 +698,19 @@ Response ControlServer::handleSettingsSet(const Request &req)
     if (patch.contains(QStringLiteral("assistant_name"))) {
         m_settings.setAssistantName(patch.value(QStringLiteral("assistant_name")).toString());
         prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("user_name"))) {
+        const QString un = patch.value(QStringLiteral("user_name")).toString().trimmed();
+        m_settings.setUserName(un);
+        prefsTouched = true;
+        // Mirror the human's name into long-term memory so every brain can address
+        // them by name. Fixed id => upsert (no duplicates when the name is re-saved
+        // from Settings or a later wizard run).
+        if (!un.isEmpty() && m_memory.isOpen()) {
+            m_memory.add(QStringLiteral("The user's name is %1.").arg(un),
+                         {QStringLiteral("user"), QStringLiteral("profile")},
+                         QStringLiteral("user-name"));
+        }
     }
     bool autoUpdateChanged = false;
     if (patch.contains(QStringLiteral("auto_update"))) {

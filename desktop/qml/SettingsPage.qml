@@ -25,8 +25,11 @@ Item {
     property var pendingKeys: ({})             // provider -> new value to save
     property var modelsByBrain: ({})
     property var canDrive: ({})                 // brain -> bool (computer-use drive)
+    property var availableBrains: ({})          // {codex:bool, claude:bool} from settings.get
     property string defaultBrain: "codex"
     property string defaultModel: ""
+    property string assistantName: "Jarvis"      // what the assistant calls itself (settings.get)
+    property string userName: ""                  // the human's name (settings.get; saved as memory)
     property string claudeAccount: "pro"        // "pro" (default) | "max"
     property string ttsVoice: ""                 // preferred TTS voice slug (the default)
     property var voiceList: []                   // [{id,label}] from voice.list_voices
@@ -159,8 +162,12 @@ Item {
             page.keysSet = s.api_keys_set !== undefined ? s.api_keys_set : ({})
             page.modelsByBrain = s.models_by_brain !== undefined ? s.models_by_brain : ({})
             page.canDrive = s.can_drive !== undefined ? s.can_drive : ({})
+            page.availableBrains = s.available_brains !== undefined ? s.available_brains : ({})
             page.defaultBrain = s.default_brain !== undefined ? s.default_brain : "codex"
             page.defaultModel = s.default_model !== undefined ? s.default_model : ""
+            page.assistantName = (s.assistant_name !== undefined && ("" + s.assistant_name).trim().length)
+                                 ? ("" + s.assistant_name) : "Jarvis"
+            page.userName = s.user_name !== undefined ? ("" + s.user_name) : ""
             page.claudeAccount = (s.claude_account === "max") ? "max" : "pro"
             page.ttsVoice = s.tts_voice !== undefined ? s.tts_voice : ""
             page.sttProvider = s.stt_provider !== undefined ? s.stt_provider : "voxtral"
@@ -184,7 +191,7 @@ Item {
             }
             page.pendingKeys = ({})
             page.dirty = false
-            brainCombo.syncFromState()
+            brainCombo.refill()
             modelCombo.syncFromState()
             claudeAccountCombo.syncFromState()
             sttProviderCombo.syncFromState()
@@ -281,6 +288,18 @@ Item {
         return (m && m.length) ? m : [page.defaultModel].filter(function(x){return x && x.length})
     }
 
+    // Only the brains actually usable on THIS machine: codex / claude when their
+    // CLI is detected (available_brains from the daemon), plus "api" which always
+    // works with a key. Prevents offering a brain that can't spawn — the source of
+    // the "shows claude/max even though it's not installed" confusion.
+    function brainOptions() {
+        var out = []
+        if (page.availableBrains.codex === true) out.push("codex")
+        if (page.availableBrains.claude === true) out.push("claude")
+        out.push("api")
+        return out
+    }
+
     // Voice picker helpers: the combo shows labels, but we persist the id slug.
     function voiceLabels() {
         var out = []
@@ -342,6 +361,8 @@ Item {
     function save() {
         page.saving = true
         var patch = {
+            "assistant_name": page.assistantName.trim().length ? page.assistantName.trim() : "Jarvis",
+            "user_name": page.userName.trim(),
             "default_brain": page.defaultBrain,
             "default_model": page.defaultModel,
             "claude_account": page.claudeAccount,
@@ -404,6 +425,73 @@ Item {
                 }
             }
 
+            // ===== Identity =================================================
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+                Text {
+                    text: "// IDENTITY"
+                    color: Theme.accent
+                    font.family: Theme.fontDisplay
+                    font.pixelSize: 11
+                    font.letterSpacing: Theme.trackMid
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "What the assistant calls itself, in chat and voice. This is the name you picked during setup."
+                    color: Theme.textFaint
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 5
+                    Text { text: "Assistant name"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                    Widgets.StyledField {
+                        id: assistantNameField
+                        Layout.fillWidth: true
+                        placeholder: "Jarvis"
+                        text: page.assistantName
+                        onTextChanged: {
+                            if (text !== page.assistantName) {
+                                page.assistantName = text
+                                page.dirty = true
+                            }
+                        }
+                        onAccepted: if (page.dirty && !page.saving) page.save()
+                    }
+                    Text {
+                        text: "Your name"
+                        color: Theme.textMuted
+                        font.family: Theme.fontSans
+                        font.pixelSize: 12
+                        Layout.topMargin: 4
+                    }
+                    Widgets.StyledField {
+                        id: userNameField
+                        Layout.fillWidth: true
+                        placeholder: "Your name (optional)"
+                        text: page.userName
+                        onTextChanged: {
+                            if (text !== page.userName) {
+                                page.userName = text
+                                page.dirty = true
+                            }
+                        }
+                        onAccepted: if (page.dirty && !page.saving) page.save()
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Saved as a memory so " + (page.assistantName.length ? page.assistantName : "Jarvis") + " can address you by name."
+                        color: Theme.textFaint
+                        font.family: Theme.fontSans
+                        font.pixelSize: 11
+                        wrapMode: Text.WordWrap
+                    }
+                }
+            }
+
             // ===== Defaults =================================================
             Widgets.SectionCard {
                 Layout.fillWidth: true
@@ -425,10 +513,17 @@ Item {
                         Widgets.StyledCombo {
                             id: brainCombo
                             Layout.fillWidth: true
-                            model: ["codex", "claude", "api"]
+                            model: page.brainOptions()
+                            function refill() { model = page.brainOptions(); syncFromState() }
                             function syncFromState() {
                                 var i = model.indexOf(page.defaultBrain)
                                 currentIndex = i >= 0 ? i : 0
+                                // If the saved brain isn't available here, fall back to
+                                // the first offered option so we never persist a dead brain.
+                                if (i < 0 && model.length > 0) {
+                                    page.defaultBrain = model[0]
+                                    modelCombo.refill()
+                                }
                             }
                             onActivated: {
                                 page.defaultBrain = currentText
@@ -477,9 +572,12 @@ Item {
             }
 
             // ===== Claude account =========================================
+            // Only meaningful when the Claude CLI is actually installed — hide it
+            // entirely otherwise so a machine without Claude never shows a stale
+            // "Pro/Max" choice that does nothing.
             Widgets.SectionCard {
                 Layout.fillWidth: true
-                visible: true
+                visible: page.availableBrains.claude === true
                 Text {
                     text: "// CLAUDE ACCOUNT"
                     color: Theme.accent
