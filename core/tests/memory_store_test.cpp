@@ -4,10 +4,14 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QTemporaryDir>
 
 #include <cstdio>
+#include <optional>
 
+using jarvis::EntityRow;
 using jarvis::MemoryRow;
 using jarvis::MemoryStore;
 
@@ -114,6 +118,104 @@ int main(int argc, char **argv)
     }
     check(store.list().size() == 2, "list reflects removal");
     check(!store.remove(QStringLiteral("mem_nope")), "remove unknown id returns false");
+
+    // --- knowledge graph: entity auto-extraction on add() ------------------
+    {
+        const QString memA = store.add(
+            QStringLiteral("Had a great sync with Chad Hanson about the roadmap"),
+            {QStringLiteral("project:K2-Tek")});
+        check(!memA.isEmpty(), "graph: memory A added");
+
+        const auto entities = store.listEntities();
+        auto findEntity = [&](const QString &name) -> std::optional<EntityRow> {
+            for (const auto &e : entities)
+                if (e.name.compare(name, Qt::CaseInsensitive) == 0)
+                    return e;
+            return std::nullopt;
+        };
+        auto person = findEntity(QStringLiteral("Chad Hanson"));
+        check(person.has_value(), "graph: 'Chad Hanson' phrase auto-extracted as an entity");
+        auto project = findEntity(QStringLiteral("K2-Tek"));
+        check(project.has_value(), "graph: 'project:K2-Tek' tag created a project entity");
+        if (project)
+            check(project->scope == QStringLiteral("project") && project->projectRef == QStringLiteral("K2-Tek"),
+                  "graph: project entity scoped correctly");
+
+        // A second, unrelated mention of the same person must NOT create a
+        // duplicate entity (case-insensitive name+type dedupe).
+        const QString memB = store.add(
+            QStringLiteral("Chad Hanson approved the deploy window"),
+            {QStringLiteral("project:K2-Tek")});
+        check(!memB.isEmpty(), "graph: memory B added");
+        int chadCount = 0;
+        for (const auto &e : store.listEntities())
+            if (e.name.compare(QStringLiteral("Chad Hanson"), Qt::CaseInsensitive) == 0)
+                ++chadCount;
+        check(chadCount == 1, "graph: repeated entity mention dedupes, not duplicates");
+
+        if (person) {
+            const QJsonObject g = store.graph(memA, 2);
+            bool sawPersonNode = false, sawMentionsEdge = false;
+            for (const QJsonValue &nv : g.value(QStringLiteral("nodes")).toArray()) {
+                const QJsonObject n = nv.toObject();
+                if (n.value(QStringLiteral("id")).toString() == person->id) {
+                    sawPersonNode = true;
+                    check(n.value(QStringLiteral("kind")).toString() == QStringLiteral("entity"),
+                          "graph: entity node tagged kind=entity");
+                }
+            }
+            for (const QJsonValue &ev : g.value(QStringLiteral("edges")).toArray()) {
+                const QJsonObject e = ev.toObject();
+                if (e.value(QStringLiteral("from")).toString() == memA &&
+                    e.value(QStringLiteral("to")).toString() == person->id)
+                    sawMentionsEdge = e.value(QStringLiteral("relation")).toString() == QStringLiteral("mentions");
+            }
+            check(sawPersonNode, "graph(memA): subgraph includes the auto-linked person entity");
+            check(sawMentionsEdge, "graph(memA): subgraph includes the 'mentions' edge");
+        }
+
+        // Both memories mentioning Chad Hanson are graph-connected (siblings
+        // via the shared entity) even though B's text doesn't literally match A's.
+        if (person) {
+            bool bReachesA = false;
+            for (const QString &nid : store.neighborIds(memB, 2))
+                if (nid == memA)
+                    bReachesA = true;
+            check(bReachesA, "graph: memory B reaches memory A within 2 hops via the shared entity");
+        }
+
+        // --- manual link()/unlink() ----------------------------------------
+        check(store.link(memA, QStringLiteral("memory"), memB, QStringLiteral("memory"),
+                         QStringLiteral("relates_to")),
+              "graph: manual link() between two memories");
+        check(store.link(memA, QStringLiteral("memory"), memB, QStringLiteral("memory"),
+                         QStringLiteral("relates_to")),
+              "graph: re-linking the same edge is idempotent (no error)");
+        {
+            const auto direct = store.neighborIds(memA, 1);
+            check(direct.contains(memB), "graph: neighborIds(memA,1) sees the manual link");
+        }
+        check(store.unlink(memA, memB), "graph: unlink() removes the manual edge");
+        {
+            const auto direct = store.neighborIds(memA, 1);
+            check(!direct.contains(memB), "graph: neighborIds(memA,1) no longer sees the unlinked edge");
+        }
+
+        // --- graph-aware prefetch: pulls in a sibling via a shared entity --
+        {
+            // Query text matches ONLY memA ("sync ... roadmap"); memB's text
+            // shares no words with it, so plain FTS/prefetch of k=1 should
+            // still surface memB once graph expansion is in play.
+            const auto pf = store.prefetch(QStringLiteral("roadmap sync"), 1);
+            bool sawA = false, sawB = false;
+            for (const auto &r : pf) {
+                if (r.id == memA) sawA = true;
+                if (r.id == memB) sawB = true;
+            }
+            check(sawA, "graph-aware prefetch: still returns the literal text match");
+            check(sawB, "graph-aware prefetch: pulls in the sibling sharing the K2-Tek entity");
+        }
+    }
 
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);

@@ -67,7 +67,7 @@ Item {
 
     Component.onCompleted: {
         // --page <n> (screenshots/testing): jump to a specific page on load.
-        if (typeof startPage !== "undefined" && startPage >= 0 && startPage < 17)
+        if (typeof startPage !== "undefined" && startPage >= 0 && startPage < 18)
             shell.currentIndex = startPage
         updateWidgetViewing()
     }
@@ -169,11 +169,12 @@ Item {
                             case 9: return agentsComp
                             case 10: return schedulesComp
                             case 11: return activityComp
-                            case 12: return mcpComp
-                            case 13: return pluginsComp
-                            case 14: return sshComp
-                            case 15: return phoneComp
-                            case 16: return settingsComp
+                            case 12: return memGraphComp
+                            case 13: return mcpComp
+                            case 14: return pluginsComp
+                            case 15: return sshComp
+                            case 16: return phoneComp
+                            case 17: return settingsComp
                             }
                         }
                     }
@@ -258,6 +259,7 @@ Item {
     Component { id: activityComp; ActivityPage {} }
     Component { id: sshComp;      SshPage {} }
     Component { id: memoryComp;   MemoryPage {} }
+    Component { id: memGraphComp; MemoryGraphPage {} }
     Component {
         id: skillsComp
         SkillsPage {
