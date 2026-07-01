@@ -17,6 +17,19 @@ rem ============================================================================
 setlocal
 cd /d "%~dp0"
 
+rem 0. Windows v2 "beside-you" agent desktop: pick the isolation tier for THIS box
+rem    (sandbox / hyperv / takeover) and export it so the daemon's AgentDesktop
+rem    tiers correctly instead of always defaulting to sandbox (a Home/no-virt box
+rem    then cleanly selects takeover instead of a noisy sandbox-precondition fail).
+rem    detect.ps1 emits JSON; we pull just recommendedMode. jarvisd is a child of
+rem    this cmd, so it inherits the exported variable. Best-effort: on any failure
+rem    the variable stays unset and AgentDesktop::resolveMode() defaults to sandbox.
+rem  (no pipe in the PowerShell -- a `|` inside a for/f backtick block is fragile
+rem   under cmd parsing; ConvertFrom-Json -InputObject takes the script output directly.)
+if exist "%~dp0isolation\detect.ps1" (
+  for /f "usebackq delims=" %%M in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "try { (ConvertFrom-Json -InputObject (& '%~dp0isolation\detect.ps1')).recommendedMode } catch { '' }"`) do set "JARVIS_WINDOWS_ISOLATION_MODE=%%M"
+)
+
 rem 1. computer-use engine (real-screen Win32 backend; serves ALL MCP tools).
 rem    PyInstaller one-dir nests it: engine\jarvis-engine\jarvis-engine.exe
 if exist "engine\jarvis-engine\jarvis-engine.exe" (
