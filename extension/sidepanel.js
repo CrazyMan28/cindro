@@ -32,6 +32,12 @@ const els = {
   sessionsClose: $("sessionsClose"),
   slashPalette: $("slashPalette"),
   quickbar: $("quickbar"),
+  planPanel: $("planPanel"),
+  planHead: $("planHead"),
+  planBody: $("planBody"),
+  planCount: $("planCount"),
+  planToggle: $("planToggle"),
+  planDismiss: $("planDismiss"),
 };
 
 // ----------------------------------------------------------------- state
@@ -292,11 +298,21 @@ function onFrame(raw) {
   if (msg.event === "widget.render" && msg.data) {
     // Only show widgets scoped to the current session (or session-less/global).
     const wsid = msg.data.session_id || "";
-    if (!wsid || !sessionId || wsid === sessionId) renderWidget(msg.data);
+    if (wsid && sessionId && wsid !== sessionId) return;
+    // The model's live plan/checklist (id "__todo__:<session>") goes to the
+    // dedicated PLAN panel above the transcript, NOT inline in chat — matches
+    // the desktop peek's PLAN card so todos don't scroll away or clutter chat.
+    if (String(msg.data.id || "").indexOf("__todo__") === 0) { renderPlan(msg.data); return; }
+    renderWidget(msg.data);
     return;
   }
-  if (msg.event === "widget.remove" && msg.data) { removeWidget(msg.data.id || ""); return; }
-  if (msg.event === "widget.clear") { clearWidgets(); return; }
+  if (msg.event === "widget.remove" && msg.data) {
+    const rid = String(msg.data.id || "");
+    if (rid.indexOf("__todo__") === 0) { dismissPlan(); return; }
+    removeWidget(rid);
+    return;
+  }
+  if (msg.event === "widget.clear") { clearWidgets(); dismissPlan(); return; }
 
   // RPC reply.
   if (typeof msg.id === "number" && pending.has(msg.id)) {
@@ -725,6 +741,62 @@ function removeWidget(id) {
   if (el) { const row = el.closest(".row") || el; row.remove(); widgetEls.delete(id); }
 }
 
+// ----- PLAN panel (the model's todo checklist, pinned above the transcript) --
+let planDismissed = false;
+
+function renderPlan(data) {
+  let spec = data.spec;
+  if (typeof spec === "string") { try { spec = JSON.parse(spec); } catch (e) { return; } }
+  if (!spec) return;
+  planDismissed = false;
+  els.planBody.innerHTML = "";
+  // The todo spec is a column: [header row (title + "done/total" badge),
+  // divider, then one row per item]. Render items as clean plan rows; pull the
+  // count out of the badge for the header. We walk the spec instead of using the
+  // generic widget renderer so the plan reads as a checklist, not a raw card.
+  const kids = asArray(spec.children);
+  let count = "";
+  const items = [];
+  for (const k of kids) {
+    if (k && k.type === "row" && Array.isArray(k.children)) {
+      // header row carries a badge with "done/total"
+      const badge = k.children.find((c) => c && c.type === "badge");
+      if (badge && /\d+\s*\/\s*\d+/.test(String(badge.text || ""))) { count = String(badge.text); continue; }
+      // item row: [glyph text, label text]
+      const texts = k.children.filter((c) => c && c.type === "text");
+      if (texts.length >= 2) {
+        const label = String(texts[texts.length - 1].text || "");
+        const strike = !!texts[texts.length - 1].strike;
+        const glyph = String(texts[0].text || "○");
+        let status = "pending";
+        if (strike || glyph === "✓" || glyph === "✔") status = "done";
+        else if (texts[texts.length - 1].weight >= 700) status = "in_progress";
+        items.push({ label, status, glyph });
+      }
+    }
+  }
+  if (items.length === 0) { dismissPlan(); return; }
+  for (const it of items) {
+    const row = document.createElement("div");
+    row.className = "plan-item " + it.status;
+    const box = document.createElement("span");
+    box.className = "box";
+    box.textContent = it.status === "done" ? "✓" : (it.status === "in_progress" ? "◔" : "○");
+    const lab = document.createElement("span");
+    lab.textContent = it.label;
+    row.appendChild(box); row.appendChild(lab);
+    els.planBody.appendChild(row);
+  }
+  els.planCount.textContent = count || (items.filter((i) => i.status === "done").length + "/" + items.length);
+  els.planPanel.classList.remove("hidden");
+}
+
+function dismissPlan() {
+  els.planPanel.classList.add("hidden");
+  els.planBody.innerHTML = "";
+  els.planCount.textContent = "";
+}
+
 function clearWidgets() {
   for (const [, el] of widgetEls) { const row = el.closest(".row") || el; row.remove(); }
   widgetEls.clear();
@@ -1024,6 +1096,7 @@ function clearTranscript() {
   endLiveBubble();
   lastToolEl = null;
   els.transcript.innerHTML = "";
+  dismissPlan();   // the plan is per-session — never carry it into another chat
 }
 
 // "+ New": drop the session id so the next Send creates a fresh one (re-priming
@@ -1270,6 +1343,15 @@ els.brain.addEventListener("change", onBrainChange);
 els.sessionsBtn.addEventListener("click", toggleSessions);
 els.sessionsClose.addEventListener("click", closeSessions);
 els.newBtn.addEventListener("click", newSession);
+
+// PLAN panel: collapse on header click, dismiss on ✕ (stops event bubbling so
+// the ✕ doesn't also toggle the collapse).
+if (els.planHead) {
+  els.planHead.addEventListener("click", () => els.planPanel.classList.toggle("collapsed"));
+}
+if (els.planDismiss) {
+  els.planDismiss.addEventListener("click", (e) => { e.stopPropagation(); dismissPlan(); });
+}
 
 // Quick-flow chips (Agents / Skills / Running / Commands).
 if (els.quickbar) {
