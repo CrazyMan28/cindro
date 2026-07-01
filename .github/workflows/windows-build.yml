@@ -44,16 +44,17 @@ jobs:
       - name: Install Ninja
         uses: seanmiddleditch/gha-setup-ninja@v5
 
-      # Qt 6 (MSVC) — must be >= 6.7, NOT the old 6.6. The app's QML uses syntax the
-      # 6.6 parser rejects: `var long` (ArcReactor.qml) — `long` was a reserved word
-      # until Qt 6.7 un-reserved it. On 6.6 the whole UI tree fails to load at runtime
-      # ("Type AppShell unavailable" -> ArcReactor.qml: Expected token 'identifier'),
-      # which is what bricked v0.12.4's UI on a clean box. 6.8 (dev/Linux uses 6.11).
-      # Core/Gui/Quick/Qml/QuickControls2/Network/Sql are in the base install.
+      # Qt 6.11.1 — MATCH the Linux build's Qt (6.11), which is rock solid. On 6.8.1
+      # AND 6.9.1, jarvis-sidebar.exe crashed at runtime with an ACCESS VIOLATION
+      # deep inside Qt6Qml.dll's JS engine while evaluating a QML binding during
+      # scene-graph rendering (WER c0000005; the full crash dump's stack is 100% Qt,
+      # zero of our code — confirmed not threading, not GPU, not our C++). So it ran
+      # headless with NO window (the sister's bug). It reproduced on a real laptop +
+      # a VM. Bumping to the exact Linux Qt line (6.11) is the fix.
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: "6.8.1"
+          version: "6.10.3"
           host: windows
           target: desktop
           arch: win64_msvc2022_64

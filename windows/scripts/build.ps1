@@ -25,7 +25,10 @@ param(
 $ErrorActionPreference = "Stop"
 $repo   = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $win    = Join-Path $repo "windows"
-$build  = Join-Path $repo "build-win"
+# build dir lives UNDER windows/ (not the repo root) so qmlcachegen's resource paths
+# stay inside the CMake source dir — a sibling build dir makes them derive a ".."
+# segment ninja can't mkdir (the reason the QML build used to need NO_CACHEGEN).
+$build  = Join-Path $win "build-win"
 $payload= Join-Path $win "dist\payload"
 Write-Host "==> Jarvis Windows build  (repo=$repo  version=$Version)" -ForegroundColor Cyan
 

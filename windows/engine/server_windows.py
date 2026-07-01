@@ -139,7 +139,89 @@ def apply_patches() -> None:
 apply_patches()
 
 
+# ── Windows fix: the live-widget supervisor is written for Linux ─────────────
+# computer_use_mcp.live_widgets.ensure_supervisor() (run from the server's
+# lifespan startup) spawns a detached child with
+#   subprocess.Popen([sys.executable, "-m", "computer_use_mcp.live_widgets",
+#                     "--supervise"], start_new_session=True)
+# Two Linux-isms break a FROZEN Windows build, and the engine never stays up:
+#   1. sys.executable is THIS engine .exe (not a Python interpreter), so the
+#      "-m computer_use_mcp.live_widgets" form re-launches a whole SECOND ENGINE
+#      instead of the supervisor module.
+#   2. start_new_session=True is a POSIX no-op on Windows, so that child stays in
+#      the engine's CONSOLE PROCESS GROUP. When the child starts/exits, a
+#      Ctrl-C / Ctrl-Break console event is delivered to the WHOLE group, and
+#      uvicorn's signal handler shuts the PARENT engine down — a graceful exit 0
+#      one breath after "Uvicorn running on 0.0.0.0:8794". (Verified: the engine
+#      survives only when fully isolated from a console.)
+# Also live_widgets._alive() probes with os.kill(pid, 0), which on Windows
+# TERMINATES the target process instead of checking it.
+#
+# Fix (Windows-only, no edits under computer-use/): rebind both to Windows-correct
+# versions. The supervisor is relaunched from THIS exe with a "--supervise" flag
+# (handled in main() below) using DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP, so
+# it has no console and its own group and can never signal the engine. Liveness
+# is probed with OpenProcess + GetExitCodeProcess.
+if sys.platform == "win32":
+    import ctypes as _ct
+    import subprocess as _sp
+
+    from computer_use_mcp import live_widgets as _lw
+
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _STILL_ACTIVE = 259
+    # DETACHED_PROCESS (no console) | CREATE_NEW_PROCESS_GROUP (own ctrl group).
+    _DETACHED_NEW_GROUP = 0x00000008 | 0x00000200
+
+    def _win_alive(pid: int) -> bool:
+        if not pid:
+            return False
+        k32 = _ct.windll.kernel32
+        handle = k32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return False
+        try:
+            code = _ct.c_ulong()
+            if not k32.GetExitCodeProcess(handle, _ct.byref(code)):
+                return False
+            return code.value == _STILL_ACTIVE
+        finally:
+            k32.CloseHandle(handle)
+
+    def _win_ensure_supervisor() -> int:
+        """Windows port of ensure_supervisor(): spawn the supervisor as a fully
+        DETACHED child of this frozen exe (own console group, no shared console)
+        so it can never console-signal the engine. Idempotent via the pid-file."""
+        try:
+            pf = _lw._supervisor_pidfile()
+            pf.parent.mkdir(parents=True, exist_ok=True)
+            pid = _lw._read_pid(pf)
+            if pid and _win_alive(pid):
+                return pid
+            proc = _sp.Popen(
+                [sys.executable, "--supervise"],
+                stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                creationflags=_DETACHED_NEW_GROUP, close_fds=True,
+            )
+            try:
+                pf.write_text(str(proc.pid), encoding="utf-8")
+            except OSError:
+                pass
+            return proc.pid
+        except Exception:
+            return 0
+
+    _lw._alive = _win_alive
+    _lw.ensure_supervisor = _win_ensure_supervisor
+
+
 def main() -> None:
+    # Windows supervisor mode: _win_ensure_supervisor() (above) relaunches THIS
+    # exe with "--supervise"; run the live-widget supervisor loop, not the server.
+    if "--supervise" in sys.argv[1:]:
+        from computer_use_mcp import live_widgets as _lw
+        _lw._supervise_loop()
+        return
     # Import the heavy server lazily (after patching) so merely importing this
     # module for tests doesn't pull in uvicorn/fastapi/the full tool surface.
     from computer_use_mcp.server import main as _engine_main
