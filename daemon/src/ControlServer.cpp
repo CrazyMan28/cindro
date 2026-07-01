@@ -4306,17 +4306,24 @@ Response ControlServer::handleAgentsDispatch(const Request &req, bool remote)
     // but the SHARED real-screen engine (the global :8794 server, reused by every
     // session) has no per-session id — so when the model invokes agent_start
     // through it, parent arrives empty and the subagent would be ORPHANED (no
-    // tree link, no done-wake). Fall back to the session that is mid-turn right
-    // now: the caller is necessarily in state "running" while it calls this tool,
-    // and a top-level chat has no parent of its own. This keeps the parent link
-    // — and therefore the subagent pop-out + the done-wake — working no matter
-    // which computer-use server the call came through.
+    // tree link, no done-wake). Fall back CAREFULLY: pick the session mid-turn
+    // right now (the caller is necessarily "running" while it calls this tool).
+    // But if MORE THAN ONE top-level session is running concurrently we can't
+    // tell which one called — guessing "the first" attached the subagent to the
+    // WRONG chat. So: prefer the take-over session if it's the one running;
+    // otherwise only auto-attach when EXACTLY ONE top-level session is running;
+    // if it's ambiguous, leave parent empty (a correctly-orphaned subagent still
+    // runs — better than surfacing under the wrong chat).
     if (parent.isEmpty()) {
-        for (const SessionRow &s : m_store.list()) {
-            if (s.state == QStringLiteral("running") && s.parentSessionId.isEmpty()) {
-                parent = s.id;
-                break;
-            }
+        QStringList runningTop;
+        for (const SessionRow &s : m_store.list())
+            if (s.state == QStringLiteral("running") && s.parentSessionId.isEmpty())
+                runningTop << s.id;
+        if (runningTop.size() == 1) {
+            parent = runningTop.first();
+        } else if (runningTop.size() > 1) {
+            for (const QString &sid : runningTop)
+                if (m_takeOverActive.contains(sid)) { parent = sid; break; }
         }
     }
     // Inline (ad-hoc subagent) overrides: the model can pick brain/model and give
@@ -5349,7 +5356,13 @@ void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrain
                        ev.fields.value(QStringLiteral("risk")).toString(QStringLiteral("high")),
                        ev.fields.value(QStringLiteral("summary")).toString(), sessionId);
     } else if (ev.kind == NormalizedBrainEvent::Kind::Final) {
-        m_notify.taskDone(QStringLiteral("Session ") + sessionId + QStringLiteral(" finished a turn."));
+        // Only TOP-LEVEL sessions raise the OS "task done" toast. A subagent
+        // finishing already wakes its parent with a [SUBAGENT DONE] summary
+        // (wakeParentForSubagent); toasting each child too spammed the desktop
+        // with raw session ids for internal agents the user never launched.
+        if (auto r = m_store.get(sessionId); !r || r->parentSessionId.isEmpty())
+            m_notify.taskDone(QStringLiteral("Session ") + sessionId
+                              + QStringLiteral(" finished a turn."));
         // Notification hook (observational).
         QJsonObject nh;
         nh.insert(QStringLiteral("session_id"), sessionId);

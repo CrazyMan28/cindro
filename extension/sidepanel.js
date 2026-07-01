@@ -278,9 +278,13 @@ function onFrame(raw) {
   let msg;
   try { msg = JSON.parse(raw); } catch (e) { return; }
 
-  // Unsolicited events.
+  // Unsolicited events. Scope STRICTLY to the panel's current session: with no
+  // session yet (fresh panel), accept NOTHING — the daemon broadcasts every
+  // session's events to unsubscribed control clients, so a null sessionId used
+  // to mean "accept everything" and leaked other chats (desktop/phone/other
+  // tabs/subagents) into a blank panel before the user sent anything.
   if (msg.event === "session.event" && msg.data) {
-    if (!sessionId || msg.data.session_id === sessionId) {
+    if (sessionId && msg.data.session_id === sessionId) {
       handleEv(msg.data.ev || {});
     }
     return;
@@ -296,9 +300,13 @@ function onFrame(raw) {
 
   // Widget bus (render_widget / todo plan / charts) over the control WS.
   if (msg.event === "widget.render" && msg.data) {
-    // Only show widgets scoped to the current session (or session-less/global).
+    // Scope to the current session. No active session yet -> drop it, so another
+    // chat's widgets (incl. its PLAN card) can't paint into a blank panel. A
+    // session-less/global widget (empty session_id) is allowed only once THIS
+    // panel has a session, matching the transcript gate above.
     const wsid = msg.data.session_id || "";
-    if (wsid && sessionId && wsid !== sessionId) return;
+    if (!sessionId) return;
+    if (wsid && wsid !== sessionId) return;
     // The model's live plan/checklist (id "__todo__:<session>") goes to the
     // dedicated PLAN panel above the transcript, NOT inline in chat — matches
     // the desktop peek's PLAN card so todos don't scroll away or clutter chat.
@@ -989,7 +997,11 @@ async function loadSessions() {
   renderSessions(null, "Loading…");
   try {
     const res = await rpc("session.list", {});
-    const list = (res && res.sessions) || [];
+    let list = (res && res.sessions) || [];
+    // Subagent CHILD sessions are not standalone conversations — they belong to
+    // their parent chat and disappear when done. Never list them as top-level
+    // rows (parity with desktop SessionsPage + Android SessionsViewModel).
+    list = list.filter((s) => !(s.parent_session_id && String(s.parent_session_id).length));
     // Newest first by `updated` (falls back to created, then id order).
     list.sort((a, b) => (b.updated || b.created || 0) - (a.updated || a.created || 0));
     renderSessions(list);
@@ -1028,9 +1040,30 @@ function renderSessions(list, note) {
     const meta = document.createElement("div");
     meta.className = "sess-meta";
     meta.textContent = [s.brain, s.state].filter(Boolean).join(" · ");
-    item.appendChild(title);
-    item.appendChild(meta);
-    item.addEventListener("click", () => pickSession(s));
+    const texts = document.createElement("div");
+    texts.className = "sess-texts";
+    texts.appendChild(title);
+    texts.appendChild(meta);
+    texts.addEventListener("click", () => pickSession(s));
+    item.appendChild(texts);
+    // Delete affordance (parity with desktop/Android). Two-step: first click
+    // arms, second confirms — so a misclick can't nuke a thread.
+    const del = document.createElement("button");
+    del.className = "sess-del";
+    del.textContent = "✕";
+    del.title = "Delete conversation";
+    let armed = false;
+    del.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!armed) { armed = true; del.textContent = "Delete?"; del.classList.add("armed");
+        setTimeout(() => { armed = false; del.textContent = "✕"; del.classList.remove("armed"); }, 2500); return; }
+      try {
+        await rpc("session.delete", { session_id: s.id });
+        if (s.id === sessionId) newSession();
+        loadSessions();
+      } catch (err) { /* leave the row; list reloads on next open */ }
+    });
+    item.appendChild(del);
     box.appendChild(item);
   }
 }

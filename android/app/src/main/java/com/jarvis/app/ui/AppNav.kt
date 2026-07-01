@@ -265,18 +265,27 @@ fun AppNav(
         }
 
         composable(Routes.CHAT) { entry ->
-            val sessionId = entry.arguments?.getString("sessionId").orEmpty()
-            val wake = entry.arguments?.getString("wake") == "true"
-            val vm: ChatViewModel = viewModel(
-                key = "chat-$sessionId",
-                factory = ChatViewModel.factory(app, sessionId),
-            )
-            ChatScreen(
-                viewModel = vm,
-                activity = activity,
-                onBack = { nav.popBackStack() },
-                autoStartVoice = wake,
-            )
+            // The app-open fingerprint gate must hold on EVERY path into chat —
+            // a notification tap / "Hey Jarvis" wake deep-links straight here, so
+            // without this check anyone could read private chat history from the
+            // lock screen while SHELL was still gated underneath. Gate the chat
+            // route itself (same GateScreen as SHELL) so no entry bypasses it.
+            if (!appUnlocked) {
+                GateScreen(activity = activity, onUnlocked = { appUnlocked = true })
+            } else {
+                val sessionId = entry.arguments?.getString("sessionId").orEmpty()
+                val wake = entry.arguments?.getString("wake") == "true"
+                val vm: ChatViewModel = viewModel(
+                    key = "chat-$sessionId",
+                    factory = ChatViewModel.factory(app, sessionId),
+                )
+                ChatScreen(
+                    viewModel = vm,
+                    activity = activity,
+                    onBack = { nav.popBackStack() },
+                    autoStartVoice = wake,
+                )
+            }
         }
     }
 }

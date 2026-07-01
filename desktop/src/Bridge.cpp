@@ -2197,7 +2197,11 @@ void Bridge::refreshAgentDesktop()
     }
     QVariantMap params;
     params.insert(QStringLiteral("session_id"), m_sessionId);
-    request(QStringLiteral("agent_desktop.info"), params, QStringLiteral("__agentdesk__"));
+    // Tag the request with the session it's for, so a late/out-of-order reply
+    // that lands AFTER the user switched sessions can be dropped instead of
+    // repainting the peek/mirror with the WRONG session's nested desktop.
+    request(QStringLiteral("agent_desktop.info"), params,
+            QStringLiteral("__agentdesk__:") + m_sessionId);
 }
 
 void Bridge::setCoworkerSessionId(const QString &id)
@@ -3235,6 +3239,11 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         // driving a nested desktop — clear the flag quietly (no error toast) and
         // revert the video bearer to the global engine's.
         if (method == QStringLiteral("agent_desktop.info")) {
+            // Same stale-reply guard as the success branch: ignore a
+            // no_agent_desktop that arrives for a session we already left.
+            if (ctx.startsWith(QStringLiteral("__agentdesk__:"))
+                && ctx.mid(QStringLiteral("__agentdesk__:").size()) != m_sessionId)
+                return;
             m_videoBearer = computeUseBearer();
             setHasAgentDesktop(false);
             return;
@@ -3408,6 +3417,13 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
     // (and Home/Computer) can mirror it even for a plain chat (not just explicit
     // co-work). This is what makes "watch it live" work for ordinary sessions.
     if (method == QStringLiteral("agent_desktop.info")) {
+        // Drop a stale/out-of-order reply: if the user switched sessions while
+        // this query was in flight, applying it would point the peek/mirror at
+        // the OLD session's nested desktop. The ctx was tagged with the session
+        // the query was issued for (refreshAgentDesktop).
+        if (ctx.startsWith(QStringLiteral("__agentdesk__:"))
+            && ctx.mid(QStringLiteral("__agentdesk__:").size()) != m_sessionId)
+            return;
         const int port = result.value(QStringLiteral("port")).toInt();
         if (port > 0)
             setVideoEndpoint(QStringLiteral("http://127.0.0.1:") + QString::number(port));

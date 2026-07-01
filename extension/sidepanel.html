@@ -124,21 +124,31 @@
     }
     .sessions-head span { flex: 1 1 auto; }
     .sess-item {
-      display: flex; align-items: baseline; gap: 8px;
-      padding: 8px 12px; cursor: pointer;
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 12px;
       border-bottom: 1px solid var(--hairline-soft);
       transition: background 120ms;
     }
     .sess-item:hover { background: rgba(41,231,255,0.08); }
     .sess-item.current { background: rgba(41,231,255,0.12); }
+    .sess-texts { flex: 1 1 auto; min-width: 0; cursor: pointer; }
     .sess-title {
-      flex: 1 1 auto; min-width: 0; font-size: 12px; font-weight: 600;
+      font-size: 12px; font-weight: 600;
       color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .sess-meta {
-      flex: none; font-family: var(--mono); font-size: 10px; color: var(--muted);
+      font-family: var(--mono); font-size: 10px; color: var(--muted);
       white-space: nowrap;
     }
+    .sess-del {
+      flex: none; background: transparent; border: 1px solid transparent;
+      color: var(--muted); font-size: 12px; cursor: pointer; border-radius: 6px;
+      padding: 2px 7px; opacity: 0; transition: opacity 120ms, color 120ms, border-color 120ms;
+    }
+    .sess-item:hover .sess-del { opacity: 1; }
+    .sess-del:hover { color: var(--bad); border-color: rgba(255,93,108,0.45); }
+    .sess-del.armed { opacity: 1; color: var(--bad); border-color: var(--bad);
+      font-size: 10px; letter-spacing: 0.5px; }
     .sess-empty { padding: 12px; color: var(--muted); font-size: 12px; text-align: center; }
     .chip {
       font-family: var(--mono); font-size: 10.5px;
