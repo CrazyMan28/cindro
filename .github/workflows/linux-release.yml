@@ -26,9 +26,16 @@ on:
 permissions:
   contents: write
 
+# Superseded dev packaging builds auto-cancel; a v* tag build is NEVER cancelled
+# (cancel-in-progress false for tags) so a release AppImage always completes.
+concurrency:
+  group: linux-release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   appimage:
     runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 45
     # Prebuilt: all deps (incl. curl/file/findutils/patchelf/fuse for linuxdeploy)
     # baked into the image and served from the runner's local registry — instant pull,
     # no 550MB download, no per-build install.

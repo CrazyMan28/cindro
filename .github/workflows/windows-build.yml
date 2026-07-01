@@ -23,8 +23,19 @@ on:
 permissions:
   contents: write
 
+# Bulletproofing: on the SINGLE Windows runner, superseded dev/PR builds must not pile
+# up. Group by ref so a newer push on the same branch/PR cancels the older in-flight run
+# — but NEVER cancel a v* tag build (that's a release; cancel-in-progress is false for
+# tags). This is what stops the queue backlog without ever killing a release build.
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 jobs:
   build:
+    # Hard ceiling so a hung build.ps1 (seen before) self-aborts and frees the runner
+    # instead of clogging it forever. Normal build is ~40 min; 75 catches a true hang.
+    timeout-minutes: 75
     # Self-hosted Windows runner (win-runner-1 on the pve/winvm box) — ZERO GitHub
     # minutes. Toolchain provisioned by windows/scripts/setup-runner-tools.ps1
     # (git + vcpkg + Inno Setup; VS Build Tools 2022 already present). Qt / Ninja /

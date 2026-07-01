@@ -17,9 +17,21 @@ on:
     branches: [dev, main]
   workflow_dispatch:
 
+# Least privilege: this is a read-only test gate; it never writes to the repo.
+permissions:
+  contents: read
+
+# Superseded dev/PR test runs auto-cancel (a newer push on the same ref wins). A merge to
+# main (refs/heads/main) is NOT cancelled — it's the canonical post-merge "is main green"
+# gate on the actual merged SHA.
+concurrency:
+  group: linux-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/dev' }}
+
 jobs:
   build-test:
     runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 30
     # Prebuilt: all deps baked in. The local registry on the runner host serves it,
     # so the "pull" is instant + layer-cached (no 550MB download, no 533-pkg install).
     container:
