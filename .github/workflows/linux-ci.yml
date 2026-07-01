@@ -21,12 +21,12 @@ on:
 permissions:
   contents: read
 
-# Superseded dev/PR test runs auto-cancel (a newer push on the same ref wins). A merge to
-# main (refs/heads/main) is NOT cancelled — it's the canonical post-merge "is main green"
-# gate on the actual merged SHA.
+# Every push (dev/main) gets its own test run — keyed by unique SHA so nothing is ever
+# cancelled by a newer commit. Only PULL-REQUEST re-pushes dedup (a newer commit on the PR
+# supersedes the stale in-flight test run).
 concurrency:
-  group: linux-ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/dev' }}
+  group: linux-ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-test:
