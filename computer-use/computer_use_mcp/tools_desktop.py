@@ -6,7 +6,8 @@ import time
 from mcp.server.fastmcp import FastMCP, Image
 
 from computer_use_mcp import (
-    apps, ask_bus, clipboard, input as inp, screen, session, windows, workspaces,
+    apps, ask_bus, clipboard, input as inp, screen, selfheal, session, windows,
+    workspaces,
 )
 
 
@@ -146,7 +147,9 @@ def register(mcp: FastMCP) -> None:
         which='active' targets the real host seat (default); which='agent' drives
         the nested co-worker desktop."""
         try:
-            return json.dumps(inp.click(x, y, button, double, coord_space, which))
+            return json.dumps(selfheal.run(
+                "mouse_click", which,
+                lambda: inp.click(x, y, button, double, coord_space, which)))
         except Exception as exc:
             return _err(exc)
 
@@ -161,7 +164,9 @@ def register(mcp: FastMCP) -> None:
         so drag-and-drop grab thresholds fire. which: 'active' (default) or
         'agent' (nested co-worker desktop)."""
         try:
-            return json.dumps(inp.drag(x1, y1, x2, y2, button, coord_space, which=which))
+            return json.dumps(selfheal.run(
+                "mouse_drag", which,
+                lambda: inp.drag(x1, y1, x2, y2, button, coord_space, which=which)))
         except Exception as exc:
             return _err(exc)
 
@@ -178,7 +183,9 @@ def register(mcp: FastMCP) -> None:
         first so the scroll lands on a specific element/window. which: 'active'
         (default) or 'agent' (nested co-worker desktop)."""
         try:
-            return json.dumps(inp.scroll(amount, direction, x, y, coord_space, which))
+            return json.dumps(selfheal.run(
+                "scroll", which,
+                lambda: inp.scroll(amount, direction, x, y, coord_space, which)))
         except Exception as exc:
             return _err(exc)
 
@@ -189,7 +196,8 @@ def register(mcp: FastMCP) -> None:
         """Press a key or combo, e.g. 'Return', 'ctrl+c', 'ctrl+shift+t',
         'alt+F4', 'super'. Names are case-insensitive; use '+' to chord."""
         try:
-            return json.dumps(inp.key_press(combo, repeat))
+            return json.dumps(selfheal.run(
+                "key_press", "active", lambda: inp.key_press(combo, repeat)))
         except Exception as exc:
             return _err(exc)
 
@@ -199,7 +207,8 @@ def register(mcp: FastMCP) -> None:
         directly and falls back to clipboard-paste (ctrl+v) for unicode or
         long text; force with 'type' or 'paste'."""
         try:
-            return json.dumps(inp.type_text(text, method))
+            return json.dumps(selfheal.run(
+                "type_text", "active", lambda: inp.type_text(text, method)))
         except Exception as exc:
             return _err(exc)
 
