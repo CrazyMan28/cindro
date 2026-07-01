@@ -266,6 +266,21 @@ test. When qa passes, open a **PR into `main`** and merge it. Never commit direc
 - **Windows-edition changes stay under `windows/` ONLY** — never `core/` / `daemon/` / `desktop/`
   / `computer-use/`. A cross-platform bug fix that's *motivated* by Windows lives in the shared
   dirs (there is no separate Windows UI), but it must be a no-op on Linux and build-verified.
+- **Self-hosted Windows runner (`win-runner-1`) recovery — learned the hard way:**
+  - **After ANY winvm reboot, the clock skews (~hours off) → the runner's OAuth session tokens
+    are rejected → it loops "registration has been deleted, please re-configure" even after you
+    re-register.** FIX THE CLOCK FIRST: `w32tm /resync /force` (config a manual peer if needed),
+    then `Restart-Service actions.runner.CrazyMan28-jarvis.win-runner-1`. Clock skew masquerades
+    as a registration problem — check `Get-Date` vs real time before re-registering.
+  - **A runner offline too long (e.g. during a Windows Update) gets AUTO-DEREGISTERED by GitHub.**
+    Re-register with `config.cmd remove --token <remove-token>` then `config.cmd --url … --token
+    <reg-token> --name win-runner-1 --labels jarvis-win --runasservice --unattended` (tokens:
+    `gh api -X POST repos/CrazyMan28/jarvis/actions/runners/{registration-token,remove-token}`).
+    `--replace` alone does NOT reconfigure a locally-configured runner — you must `remove` first.
+  - **winvm's `build.ps1` takes ~40 min** (compile + PyInstaller + npm + Inno on limited cores) —
+    that is NORMAL, not a hang. Don't cancel/reboot before ~45 min.
+  - **When SSH is flaky (loaded host), reach winvm via the QEMU guest agent:**
+    `ssh pve 'qm guest exec 106 -- powershell -NoProfile -Command "…"'`.
 
 ## Conventions
 
