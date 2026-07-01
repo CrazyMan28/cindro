@@ -240,6 +240,48 @@ Do day-to-day work on **`dev`**. When it's good, fast-forward/merge into **`qa`*
 test. When qa passes, open a **PR into `main`** and merge it. Never commit directly to
 `main` (the branch protection will reject it).
 
+## GitHub / CI / releases (how Issac runs this repo)
+
+- **CI is 100% self-hosted — ZERO GitHub-hosted minutes.** Windows builds run on
+  `win-runner-1` (the winvm / Proxmox VM 106 box); Linux CI/release/auto-release run on the
+  six `pve-ubuntu-runner-*` (VM 104). **Never** switch a workflow to `windows-latest` /
+  `ubuntu-latest` — all four workflow files use `runs-on: [self-hosted, …]`. The Windows
+  runner is **prebuilt** (git, vcpkg + libsodium/libqrencode, Inno Setup, VS Build Tools,
+  PowerShell 7, Python, Qt, Ninja, CMake, Node) via `windows/scripts/setup-runner-*.ps1`, so
+  the workflow does **no per-run tool downloads** (mirrors the Linux prebuilt CI image). After
+  a winvm reboot the runner service may need `Start-Service "actions.runner.CrazyMan28-jarvis.win-runner-1"`
+  (or `sc.exe start …`); it does not always auto-start after a hard power cycle.
+- **Releases are automatic: merging to `main` = a new release.** `auto-release.yml` finds the
+  highest `vX.Y.Z` tag, bumps the **patch**, and creates that tag → `windows-build` +
+  `linux-release` fire on the tag and attach `Jarvis-Setup-<ver>.exe` + the AppImage to a new
+  GitHub Release. **Do NOT hand-edit a version number** to cut a release. (Want a minor/major
+  bump? cut the tag yourself, e.g. `gh release create v0.13.0`; auto-bump continues from it.)
+  Requires the `RELEASE_PAT` repo secret — a `GITHUB_TOKEN`-created tag can't trigger the
+  release builds (GitHub anti-recursion).
+- **Agents open PRs; the USER merges to `main`.** Never merge a PR to `main` yourself — open it
+  with an honest body (what's proven vs. what needs a live box) and leave it for Issac.
+- **When CI goes red, READ THE ACTION LOG and fix — never guess.** `gh run view <id> --log-failed`.
+  (e.g. a self-hosted Windows runner lacks `bash`/`pwsh`/CMake/ExecutionPolicy that hosted
+  runners have — fix the runner or the workflow, don't paper over it.)
+- **Windows-edition changes stay under `windows/` ONLY** — never `core/` / `daemon/` / `desktop/`
+  / `computer-use/`. A cross-platform bug fix that's *motivated* by Windows lives in the shared
+  dirs (there is no separate Windows UI), but it must be a no-op on Linux and build-verified.
+- **Self-hosted Windows runner (`win-runner-1`) recovery — learned the hard way:**
+  - **After ANY winvm reboot, the clock skews (~hours off) → the runner's OAuth session tokens
+    are rejected → it loops "registration has been deleted, please re-configure" even after you
+    re-register.** FIX THE CLOCK FIRST: `w32tm /resync /force` (config a manual peer if needed),
+    then `Restart-Service actions.runner.CrazyMan28-jarvis.win-runner-1`. Clock skew masquerades
+    as a registration problem — check `Get-Date` vs real time before re-registering.
+  - **A runner offline too long (e.g. during a Windows Update) gets AUTO-DEREGISTERED by GitHub.**
+    Re-register with `config.cmd remove --token <remove-token>` then `config.cmd --url … --token
+    <reg-token> --name win-runner-1 --labels jarvis-win --runasservice --unattended` (tokens:
+    `gh api -X POST repos/CrazyMan28/jarvis/actions/runners/{registration-token,remove-token}`).
+    `--replace` alone does NOT reconfigure a locally-configured runner — you must `remove` first.
+  - **winvm's `build.ps1` takes ~40 min** (compile + PyInstaller + npm + Inno on limited cores) —
+    that is NORMAL, not a hang. Don't cancel/reboot before ~45 min.
+  - **When SSH is flaky (loaded host), reach winvm via the QEMU guest agent:**
+    `ssh pve 'qm guest exec 106 -- powershell -NoProfile -Command "…"'`.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.
