@@ -28,7 +28,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from computer_use_mcp import daemon_client
+from computer_use_mcp import anomaly, daemon_client
 
 def _jobs_root() -> Path:
     # Honors $JARVIS_BG_JOBS_DIR (used by tests, and lets ops relocate state).
@@ -165,6 +165,32 @@ def monitor(command: str, interval_sec: int = 30, until_regex: str = "",
     meta["runner_pid"] = _spawn_runner(["--monitor", "--job", jid])
     _write_meta(jid, meta)
     return {"id": jid, "state": "running"}
+
+
+def watch(command: str, interval_sec: int = 60, learn_checks: int = 5,
+          sensitivity: str = "medium", mode: str = "auto", max_checks: int = 0,
+          name: str = "", session_id: str = "") -> dict:
+    """Proactive anomaly watcher (jarvis#68): poll `command` every interval,
+    learn a baseline, and WAKE the session only when something unusual appears.
+    Runs indefinitely (until stopped) unless max_checks is set."""
+    jid = _new_id(name or "watch")
+    _job_dir(jid).mkdir(parents=True, exist_ok=True)
+    _log_path(jid).write_text("")
+    meta = {
+        "id": jid, "kind": "watch", "name": name or "watch",
+        "command": command, "cwd": os.getcwd(),
+        "session_id": _session_default(session_id),
+        "interval_sec": max(5, int(interval_sec)),
+        "max_checks": int(max_checks),
+        "notify_on_done": False, "state": "watching",
+        "anomalies": 0, "started_at": _now(), "ended_at": None, "runner_pid": None,
+        "watch_state": anomaly.new_state(mode, learn_checks, sensitivity),
+    }
+    _write_meta(jid, meta)
+    meta["runner_pid"] = _spawn_runner(["--watch", "--job", jid])
+    _write_meta(jid, meta)
+    return {"id": jid, "state": "watching",
+            "learning_checks": meta["watch_state"]["learn_checks"]}
 
 
 def sleep_wake(seconds: int, note: str = "", session_id: str = "") -> dict:
@@ -331,6 +357,44 @@ def _run_monitor(jid: str) -> None:
     log.close()
 
 
+def _run_watch(jid: str) -> None:
+    m = _read_meta(jid)
+    log = open(_log_path(jid), "a", buffering=1)
+    while True:
+        m = _read_meta(jid)
+        if m.get("state") == "stopped":
+            break
+        out = ""
+        try:
+            r = subprocess.run(m["command"], shell=True, cwd=m.get("cwd") or None,
+                               capture_output=True, text=True, timeout=120)
+            out = (r.stdout or "") + (r.stderr or "")
+        except Exception as exc:  # noqa: BLE001
+            out = f"__probe_error__ {exc}"
+        st = m.get("watch_state") or anomaly.new_state()
+        report = anomaly.observe(st, out)
+        m["watch_state"] = st
+        tag = "LEARN" if report["learning"] else ("!! ANOMALY" if report["anomaly"] else "ok")
+        log.write(f"[check {report['check']} {tag}] {report.get('detail','')}\n")
+        if report["anomaly"] and m.get("session_id"):
+            m["anomalies"] = m.get("anomalies", 0) + 1
+            _wake(m["session_id"],
+                  f"[ANOMALY DETECTED] watcher \"{m.get('name')}\" (id {jid}) — "
+                  f"{report.get('detail','')}\nProbe: {m.get('command')}\n"
+                  f"Latest output:\n{out.strip()[:600]}\n\n"
+                  "This deviates from the learned baseline. Investigate; if it's "
+                  "actually fine, you can ignore it (it won't re-alert while it "
+                  "persists).", critical=True)
+        if m.get("max_checks") and report["check"] >= int(m["max_checks"]):
+            m["state"] = "expired"
+            m["ended_at"] = _now()
+            _write_meta(jid, m)
+            break
+        _write_meta(jid, m)
+        time.sleep(m.get("interval_sec", 60))
+    log.close()
+
+
 def _run_sleep(jid: str) -> None:
     m = _read_meta(jid)
     time.sleep(m.get("seconds", 1))
@@ -352,6 +416,7 @@ def _main(argv) -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", action="store_true")
     ap.add_argument("--monitor", action="store_true")
+    ap.add_argument("--watch", action="store_true")
     ap.add_argument("--sleep", action="store_true")
     ap.add_argument("--job", required=True)
     a = ap.parse_args(argv)
@@ -359,6 +424,8 @@ def _main(argv) -> None:
         _run_job(a.job)
     elif a.monitor:
         _run_monitor(a.job)
+    elif a.watch:
+        _run_watch(a.job)
     elif a.sleep:
         _run_sleep(a.job)
 

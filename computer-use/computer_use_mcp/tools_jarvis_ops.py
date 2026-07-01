@@ -334,6 +334,114 @@ def register(mcp: FastMCP) -> None:
         except Exception as exc:  # noqa: BLE001
             return _err(exc)
 
+    @mcp.tool()
+    def agent_committee(task: str, strategies: list[str],
+                        brain: str = "", model: str = "",
+                        judge: bool = True, timeout_sec: int = 3600) -> str:
+        """COMMITTEE MODE (jarvis#69): solve ONE task with several subagents in
+        PARALLEL, each taking a DIFFERENT strategy, then (optionally) a JUDGE
+        subagent picks or merges the best answer.
+
+        `strategies` is a list of angle descriptions — one subagent per entry,
+        all dispatched at once with the SAME `task` but that strategy injected as
+        its role (e.g. ["MVP-first: simplest thing that works", "risk-first:
+        find what breaks", "user-first: best UX"]). 2-6 works best.
+
+        Returns JSON {task, members:[{strategy, session_id, status, summary}],
+        verdict?}. With judge=true a final subagent reads every member's result
+        and returns a chosen/merged answer in `verdict` — otherwise YOU compare
+        the members yourself. Blocks until members (and the judge) finish or
+        timeout_sec elapses.
+
+        Use for high-stakes / wide-solution-space work where one attempt is
+        risky. For a single delegation use agent_start."""
+        import time
+        try:
+            strategies = [s for s in (strategies or []) if str(s).strip()][:6]
+            if len(strategies) < 2:
+                return _err(ValueError("committee needs >=2 strategies"))
+            parent = os.environ.get("JARVIS_AGENT_SESSION")
+            members: list[dict] = []
+            for i, strat in enumerate(strategies):
+                sp = ("You are committee member %d of %d solving a shared task. "
+                      "Your ASSIGNED STRATEGY: %s\nCommit fully to this angle — "
+                      "do not hedge toward the others. End with a concise SUMMARY "
+                      "of your solution and why it fits your strategy."
+                      % (i + 1, len(strategies), strat))
+                params = {"agent": "committee-%d" % (i + 1), "task": task,
+                          "system_prompt": sp}
+                if brain:
+                    params["brain"] = brain
+                if model:
+                    params["model"] = model
+                if parent:
+                    params["parent_session_id"] = parent
+                r = daemon_client.call("agents.dispatch", params, timeout=30)
+                members.append({"strategy": strat,
+                                "session_id": r.get("session_id", ""),
+                                "status": "running", "summary": ""})
+
+            end = time.time() + max(30, min(int(timeout_sec or 3600), 14400))
+            for m in members:
+                sid = m["session_id"]
+                if not sid:
+                    m["status"] = "error"
+                    continue
+                while time.time() < end:
+                    res = daemon_client.call("agents.result", {"session_id": sid})
+                    if not res.get("running", False):
+                        m["status"] = res.get("status", "done")
+                        m["summary"] = res.get("summary", "")
+                        break
+                    time.sleep(1.5)
+                else:
+                    m["status"] = "timeout"
+
+            out: dict = {"task": task, "members": members}
+            if judge:
+                done = [m for m in members if m["summary"].strip()]
+                if done:
+                    lines = "\n\n".join(
+                        "### Member %d — strategy: %s\n%s"
+                        % (i + 1, m["strategy"], m["summary"])
+                        for i, m in enumerate(members))
+                    jtask = (
+                        "You are the JUDGE of a committee that solved this task:\n"
+                        "%s\n\nHere is each member's solution:\n\n%s\n\n"
+                        "Pick the single best solution OR merge the strongest "
+                        "ideas into one. Justify briefly, then give the final "
+                        "answer. End with a SUMMARY containing that final answer."
+                        % (task, lines))
+                    jp = {"agent": "committee-judge", "task": jtask,
+                          "system_prompt": "You are an impartial judge selecting "
+                          "or synthesizing the best of several solutions."}
+                    if brain:
+                        jp["brain"] = brain
+                    if model:
+                        jp["model"] = model
+                    if parent:
+                        jp["parent_session_id"] = parent
+                    jr = daemon_client.call("agents.dispatch", jp, timeout=30)
+                    jsid = jr.get("session_id", "")
+                    verdict = {"session_id": jsid, "status": "running", "summary": ""}
+                    while jsid and time.time() < end:
+                        res = daemon_client.call("agents.result", {"session_id": jsid})
+                        if not res.get("running", False):
+                            verdict["status"] = res.get("status", "done")
+                            verdict["summary"] = res.get("summary", "")
+                            break
+                        time.sleep(1.5)
+                    else:
+                        if jsid:
+                            verdict["status"] = "timeout"
+                    out["verdict"] = verdict
+                else:
+                    out["verdict"] = {"status": "error",
+                                      "summary": "no member produced a result to judge"}
+            return json.dumps(out)
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
     # ---- Claude-Code-style lifecycle hooks --------------------------------
     @mcp.tool()
     def hooks_list() -> str:
