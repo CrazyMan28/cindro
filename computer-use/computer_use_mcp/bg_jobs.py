@@ -24,6 +24,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -69,9 +70,22 @@ def _read_meta(jid: str) -> dict:
 def _write_meta(jid: str, meta: dict) -> None:
     p = _meta_path(jid)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(meta, indent=2))
-    tmp.replace(p)
+    # Unique temp file per write (mkstemp), NOT a shared "job.tmp": two writers for
+    # the same job (e.g. a concurrent stop + a status update) would otherwise both
+    # write the same job.tmp, the first os.replace() renames it to job.json, and the
+    # second os.replace() dies with FileNotFoundError (job.tmp already gone). That was
+    # the flaky test_concurrent_stop_all / test_ended_at_none_while_job_running race.
+    fd, tmp = tempfile.mkstemp(dir=str(p.parent), prefix=p.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(meta, indent=2))
+        os.replace(tmp, p)  # atomic
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def _alive(pid) -> bool:
