@@ -86,17 +86,35 @@ QJsonObject AgentDesktopInfo::toJson() const
 // ---------------------------------------------------------------------------
 namespace {
 
-// sandbox | childsession | hyperv | takeover. Default sandbox (the v2 tier). The
-// installer/launcher sets this from windows/isolation/detect.ps1.
+// sandbox | childsession | hyperv | takeover.
+//
+// v2 SHIP GATE: the isolated agent-desktop tiers (sandbox/hyperv/childsession) are not
+// yet validated on real Windows hardware (the CI runner is a nested VM that can't boot
+// nested Hyper-V, so they only COMPILE here). Until someone trials them on a real
+// Windows Pro box, they NEVER auto-activate: the daemon uses the shipping-safe v1
+// real-screen take-over unless the operator explicitly opts in with JARVIS_ENABLE_V2=1
+// (set it, then windows.isolation.mode / detect.ps1 pick the tier as usual). This keeps
+// an untested nested-Hyper-V path from hanging a release machine ~120s before it falls
+// back to v1. The installer/launcher still sets JARVIS_WINDOWS_ISOLATION_MODE from
+// windows/isolation/detect.ps1 — it's just ignored for the v2 tiers without the opt-in.
 QString resolveMode()
 {
     const QString m = qEnvironmentVariable("JARVIS_WINDOWS_ISOLATION_MODE")
                           .trimmed()
                           .toLower();
-    if (m == QStringLiteral("childsession") || m == QStringLiteral("hyperv") ||
-        m == QStringLiteral("takeover") || m == QStringLiteral("sandbox"))
+    if (m == QStringLiteral("takeover"))
         return m;
-    return QStringLiteral("sandbox");
+
+    const QString v2 =
+        qEnvironmentVariable("JARVIS_ENABLE_V2").trimmed().toLower();
+    const bool v2optin = (v2 == QStringLiteral("1") || v2 == QStringLiteral("true") ||
+                          v2 == QStringLiteral("yes") || v2 == QStringLiteral("on"));
+    if (v2optin &&
+        (m == QStringLiteral("childsession") || m == QStringLiteral("hyperv") ||
+         m == QStringLiteral("sandbox")))
+        return m;
+
+    return QStringLiteral("takeover");
 }
 
 // Reverse-tunnel reachability backend: tunnel (default, in-process QTcpServer) or
