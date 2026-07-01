@@ -149,6 +149,7 @@ private:
     bool exec(const QString &sql, QString *err = nullptr);
     bool migrate();
     void autoExtractEntities(const QString &memId, const QString &text, const QStringList &tags);
+    void backfillEntityExtraction();
 
     QSqlDatabase m_db;
     QString m_connectionName;
