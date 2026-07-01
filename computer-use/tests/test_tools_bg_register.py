@@ -33,7 +33,7 @@ from computer_use_mcp.tools_bg import _err, register
 
 EXPECTED_TOOLS = frozenset(
     {"bg_start", "bg_status", "bg_logs", "bg_stop", "bg_list", "bg_wait",
-     "monitor", "wake_me_in"}
+     "monitor", "watch", "wake_me_in"}
 )
 
 # ---------------------------------------------------------------------------
