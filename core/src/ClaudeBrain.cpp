@@ -86,9 +86,11 @@ QStringList ClaudeBrain::buildArgs(const QString &prompt, const QStringList &ima
     args << QStringLiteral("--strict-mcp-config");
     if (!m_opts.permissionMode.isEmpty())
         args << QStringLiteral("--permission-mode") << m_opts.permissionMode;
-    // `--` terminates option parsing so the prompt is unambiguously the sole
-    // trailing positional, even if a future variadic flag is added above.
-    args << QStringLiteral("--") << prompt;
+    // The prompt is NOT passed as a positional arg — it is fed via stdin in send()
+    // (quoting-safe on every platform; a Windows claude.cmd + cmd.exe would otherwise
+    // mangle a multi-word command-line prompt, leaving claude with none). `prompt` is
+    // kept in the signature for the caller but is no longer used to build args.
+    Q_UNUSED(prompt);
     return args;
 }
 
@@ -162,8 +164,10 @@ void ClaudeBrain::send(const QString &text, const QStringList &images)
         m_proc->setProcessEnvironment(env);
     }
     m_proc->setProcessChannelMode(QProcess::SeparateChannels);
-    // Close stdin (EOF) so the one-shot `-p` turn never blocks reading input.
-    m_proc->setStandardInputFile(QProcess::nullDevice());
+    // stdin is intentionally left OPEN: the prompt is written to it after start()
+    // (see below). Passing the prompt on the command line breaks on Windows — a global
+    // `claude` is a .cmd shim and cmd.exe drops/mangles a multi-word quoted prompt, so
+    // claude receives NO prompt and just summarizes CLAUDE.md. stdin is quoting-safe.
 
     connect(m_proc, &QProcess::readyReadStandardOutput, this, &ClaudeBrain::onReadyReadStdout);
     connect(m_proc, &QProcess::readyReadStandardError, this, &ClaudeBrain::onReadyReadStderr);
@@ -178,6 +182,10 @@ void ClaudeBrain::send(const QString &text, const QStringList &images)
         emit turnFinished(m_sessionId);
         return;
     }
+    // Feed the prompt via stdin (claude -p reads it there), then EOF so the one-shot
+    // turn runs. Command-line-safe on every platform — no cmd.exe / .cmd arg mangling.
+    m_proc->write(promptText.toUtf8());
+    m_proc->closeWriteChannel();
 }
 
 void ClaudeBrain::cancel()

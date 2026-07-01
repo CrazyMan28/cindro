@@ -1,12 +1,13 @@
-// ctest: guard the ClaudeBrain argv shape — specifically that the user PROMPT is
-// an isolated trailing positional placed AFTER a `--` option terminator.
+// ctest: guard the ClaudeBrain argv shape. The user PROMPT is fed to `claude -p` via
+// STDIN (see ClaudeBrain::send), NOT as a command-line positional.
 //
-// This guards a real regression: `--add-dir` is VARIADIC in the claude CLI, so
-// the separate-token form `--add-dir <dir> "<prompt>"` greedily swallowed the
-// trailing prompt as a second directory and claude aborted with "Input must be
-// provided ... when using --print". The fix uses `--add-dir=<dir>` (equals form)
-// AND terminates options with `--` so the prompt can never be consumed by any
-// (current or future) variadic flag. This test fails if either guard is lost.
+// Why via stdin: passing the prompt on the command line breaks on Windows — a global
+// `claude` is a .cmd shim and cmd.exe drops/mangles a multi-word quoted prompt, so
+// claude receives NO prompt and just summarizes CLAUDE.md ("I've got your memory
+// loaded…"). stdin is quoting-safe on every platform. So buildArgs must NEVER contain
+// the prompt. This test also keeps the --add-dir=<dir> (equals) guard: a bare
+// `--add-dir <dir>` is variadic and wrong regardless. It fails if the prompt leaks back
+// into argv or the equals guard is lost.
 
 #include "jarvis/ClaudeBrain.h"
 
@@ -31,25 +32,24 @@ void check(bool cond, const char *msg)
     }
 }
 
-// True iff `--` appears exactly once, the prompt is the SOLE token after it, and
-// nothing between the program flags and `--` is the prompt.
-bool promptIsIsolatedTrailingPositional(const QStringList &args, const QString &prompt)
+// True iff the full prompt string appears NOWHERE in argv (it is fed via stdin) and no
+// dangling `--` option-terminator with a trailing positional was left behind.
+bool promptAbsentFromArgs(const QStringList &args, const QString &prompt)
 {
+    if (args.contains(prompt))
+        return false; // the prompt must never be a command-line positional
     const int dd = args.indexOf(QStringLiteral("--"));
-    if (dd < 0)
-        return false;
-    if (args.indexOf(QStringLiteral("--"), dd + 1) != -1)
-        return false; // `--` must be unique
-    // Exactly one token after `--`, and it is the prompt.
-    if (dd != args.size() - 2)
-        return false;
-    return args.last() == prompt;
+    if (dd >= 0 && dd < args.size() - 1)
+        return false; // nothing may trail a `--` (no dangling positional)
+    return true;
 }
 
 } // namespace
 
 int main()
 {
+    // A prompt salted with tokens that LOOK like flags (-p, --add-dir, --verbose): if it
+    // ever leaked into argv it could be mis-parsed. Via stdin it never can.
     const QString prompt =
         QStringLiteral("list the files -p --add-dir /etc and explain --verbose");
 
@@ -71,23 +71,22 @@ int main()
                   args.contains(QStringLiteral("stream-json")),
               "has --output-format stream-json");
         check(args.contains(QStringLiteral("--verbose")), "has --verbose flag");
-        // --add-dir MUST be the equals form (never a bare `--add-dir <dir>` that
-        // could swallow the prompt).
+        // --add-dir MUST be the equals form (never a bare `--add-dir <dir>`).
         check(args.contains(QStringLiteral("--add-dir=/home/user/project")),
               "--add-dir uses the equals form (binds a single value)");
         check(!args.contains(QStringLiteral("--add-dir")),
               "no bare separate-token --add-dir");
-        check(promptIsIsolatedTrailingPositional(args, prompt),
-              "prompt is the sole trailing positional after a unique --");
+        check(promptAbsentFromArgs(args, prompt),
+              "prompt is NOT a command-line positional (fed via stdin)");
     }
 
-    // Case 2: no cwd, no model — `--` + prompt must STILL be the trailing pair.
+    // Case 2: no cwd, no model.
     {
         ClaudeBrain::Options opts;
         ClaudeBrain brain(opts);
         const QStringList args = brain.buildArgs(prompt);
-        check(promptIsIsolatedTrailingPositional(args, prompt),
-              "no-cwd/model: prompt still isolated after --");
+        check(promptAbsentFromArgs(args, prompt),
+              "no-cwd/model: prompt still absent from argv");
         check(!args.contains(QStringLiteral("--model")),
               "no --model when model is empty");
         // ISOLATION: even with NO --mcp-config, a Jarvis claude turn MUST pass
@@ -99,19 +98,20 @@ int main()
               "no --mcp-config when none was built (strict alone = zero servers)");
     }
 
-    // Case 3: a prompt that itself starts with a dash must not be parsed as a flag.
+    // Case 3: a prompt that itself starts with a dash. Via stdin it can NEVER reach argv
+    // and so can never be mistaken for a flag — the strongest form of the old guarantee.
     {
         ClaudeBrain::Options opts;
         opts.cwd = QStringLiteral("/tmp/x");
         ClaudeBrain brain(opts);
         const QString dashy = QStringLiteral("--help me write code");
         const QStringList args = brain.buildArgs(dashy);
-        check(promptIsIsolatedTrailingPositional(args, dashy),
-              "dash-leading prompt is isolated after -- (not mistaken for a flag)");
+        check(promptAbsentFromArgs(args, dashy),
+              "dash-leading prompt never reaches argv (fed via stdin)");
     }
 
-    // Case 4: MULTIMODAL — image attachments grant Read access via --add-dir=<dir>
-    // (the dir of each attached image), still keeping the prompt isolated after --.
+    // Case 4: MULTIMODAL — image attachments grant Read access via --add-dir=<dir> (the
+    // dir of each attached image); the prompt still never appears in argv.
     {
         ClaudeBrain::Options opts;
         opts.cwd = QStringLiteral("/home/user/project");
@@ -124,8 +124,8 @@ int main()
         // both images share one dir -> only one extra --add-dir for it
         check(args.count(QStringLiteral("--add-dir=/tmp/jarvis")) == 1,
               "duplicate image dirs are de-duplicated");
-        check(promptIsIsolatedTrailingPositional(args, prompt),
-              "prompt still isolated after -- with image dirs added");
+        check(promptAbsentFromArgs(args, prompt),
+              "prompt still absent from argv with image dirs added");
     }
 
     if (g_failures) {

@@ -479,8 +479,16 @@ static QJsonArray modelsForBrain(const QString &brain)
         models << QStringLiteral("gpt-5.5") << QStringLiteral("gpt-5-codex")
                << QStringLiteral("gpt-5.5-codex") << QStringLiteral("o4-mini");
     } else if (brain == QStringLiteral("claude")) {
-        models << QStringLiteral("claude-opus-4-8") << QStringLiteral("claude-opus-4-5")
-               << QStringLiteral("claude-sonnet-4-5") << QStringLiteral("claude-haiku-4-5");
+        // Current full model names + the claude CLI's real `--model` ALIASES
+        // (opus/sonnet/haiku). The aliases are the robust "real options the CLI has":
+        // the CLI resolves each to the latest model the signed-in account can actually
+        // use, so they never go stale or offer a model the account lacks. (The claude
+        // CLI has no list-models command to query, so this is the accurate set.)
+        models << QStringLiteral("claude-opus-4-8")
+               << QStringLiteral("claude-sonnet-4-6")
+               << QStringLiteral("claude-haiku-4-5")
+               << QStringLiteral("opus") << QStringLiteral("sonnet")
+               << QStringLiteral("haiku");
     } else { // api — Mistral first: the recommended default for a CLI-less user.
         models << QStringLiteral("mistral-large-latest")
                << QStringLiteral("mistral-small-latest")
