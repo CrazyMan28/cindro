@@ -31,6 +31,7 @@ Item {
     property string assistantName: "Jarvis"      // what the assistant calls itself (settings.get)
     property string userName: ""                  // the human's name (settings.get; saved as memory)
     property string claudeAccount: "pro"        // "pro" (default) | "max"
+    property var claudeAccounts: []              // [{id,email}] from settings.get claude_accounts
     property string ttsVoice: ""                 // preferred TTS voice slug (the default)
     property var voiceList: []                   // [{id,label}] from voice.list_voices
     // Named voice library (record/upload your own voice + set one as default).
@@ -169,6 +170,7 @@ Item {
                                  ? ("" + s.assistant_name) : "Jarvis"
             page.userName = s.user_name !== undefined ? ("" + s.user_name) : ""
             page.claudeAccount = (s.claude_account === "max") ? "max" : "pro"
+            page.claudeAccounts = s.claude_accounts !== undefined ? s.claude_accounts : []
             page.ttsVoice = s.tts_voice !== undefined ? s.tts_voice : ""
             page.sttProvider = s.stt_provider !== undefined ? s.stt_provider : "voxtral"
             page.ttsProvider = s.tts_provider !== undefined ? s.tts_provider : "voxtral"
@@ -193,7 +195,7 @@ Item {
             page.dirty = false
             brainCombo.refill()
             modelCombo.syncFromState()
-            claudeAccountCombo.syncFromState()
+            claudeAccountCombo.refill()
             sttProviderCombo.syncFromState()
             ttsProviderCombo.syncFromState()
             voiceCombo.syncFromState()
@@ -355,6 +357,37 @@ Item {
     function providerIndexForId(list, id) {
         for (var i = 0; i < list.length; i++)
             if (("" + list[i].id) === id) return i
+        return 0
+    }
+
+    // Claude account picker helpers: build labels from claude_accounts (real emails
+    // when present, else readable fallbacks). Max is omitted when not in the array.
+    function claudeAccountModel() {
+        if (page.claudeAccounts.length === 0) return ["Default account"]
+        var out = []
+        for (var i = 0; i < page.claudeAccounts.length; i++) {
+            var a = page.claudeAccounts[i]
+            var id    = (a && a.id    !== undefined) ? ("" + a.id)    : "pro"
+            var email = (a && a.email !== undefined && ("" + a.email).length) ? (" (" + a.email + ")") : ""
+            if      (id === "pro") out.push("Pro" + (email.length ? email : " (default)"))
+            else if (id === "max") out.push("Max" + (email.length ? email : " (secondary)"))
+            else                   out.push(id + email)
+        }
+        return out
+    }
+    function claudeAccountIdForIndex(idx) {
+        if (page.claudeAccounts.length === 0) return "pro"
+        if (idx >= 0 && idx < page.claudeAccounts.length) {
+            var a = page.claudeAccounts[idx]
+            return (a && a.id !== undefined) ? ("" + a.id) : "pro"
+        }
+        return "pro"
+    }
+    function claudeAccountIndexForId(id) {
+        for (var i = 0; i < page.claudeAccounts.length; i++) {
+            var a = page.claudeAccounts[i]
+            if (("" + (a && a.id !== undefined ? a.id : "")) === id) return i
+        }
         return 0
     }
 
@@ -604,13 +637,18 @@ Item {
                         Widgets.StyledCombo {
                             id: claudeAccountCombo
                             Layout.fillWidth: true
-                            // index 0 == Pro (default), index 1 == Max
-                            model: ["Pro (you@example.com)", "Max (you-max@example.com)"]
+                            // Built dynamically from claude_accounts; Max is omitted
+                            // when absent from the array — never hardcoded.
+                            model: page.claudeAccountModel()
+                            function refill() { model = page.claudeAccountModel(); syncFromState() }
                             function syncFromState() {
-                                currentIndex = (page.claudeAccount === "max") ? 1 : 0
+                                model = page.claudeAccountModel()
+                                currentIndex = page.claudeAccounts.length > 0
+                                    ? page.claudeAccountIndexForId(page.claudeAccount)
+                                    : 0
                             }
                             onActivated: {
-                                page.claudeAccount = (currentIndex === 1) ? "max" : "pro"
+                                page.claudeAccount = page.claudeAccountIdForIndex(currentIndex)
                                 page.dirty = true
                             }
                         }
@@ -620,7 +658,17 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     visible: page.claudeAccount === "max"
-                    text: "⚠ Max — uses your Max quota (you-max@example.com)."
+                    text: {
+                        for (var i = 0; i < page.claudeAccounts.length; i++) {
+                            var a = page.claudeAccounts[i]
+                            if (("" + (a && a.id !== undefined ? a.id : "")) === "max") {
+                                var em = (a.email !== undefined && ("" + a.email).length)
+                                         ? " (" + a.email + ")" : ""
+                                return "⚠ Max — uses your Max quota" + em + "."
+                            }
+                        }
+                        return "⚠ Max — uses your Max quota."
+                    }
                     color: Theme.amber
                     font.family: Theme.fontSans
                     font.pixelSize: 12

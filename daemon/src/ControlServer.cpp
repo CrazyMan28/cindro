@@ -522,6 +522,51 @@ Response ControlServer::handleSettingsGet(const Request &req)
     s.insert(QStringLiteral("default_brain"), m_settings.defaultBrain());
     s.insert(QStringLiteral("default_model"), m_settings.defaultModel());
     s.insert(QStringLiteral("claude_account"), m_settings.claudeAccount());
+
+    // Real Claude account list for the account picker (SettingsPage.qml).
+    // Include an entry only when the account's config directory exists on disk.
+    // Best-effort read the email from <dir>/.claude.json oauthAccount.emailAddress;
+    // fall back to ~/.claude.json for the Pro slot (the default location).
+    {
+        const struct { const char *id; const char *label; } kSlots[] = {
+            { "pro", "Claude Pro" },
+            { "max", "Claude Max" },
+        };
+        QJsonArray claudeAccounts;
+        for (const auto &slot : kSlots) {
+            const QString dir =
+                SettingsStore::claudeConfigDirFor(QString::fromLatin1(slot.id));
+            if (!QDir(dir).exists())
+                continue;
+            QString email;
+            // Try the account-specific config first, then the default ~/.claude.json.
+            const QStringList candidates = {
+                dir + QStringLiteral("/.claude.json"),
+                QDir::homePath() + QStringLiteral("/.claude.json"),
+            };
+            for (const QString &path : candidates) {
+                QFile f(path);
+                if (!f.open(QIODevice::ReadOnly))
+                    continue;
+                email = QJsonDocument::fromJson(f.readAll())
+                            .object()
+                            .value(QStringLiteral("oauthAccount"))
+                            .toObject()
+                            .value(QStringLiteral("emailAddress"))
+                            .toString();
+                f.close();
+                if (!email.isEmpty())
+                    break;
+            }
+            QJsonObject acct;
+            acct.insert(QStringLiteral("id"), QString::fromLatin1(slot.id));
+            acct.insert(QStringLiteral("label"), QString::fromLatin1(slot.label));
+            acct.insert(QStringLiteral("email"), email);
+            claudeAccounts.append(acct);
+        }
+        s.insert(QStringLiteral("claude_accounts"), claudeAccounts);
+    }
+
     s.insert(QStringLiteral("tts_voice"), m_settings.ttsVoice());
 
     // First-launch SETUP WIZARD state + the chosen assistant name. The desktop
@@ -1566,25 +1611,36 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     row.profile = effProfile.isEmpty() ? QStringLiteral("coder") : effProfile;
     row.brain = effBrain.isEmpty() ? m_config.defaultBrain : effBrain;
     // NO-CLI FALLBACK: if the brain came from the DEFAULT (the caller didn't ask
-    // for a specific one) and it's a CLI brain that isn't installed, fall back to
-    // the direct API brain so a user with neither codex nor claude can still chat.
-    // Prefer Mistral when that key is present (the recommended CLI-less default).
+    // for a specific one) and it's a CLI brain that isn't installed, first try the
+    // OTHER cli brain (so a user who has claude but not codex gets claude, not an
+    // immediate api-fallback), THEN fall back to the direct API brain if neither
+    // CLI is on PATH. Prefer Mistral when that key is present (CLI-less default).
     // An EXPLICIT brain request is always honored (it surfaces its own error).
     if (effBrain.isEmpty() &&
         (row.brain == QStringLiteral("codex") || row.brain == QStringLiteral("claude")) &&
         QStandardPaths::findExecutable(row.brain).isEmpty()) {
-        const bool haveMistral = m_settings.hasApiKey(QStringLiteral("mistral"));
-        if (haveMistral || m_settings.hasApiKey(QStringLiteral("openai")) ||
-            m_settings.hasApiKey(QStringLiteral("anthropic"))) {
+        // Prefer the OTHER installed CLI brain before giving up on a CLI brain.
+        const QString altBrain = (row.brain == QStringLiteral("codex"))
+                                     ? QStringLiteral("claude")
+                                     : QStringLiteral("codex");
+        if (!QStandardPaths::findExecutable(altBrain).isEmpty()) {
             qInfo().noquote() << "[brain] default" << row.brain
-                              << "CLI not found on PATH; falling back to the api brain";
-            row.brain = QStringLiteral("api");
-            if (haveMistral && effModel.isEmpty())
-                effModel = QStringLiteral("mistral-large-latest");
+                              << "CLI not found on PATH; switching to installed" << altBrain;
+            row.brain = altBrain;
+        } else {
+            const bool haveMistral = m_settings.hasApiKey(QStringLiteral("mistral"));
+            if (haveMistral || m_settings.hasApiKey(QStringLiteral("openai")) ||
+                m_settings.hasApiKey(QStringLiteral("anthropic"))) {
+                qInfo().noquote() << "[brain] default" << row.brain
+                                  << "CLI not found on PATH; falling back to the api brain";
+                row.brain = QStringLiteral("api");
+                if (haveMistral && effModel.isEmpty())
+                    effModel = QStringLiteral("mistral-large-latest");
+            }
+            // No api key either: leave the brain as-is. The CLI spawn emits a clear
+            // "<brain> failed to start" error, and the UI's available_brains +
+            // api_keys_set drive the "add a Mistral key" onboarding prompt.
         }
-        // No api key either: leave the brain as-is. The CLI spawn emits a clear
-        // "<brain> failed to start" error, and the UI's available_brains +
-        // api_keys_set drive the "add a Mistral key" onboarding prompt.
     }
     // BRAIN DEFAULT FIX: when the caller gives no model, pick the per-brain
     // default (the FIRST entry of modelsForBrain) — a claude brain gets a claude

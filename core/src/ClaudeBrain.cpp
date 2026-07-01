@@ -1,5 +1,6 @@
 #include "jarvis/ClaudeBrain.h"
 
+#include "jarvis/CliResolve.h"
 #include "jarvis/ClaudeParser.h"
 
 #include <QDir>
@@ -133,7 +134,6 @@ void ClaudeBrain::send(const QString &text, const QStringList &images)
     m_busy = true;
 
     m_proc = new QProcess(this);
-    m_proc->setProgram(m_opts.program);
     // Multimodal: `claude -p` has no base64 image flag, but its Read tool renders
     // local image files. The daemon decoded the phone's {mime,b64} attachments to
     // file paths; tell the model to view each, and grant access via --add-dir.
@@ -146,7 +146,11 @@ void ClaudeBrain::send(const QString &text, const QStringList &images)
         note += QStringLiteral("]");
         promptText += note;
     }
-    m_proc->setArguments(buildArgs(promptText, images));
+    QString program = m_opts.program;
+    QStringList args = buildArgs(promptText, images);
+    jarvis::resolveCliLaunch(program, args);
+    m_proc->setProgram(program);
+    m_proc->setArguments(args);
     if (!m_opts.cwd.isEmpty())
         m_proc->setWorkingDirectory(m_opts.cwd);
     // Pin CLAUDE_CONFIG_DIR so the brain runs as the SELECTED claude account

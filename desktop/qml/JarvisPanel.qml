@@ -166,14 +166,25 @@ Item {
         // Kick an immediate refresh whenever it starts (e.g. a turn begins).
         onRunningChanged: if (running) panel.refreshSubagents()
     }
-    // Default model is gpt-5.5 (gpt-5-codex is rejected HTTP 400 by this codex login).
-    property var modelOptions: ["gpt-5.5", "gpt-5", "o4-mini", "claude-sonnet-4.5", "claude-opus-4.5"]
+    // Model list is populated dynamically from the daemon (onModelsListed). The empty
+    // initializer is replaced as soon as the bridge responds to bridge.listModels().
+    property var modelOptions: []
     property string selectedModel: modelOptions.length > 0 ? modelOptions[0] : ""
 
     // Which brain (engine) backs the next session: "codex" (default) or "claude".
     // Changing it re-queries model.list so the model picker shows THAT brain's
     // models. The session.create call passes this as the `brain` param.
-    property var brainOptions: ["codex", "claude"]
+    //
+    // _availableBrains is populated from settings.get (onSettingsLoaded below).
+    // brainOptions is a reactive binding so the brain picker auto-updates.
+    property var _availableBrains: ({})
+    readonly property var brainOptions: {
+        var out = []
+        if (_availableBrains.codex === true) out.push("codex")
+        if (_availableBrains.claude === true) out.push("claude")
+        out.push("api")
+        return out.length > 1 ? out : ["codex", "claude", "api"]
+    }
     property string selectedBrain: "codex"
 
     // Repopulate the model list for the chosen brain. onModelsListed only adopts a
@@ -187,12 +198,15 @@ Item {
             bridge.listModels(brain)
     }
 
-    // On startup (and reconnect) fetch the default brain's models.
+    // On startup (and reconnect) fetch settings (brain preference + availability)
+    // and the default brain's model list.
     Component.onCompleted: {
         if (Qt.application.arguments.indexOf("--demo") !== -1)
             seedDemo()
-        if (bridge.connected)
+        if (bridge.connected) {
+            bridge.loadSettings()
             bridge.listModels(panel.selectedBrain)
+        }
         if (typeof startPeek !== "undefined" && startPeek)
             panel.peekOpen = true
     }
@@ -375,10 +389,21 @@ Item {
             }
         }
 
-        // When the daemon connects after the panel loaded, fetch the brain's models.
+        // When the daemon connects after the panel loaded, fetch settings (to pick
+        // up default_brain / available_brains) then fetch that brain's model list.
         function onConnectedChanged() {
-            if (bridge.connected)
+            if (bridge.connected) {
+                bridge.loadSettings()
                 bridge.listModels(panel.selectedBrain)
+            }
+        }
+
+        // settings.get response: update available brains and honour stored default.
+        function onSettingsLoaded(s) {
+            panel._availableBrains = s.available_brains !== undefined ? s.available_brains : ({})
+            var db = s.default_brain !== undefined ? ("" + s.default_brain) : ""
+            if (db.length > 0 && db !== panel.selectedBrain)
+                panel.selectBrain(db)   // updates selectedBrain + re-queries model list
         }
 
         // Launch / toggle-to-visible: land in a FRESH chat, never an old/Chrome

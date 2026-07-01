@@ -25,6 +25,7 @@ Item {
     // rolling history (newest last) for the dashboard mini bar charts
     property var cpuHist: [4, 7, 5, 9, 6]
     property var ramHist: [40, 42, 41, 43, 42]
+    property string userName: ""
 
     function greeting() {
         var h = new Date().getHours()
@@ -37,6 +38,7 @@ Item {
     Component.onCompleted: {
         bridge.listSessions()
         bridge.replayAllWidgets()
+        if (bridge.connected) bridge.loadSettings()
     }
 
     Connections {
@@ -81,6 +83,9 @@ Item {
                 if (widgetModel.get(i).wid === id) { widgetModel.remove(i); return }
         }
         function onWidgetsCleared() { widgetModel.clear() }
+        function onSettingsLoaded(s) {
+            home.userName = (s.user_name !== undefined) ? ("" + s.user_name) : ""
+        }
     }
 
     // ---- Home widget ordering (drag/move + persist) -----------------------
@@ -163,7 +168,7 @@ Item {
                 RowLayout {
                     spacing: 12
                     Text {
-                        text: home.greeting() + ", Issac"
+                        text: home.greeting() + (home.userName.length ? ", " + home.userName : "")
                         color: Theme.text
                         font.family: Theme.fontDisplay
                         font.pixelSize: 25
