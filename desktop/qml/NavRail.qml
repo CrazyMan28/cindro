@@ -32,6 +32,7 @@ Item {
         { key: "agents",    label: "AGENTS",    section: "MIND" },
         { key: "schedules", label: "SCHEDULES", section: "MIND" },
         { key: "activity",  label: "ACTIVITY",  section: "MIND" },
+        { key: "memgraph",  label: "GRAPH",     section: "MIND" },
         { key: "mcp",       label: "MCP",       section: "SYSTEM" },
         { key: "plugins",   label: "PLUGINS",   section: "SYSTEM" },
         { key: "ssh",       label: "SSH",       section: "SYSTEM" },
@@ -433,6 +434,17 @@ Item {
                     ctx.moveTo(1.5, 9); ctx.lineTo(5, 9); ctx.lineTo(7, 3.5)
                     ctx.lineTo(10, 14.5); ctx.lineTo(12, 9); ctx.lineTo(16.5, 9)
                     ctx.stroke()
+                    break
+                case "memgraph":
+                    // three linked nodes: the knowledge-graph glyph
+                    ctx.beginPath()
+                    ctx.moveTo(9, 4); ctx.lineTo(4, 13.5)
+                    ctx.moveTo(9, 4); ctx.lineTo(14, 13.5)
+                    ctx.moveTo(4, 13.5); ctx.lineTo(14, 13.5)
+                    ctx.stroke()
+                    ctx.beginPath(); ctx.arc(9, 4, 2, 0, Math.PI*2); ctx.stroke()
+                    ctx.beginPath(); ctx.arc(4, 13.5, 2, 0, Math.PI*2); ctx.stroke()
+                    ctx.beginPath(); ctx.arc(14, 13.5, 2, 0, Math.PI*2); ctx.stroke()
                     break
                 case "ssh":
                     // terminal: window with a prompt chevron + cursor

@@ -357,6 +357,12 @@ private:
     Response handleMemoryAdd(const Request &req);
     Response handleMemoryEdit(const Request &req);
     Response handleMemoryRemove(const Request &req);
+    // Knowledge graph (jarvis#70 phase 1): entities auto-extracted by
+    // MemoryStore::add(), plus explicit graph editing/browsing.
+    Response handleMemoryEntitiesList(const Request &req);
+    Response handleMemoryEntityGet(const Request &req);
+    Response handleMemoryLink(const Request &req);
+    Response handleMemoryGraph(const Request &req);
     // Contract A v3: self-authored skills (HERMES_FEATURES §2).
     Response handleSkillsList(const Request &req);
     Response handleSkillsGet(const Request &req);

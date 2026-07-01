@@ -808,6 +808,44 @@ void Bridge::memoryRemove(const QString &id)
     request(QStringLiteral("memory.remove"), params);
 }
 
+void Bridge::memoryGraph(const QString &root, int depth)
+{
+    QVariantMap params;
+    if (!root.isEmpty())
+        params.insert(QStringLiteral("root"), root);
+    params.insert(QStringLiteral("depth"), depth);
+    request(QStringLiteral("memory.graph"), params);
+}
+
+void Bridge::memoryEntitiesList(int limit)
+{
+    QVariantMap params;
+    if (limit > 0)
+        params.insert(QStringLiteral("limit"), limit);
+    request(QStringLiteral("memory.entities.list"), params);
+}
+
+void Bridge::memoryEntityGet(const QString &id)
+{
+    if (id.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    request(QStringLiteral("memory.entity.get"), params);
+}
+
+void Bridge::memoryLink(const QString &fromId, const QString &toId, const QString &relation)
+{
+    if (fromId.isEmpty() || toId.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("from"), fromId);
+    params.insert(QStringLiteral("to"), toId);
+    if (!relation.isEmpty())
+        params.insert(QStringLiteral("relation"), relation);
+    request(QStringLiteral("memory.link"), params);
+}
+
 // ---- Skills (Contract A v3, self-authoring) --------------------------------
 
 void Bridge::skillsList()
@@ -3203,6 +3241,10 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                 emit memoriesListed(QVariantList(), false);
             else if (method == QStringLiteral("memory.search"))
                 emit memoriesListed(QVariantList(), true);
+            else if (method == QStringLiteral("memory.graph"))
+                emit memoryGraphLoaded(QVariantMap());
+            else if (method == QStringLiteral("memory.entities.list"))
+                emit memoryEntitiesListed(QVariantList());
             else if (method == QStringLiteral("skills.list"))
                 emit skillsListed(QVariantList());
             else if (method == QStringLiteral("skills.today"))
@@ -3507,6 +3549,15 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                || method == QStringLiteral("memory.remove")) {
         emit memoryChanged();
         memoryList(); // refresh the list after a mutation
+    } else if (method == QStringLiteral("memory.graph")) {
+        emit memoryGraphLoaded(result);
+    } else if (method == QStringLiteral("memory.entities.list")) {
+        emit memoryEntitiesListed(result.value(QStringLiteral("entities")).toList());
+    } else if (method == QStringLiteral("memory.entity.get")) {
+        emit memoryEntityLoaded(result);
+    } else if (method == QStringLiteral("memory.link")) {
+        emit memoryChanged();
+        memoryGraph(); // refresh the graph after a manual edge edit
     } else if (method == QStringLiteral("skills.list")) {
         emit skillsListed(result.value(QStringLiteral("skills")).toList());
     } else if (method == QStringLiteral("skills.get")) {
