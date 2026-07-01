@@ -27,6 +27,7 @@ Item {
     property var canDrive: ({})                 // brain -> bool (computer-use drive)
     property string defaultBrain: "codex"
     property string defaultModel: ""
+    property string assistantName: "Jarvis"      // what the assistant calls itself (settings.get)
     property string claudeAccount: "pro"        // "pro" (default) | "max"
     property string ttsVoice: ""                 // preferred TTS voice slug (the default)
     property var voiceList: []                   // [{id,label}] from voice.list_voices
@@ -161,6 +162,8 @@ Item {
             page.canDrive = s.can_drive !== undefined ? s.can_drive : ({})
             page.defaultBrain = s.default_brain !== undefined ? s.default_brain : "codex"
             page.defaultModel = s.default_model !== undefined ? s.default_model : ""
+            page.assistantName = (s.assistant_name !== undefined && ("" + s.assistant_name).trim().length)
+                                 ? ("" + s.assistant_name) : "Jarvis"
             page.claudeAccount = (s.claude_account === "max") ? "max" : "pro"
             page.ttsVoice = s.tts_voice !== undefined ? s.tts_voice : ""
             page.sttProvider = s.stt_provider !== undefined ? s.stt_provider : "voxtral"
@@ -342,6 +345,7 @@ Item {
     function save() {
         page.saving = true
         var patch = {
+            "assistant_name": page.assistantName.trim().length ? page.assistantName.trim() : "Jarvis",
             "default_brain": page.defaultBrain,
             "default_model": page.defaultModel,
             "claude_account": page.claudeAccount,
@@ -401,6 +405,45 @@ Item {
                     busy: page.saving
                     Layout.alignment: Qt.AlignTop
                     onClicked: page.save()
+                }
+            }
+
+            // ===== Identity =================================================
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+                Text {
+                    text: "// IDENTITY"
+                    color: Theme.accent
+                    font.family: Theme.fontDisplay
+                    font.pixelSize: 11
+                    font.letterSpacing: Theme.trackMid
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "What the assistant calls itself, in chat and voice. This is the name you picked during setup."
+                    color: Theme.textFaint
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 5
+                    Text { text: "Assistant name"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                    Widgets.StyledField {
+                        id: assistantNameField
+                        Layout.fillWidth: true
+                        placeholder: "Jarvis"
+                        text: page.assistantName
+                        onTextChanged: {
+                            if (text !== page.assistantName) {
+                                page.assistantName = text
+                                page.dirty = true
+                            }
+                        }
+                        onAccepted: if (page.dirty && !page.saving) page.save()
+                    }
                 }
             }
 
