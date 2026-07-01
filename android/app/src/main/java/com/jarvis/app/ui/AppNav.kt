@@ -163,16 +163,13 @@ fun AppNav(
         }
     }
 
-    // A session was created on ANY surface (phone/desktop/MCP/scheduler): the daemon
-    // fanned out a 'session.opened' event. While the app is in the foreground, open
-    // that session's chat — same route the FCM/wake deep-link uses.
-    LaunchedEffect(Unit) {
-        app.repository.sessionOpened.collect { opened ->
-            if (app.pairingStore.isPaired && opened.sessionId.isNotEmpty()) {
-                nav.navigate(Routes.chat(opened.sessionId))
-            }
-        }
-    }
+    // A session created on ANOTHER surface (desktop/MCP/scheduler) must NEVER yank
+    // this phone into its chat — starting a chat on the desktop and then opening
+    // the app dropped you straight inside that session. The phone's OWN creations
+    // navigate from the session.create reply (HomeScreen/SessionsScreen onCreated),
+    // and JarvisConnectionService already posts a notification for every foreign
+    // session.opened whose tap deep-links into chat (deepLinkSessionId above). So
+    // there is deliberately NO auto-navigation collector here.
 
     // Deep-link from a tapped "Unlock Jarvis" push into the Approve screen (the
     // phone leg of the 2FA + fingerprint cross-device unlock).

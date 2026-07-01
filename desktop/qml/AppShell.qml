@@ -4,15 +4,15 @@ import QtQuick.Controls
 import JarvisSidebar
 
 // AppShell — the full multi-page application body. A slim left NavRail routes
-// between fourteen pages rendered in the content area on the right:
-//   0 Chat (the existing JarvisPanel), 1 Voice (the voice-mode orb),
-//   2 Computer (co-worker / take-over), 3 Canvas (model-rendered widgets),
-//   4 Browser (agent's tab), 5 Schedules (cron jobs), 6 Memory, 7 Skills,
-//   8 Sessions (+ sub-agent tree), 9 Activity (audit), 10 SSH (allow-list +
-//   gated exec), 11 Settings, 12 MCP, 13 Plugins.
+// between the pages rendered in the content area on the right:
+//   0 Home · 1 Chat · 2 Voice · 3 Computer · 4 Canvas · 5 Widgets · 6 Sessions ·
+//   7 Memory · 8 Skills · 9 Agents · 10 Schedules · 11 Activity · 12 Graph ·
+//   13 MCP · 14 Plugins · 15 SSH · 16 Phone · 17 Settings.
 //
-// NOTE: this switch + the Repeater `model` count + NavRail.items MUST stay in
-// lock-step (same order, same length).
+// NOTE: this switch + NavRail.items MUST stay in lock-step (same order, same
+// length). The page Repeater derives its count from rail.items.length so adding
+// a page can never silently leave the LAST page unrenderable again (Settings
+// was blank for anyone clicking it: 18 nav items, `model: 17`).
 //
 // This is the single shared content surface reparented between the floating
 // window and the docked layer-shell surface (see Main.qml), so all page state
@@ -25,11 +25,11 @@ Item {
 
     property int currentIndex: 0
     // The NavRail/switch index of the Voice page (used by the --voice CLI flag in
-    // Main.qml to boot straight onto it). Keep in sync with the order below.
-    // Page order (matches NavRail.items): 0 Home · 1 Chat · 2 Voice · 3 Computer ·
-    // 4 Canvas · 5 Widgets · 6 Sessions · 7 Memory · 8 Skills · 9 Schedules ·
-    // 10 Activity · 11 MCP · 12 Plugins · 13 SSH · 14 Settings.
+    // Main.qml to boot straight onto it). Keep in sync with the page order in the
+    // header comment above.
     readonly property int voiceIndex: 2
+    // The Computer page's index (the chat peek's "⛶ Full" + Home's quick action).
+    readonly property int computerIndex: 3
 
     // Drive hands-free voice capture by PAGE: start continuous listening the moment
     // the Voice page becomes active, stop it when leaving. This is the reliable
@@ -67,7 +67,7 @@ Item {
 
     Component.onCompleted: {
         // --page <n> (screenshots/testing): jump to a specific page on load.
-        if (typeof startPage !== "undefined" && startPage >= 0 && startPage < 18)
+        if (typeof startPage !== "undefined" && startPage >= 0 && startPage < rail.items.length)
             shell.currentIndex = startPage
         updateWidgetViewing()
     }
@@ -96,6 +96,12 @@ Item {
             id: rail
             Layout.fillHeight: true
             currentIndex: shell.currentIndex
+            // Surface the COMPUTER item whenever a live agent desktop exists — and
+            // ALWAYS while the user is on the page (otherwise the rail highlight
+            // lands on a hidden zero-height row and the user is "nowhere").
+            computerAvailable: shell.currentIndex === shell.computerIndex
+                               || bridge.hasAgentDesktop
+                               || bridge.coworkerSessionId.length > 0
             onNavigate: function(i) { shell.currentIndex = i }
         }
 
@@ -124,7 +130,8 @@ Item {
             // Each page is wrapped so we can animate opacity + a small x-slide.
             // Only the active page is interactive; the rest fade out behind it.
             Repeater {
-                model: 17
+                // One wrap per nav item — derived, never a hand-counted literal.
+                model: rail.items.length
                 delegate: Item {
                     id: pageWrap
                     required property int index
@@ -221,7 +228,7 @@ Item {
                 shell.currentIndex = 1
             }
             onGoCanvas: function() { shell.currentIndex = 4 }
-            onGoComputer: function() { shell.currentIndex = 3 }
+            onGoComputer: function() { shell.currentIndex = shell.computerIndex }
             onGoVoice: function() { shell.currentIndex = 2 }
         }
     }
@@ -229,8 +236,8 @@ Item {
         id: chatComp
         JarvisPanel {
             Component.onCompleted: shell.chatPanel = this
-            // The peek panel's "⛶ Full" jumps to the Computer page (index 3).
-            onRequestComputerPage: shell.currentIndex = 3
+            // The peek panel's "⛶ Full" jumps to the Computer page.
+            onRequestComputerPage: shell.currentIndex = shell.computerIndex
             // Slash-command navigation: /voice, /agents, /skills jump to their pages.
             onRequestVoice: shell.currentIndex = 2
             onRequestAgents: shell.currentIndex = 9

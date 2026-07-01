@@ -55,7 +55,12 @@ class SessionsViewModel(private val repo: JarvisRepository) : ViewModel() {
         _uiState.update { it.copy(loading = true, error = null) }
         viewModelScope.launch {
             runCatching { withContext(Dispatchers.IO) { repo.listSessions() } }
-                .onSuccess { list -> _uiState.update { it.copy(sessions = list, loading = false) } }
+                .onSuccess { list ->
+                    // Subagent child sessions are not normal chats: they belong to
+                    // their parent chat and disappear when done — never top-level
+                    // rows in the sessions list (jarvis#72).
+                    _uiState.update { it.copy(sessions = list.filterNot(Session::isSubagent), loading = false) }
+                }
                 .onFailure { e -> _uiState.update { it.copy(loading = false, error = e.message) } }
         }
     }

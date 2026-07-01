@@ -18,10 +18,16 @@ data class Session(
     val brain: String?,
     val state: String?,
     val updatedAt: Long?,
+    /** Non-null/blank = this is a subagent CHILD session of that parent chat. */
+    val parentSessionId: String? = null,
+    /** The custom-agent name a child session runs as (when it is a subagent). */
+    val agent: String? = null,
 ) {
     val displayTitle: String
         get() = title?.takeIf { it.isNotBlank() }
             ?: listOfNotNull(profile, brain).joinToString(" · ").ifBlank { id.take(8) }
+
+    val isSubagent: Boolean get() = !parentSessionId.isNullOrBlank()
 
     companion object {
         fun from(o: JsonObject): Session = Session(
@@ -32,6 +38,8 @@ data class Session(
             state = o.get("state")?.takeIf { !it.isJsonNull }?.asString,
             updatedAt = o.get("updated_at")?.takeIf { !it.isJsonNull }?.asLong
                 ?: o.get("updatedAt")?.takeIf { !it.isJsonNull }?.asLong,
+            parentSessionId = o.get("parent_session_id")?.takeIf { !it.isJsonNull }?.asString,
+            agent = o.get("agent")?.takeIf { !it.isJsonNull }?.asString,
         )
     }
 }

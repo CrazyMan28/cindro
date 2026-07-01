@@ -1780,8 +1780,14 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     // signal the apps to OPEN/FOCUS this session's chat. This fires on the SINGLE
     // shared success exit so it covers BOTH the control-WS caller path and the
     // scheduler path; all early-error returns are above this point.
-    broadcastSessionOpened(row.id, row.title);  // control-WS fan-out (desktop)
-    emit sessionOpened(row.id, row.title);      // device-WS + FCM fan-out (phone)
+    // TOP-LEVEL sessions only: a subagent CHILD session is internal — it renders
+    // inside its parent chat's sub-agent tree. Fanning children out here raised
+    // windows and pushed a "New session" notification to every phone PER dispatched
+    // subagent (part of the jarvis#72 "chats keep popping out as subagents" mess).
+    if (row.parentSessionId.isEmpty()) {
+        broadcastSessionOpened(row.id, row.title);  // control-WS fan-out (desktop)
+        emit sessionOpened(row.id, row.title);      // device-WS + FCM fan-out (phone)
+    }
 
     // SessionStart hook — top-level sessions only (a child session = a subagent).
     // Any additionalContext is stashed and prepended to the session's FIRST turn
