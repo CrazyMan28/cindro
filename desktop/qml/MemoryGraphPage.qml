@@ -14,12 +14,25 @@ Item {
 
     property var graphNodes: []          // [{id,kind,...}]
     property var graphEdges: []          // [{from,to,relation}]
-    property var nodePos: ({})           // id -> {x,y}
+    property var nodePos: ({})           // id -> {x,y}, mutated in place by node-drag
     property bool layoutDirty: false
     property string rootId: ""           // "" == default overview
     property string selectedId: ""
     property var selectedNode: null
     property var selectedRelated: []     // populated for entity nodes via memory.entity.get
+
+    // Pan (drag empty space) + per-node drag (drag a node to reposition it).
+    // viewOffset is a pure draw-time translate; nodePos itself stays in
+    // "graph space" so re-layout/hit-testing math doesn't need to know about it.
+    property real viewOffsetX: 0
+    property real viewOffsetY: 0
+    property string dragNodeId: ""
+    property bool didDrag: false
+    property real pressX: 0
+    property real pressY: 0
+    property real panStartOffsetX: 0
+    property real panStartOffsetY: 0
+    property string hoveredId: ""
 
     function nodeById(id) {
         for (var i = 0; i < page.graphNodes.length; i++)
@@ -54,6 +67,8 @@ Item {
             page.graphNodes = graph && graph.nodes ? graph.nodes : []
             page.graphEdges = graph && graph.edges ? graph.edges : []
             page.layoutDirty = true
+            page.viewOffsetX = 0
+            page.viewOffsetY = 0
             canvas.requestPaint()
             // A previously-selected node may have dropped out of the subgraph
             // (e.g. after re-centering) — clear stale selection detail.
@@ -165,7 +180,7 @@ Item {
         PageHeader {
             Layout.fillWidth: true
             title: "Knowledge Graph"
-            subtitle: "Entities and relationships auto-extracted from memory. Click a node to inspect, double-click to re-center."
+            subtitle: "Entities and relationships auto-extracted from memory. Drag empty space to pan, drag a node to move it, click to inspect, double-click to re-center."
         }
 
         RowLayout {
@@ -258,47 +273,96 @@ Item {
                         page.nodePos = page.computeLayout(page.graphNodes, page.graphEdges, width, height)
                         page.layoutDirty = false
                     }
+                    ctx.translate(page.viewOffsetX, page.viewOffsetY)
                     var pos = page.nodePos
 
-                    // edges
-                    ctx.strokeStyle = Theme.hairline
-                    ctx.lineWidth = 1
-                    for (var e = 0; e < page.graphEdges.length; e++) {
-                        var edge = page.graphEdges[e]
-                        var pa = pos[edge.from], pb = pos[edge.to]
-                        if (!pa || !pb) continue
-                        ctx.beginPath()
-                        ctx.moveTo(pa.x, pa.y)
-                        ctx.lineTo(pb.x, pb.y)
-                        ctx.stroke()
+                    // edges: a soft wide glow pass underneath, then a crisp
+                    // line on top — reads as a real "constellation" web at a glance.
+                    ctx.lineCap = "round"
+                    for (var pass = 0; pass < 2; pass++) {
+                        ctx.strokeStyle = pass === 0 ? Qt.rgba(0.239, 0.839, 1.0, 0.10) : Theme.hairline
+                        ctx.lineWidth = pass === 0 ? 3.5 : 1
+                        for (var e = 0; e < page.graphEdges.length; e++) {
+                            var edge = page.graphEdges[e]
+                            var pa = pos[edge.from], pb = pos[edge.to]
+                            if (!pa || !pb) continue
+                            ctx.beginPath()
+                            ctx.moveTo(pa.x, pa.y)
+                            ctx.lineTo(pb.x, pb.y)
+                            ctx.stroke()
+                        }
                     }
 
-                    // nodes
+                    // nodes: a soft glow halo behind a crisp core dot.
                     for (var i = 0; i < page.graphNodes.length; i++) {
                         var node = page.graphNodes[i]
                         var p = pos[node.id]
                         if (!p) continue
                         var r = page.nodeRadius(node)
                         var isSelected = node.id === page.selectedId
+                        var isHovered = node.id === page.hoveredId
+                        var col = page.nodeColor(node)
+
+                        ctx.beginPath()
+                        ctx.arc(p.x, p.y, r + (isSelected || isHovered ? 8 : 5), 0, Math.PI * 2)
+                        ctx.fillStyle = Qt.rgba(col.r, col.g, col.b, isSelected ? 0.28 : (isHovered ? 0.22 : 0.14))
+                        ctx.fill()
+
                         ctx.beginPath()
                         ctx.arc(p.x, p.y, isSelected ? r + 2 : r, 0, Math.PI * 2)
                         ctx.fillStyle = Theme.surfaceStrong
                         ctx.fill()
-                        ctx.lineWidth = isSelected ? 2.5 : 1.5
-                        ctx.strokeStyle = page.nodeColor(node)
+                        ctx.lineWidth = isSelected ? 2.5 : (isHovered ? 2 : 1.5)
+                        ctx.strokeStyle = col
                         ctx.stroke()
 
-                        ctx.fillStyle = isSelected ? Theme.text : Theme.textFaint
-                        ctx.font = "10px " + Theme.fontMono
+                        ctx.fillStyle = isSelected || isHovered ? Theme.text : Theme.textFaint
+                        ctx.font = (isSelected ? "bold " : "") + "10px " + Theme.fontMono
                         ctx.textAlign = "center"
-                        ctx.fillText(page.nodeLabel(node), p.x, p.y + r + 12)
+                        ctx.fillText(page.nodeLabel(node), p.x, p.y + r + 13)
                     }
                 }
 
                 MouseArea {
                     anchors.fill: parent
+                    hoverEnabled: true
+                    onPressed: function(mouse) {
+                        page.didDrag = false
+                        page.pressX = mouse.x
+                        page.pressY = mouse.y
+                        page.dragNodeId = page.hitTest(mouse.x - page.viewOffsetX, mouse.y - page.viewOffsetY)
+                        page.panStartOffsetX = page.viewOffsetX
+                        page.panStartOffsetY = page.viewOffsetY
+                    }
+                    onPositionChanged: function(mouse) {
+                        if (mouse.buttons & Qt.LeftButton) {
+                            var dx = mouse.x - page.pressX, dy = mouse.y - page.pressY
+                            if (Math.abs(dx) > 3 || Math.abs(dy) > 3)
+                                page.didDrag = true
+                            if (page.dragNodeId.length > 0) {
+                                var p = page.nodePos[page.dragNodeId]
+                                if (p) {
+                                    p.x = mouse.x - page.viewOffsetX
+                                    p.y = mouse.y - page.viewOffsetY
+                                    canvas.requestPaint()
+                                }
+                            } else if (page.didDrag) {
+                                page.viewOffsetX = page.panStartOffsetX + dx
+                                page.viewOffsetY = page.panStartOffsetY + dy
+                                canvas.requestPaint()
+                            }
+                        } else {
+                            var hit = page.hitTest(mouse.x - page.viewOffsetX, mouse.y - page.viewOffsetY)
+                            if (hit !== page.hoveredId) {
+                                page.hoveredId = hit
+                                canvas.requestPaint()
+                            }
+                        }
+                    }
                     onClicked: function(mouse) {
-                        var hit = page.hitTest(mouse.x, mouse.y)
+                        if (page.didDrag)
+                            return
+                        var hit = page.hitTest(mouse.x - page.viewOffsetX, mouse.y - page.viewOffsetY)
                         if (hit.length > 0)
                             page.selectNode(hit)
                         else {
@@ -308,7 +372,7 @@ Item {
                         }
                     }
                     onDoubleClicked: function(mouse) {
-                        var hit = page.hitTest(mouse.x, mouse.y)
+                        var hit = page.hitTest(mouse.x - page.viewOffsetX, mouse.y - page.viewOffsetY)
                         if (hit.length > 0)
                             page.recenter(hit)
                     }

@@ -3810,11 +3810,14 @@ Response ControlServer::handleMemoryEntityGet(const Request &req)
     QJsonObject result = entity->toJson();
     QJsonArray related;
     for (const QString &nid : m_memory.neighborIds(id, 1)) {
-        if (nid.startsWith(QStringLiteral("mem_"))) {
-            if (auto m = m_memory.get(nid))
-                related.append(m->toJson());
-        } else if (auto e = m_memory.getEntity(nid)) {
-            related.append(e->toJson());
+        // Entities are always "ent_"-prefixed; a memory id is caller-supplied
+        // and need not be (e.g. the daemon's "user-name" slot) — check the
+        // entity prefix first, then fall back to a memory lookup.
+        if (nid.startsWith(QStringLiteral("ent_"))) {
+            if (auto e = m_memory.getEntity(nid))
+                related.append(e->toJson());
+        } else if (auto m = m_memory.get(nid)) {
+            related.append(m->toJson());
         }
     }
     result.insert(QStringLiteral("related"), related);

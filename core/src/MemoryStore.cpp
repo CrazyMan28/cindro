@@ -145,7 +145,14 @@ bool MemoryStore::open(const QString &dbPath, const QString &connectionName)
     }
 
     exec(QStringLiteral("PRAGMA journal_mode=WAL"));
-    return migrate();
+    if (!migrate())
+        return false;
+    // One-time-per-memory backfill: memories written before the knowledge
+    // graph existed (or by an older binary) never went through add()'s
+    // auto-extraction. Best-effort — a store that opens but can't backfill
+    // still functions as a plain memory store.
+    backfillEntityExtraction();
+    return true;
 }
 
 bool MemoryStore::isOpen() const
@@ -511,14 +518,15 @@ QJsonObject MemoryStore::graph(const QString &rootId, int depth)
 {
     constexpr int kMaxNodes = 300;
 
+    // Empty rootId == the overview: seed with EVERY entity and memory (not
+    // just BFS-reachable ones) so isolated nodes and their edges still show
+    // up. depth only matters for the rooted-subgraph case below.
     QVector<QString> seeds;
     if (rootId.isEmpty()) {
         for (const EntityRow &e : listEntities(kMaxNodes))
             seeds << e.id;
-        if (seeds.isEmpty()) {
-            for (const MemoryRow &m : list(50))
-                seeds << m.id;
-        }
+        for (const MemoryRow &m : list(kMaxNodes))
+            seeds << m.id;
     } else {
         seeds << rootId;
     }
@@ -544,17 +552,19 @@ QJsonObject MemoryStore::graph(const QString &rootId, int depth)
         frontier = next;
     }
 
+    // Entities are ALWAYS "ent_"-prefixed (only genEntityId() mints them), but
+    // a memory id is caller-controlled (add(text,tags,id) — e.g. the daemon's
+    // self-curated "user-name" slot) and need not start with "mem_". So
+    // entity-prefix is authoritative; anything else is a memory-id candidate.
     QJsonArray nodesArr;
     for (const QString &id : visited) {
-        if (id.startsWith(QStringLiteral("mem_"))) {
-            if (auto r = get(id)) {
-                QJsonObject o = r->toJson();
-                o.insert(QStringLiteral("kind"), QStringLiteral("memory"));
-                nodesArr.append(o);
-            }
-        } else if (id.startsWith(QStringLiteral("ent_"))) {
+        if (id.startsWith(QStringLiteral("ent_"))) {
             if (auto r = getEntity(id))
                 nodesArr.append(r->toJson());
+        } else if (auto r = get(id)) {
+            QJsonObject o = r->toJson();
+            o.insert(QStringLiteral("kind"), QStringLiteral("memory"));
+            nodesArr.append(o);
         }
     }
 
@@ -629,6 +639,22 @@ void MemoryStore::autoExtractEntities(const QString &memId, const QString &text,
             ++count;
         }
     }
+}
+
+void MemoryStore::backfillEntityExtraction()
+{
+    struct Row { QString id; QString text; QString tags; };
+    QVector<Row> rows;
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral(
+            "SELECT m.id, m.text, m.tags FROM memories m"
+            " WHERE NOT EXISTS (SELECT 1 FROM memory_links l WHERE l.from_id = m.id)")))
+        return;
+    while (q.next())
+        rows.push_back({q.value(0).toString(), q.value(1).toString(), q.value(2).toString()});
+
+    for (const Row &r : rows)
+        autoExtractEntities(r.id, r.text, tagsFromStorage(r.tags));
 }
 
 QVector<MemoryRow> MemoryStore::list(int limit)
@@ -742,7 +768,10 @@ QVector<MemoryRow> MemoryStore::prefetch(const QString &query, int k)
         for (const QString &nid : neighborIds(hits[i].id, 2)) {
             if (added >= kMaxExpand)
                 break;
-            if (have.contains(nid) || !nid.startsWith(QStringLiteral("mem_")))
+            // Entities are always "ent_"-prefixed; a memory id is not (e.g.
+            // the daemon's caller-supplied "user-name" slot) — skip entities
+            // by prefix, then try a memory lookup for everything else.
+            if (have.contains(nid) || nid.startsWith(QStringLiteral("ent_")))
                 continue;
             if (auto r = get(nid)) {
                 have.insert(nid);
