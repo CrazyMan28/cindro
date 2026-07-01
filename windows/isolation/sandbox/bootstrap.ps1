@@ -42,6 +42,15 @@ Log ("bootstrap start: session={0} port={1} rendezvous={2} hostip={3}" -f $Sessi
 $env:JARVIS_AGENT_INSANDBOX = "1"
 $env:COMPUTER_USE_PORT = "$Port"
 $env:COMPUTER_USE_BEARER = "$Bearer"
+# Deep /ready gate: server.py computes is_agent from JARVIS_AGENT_WAYLAND_DISPLAY /
+# JARVIS_AGENT_SWAYSOCK (the Linux env names). Without one of them set, /ready
+# short-circuits to {ready:true,kind:host} and NEVER proves capture works -- so the
+# daemon's waitForEngineReady() would pass on a half-up engine (the first-tool-call
+# race the /ready gate exists to close). Export a truthy sentinel so is_agent=True
+# and /ready runs a REAL mss grab via grab_jpeg_frame(which='agent'). This is inert
+# to session routing: the Windows backend keys ONLY off JARVIS_AGENT_INSANDBOX
+# (backend_windows.get_session ignores the Wayland env entirely).
+$env:JARVIS_AGENT_WAYLAND_DISPLAY = "jarvis-sandbox"
 
 # 2. Engine config: per-session bearer + port, bound to 0.0.0.0 so the relay can
 #    reach it. The engine reads %USERPROFILE%\.computer-use\config.yaml.

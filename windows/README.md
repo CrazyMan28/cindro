@@ -33,8 +33,11 @@ windows/
     `core/src/*` except two, the `daemon/src/*`, the desktop `Bridge`/`FrameProvider`, and the
     entire `desktop/qml/*` UI via `qt_add_qml_module`).
   - For the handful of POSIX-only sources it compiles a **copy under `windows/shell/`** and
-    excludes the original: `AgentDesktop.cpp` (nested headless Sway → "not available on Windows
-    (v2)" stub), `PluginSandbox.cpp` (systemd-run → consent-gated QProcess fallback),
+    excludes the original: `AgentDesktop.cpp` (nested headless Sway → **Windows Sandbox v2**
+    orchestrator: renders `windows/isolation/sandbox/jarvis-agent.wsb`, launches
+    `WindowsSandbox.exe`, runs the engine inside bound `0.0.0.0:<port>`, and re-exposes it on the
+    host at `127.0.0.1:<port>` via the in-process reverse tunnel — see `isolation/DESIGN.md`),
+    `PluginSandbox.cpp` (systemd-run → consent-gated QProcess fallback),
     `main.cpp` (selects the Windows controller via include order), and
     `WindowController.{h,cpp}` (tray + global hotkey, **no LayerShellQt**).
   - `windows/shell/posix_compat.h` is **force-included** (`/FI`) into every Windows target so the
@@ -54,11 +57,25 @@ cmake --build ..\..\build-win --config Release
 .\build.ps1     # bundles engine + node + makes windows\dist\Jarvis-Setup-x.y.z.exe
 ```
 
+## Windows v2 — the isolated "beside-you" agent desktop
+
+The v2 tier (default: **Windows Sandbox**) is implemented under `windows/isolation/` +
+`windows/shell/AgentDesktop.cpp`. The engine runs INSIDE a disposable Hyper-V micro-VM, so its
+`SendInput` + `mss` are scoped to that desktop by the OS boundary (the Windows analogue of Linux's
+nested-Sway seat), streamed to the side pane; a take-over button falls back to v1. Two
+`windows/`-local seams make the rest of the pipeline reuse unchanged: (1) `which="agent"` is
+env-gated by `JARVIS_AGENT_INSANDBOX=1` in `backend_windows.get_session`, and (2) reachability via
+the in-sandbox reverse tunnel (`isolation/relay/`). `isolation/detect.ps1` picks the tier
+(`sandbox`/`hyperv`/`takeover`), exported at launch as `JARVIS_WINDOWS_ISOLATION_MODE`.
+
+> The host side compiles + unit-tests on Linux (`windows/engine/tests`), but actually spinning a
+> Sandbox can only be validated on a real **Windows Pro/Ent/Edu** box with virtualization on — see
+> `isolation/DESIGN.md`. `childsession`/`hyperv` are staged (typed-degrade to v1 today).
+
 ## Honest limits on Windows (no Win32 equivalent)
 
-- **Nested "beside-you" agent desktop** (Linux uses a headless Sway compositor) — Windows v1
-  drives the **real screen** only (take-over UX). A child-RDP-session / Windows-Sandbox / VM
-  isolation is the planned **v2**.
-- **Multi-seat isolated agent cursor** (Linux forks KWin) — the agent shares your input queue,
-  gated by the consent + the "Jarvis is driving" banner.
+- **Multi-seat isolated agent cursor on the REAL screen** (Linux forks KWin) — on Windows the
+  agent's isolation comes from the Sandbox/session/VM boundary (v2 above), not a second seat on the
+  user's own desktop. When isolation is unavailable (Home / no-virt) the **v1 take-over** fallback
+  shares your input queue, gated by consent + the "Jarvis is driving" banner.
 - **Layer-shell dock anchoring** — the Windows window is a normal top-level window + tray.

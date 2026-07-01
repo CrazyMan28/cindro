@@ -64,15 +64,26 @@ createSession(target="agent") → AgentDesktop::ensure(sid)  [windows/shell/Agen
 
 ## Phased build
 
-- **Phase 0 (build/unit-test on Linux now):** gap-#1 alias in `windows/engine/backend_windows.py`
-  + test; `windows/isolation/detect.ps1` (edition/VT-x/DisposableClientVM/Hyper-V → mode);
-  the new `AgentDesktop.cpp` orchestrator + `windows/isolation/relay/` (compile in the windows
-  CMake target — pure Qt+QProcess+QTcp; can't *run* on Linux but compiles); CMake wiring.
-- **Phase 1 (Sandbox, the default — validate on Win Pro):** `windows/isolation/sandbox/
-  jarvis-agent.wsb.in` (MappedFolder engine read-only, LogonCommand→bootstrap.ps1, tokens
-  @PORT@/@BEARER@/@HOSTIP@) + `bootstrap.ps1` (set env, start relay/open-firewall, launch
-  jarvis-engine.exe); `AgentDesktop::ensure()` renders+launches the sandbox, starts the host
-  relay, waits for health.
+- **Phase 0 (build/unit-test on Linux now) — DONE:** gap-#1 alias in
+  `windows/engine/backend_windows.py` + tests (`windows/engine/tests`, 30 passing);
+  `windows/isolation/detect.ps1` (edition/VT-x/DisposableClientVM/Hyper-V → mode); the
+  `AgentDesktop.cpp` orchestrator + `windows/isolation/relay/` (pure Qt+QProcess+QTcp; compiles in
+  the windows CMake target, can't *run* on Linux); CMake wiring.
+- **Phase 1 (Sandbox, the default) — DONE host-side, validate on Win Pro:**
+  `windows/isolation/sandbox/jarvis-agent.wsb.in` (MappedFolder engine read-only,
+  LogonCommand→bootstrap.ps1, tokens @PORT@/@BEARER@/@RENDEZVOUS@/@HOSTIP@/@SESSION@) +
+  `bootstrap.ps1` (set env incl. `JARVIS_AGENT_INSANDBOX=1` + a truthy `JARVIS_AGENT_WAYLAND_DISPLAY`
+  so the deep `/ready` grab-gate stays armed, write the engine config, launch jarvis-engine.exe +
+  the reverse-tunnel dialer); `AgentDesktop::ensure()` renders+launches the sandbox, starts the
+  in-process host relay, and waits for `/health` then `/ready`. Completed the tier with: a
+  **single-instance guard** (Windows Sandbox is one-per-host → typed `sandbox_busy` degrade); a
+  **firewall allow-rule** on the rendezvous port (`addRelayFirewallRule`, dropped in `teardown()`)
+  so the in-sandbox dialer's inbound connect is permitted on a default-firewall box; a
+  **mode-specific cold-boot budget** (~120s, `JARVIS_SANDBOX_STARTUP_MS`) for the health/ready
+  waiters; and **launch-time `detect.ps1` wiring** (`jarvis-start.cmd` / `jarvis-launch.vbs` export
+  `JARVIS_WINDOWS_ISOLATION_MODE`) so a Home/no-virt box auto-selects `takeover`.
+  NB: `WindowsSandbox.exe` is a long-lived host-window process (closing it destroys the disposable
+  box), so `d.sway` tracks the boundary lifetime — the one mirror assumption to confirm on real HW.
 - **Phase 2 (RDP child session):** `WTSEnableChildSessions(TRUE)` + RDP-ActiveX
   `ConnectToChildSession` + a Session-0 broker (`WTSQueryUserToken`→`CreateProcessAsUser`) to
   launch the engine in the child; `engineBase()` reaches it directly. Keep-alive: a virtual

@@ -86,17 +86,35 @@ QJsonObject AgentDesktopInfo::toJson() const
 // ---------------------------------------------------------------------------
 namespace {
 
-// sandbox | childsession | hyperv | takeover. Default sandbox (the v2 tier). The
-// installer/launcher sets this from windows/isolation/detect.ps1.
+// sandbox | childsession | hyperv | takeover.
+//
+// v2 SHIP GATE: the isolated agent-desktop tiers (sandbox/hyperv/childsession) are not
+// yet validated on real Windows hardware (the CI runner is a nested VM that can't boot
+// nested Hyper-V, so they only COMPILE here). Until someone trials them on a real
+// Windows Pro box, they NEVER auto-activate: the daemon uses the shipping-safe v1
+// real-screen take-over unless the operator explicitly opts in with JARVIS_ENABLE_V2=1
+// (set it, then windows.isolation.mode / detect.ps1 pick the tier as usual). This keeps
+// an untested nested-Hyper-V path from hanging a release machine ~120s before it falls
+// back to v1. The installer/launcher still sets JARVIS_WINDOWS_ISOLATION_MODE from
+// windows/isolation/detect.ps1 — it's just ignored for the v2 tiers without the opt-in.
 QString resolveMode()
 {
     const QString m = qEnvironmentVariable("JARVIS_WINDOWS_ISOLATION_MODE")
                           .trimmed()
                           .toLower();
-    if (m == QStringLiteral("childsession") || m == QStringLiteral("hyperv") ||
-        m == QStringLiteral("takeover") || m == QStringLiteral("sandbox"))
+    if (m == QStringLiteral("takeover"))
         return m;
-    return QStringLiteral("sandbox");
+
+    const QString v2 =
+        qEnvironmentVariable("JARVIS_ENABLE_V2").trimmed().toLower();
+    const bool v2optin = (v2 == QStringLiteral("1") || v2 == QStringLiteral("true") ||
+                          v2 == QStringLiteral("yes") || v2 == QStringLiteral("on"));
+    if (v2optin &&
+        (m == QStringLiteral("childsession") || m == QStringLiteral("hyperv") ||
+         m == QStringLiteral("sandbox")))
+        return m;
+
+    return QStringLiteral("takeover");
 }
 
 // Reverse-tunnel reachability backend: tunnel (default, in-process QTcpServer) or
@@ -175,6 +193,94 @@ QString sessionTempDir(const QString &sessionId)
 {
     return QDir(agentTempRoot())
         .absoluteFilePath(QStringLiteral("sess-") + sessionId);
+}
+
+// --- host firewall for the reverse-tunnel rendezvous port (SANDBOX-BLOCKING) --
+// ReverseTunnel binds 0.0.0.0:<rport>; the in-sandbox dialer connects
+// host_gateway:<rport>, an INBOUND TCP connection to the headless jarvisd.exe.
+// Windows Defender Firewall default-blocks inbound to a background service with NO
+// interactive prompt, so without an explicit allow rule the tunnel never pairs ->
+// /health never returns 200 -> ensure() always fails on a default-firewall box.
+// We add a per-port allow rule while the tunnel is up and delete it in teardown().
+QString relayFirewallRuleName(quint16 rport)
+{
+    return QStringLiteral("Jarvis-Agent-Relay-%1").arg(rport);
+}
+
+// Best-effort. Requires an elevated token to actually take effect; if jarvisd is
+// not elevated netsh is a silent no-op and pairing then relies on the firewall
+// already permitting the port (operator rule / disabled profile). Never fails
+// ensure(): if the rule can't be added and the port is genuinely blocked, the
+// health wait times out with its own typed reason. A stale same-named rule is
+// deleted first so restarts don't stack duplicates.
+void addRelayFirewallRule(quint16 rport)
+{
+    const QString name = relayFirewallRuleName(rport);
+    QProcess::execute(QStringLiteral("netsh"),
+                      {QStringLiteral("advfirewall"), QStringLiteral("firewall"),
+                       QStringLiteral("delete"), QStringLiteral("rule"),
+                       QStringLiteral("name=") + name});
+    QProcess::execute(
+        QStringLiteral("netsh"),
+        {QStringLiteral("advfirewall"), QStringLiteral("firewall"),
+         QStringLiteral("add"), QStringLiteral("rule"), QStringLiteral("name=") + name,
+         QStringLiteral("dir=in"), QStringLiteral("action=allow"),
+         QStringLiteral("protocol=TCP"),
+         QStringLiteral("localport=%1").arg(rport), QStringLiteral("profile=any")});
+}
+
+void removeRelayFirewallRule(quint16 rport)
+{
+    QProcess::startDetached(
+        QStringLiteral("netsh"),
+        {QStringLiteral("advfirewall"), QStringLiteral("firewall"),
+         QStringLiteral("delete"), QStringLiteral("rule"),
+         QStringLiteral("name=") + relayFirewallRuleName(rport)});
+}
+
+// --- single-instance guard --------------------------------------------------
+// Windows Sandbox allows only ONE running instance per host. Detect an existing
+// one (ours-after-a-crash or the USER's own) so ensure() can refuse a 2nd launch
+// with a typed reason instead of spawning a WindowsSandbox.exe that fails opaquely.
+// Best-effort: returns false when the probe can't run (we then fall through to the
+// normal launch, which still fails safely if a sandbox truly exists). The broad
+// "WindowsSandbox" substring covers WindowsSandbox.exe / WindowsSandboxClient.exe /
+// WindowsSandboxServer.exe.
+bool sandboxAlreadyRunning()
+{
+    if (qEnvironmentVariableIsSet("JARVIS_SANDBOX_SKIP_RUNNING_CHECK"))
+        return false;
+    QProcess ps;
+    ps.start(QStringLiteral("tasklist"),
+             {QStringLiteral("/nh"), QStringLiteral("/fo"), QStringLiteral("csv")});
+    if (!ps.waitForStarted(3000))
+        return false;
+    if (!ps.waitForFinished(5000)) {
+        ps.kill();
+        ps.waitForFinished(1000);
+        return false;
+    }
+    const QString out = QString::fromLocal8Bit(ps.readAllStandardOutput());
+    return out.contains(QStringLiteral("WindowsSandbox"), Qt::CaseInsensitive);
+}
+
+// --- sandbox cold-boot startup budget ---------------------------------------
+// A cold Windows Sandbox boots a FULL Windows image (often 60-90s) BEFORE
+// bootstrap.ps1 even starts the engine, so the Linux `uv run` budget (Options
+// startupTimeoutMs, default 45s) is far too tight for a first launch. Use a
+// mode-specific budget: max(configured, 120s), overridable via
+// JARVIS_SANDBOX_STARTUP_MS. Applied to the tunnel pairing wait + both HTTP waiters.
+int sandboxStartupBudgetMs(int configuredMs)
+{
+    int budget = qMax(configuredMs, 120000);
+    const QString ov = qEnvironmentVariable("JARVIS_SANDBOX_STARTUP_MS").trimmed();
+    if (!ov.isEmpty()) {
+        bool ok = false;
+        const int v = ov.toInt(&ok);
+        if (ok && v > 0)
+            budget = v;
+    }
+    return budget;
 }
 
 } // namespace
@@ -359,6 +465,24 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
         return {};
     }
 
+    // --- single-instance guard (Windows Sandbox is one-per-host) ----------
+    // This session's own up desk already early-returned above, so a non-empty
+    // m_desks here is ALWAYS a DIFFERENT session's live sandbox. Also refuse if a
+    // WindowsSandbox.exe is already running out-of-band (the user's own, or ours
+    // orphaned by a daemon crash -- we can't safely taskkill it). A typed
+    // 'sandbox_busy' reason tells ControlServer to degrade to v1 take-over rather
+    // than launch a doomed 2nd WindowsSandbox.exe. sweepOrphans() only tidies our
+    // on-disk artifacts, never a running sandbox, so this guard is the enforcement.
+    if (!m_desks.empty() || sandboxAlreadyRunning()) {
+        m_lastError = QStringLiteral(
+            "sandbox_busy: a Windows Sandbox agent desktop is already running "
+            "(Windows Sandbox allows only one instance per host); using v1 "
+            "real-screen take-over");
+        if (err)
+            *err = m_lastError;
+        return {};
+    }
+
     // --- reservation (VERBATIM from the Linux twin) -----------------------
     auto desk = std::make_unique<Desk>();
     Desk &d = *desk;
@@ -405,6 +529,9 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
     QDir().mkpath(d.runtimeDir);
 
     const quint16 rport = rendezvousPortFor(d.info.port);
+    // Mode-specific cold-boot budget (a Windows Sandbox boots a full image before
+    // the engine starts); applied to the tunnel pairing wait + both HTTP waiters.
+    const int startupMs = sandboxStartupBudgetMs(m_opts.startupTimeoutMs);
 
     // --- gap #2: host reachability (reverse tunnel or netsh portproxy) -----
     const QString relayKind = resolveRelayKind();
@@ -414,7 +541,7 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
         // has no slot for it).
         auto *tunnel = new ReverseTunnel(this);
         tunnel->setObjectName(QStringLiteral("jarvis-relay-") + sessionId);
-        tunnel->setPairTimeoutMs(m_opts.startupTimeoutMs);
+        tunnel->setPairTimeoutMs(startupMs);
         if (!tunnel->start(quint16(d.info.port), rport)) {
             m_lastError = QStringLiteral(
                               "reverse tunnel failed to bind 127.0.0.1:%1 / "
@@ -427,6 +554,11 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
                 *err = m_lastError;
             return {};
         }
+        // BLOCKING FIX: permit the in-sandbox dialer's inbound connect to rport
+        // through Windows Defender Firewall (default-blocks a headless service with
+        // no prompt). Best-effort; dropped in teardown(). Without it the tunnel
+        // never pairs on a default-firewall box and /health never returns.
+        addRelayFirewallRule(rport);
     } else {
         // MVP: netsh portproxy host loopback -> a KNOWN sandbox IP. Requires the
         // operator to pin the sandbox NAT IP (JARVIS_SANDBOX_IP); without it the
@@ -493,8 +625,14 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
     }
 
     // --- launch the sandbox ------------------------------------------------
-    // WindowsSandbox.exe <wsb> returns immediately (the sandbox + its LogonCommand
-    // bootstrap.ps1 run detached); we hold the QProcess as our handle to close it.
+    // WindowsSandbox.exe <wsb> STAYS RUNNING as the sandbox's host window process
+    // for the whole session -- it does NOT fork-and-exit; closing it destroys the
+    // disposable box (nothing persists). So our QProcess handle (d.sway) tracks the
+    // sandbox's lifetime: the health/ready waiters probe d.sway->state() as the
+    // "boundary gone" signal and teardown() kills d.sway to close the box. (This is
+    // the single riskiest mirror assumption -- verify on a real Win Pro/Ent box;
+    // see windows/isolation/DESIGN.md's honest constraint.) The LogonCommand
+    // (bootstrap.ps1) runs INSIDE the box, so no host-side engine QProcess exists.
     d.sway = new QProcess(this);
     d.sway->setProgram(sbExe);
     d.sway->setArguments({d.confPath});
@@ -515,7 +653,7 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
     d.info.swayPid = qint64(d.sway->processId());
 
     // --- wait for the in-box engine via the relay --------------------------
-    if (!waitForEngineHealth(d, m_opts.startupTimeoutMs)) {
+    if (!waitForEngineHealth(d, startupMs)) {
         m_lastError = QStringLiteral(
                           "agent sandbox engine /health never became ready on "
                           "127.0.0.1:%1 (sandbox boot or relay failure)")
@@ -527,7 +665,7 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
             *err = m_lastError;
         return {};
     }
-    if (!waitForEngineReady(d, m_opts.startupTimeoutMs)) {
+    if (!waitForEngineReady(d, startupMs)) {
         m_lastError = QStringLiteral(
                           "agent sandbox engine /ready (capture not serviceable) "
                           "never succeeded on 127.0.0.1:%1")
@@ -575,10 +713,15 @@ void AgentDesktop::teardown(const QString &sessionId)
         tunnel->stop();
         tunnel->deleteLater();
     }
-    // Best-effort: drop any netsh portproxy rule for this session's port.
+    // Resolve this session's engine port (tracked desk or, if ensure() failed
+    // mid-flight, the surviving reservation) for the per-session relay cleanup.
+    int port = 0;
+    if (auto d = m_desks.find(sessionId); d != m_desks.end())
+        port = d->second->info.port;
+    else if (auto r = m_reserved.find(sessionId); r != m_reserved.end())
+        port = r->second.first;
     if (resolveRelayKind() == QStringLiteral("portproxy")) {
-        auto it = m_reserved.find(sessionId);
-        const int port = it != m_reserved.end() ? it->second.first : 0;
+        // Best-effort: drop any netsh portproxy rule for this session's port.
         if (port > 0)
             QProcess::startDetached(
                 QStringLiteral("netsh"),
@@ -586,6 +729,9 @@ void AgentDesktop::teardown(const QString &sessionId)
                  QStringLiteral("delete"), QStringLiteral("v4tov4"),
                  QStringLiteral("listenaddress=127.0.0.1"),
                  QStringLiteral("listenport=%1").arg(port)});
+    } else if (port > 0) {
+        // Drop the reverse-tunnel firewall allow-rule (rendezvous = engine+1000).
+        removeRelayFirewallRule(rendezvousPortFor(port));
     }
 
     auto it = m_desks.find(sessionId);
