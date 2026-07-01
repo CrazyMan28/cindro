@@ -262,6 +262,16 @@ public:
     Q_INVOKABLE void memoryAdd(const QString &text, const QStringList &tags);
     // memory.remove { id } -> on success refreshes the list.
     Q_INVOKABLE void memoryRemove(const QString &id);
+    // memory.graph { root?, depth? } -> memoryGraphLoaded({nodes,edges}). Empty
+    // root gets the default subgraph (all entities + their linked memories).
+    Q_INVOKABLE void memoryGraph(const QString &root = QString(), int depth = 2);
+    // memory.entities.list { limit? } -> memoryEntitiesListed(QVariantList).
+    Q_INVOKABLE void memoryEntitiesList(int limit = 0);
+    // memory.entity.get { id } -> memoryEntityLoaded({...entity, related:[...]}).
+    Q_INVOKABLE void memoryEntityGet(const QString &id);
+    // memory.link { from, to, relation? } -> on success refreshes the graph.
+    Q_INVOKABLE void memoryLink(const QString &fromId, const QString &toId,
+                               const QString &relation = QString());
 
     // ---- Skills (Contract A v3, self-authoring) ----------------------------
     // skills.list -> skillsListed(QVariantList).
@@ -637,6 +647,12 @@ signals:
     void memoriesListed(const QVariantList &memories, bool isSearch);
     // Emitted after add/remove so the page can re-query.
     void memoryChanged();
+    // memory.graph result: {nodes:[{id,kind,...}], edges:[{from,to,relation}]}.
+    void memoryGraphLoaded(const QVariantMap &graph);
+    // memory.entities.list result. Rows: {id,kind:"entity",name,type,scope,...}.
+    void memoryEntitiesListed(const QVariantList &entities);
+    // memory.entity.get result: the entity plus a `related` array (1-hop neighbors).
+    void memoryEntityLoaded(const QVariantMap &entity);
 
     // ---- Skills results (Contract A v3) ------------------------------------
     // Rows: {name,group,description,tags,self_authored}.

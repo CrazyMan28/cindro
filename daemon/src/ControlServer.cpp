@@ -3663,6 +3663,14 @@ Response ControlServer::dispatchMemoryOrSkill(const Request &req)
         return handleMemoryEdit(req);
     if (m == QStringLiteral("memory.remove"))
         return handleMemoryRemove(req);
+    if (m == QStringLiteral("memory.entities.list"))
+        return handleMemoryEntitiesList(req);
+    if (m == QStringLiteral("memory.entity.get"))
+        return handleMemoryEntityGet(req);
+    if (m == QStringLiteral("memory.link"))
+        return handleMemoryLink(req);
+    if (m == QStringLiteral("memory.graph"))
+        return handleMemoryGraph(req);
     if (m == QStringLiteral("skills.list"))
         return handleSkillsList(req);
     if (m == QStringLiteral("skills.get"))
@@ -3779,6 +3787,70 @@ Response ControlServer::handleMemoryRemove(const Request &req)
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleMemoryEntitiesList(const Request &req)
+{
+    const int limit = req.params.value(QStringLiteral("limit")).toInt(0);
+    QJsonArray arr;
+    for (const EntityRow &e : m_memory.listEntities(limit))
+        arr.append(e.toJson());
+    QJsonObject result;
+    result.insert(QStringLiteral("entities"), arr);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleMemoryEntityGet(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const auto entity = m_memory.getEntity(id);
+    if (!entity)
+        return Response::failure(req.id, QStringLiteral("not_found"),
+                                 QStringLiteral("entity not found: ") + id);
+    QJsonObject result = entity->toJson();
+    QJsonArray related;
+    for (const QString &nid : m_memory.neighborIds(id, 1)) {
+        // Entities are always "ent_"-prefixed; a memory id is caller-supplied
+        // and need not be (e.g. the daemon's "user-name" slot) — check the
+        // entity prefix first, then fall back to a memory lookup.
+        if (nid.startsWith(QStringLiteral("ent_"))) {
+            if (auto e = m_memory.getEntity(nid))
+                related.append(e->toJson());
+        } else if (auto m = m_memory.get(nid)) {
+            related.append(m->toJson());
+        }
+    }
+    result.insert(QStringLiteral("related"), related);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleMemoryLink(const Request &req)
+{
+    const QString fromId = req.params.value(QStringLiteral("from")).toString();
+    const QString toId = req.params.value(QStringLiteral("to")).toString();
+    const QString relation = req.params.value(QStringLiteral("relation")).toString();
+    if (fromId.isEmpty() || toId.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("from and to are required"));
+    // Node kind is inferred from the id prefix ("mem_"/"ent_") rather than a
+    // caller-supplied param — both node stores share the same id namespace.
+    const auto kindOf = [](const QString &id) {
+        return id.startsWith(QStringLiteral("ent_")) ? QStringLiteral("entity")
+                                                       : QStringLiteral("memory");
+    };
+    if (!m_memory.link(fromId, kindOf(fromId), toId, kindOf(toId),
+                       relation.isEmpty() ? QStringLiteral("relates_to") : relation))
+        return Response::failure(req.id, QStringLiteral("link_error"), m_memory.lastError());
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleMemoryGraph(const Request &req)
+{
+    const QString root = req.params.value(QStringLiteral("root")).toString();
+    const int depth = req.params.value(QStringLiteral("depth")).toInt(2);
+    return Response::success(req.id, m_memory.graph(root, depth));
 }
 
 void ControlServer::seedPhoneMcp()

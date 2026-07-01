@@ -4,10 +4,16 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 
 #include <cstdio>
+#include <optional>
 
+using jarvis::EntityRow;
 using jarvis::MemoryRow;
 using jarvis::MemoryStore;
 
@@ -114,6 +120,202 @@ int main(int argc, char **argv)
     }
     check(store.list().size() == 2, "list reflects removal");
     check(!store.remove(QStringLiteral("mem_nope")), "remove unknown id returns false");
+
+    // --- knowledge graph: entity auto-extraction on add() ------------------
+    {
+        const QString memA = store.add(
+            QStringLiteral("Had a great sync with Chad Hanson about the roadmap"),
+            {QStringLiteral("project:K2-Tek")});
+        check(!memA.isEmpty(), "graph: memory A added");
+
+        const auto entities = store.listEntities();
+        auto findEntity = [&](const QString &name) -> std::optional<EntityRow> {
+            for (const auto &e : entities)
+                if (e.name.compare(name, Qt::CaseInsensitive) == 0)
+                    return e;
+            return std::nullopt;
+        };
+        auto person = findEntity(QStringLiteral("Chad Hanson"));
+        check(person.has_value(), "graph: 'Chad Hanson' phrase auto-extracted as an entity");
+        auto project = findEntity(QStringLiteral("K2-Tek"));
+        check(project.has_value(), "graph: 'project:K2-Tek' tag created a project entity");
+        if (project)
+            check(project->scope == QStringLiteral("project") && project->projectRef == QStringLiteral("K2-Tek"),
+                  "graph: project entity scoped correctly");
+
+        // A second, unrelated mention of the same person must NOT create a
+        // duplicate entity (case-insensitive name+type dedupe).
+        const QString memB = store.add(
+            QStringLiteral("Chad Hanson approved the deploy window"),
+            {QStringLiteral("project:K2-Tek")});
+        check(!memB.isEmpty(), "graph: memory B added");
+        int chadCount = 0;
+        for (const auto &e : store.listEntities())
+            if (e.name.compare(QStringLiteral("Chad Hanson"), Qt::CaseInsensitive) == 0)
+                ++chadCount;
+        check(chadCount == 1, "graph: repeated entity mention dedupes, not duplicates");
+
+        if (person) {
+            const QJsonObject g = store.graph(memA, 2);
+            bool sawPersonNode = false, sawMentionsEdge = false;
+            for (const QJsonValue &nv : g.value(QStringLiteral("nodes")).toArray()) {
+                const QJsonObject n = nv.toObject();
+                if (n.value(QStringLiteral("id")).toString() == person->id) {
+                    sawPersonNode = true;
+                    check(n.value(QStringLiteral("kind")).toString() == QStringLiteral("entity"),
+                          "graph: entity node tagged kind=entity");
+                }
+            }
+            for (const QJsonValue &ev : g.value(QStringLiteral("edges")).toArray()) {
+                const QJsonObject e = ev.toObject();
+                if (e.value(QStringLiteral("from")).toString() == memA &&
+                    e.value(QStringLiteral("to")).toString() == person->id)
+                    sawMentionsEdge = e.value(QStringLiteral("relation")).toString() == QStringLiteral("mentions");
+            }
+            check(sawPersonNode, "graph(memA): subgraph includes the auto-linked person entity");
+            check(sawMentionsEdge, "graph(memA): subgraph includes the 'mentions' edge");
+        }
+
+        // Both memories mentioning Chad Hanson are graph-connected (siblings
+        // via the shared entity) even though B's text doesn't literally match A's.
+        if (person) {
+            bool bReachesA = false;
+            for (const QString &nid : store.neighborIds(memB, 2))
+                if (nid == memA)
+                    bReachesA = true;
+            check(bReachesA, "graph: memory B reaches memory A within 2 hops via the shared entity");
+        }
+
+        // --- manual link()/unlink() ----------------------------------------
+        check(store.link(memA, QStringLiteral("memory"), memB, QStringLiteral("memory"),
+                         QStringLiteral("relates_to")),
+              "graph: manual link() between two memories");
+        check(store.link(memA, QStringLiteral("memory"), memB, QStringLiteral("memory"),
+                         QStringLiteral("relates_to")),
+              "graph: re-linking the same edge is idempotent (no error)");
+        {
+            const auto direct = store.neighborIds(memA, 1);
+            check(direct.contains(memB), "graph: neighborIds(memA,1) sees the manual link");
+        }
+        check(store.unlink(memA, memB), "graph: unlink() removes the manual edge");
+        {
+            const auto direct = store.neighborIds(memA, 1);
+            check(!direct.contains(memB), "graph: neighborIds(memA,1) no longer sees the unlinked edge");
+        }
+
+        // --- graph-aware prefetch: pulls in a sibling via a shared entity --
+        {
+            // Query text matches ONLY memA ("sync ... roadmap"); memB's text
+            // shares no words with it, so plain FTS/prefetch of k=1 should
+            // still surface memB once graph expansion is in play.
+            const auto pf = store.prefetch(QStringLiteral("roadmap sync"), 1);
+            bool sawA = false, sawB = false;
+            for (const auto &r : pf) {
+                if (r.id == memA) sawA = true;
+                if (r.id == memB) sawB = true;
+            }
+            check(sawA, "graph-aware prefetch: still returns the literal text match");
+            check(sawB, "graph-aware prefetch: pulls in the sibling sharing the K2-Tek entity");
+        }
+
+        // --- regression: a caller-supplied (non "mem_"-prefixed) memory id --
+        // The daemon writes a stable "user-name" slot via add(text,tags,id).
+        // graph()/prefetch() used to key memory-vs-entity purely off the
+        // "mem_" prefix, so a custom id was silently dropped from results
+        // even though it was correctly discovered by graph traversal.
+        {
+            const QString customId = store.add(
+                QStringLiteral("The user's name is Dana Scully"),
+                {QStringLiteral("user"), QStringLiteral("profile")},
+                QStringLiteral("user-name"));
+            check(customId == QStringLiteral("user-name"),
+                  "custom id: add() honors the caller-supplied id verbatim");
+
+            const QJsonObject g = store.graph(customId, 1);
+            bool sawCustomIdNode = false;
+            for (const QJsonValue &nv : g.value(QStringLiteral("nodes")).toArray()) {
+                const QJsonObject n = nv.toObject();
+                if (n.value(QStringLiteral("id")).toString() == customId) {
+                    sawCustomIdNode = true;
+                    check(n.value(QStringLiteral("kind")).toString() == QStringLiteral("memory"),
+                          "custom id: graph() classifies it as kind=memory despite the non-mem_ id");
+                }
+            }
+            check(sawCustomIdNode, "custom id: graph(rootId=customId) includes the root itself");
+
+            // Overview graph (no root) must include it too, and the
+            // graph-aware prefetch expansion must be able to return it as a
+            // neighbor (both used to filter it out via the "mem_" prefix).
+            const QJsonObject overview = store.graph(QString(), 2);
+            bool sawInOverview = false;
+            for (const QJsonValue &nv : overview.value(QStringLiteral("nodes")).toArray())
+                if (nv.toObject().value(QStringLiteral("id")).toString() == customId)
+                    sawInOverview = true;
+            check(sawInOverview, "custom id: the default overview graph includes it");
+        }
+
+        // --- regression: backfill extracts entities for pre-existing memories
+        // (memories written before the graph tables existed, or by an older
+        // binary — nothing ever called add() on them post-upgrade).
+        {
+            QTemporaryDir tmp2;
+            const QString dbPath2 = tmp2.path() + QStringLiteral("/backfill_test.db");
+
+            // Simulate a "legacy" memory: insert straight into `memories` via
+            // raw SQL, bypassing add() entirely, so it has zero graph links —
+            // exactly what a pre-upgrade memories table looks like.
+            {
+                MemoryStore legacy;
+                check(legacy.open(dbPath2, QStringLiteral("mem-test-legacy-conn")),
+                      "backfill: legacy store open + migrate");
+                QSqlDatabase db = QSqlDatabase::database(QStringLiteral("mem-test-legacy-conn"));
+                QSqlQuery ins(db);
+                ins.prepare(QStringLiteral(
+                    "INSERT INTO memories (id,text,tags,created,updated) VALUES (?,?,?,?,?)"));
+                ins.addBindValue(QStringLiteral("legacy-1"));
+                ins.addBindValue(QStringLiteral("Talked to Fox Mulder about the case"));
+                ins.addBindValue(QStringLiteral("case work"));
+                ins.addBindValue(qint64(1));
+                ins.addBindValue(qint64(1));
+                check(ins.exec(), "backfill: raw-inserted a legacy memory with no links");
+                check(legacy.listEntities().isEmpty(),
+                      "backfill: legacy memory has no entities yet (never went through add())");
+                legacy.close();
+            }
+
+            // Reopen the SAME db file — open() re-runs migrate() + the
+            // backfill, which should now extract entities for "legacy-1".
+            {
+                MemoryStore reopened;
+                check(reopened.open(dbPath2, QStringLiteral("mem-test-reopen-conn")),
+                      "backfill: reopen the same db file");
+                const auto entities = reopened.listEntities();
+                bool sawMulder = false, sawWorkTag = false;
+                for (const auto &e : entities) {
+                    if (e.name.compare(QStringLiteral("Fox Mulder"), Qt::CaseInsensitive) == 0)
+                        sawMulder = true;
+                    if (e.name.compare(QStringLiteral("work"), Qt::CaseInsensitive) == 0)
+                        sawWorkTag = true;
+                }
+                check(sawMulder, "backfill: reopening extracted 'Fox Mulder' from the legacy memory's text");
+                check(sawWorkTag, "backfill: reopening extracted the legacy memory's tags too");
+
+                const auto direct = reopened.neighborIds(QStringLiteral("legacy-1"), 1);
+                check(!direct.isEmpty(), "backfill: the legacy memory is now linked into the graph");
+
+                // Re-opening again must NOT duplicate entities (idempotent).
+                reopened.close();
+                MemoryStore reopenedAgain;
+                check(reopenedAgain.open(dbPath2, QStringLiteral("mem-test-reopen2-conn")),
+                      "backfill: reopen a second time");
+                int mulderCount = 0;
+                for (const auto &e : reopenedAgain.listEntities())
+                    if (e.name.compare(QStringLiteral("Fox Mulder"), Qt::CaseInsensitive) == 0)
+                        ++mulderCount;
+                check(mulderCount == 1, "backfill: re-running backfill on an already-linked memory doesn't duplicate");
+            }
+        }
+    }
 
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);

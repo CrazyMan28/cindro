@@ -34,6 +34,35 @@ struct MemoryRow {
     QJsonObject toJson() const;
 };
 
+// One knowledge-graph node representing a real-world entity (person, project,
+// topic, place, ...) — auto-extracted from memory text/tags, or created
+// explicitly via link(). Dedup key is (lower(name), type).
+struct EntityRow {
+    QString id;
+    QString name;
+    QString type = QStringLiteral("misc");     // person|project|topic|place|misc
+    QString scope = QStringLiteral("global");   // global|project
+    QString projectRef;                          // set when scope=="project"
+    qint64 created = 0;
+    qint64 updated = 0;
+
+    QJsonObject toJson() const;
+};
+
+// A directed edge between two graph nodes, each identified by id + kind
+// ("memory" or "entity"). `relation` is free-form (mentions/tagged/part_of/
+// relates_to/...).
+struct MemoryLink {
+    QString fromId;
+    QString fromType;
+    QString toId;
+    QString toType;
+    QString relation = QStringLiteral("relates_to");
+    qint64 created = 0;
+
+    QJsonObject toJson() const;
+};
+
 class MemoryStore {
 public:
     MemoryStore() = default;
@@ -82,9 +111,45 @@ public:
     // Empty input => empty string (nothing injected).
     static QString renderPromptBlock(const QVector<MemoryRow> &memories);
 
+    // --- Knowledge graph (entities + links) --------------------------------
+    // Personal Knowledge Graph (jarvis#70), phase 1: a lightweight graph layer
+    // on top of the flat memories table — entities are auto-extracted from
+    // memory text/tags and linked to the memory that mentioned them; add()
+    // calls this automatically so every existing caller (daemon, tests) gets
+    // graph population for free.
+
+    // Create or update (by case-insensitive name+type) an entity node. Scope
+    // defaults to "global" (recalled everywhere); pass scope="project" +
+    // projectRef to scope it to one project (never downgrades an existing
+    // project-scoped entity back to global). Returns its id (empty on error).
+    QString upsertEntity(const QString &name, const QString &type = QStringLiteral("misc"),
+                         const QString &scope = QStringLiteral("global"),
+                         const QString &projectRef = QString());
+    std::optional<EntityRow> getEntity(const QString &id);
+    QVector<EntityRow> listEntities(int limit = 0);
+
+    // Directed link between two graph nodes (ids are memory "mem_..." or
+    // entity "ent_..." ids). Idempotent: re-linking the same (from,to,relation)
+    // is a no-op, not a duplicate edge.
+    bool link(const QString &fromId, const QString &fromType, const QString &toId,
+             const QString &toType, const QString &relation = QStringLiteral("relates_to"));
+    bool unlink(const QString &fromId, const QString &toId);
+
+    // BFS over memory_links (edges treated as undirected for traversal) out to
+    // `depth` hops from `nodeId`. Returns newly-discovered ids only (not
+    // nodeId itself), nearest first.
+    QVector<QString> neighborIds(const QString &nodeId, int depth = 1);
+
+    // Subgraph as {nodes:[...], edges:[{from,to,relation}]} for the desktop
+    // graph browser. Empty rootId => seeded from all entities (or recent
+    // memories if there are none yet). Bounded to a few hundred nodes.
+    QJsonObject graph(const QString &rootId = QString(), int depth = 2);
+
 private:
     bool exec(const QString &sql, QString *err = nullptr);
     bool migrate();
+    void autoExtractEntities(const QString &memId, const QString &text, const QStringList &tags);
+    void backfillEntityExtraction();
 
     QSqlDatabase m_db;
     QString m_connectionName;
