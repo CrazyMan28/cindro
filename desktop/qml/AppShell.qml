@@ -84,6 +84,10 @@ Item {
     // Set by the Chat loader so other pages (e.g. Skills /invoke) can inject into
     // the live transcript without coupling to load order.
     property var chatPanel: null
+    // Set by the Replay loader so the Sessions page can drive it (open a session
+    // into Mission Control Replay). The Replay page's index in the rail.
+    property var replayPanel: null
+    readonly property int replayIndex: 13
 
     // Singleton-style access to shared inline widgets (Widgets.PillButton, etc.).
     // QML resolves `Widgets` inside pages because it's in the same module.
@@ -177,11 +181,12 @@ Item {
                             case 10: return schedulesComp
                             case 11: return activityComp
                             case 12: return memGraphComp
-                            case 13: return mcpComp
-                            case 14: return pluginsComp
-                            case 15: return sshComp
-                            case 16: return phoneComp
-                            case 17: return settingsComp
+                            case 13: return replayComp
+                            case 14: return mcpComp
+                            case 15: return pluginsComp
+                            case 16: return sshComp
+                            case 17: return phoneComp
+                            case 18: return settingsComp
                             }
                         }
                     }
@@ -267,6 +272,7 @@ Item {
     Component { id: sshComp;      SshPage {} }
     Component { id: memoryComp;   MemoryPage {} }
     Component { id: memGraphComp; MemoryGraphPage {} }
+    Component { id: replayComp;   ReplayPage { Component.onCompleted: shell.replayPanel = this } }
     Component {
         id: skillsComp
         SkillsPage {
@@ -295,6 +301,11 @@ Item {
         id: sessionsComp
         SessionsPage {
             onOpenInChat: function(sid) { shell.currentIndex = 1 }
+            // "▶ Replay" opens the session in Mission Control Replay (jarvis#66).
+            onReplaySession: function(sid) {
+                shell.currentIndex = shell.replayIndex
+                if (shell.replayPanel) shell.replayPanel.load(sid)
+            }
             // "+ New chat": jump to Chat and start a fresh conversation (drops the
             // current session so the next send creates a new one).
             onNewChat: function() {

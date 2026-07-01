@@ -49,6 +49,7 @@ qt_add_qml_module(jarvis-sidebar
         qml/PluginsPage.qml
         qml/MemoryPage.qml
         qml/MemoryGraphPage.qml
+        qml/ReplayPage.qml
         qml/SkillsPage.qml
         qml/AgentsPage.qml
         qml/SlashPalette.qml

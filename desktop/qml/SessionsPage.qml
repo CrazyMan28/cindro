@@ -14,6 +14,8 @@ Item {
     // Start a brand-new conversation (AppShell routes this to the Chat page and
     // tells JarvisPanel.startNewChat()).
     signal newChat()
+    // Scrub a session's timeline in Mission Control Replay (jarvis#66).
+    signal replaySession(string sessionId)
 
     ListModel { id: sessionsModel }
 
@@ -319,6 +321,43 @@ Item {
                         }
                         bridge.openSession(row.sid)
                         page.openInChat(row.sid)
+                    }
+                }
+
+                // ---- Replay button (overlay, left of the delete actions) --------
+                // Opens this session in Mission Control Replay (jarvis#66).
+                Rectangle {
+                    id: replayBtn
+                    anchors.right: actions.left
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: replayInner.implicitWidth + 16
+                    height: 26
+                    radius: Theme.radiusXs
+                    visible: !row.confirming
+                    color: replayMa.containsMouse ? Theme.accentDim : "transparent"
+                    border.width: 1
+                    border.color: replayMa.containsMouse ? Theme.accent
+                                  : (row.hot ? Theme.hairlineSoft : "transparent")
+                    Behavior on border.color { ColorAnimation { duration: 110 } }
+                    opacity: row.hot ? 1.0 : 0.0
+                    Behavior on opacity { NumberAnimation { duration: 110 } }
+                    Row {
+                        id: replayInner
+                        anchors.centerIn: parent
+                        spacing: 5
+                        Text { text: "▶"; color: replayMa.containsMouse ? Theme.accentBright : Theme.accent
+                            font.pixelSize: 10; anchors.verticalCenter: parent.verticalCenter }
+                        Text { text: "REPLAY"; color: replayMa.containsMouse ? Theme.accentBright : Theme.textMuted
+                            font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: Theme.trackMid
+                            anchors.verticalCenter: parent.verticalCenter }
+                    }
+                    MouseArea {
+                        id: replayMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: page.replaySession(row.sid)
                     }
                 }
 

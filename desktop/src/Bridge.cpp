@@ -755,6 +755,17 @@ void Bridge::loadSessionHistory(const QString &sessionId)
     request(QStringLiteral("session.history"), params, sessionId);
 }
 
+void Bridge::loadReplay(const QString &sessionId)
+{
+    // Mission Control Replay (jarvis#66): fetch ANY session's full timeline for
+    // scrubbing. Tagged so its reply is NOT gated to the active chat (unlike
+    // loadSessionHistory) and KEEPS per-event ts for the timeline.
+    QVariantMap params;
+    params.insert(QStringLiteral("session_id"), sessionId);
+    request(QStringLiteral("session.history"), params,
+            QStringLiteral("__replay__:") + sessionId);
+}
+
 // ---- Devices (pairing) -----------------------------------------------------
 
 void Bridge::devicesPairStart()
@@ -3577,6 +3588,18 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
     } else if (method == QStringLiteral("session.delete")) {
         // ctx carries the deleted session id; the Sessions page refreshes on it.
         emit sessionDeleted(ctx);
+    } else if (method == QStringLiteral("session.history")
+               && ctx.startsWith(QStringLiteral("__replay__:"))) {
+        // Mission Control Replay (jarvis#66): ungated (any session) + keeps ts.
+        QVariantList events;
+        for (const QVariant &v : result.value(QStringLiteral("events")).toList()) {
+            const QVariantMap row = v.toMap();
+            QVariantMap evm = row.value(QStringLiteral("ev")).toMap();
+            evm.insert(QStringLiteral("seq"), row.value(QStringLiteral("seq")));
+            evm.insert(QStringLiteral("ts"), row.value(QStringLiteral("ts")));
+            events << evm;
+        }
+        emit replayLoaded(result.value(QStringLiteral("session")).toMap(), events);
     } else if (method == QStringLiteral("session.history")) {
         // events: [{seq,ts,ev:{kind,...}}] — fold the inner ev out for QML.
         QVariantList events;

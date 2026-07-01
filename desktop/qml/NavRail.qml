@@ -40,6 +40,7 @@ Item {
         { key: "schedules", label: "SCHEDULES", section: "MIND" },
         { key: "activity",  label: "ACTIVITY",  section: "MIND" },
         { key: "memgraph",  label: "GRAPH",     section: "MIND" },
+        { key: "replay",    label: "REPLAY",    section: "MIND" },
         { key: "mcp",       label: "MCP",       section: "SYSTEM" },
         { key: "plugins",   label: "PLUGINS",   section: "SYSTEM" },
         { key: "ssh",       label: "SSH",       section: "SYSTEM" },
@@ -466,6 +467,13 @@ Item {
                     ctx.strokeRect(2.5, 2.5, 13, 3.5)
                     ctx.strokeRect(2.5, 7.5, 13, 3.5)
                     ctx.strokeRect(2.5, 12.5, 13, 3.5)
+                    break
+                case "replay":
+                    // play triangle inside a circle (scrub/replay)
+                    ctx.beginPath(); ctx.arc(9, 9, 7, 0, Math.PI * 2); ctx.stroke()
+                    ctx.beginPath()
+                    ctx.moveTo(7, 5.5); ctx.lineTo(13, 9); ctx.lineTo(7, 12.5)
+                    ctx.closePath(); ctx.stroke()
                     break
                 case "settings":
                     ctx.beginPath(); ctx.arc(w/2, h/2, 3.2, 0, Math.PI*2); ctx.stroke()

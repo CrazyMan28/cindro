@@ -240,6 +240,9 @@ public:
     Q_INVOKABLE void listSessions();
     // session.history { session_id } -> sessionHistory(sessionId, events).
     Q_INVOKABLE void loadSessionHistory(const QString &sessionId);
+    // Mission Control Replay (jarvis#66): load ANY session's full timeline
+    // (ungated + keeps per-event ts) -> replayLoaded(session, events).
+    Q_INVOKABLE void loadReplay(const QString &sessionId);
 
     // ---- Devices (Contract A v2 pairing, surfaced in Settings) --------------
     // devices.pair_start -> pairingStarted(qrSvg, code, payload, expiresAt).
@@ -626,6 +629,8 @@ signals:
     void connectorsChanged(); // emitted after connectors.add so the UI refreshes
     void sessionsListed(const QVariantList &sessions);
     void sessionHistory(const QString &sessionId, const QVariantList &events);
+    // Mission Control Replay: {session metadata map} + [{seq,ts,kind,...}].
+    void replayLoaded(const QVariantMap &session, const QVariantList &events);
     // Fired when openSession finishes wiring a chosen session as current.
     void sessionOpened(const QString &sessionId);
     // Fired when a FOREIGN session opened but the desktop already has an active chat:
