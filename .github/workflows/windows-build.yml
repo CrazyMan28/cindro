@@ -7,8 +7,13 @@
 name: windows-build
 
 on:
+  # 'main' is intentionally NOT in push.branches. A merge to main fires auto-release,
+  # which tags the new version -> that tag (below) builds AND attaches the .exe to the
+  # Release. A push:main build here would be a REDUNDANT second build that never attaches
+  # and clogs the SINGLE self-hosted Windows runner (it once blocked the real release
+  # build, forcing a manual cancel). main-bound changes are validated via pull_request.
   push:
-    branches: [dev, main]
+    branches: [dev]
     tags: ["v*"]
   pull_request:
     branches: [dev, main]

@@ -13,8 +13,13 @@
 name: linux-release
 
 on:
+  # 'main' is intentionally NOT in push.branches (mirrors windows-build.yml): a merge to
+  # main fires auto-release -> tags the version -> that tag (below) builds AND attaches
+  # the AppImage to the Release. A push:main build here would be a redundant second build
+  # that never attaches. Pre-merge Linux validation is linux-ci.yml (push+PR); this
+  # workflow only needs dev (packaging sanity) + tags (the actual release artifact).
   push:
-    branches: [dev, main]
+    branches: [dev]
     tags: ["v*"]
   workflow_dispatch:
 
