@@ -44,8 +44,15 @@ QString CodexBrain::ensureIsolatedHome() const
             std::filesystem::create_hard_link(
                 std::filesystem::path(src.toStdWString()),
                 std::filesystem::path(dst.toStdWString()), ec);
-            if (ec)
+            if (ec) {
+                // Cross-volume/odd-FS fallback: a snapshot copy. No write-through,
+                // so a token codex refreshes in the isolated copy is NOT written
+                // back to ~/.codex — log it so a stale-token drift is diagnosable.
                 QFile::copy(src, dst);
+                qWarning("codex: hard-link of %s failed (%s); using a snapshot copy "
+                         "(token refresh won't write through)",
+                         qPrintable(f), ec.message().c_str());
+            }
         }
 #else
         if (QFile::exists(src) && !QFileInfo::exists(dst))

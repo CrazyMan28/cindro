@@ -1186,6 +1186,26 @@ Response ControlServer::handleModelList(const Request &req)
 Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverride,
                                 const CodexMcpOverrides &agentMcpOverrides)
 {
+    // V1 TAKE-OVER FALLBACK (Windows without the v2 opt-in): the platform can
+    // never provision a nested desktop, so the auto-computer path degrades with
+    // EMPTY overrides — which used to leave every plain chat with ZERO
+    // computer-use tools (claude's always-on --strict-mcp-config then loads no
+    // MCP servers at all). When "Let Jarvis use a computer" is on AND the user
+    // hasn't disabled the built-in computer-use server, non-coworker sessions
+    // fall back to the GLOBAL :8794 registry engine — the designed v1
+    // real-screen contract. Computed once; used by all three brain arms below.
+    const bool v1TakeoverFallback = [this]() {
+        if (AgentDesktop::nestedDesktopSupported() || !m_settings.letJarvisUseComputer())
+            return false;
+        if (!m_mcp)
+            return false;
+        const QVector<McpServerRow> servers = m_mcp->list();
+        for (const McpServerRow &s : servers)
+            if (s.id == McpRegistry::builtinId())
+                return s.enabled; // user disabled it => no injection at all
+        return false;
+    }();
+
     if (row.brain == QStringLiteral("codex")) {
         CodexBrain::Options opts;
         opts.cwd = cwdOverride.isEmpty() ? m_config.effectiveCwd() : cwdOverride;
@@ -1204,15 +1224,8 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
             // computer-use engine.
             opts.configOverrides = agentMcpOverrides.args;
             opts.extraEnv = agentMcpOverrides.env;
-        } else if ((row.profile == QStringLiteral("coworker") ||
-                    (m_settings.letJarvisUseComputer() &&
-                     !AgentDesktop::nestedDesktopSupported())) &&
+        } else if ((row.profile == QStringLiteral("coworker") || v1TakeoverFallback) &&
                    m_mcp) {
-            // V1 TAKE-OVER FALLBACK (Windows without the v2 opt-in): the platform
-            // can never provision a nested desktop, so the auto-computer path
-            // degraded with EMPTY overrides — which used to leave every plain chat
-            // with ZERO computer-use tools. Inject the GLOBAL registry config
-            // (built-in :8794 engine, the designed v1 real-screen contract).
             const CodexMcpOverrides cu = m_mcp->codexOverrides(
                 [this](const QString &ref) { return resolveConnectorEnv(ref); });
             opts.configOverrides = cu.args;
@@ -1267,14 +1280,7 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
             opts.permissionMode = QStringLiteral("bypassPermissions");
         } else if (row.profile == QStringLiteral("coworker")) {
             mcpJson = claudeMcpConfigFromRegistry();
-        } else if (m_settings.letJarvisUseComputer() &&
-                   !AgentDesktop::nestedDesktopSupported()) {
-            // V1 TAKE-OVER FALLBACK (Windows without the v2 opt-in): the nested
-            // agent desktop can never come up, so the auto-computer path degraded
-            // with empty overrides — and claude's always-on --strict-mcp-config
-            // then yields ZERO MCP servers (the "no tools on Windows" bug). Give
-            // the session the GLOBAL registry config (built-in :8794 engine, the
-            // designed v1 real-screen contract) instead of nothing.
+        } else if (v1TakeoverFallback) {
             mcpJson = claudeMcpConfigFromRegistry();
             // Same rationale as the nested-agent path above: headless `claude -p`
             // stalls on MCP permission prompts, so the injected computer-use
@@ -1317,11 +1323,7 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
                 opts.mcpEndpoint = desk.mcpUrl;
                 opts.mcpBearer = desk.bearer;
             } else if (row.profile == QStringLiteral("coworker") ||
-                       (m_settings.letJarvisUseComputer() &&
-                        !AgentDesktop::nestedDesktopSupported())) {
-                // Second arm: v1 take-over fallback (Windows without the v2
-                // opt-in) — no nested desktop can exist, so plain chats use the
-                // GLOBAL built-in engine like coworker sessions do.
+                       v1TakeoverFallback) {
                 opts.mcpEndpoint = McpRegistry::builtinEndpoint();
                 opts.mcpBearer = McpRegistry::computerUseBearer();
             }

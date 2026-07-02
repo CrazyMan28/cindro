@@ -1242,8 +1242,10 @@ bool Bridge::voiceAvailable() const
     // exist (Windows/WASAPI, non-PipeWire boxes) we capture with Qt Multimedia
     // instead, so voice is available whenever ANY input device is present —
     // gating on pw-record alone hid the mic button on every Windows install.
+    // defaultAudioInput() (not audioInputs()) so the button only shows when the
+    // capture paths' device lookup will actually succeed.
     return hasExecutable(QStringLiteral("pw-record")) ||
-           !QMediaDevices::audioInputs().isEmpty();
+           !QMediaDevices::defaultAudioInput().isNull();
 }
 
 void Bridge::setRecordingState(const QString &s)
@@ -1301,8 +1303,10 @@ void Bridge::voiceDictate(int seconds)
         });
         m_recAutoStop = true;
         setRecordingState(QStringLiteral("recording"));
-        QTimer::singleShot(secs * 1000, this, [this]() {
-            if (m_dictSource && m_recAutoStop)
+        // Capture the generation so a stale timer from an earlier recording
+        // (stopped early, restarted within its window) can't truncate this one.
+        QTimer::singleShot(secs * 1000, this, [this, gen = ++m_dictGen]() {
+            if (m_dictSource && m_recAutoStop && gen == m_dictGen)
                 voiceDictateStop();
         });
         return;
@@ -1444,8 +1448,9 @@ void Bridge::recordVoiceClone(int seconds)
         });
         m_cloneAutoStop = true;
         setVoiceCloneState(QStringLiteral("recording"));
-        QTimer::singleShot(secs * 1000, this, [this]() {
-            if (m_cloneSource && m_cloneAutoStop)
+        // Same stale-timer guard as voiceDictate().
+        QTimer::singleShot(secs * 1000, this, [this, gen = ++m_cloneGen]() {
+            if (m_cloneSource && m_cloneAutoStop && gen == m_cloneGen)
                 stopVoiceCloneRecording();
         });
         return;

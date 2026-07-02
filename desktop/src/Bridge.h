@@ -1017,6 +1017,8 @@ private:
     QAudioSource *m_dictSource = nullptr;
     QIODevice *m_dictIo = nullptr;      // pull device (owned by the source)
     QByteArray m_dictPcm;
+    int m_dictGen = 0;                  // guards the auto-stop timer against a
+                                        // stale fire truncating a LATER recording
     // Named voice-library reference-clip recorder (separate from dictation above).
     QString m_voiceCloneState = QStringLiteral("idle");
     QProcess *m_cloneRecProc = nullptr; // active pw-record capture for a voice clip
@@ -1026,6 +1028,7 @@ private:
     QAudioSource *m_cloneSource = nullptr;
     QIODevice *m_cloneIo = nullptr;
     QByteArray m_clonePcm;
+    int m_cloneGen = 0;                 // same stale-timer guard as m_dictGen
     QByteArray m_voiceClipBytes;        // the captured/loaded candidate reference clip
     QString m_voiceClipFormat;          // its container ext ("wav", "mp3", ...)
     QString m_voiceClipSource = QStringLiteral("upload"); // "record" | "upload"

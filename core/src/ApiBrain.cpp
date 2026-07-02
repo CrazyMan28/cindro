@@ -491,6 +491,8 @@ void ApiBrain::handleSseData(const QByteArray &data)
             if (!usage.isEmpty())
                 m_lastUsage = usage;
         } else if (type == QStringLiteral("error")) {
+            // Keep the old streaming order: partial text renders BEFORE the error.
+            flushPendingText();
             const QJsonObject e = obj.value(QStringLiteral("error")).toObject();
             emitEvent(NormalizedBrainEvent::error(
                 e.value(QStringLiteral("message")).toString(QStringLiteral("api error"))));
@@ -502,6 +504,8 @@ void ApiBrain::handleSseData(const QByteArray &data)
 
     // OpenAI-compatible (and Ollama /v1) streaming.
     if (obj.contains(QStringLiteral("error"))) {
+        // Keep the old streaming order: partial text renders BEFORE the error.
+        flushPendingText();
         const QJsonObject e = obj.value(QStringLiteral("error")).toObject();
         emitEvent(NormalizedBrainEvent::error(
             e.value(QStringLiteral("message")).toString(QStringLiteral("api error"))));
