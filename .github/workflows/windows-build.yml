@@ -7,23 +7,23 @@
 name: windows-build
 
 on:
-  # 'main' is intentionally NOT in push.branches. A merge to main fires auto-release,
-  # which tags the new version -> that tag (below) builds AND attaches the .exe to the
-  # Release. A push:main build here would be a REDUNDANT second build that never attaches
-  # and clogs the SINGLE self-hosted Windows runner (it once blocked the real release
-  # build, forcing a manual cancel). main-bound changes are validated via pull_request.
+  # Two-branch model: qa (integration) + main (production). A build runs on a push to qa
+  # and on a pull_request into main. main-bound changes are validated by that PR build;
+  # a merge to main then fires auto-release, which tags the version -> that v* tag (below)
+  # builds AND attaches Jarvis-Setup.exe to the Release. 'main' is intentionally NOT in
+  # push.branches: a push:main build would be a redundant second build that never attaches.
   push:
-    branches: [dev]
+    branches: [qa]
     tags: ["v*"]
   pull_request:
-    branches: [dev, main]
+    branches: [main]
   workflow_dispatch:
 
 # Needed so the tag build can CREATE the GitHub Release + attach Jarvis-Setup.exe.
 permissions:
   contents: write
 
-# Concurrency: EVERY dev push and EVERY v* tag builds — nothing gets auto-cancelled.
+# Concurrency: EVERY qa push and EVERY v* tag builds — nothing gets auto-cancelled.
 # We only dedup PULL-REQUEST re-pushes: pushing a new commit to a PR branch supersedes
 # that PR's still-running build (standard, saves runner time). For push/tag events the
 # group is keyed by the unique commit SHA, so no two commits ever share a group and no

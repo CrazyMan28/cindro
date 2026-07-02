@@ -16,17 +16,17 @@ on:
   # 'main' is intentionally NOT in push.branches (mirrors windows-build.yml): a merge to
   # main fires auto-release -> tags the version -> that tag (below) builds AND attaches
   # the AppImage to the Release. A push:main build here would be a redundant second build
-  # that never attaches. Pre-merge Linux validation is linux-ci.yml (push+PR); this
-  # workflow only needs dev (packaging sanity) + tags (the actual release artifact).
+  # that never attaches. Pre-merge Linux validation is linux-ci.yml (qa push + PR to main);
+  # this workflow only needs qa (packaging sanity) + tags (the actual release artifact).
   push:
-    branches: [dev]
+    branches: [qa]
     tags: ["v*"]
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# Every dev push and every v* tag builds — nothing auto-cancels. Keyed by unique SHA so no
+# Every qa push and every v* tag builds — nothing auto-cancels. Keyed by unique SHA so no
 # two commits share a group. (No PR trigger here, so there's no PR-dedup branch to key on.)
 concurrency:
   group: linux-release-${{ github.sha }}
