@@ -66,6 +66,31 @@ function Resolve-QtPrefix {
   return $null
 }
 $qtPrefix = Resolve-QtPrefix
+if (-not $qtPrefix) {
+  # SELF-HEAL: a runner whose Qt install is missing/incomplete (e.g. win-runner-2
+  # after a reset — C:\Qt\6.10.3 present but no lib\cmake\Qt6\Qt6Config.cmake) would
+  # otherwise fail configure with "Could not find a package configuration file
+  # provided by Qt6" and stay broken build after build. Install Qt the SAME way the
+  # runner-provisioning script does (aqtinstall -> C:\Qt) so the runner repairs
+  # itself, then re-resolve. On a healthy runner this branch never runs.
+  Write-Host "==> Qt6 not found on this runner — installing via aqtinstall (self-heal)…" -ForegroundColor Yellow
+  $py = (Get-Command python -ErrorAction SilentlyContinue).Source
+  if (-not $py) { $py = (Get-Command py -ErrorAction SilentlyContinue).Source }
+  if ($py) {
+    & $py -m pip install --upgrade pip aqtinstall 2>&1 | Select-Object -Last 2
+    & $py -m aqt install-qt windows desktop 6.10.3 win64_msvc2022_64 --modules qtwebsockets qtmultimedia --outputdir C:\Qt 2>&1 | Select-Object -Last 3
+    $qtPrefix = Resolve-QtPrefix
+    if ($qtPrefix) {
+      # Persist the machine env so future runs (and the workflow's preflight) see it.
+      try {
+        [Environment]::SetEnvironmentVariable("CMAKE_PREFIX_PATH", $qtPrefix, "Machine")
+        [Environment]::SetEnvironmentVariable("Qt6_DIR", (Join-Path $qtPrefix "lib\cmake\Qt6"), "Machine")
+      } catch { Write-Host "WARN: could not persist Qt machine env: $_" -ForegroundColor Yellow }
+    }
+  } else {
+    Write-Host "WARN: python not found — cannot self-heal Qt" -ForegroundColor Yellow
+  }
+}
 if ($qtPrefix) {
   Write-Host "==> Qt6 prefix: $qtPrefix" -ForegroundColor Cyan
 } else {
