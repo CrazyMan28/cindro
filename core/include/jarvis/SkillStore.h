@@ -91,6 +91,16 @@ public:
 
     bool remove(const QString &name);
 
+    // Re-mirror EVERY stored skill into the installed CLI brains' skill dirs
+    // (~/.codex/skills, ~/.claude/skills). mirrorToCli() otherwise runs only at
+    // skill CREATION — and silently skips a CLI whose config dir doesn't exist
+    // yet — so a machine where Jarvis ran before claude/codex was installed
+    // permanently missed the mirrors (/internal_docs absent in Claude Code).
+    // Idempotent overwrite (the Jarvis store is authoritative); called at daemon
+    // start. Production only (no-op with an overridden root, like create()).
+    // Returns the number of skills mirrored.
+    int syncMirrorsToCli();
+
     // --- invoke ------------------------------------------------------------
     // Render the skill body, substituting {{VAR}} template vars from `vars`
     // plus the builtins {{SKILL_DIR}} (the skill's directory) and {{ARGS}}

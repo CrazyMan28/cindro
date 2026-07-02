@@ -312,6 +312,16 @@ QString AgentDesktop::defaultEngineDir()
     return fromEnv.isEmpty() ? QDir(fromExe).absolutePath() : fromEnv;
 }
 
+bool AgentDesktop::nestedDesktopSupported()
+{
+    // Only the v2 sandbox tier (JARVIS_ENABLE_V2 opt-in, resolveMode()=="sandbox")
+    // can provision an isolated agent desktop on Windows. Everything else is the
+    // shipped v1 real-screen take-over: ensure() always degrades, and the daemon
+    // uses this predicate to fall back to the GLOBAL :8794 engine so sessions
+    // still get computer-use MCP tools instead of none at all.
+    return resolveMode() == QStringLiteral("sandbox");
+}
+
 QString AgentDesktop::genBearer()
 {
     auto *rng = QRandomGenerator::system();

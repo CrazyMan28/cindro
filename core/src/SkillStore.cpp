@@ -415,6 +415,42 @@ QString SkillStore::create(const QString &name, const QString &description,
     return mdPath;
 }
 
+int SkillStore::syncMirrorsToCli()
+{
+    if (!m_root.isEmpty())
+        return 0; // tests: never touch the real ~/.codex / ~/.claude
+    int n = 0;
+    const QVector<SkillRow> rows = list();
+    for (const SkillRow &row : rows) {
+        QFile f(row.path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        const QString md = QString::fromUtf8(f.readAll());
+        f.close();
+        // On-disk layout is <root>/<group>/<name>/SKILL.md — mirror by the SAME
+        // directory pair so the copy lands exactly where create() put its own.
+        const QDir skillDir = QFileInfo(row.path).absoluteDir();
+        const QString name = skillDir.dirName();
+        const QString group =
+            QFileInfo(skillDir.absolutePath()).absoluteDir().dirName();
+        QVector<SkillScript> scripts;
+        const QDir sd(skillDir.absoluteFilePath(QStringLiteral("scripts")));
+        if (sd.exists()) {
+            const QFileInfoList files = sd.entryInfoList(QDir::Files | QDir::NoDotAndDotDot);
+            for (const QFileInfo &si : files) {
+                QFile sf(si.absoluteFilePath());
+                if (!sf.open(QIODevice::ReadOnly))
+                    continue;
+                scripts.push_back({si.fileName(), QString::fromUtf8(sf.readAll())});
+                sf.close();
+            }
+        }
+        mirrorToCli(group, name, md, scripts);
+        ++n;
+    }
+    return n;
+}
+
 void SkillStore::mirrorToCli(const QString &group, const QString &name, const QString &md,
                              const QVector<SkillScript> &scripts)
 {
