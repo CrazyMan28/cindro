@@ -45,11 +45,30 @@ if (-not (Test-Path $toolchain)) { throw "vcpkg toolchain file not found: $toolc
 # can go missing for the runner process, and find_package(Qt6) then fails at
 # configure ("Could not find a package configuration file provided by Qt6").
 # Probe: existing CMAKE_PREFIX_PATH -> Qt6_DIR -> newest C:\Qt\<ver>\msvc*_64.
+# A prefix counts as usable only if it has Qt6Config AND the modules this build
+# links (WebSockets + Multimedia) — an INCOMPLETE Qt (e.g. a build cancelled
+# mid-aqt-download, leaving qtmultimedia missing) must NOT be accepted, or the
+# build passes configure then fails at link/windeployqt. Treating "incomplete"
+# as "not found" makes the self-heal below reinstall the missing modules.
+function Test-QtComplete($prefix) {
+  if (-not $prefix) { return $false }
+  # $prefix may be the Qt root (…/msvc2022_64) or already …/lib/cmake/Qt6.
+  $cm = if (Test-Path (Join-Path $prefix "lib\cmake")) { Join-Path $prefix "lib\cmake" }
+        elseif ($prefix -like "*lib\cmake\Qt6") { Split-Path $prefix -Parent }
+        else { return $false }
+  foreach ($mod in @("Qt6\Qt6Config.cmake", "Qt6WebSockets\Qt6WebSocketsConfig.cmake",
+                     "Qt6Multimedia\Qt6MultimediaConfig.cmake", "Qt6Sql\Qt6SqlConfig.cmake")) {
+    if (-not (Test-Path (Join-Path $cm $mod))) { return $false }
+  }
+  return $true
+}
 function Resolve-QtPrefix {
   foreach ($p in @($env:CMAKE_PREFIX_PATH, $env:Qt6_DIR)) {
-    if ($p -and (Test-Path (Join-Path $p "lib\cmake\Qt6\Qt6Config.cmake"))) { return $p }
-    # Qt6_DIR may already point at lib/cmake/Qt6 — accept the file there too.
-    if ($p -and (Test-Path (Join-Path $p "Qt6Config.cmake"))) { return $p }
+    if (Test-QtComplete $p) {
+      # Normalize a Qt6_DIR that points at lib/cmake/Qt6 back to the Qt root.
+      if ($p -like "*lib\cmake\Qt6") { return (Split-Path (Split-Path (Split-Path $p -Parent) -Parent) -Parent) }
+      return $p
+    }
   }
   $roots = @("C:\Qt") | Where-Object { Test-Path $_ }
   foreach ($root in $roots) {
@@ -59,7 +78,7 @@ function Resolve-QtPrefix {
       ForEach-Object {
         Get-ChildItem -Path $_.FullName -Directory -ErrorAction SilentlyContinue |
           Where-Object { $_.Name -like 'msvc*_64' } | Select-Object -First 1
-      } | Where-Object { $_ -and (Test-Path (Join-Path $_.FullName "lib\cmake\Qt6\Qt6Config.cmake")) } |
+      } | Where-Object { Test-QtComplete $_.FullName } |
       Select-Object -First 1
     if ($cand) { return $cand.FullName }
   }
