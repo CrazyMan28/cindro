@@ -1,9 +1,12 @@
 #include "jarvis/SkillStore.h"
 
+#include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QTextStream>
 
 namespace jarvis {
@@ -74,6 +77,12 @@ QJsonObject SkillRow::toListJson() const
     o.insert(QStringLiteral("tags"), t);
     o.insert(QStringLiteral("self_authored"), fm.selfAuthored);
     o.insert(QStringLiteral("path"), path);
+    // Usage stats sidecar (jarvis#76 item 2) — absent file = zeros/unpinned.
+    const SkillStats s =
+        SkillStore::readStats(QFileInfo(path).absoluteDir().absolutePath());
+    o.insert(QStringLiteral("use_count"), s.useCount);
+    o.insert(QStringLiteral("last_used_at"), static_cast<double>(s.lastUsedAt));
+    o.insert(QStringLiteral("pinned"), s.pinned);
     return o;
 }
 
@@ -221,6 +230,10 @@ QVector<SkillRow> SkillStore::list()
                     QDirIterator::Subdirectories);
     while (it.hasNext()) {
         const QString path = it.next();
+        // Archived skills live under <root>/_archived — hidden from the live
+        // list (jarvis#76 item 2); see listArchived().
+        if (path.contains(QStringLiteral("/_archived/")))
+            continue;
         QFile f(path);
         if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
             continue;
@@ -513,6 +526,233 @@ bool SkillStore::remove(const QString &name)
         }
     }
     return true;
+}
+
+// --- lifecycle curation (jarvis#76 item 2) ----------------------------------
+
+QString SkillStore::archivedRoot() const
+{
+    return root() + QStringLiteral("/_archived");
+}
+
+SkillStats SkillStore::readStats(const QString &skillDirPath)
+{
+    SkillStats s;
+    QFile f(skillDirPath + QStringLiteral("/_stats.json"));
+    if (!f.open(QIODevice::ReadOnly))
+        return s;
+    const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+    s.useCount = o.value(QStringLiteral("use_count")).toInt();
+    s.lastUsedAt = static_cast<qint64>(o.value(QStringLiteral("last_used_at")).toDouble());
+    s.pinned = o.value(QStringLiteral("pinned")).toBool();
+    return s;
+}
+
+void SkillStore::writeStats(const QString &skillDirPath, const SkillStats &stats)
+{
+    QJsonObject o;
+    o.insert(QStringLiteral("use_count"), stats.useCount);
+    o.insert(QStringLiteral("last_used_at"), static_cast<double>(stats.lastUsedAt));
+    o.insert(QStringLiteral("pinned"), stats.pinned);
+    // Write-then-rename so a crash can't leave a truncated sidecar.
+    const QString path = skillDirPath + QStringLiteral("/_stats.json");
+    QFile f(path + QStringLiteral(".tmp"));
+    if (!f.open(QIODevice::WriteOnly))
+        return;
+    f.write(QJsonDocument(o).toJson(QJsonDocument::Compact));
+    f.close();
+    QFile::remove(path);
+    QFile::rename(path + QStringLiteral(".tmp"), path);
+}
+
+bool SkillStore::trackUsage(const QString &name)
+{
+    auto row = get(name);
+    if (!row)
+        return false;
+    const QString dir = QFileInfo(row->path).absoluteDir().absolutePath();
+    // Only track skills inside the writable Jarvis root — a CLI-dir skill's
+    // home is owned by codex/claude and we don't drop sidecars there.
+    if (!dir.startsWith(root()))
+        return false;
+    SkillStats s = readStats(dir);
+    ++s.useCount;
+    s.lastUsedAt = QDateTime::currentMSecsSinceEpoch();
+    writeStats(dir, s);
+    return true;
+}
+
+bool SkillStore::setPinned(const QString &name, bool pinned)
+{
+    auto row = get(name);
+    if (!row) {
+        m_lastError = QStringLiteral("no such skill: ") + name;
+        return false;
+    }
+    const QString dir = QFileInfo(row->path).absoluteDir().absolutePath();
+    if (!dir.startsWith(root())) {
+        m_lastError = QStringLiteral("cannot pin a CLI-dir skill: ") + name;
+        return false;
+    }
+    SkillStats s = readStats(dir);
+    s.pinned = pinned;
+    writeStats(dir, s);
+    return true;
+}
+
+bool SkillStore::archive(const QString &name)
+{
+    auto row = get(name);
+    if (!row) {
+        m_lastError = QStringLiteral("no such skill: ") + name;
+        return false;
+    }
+    const QDir skillDir = QFileInfo(row->path).absoluteDir();
+    const QString src = skillDir.absolutePath();
+    if (!src.startsWith(root())) {
+        m_lastError = QStringLiteral("cannot archive a CLI-dir skill: ") + name;
+        return false;
+    }
+    const QString nm = skillDir.dirName();
+    const QString grp = QFileInfo(src).absoluteDir().dirName();
+    const QString dest =
+        archivedRoot() + QStringLiteral("/") + grp + QStringLiteral("/") + nm;
+    QDir().mkpath(QFileInfo(dest).absolutePath());
+    if (QFileInfo::exists(dest))
+        QDir(dest).removeRecursively();
+    if (!QDir().rename(src, dest)) {
+        m_lastError = QStringLiteral("failed to move skill to archive: ") + src;
+        return false;
+    }
+    // Drop the CLI mirror copies so the archived skill can't resurface via
+    // listAll()'s CLI scan (production only, same guard as remove()).
+    if (m_root.isEmpty()) {
+        const QStringList cliRoots = {codexSkillsRoot(), claudeSkillsRoot()};
+        for (const QString &r : cliRoots) {
+            QDir d(r + QStringLiteral("/") + grp + QStringLiteral("/") + nm);
+            if (d.exists())
+                d.removeRecursively();
+        }
+    }
+    return true;
+}
+
+bool SkillStore::unarchive(const QString &name)
+{
+    const QString wantSlug = slug(name);
+    for (const SkillRow &row : listArchived()) {
+        const QDir skillDir = QFileInfo(row.path).absoluteDir();
+        const QString dirName = skillDir.dirName();
+        if (row.fm.name.compare(name, Qt::CaseInsensitive) != 0 &&
+            dirName.compare(wantSlug, Qt::CaseInsensitive) != 0 &&
+            dirName.compare(name, Qt::CaseInsensitive) != 0)
+            continue;
+        const QString src = skillDir.absolutePath();
+        const QString grp = QFileInfo(src).absoluteDir().dirName();
+        const QString dest =
+            root() + QStringLiteral("/") + grp + QStringLiteral("/") + dirName;
+        QDir().mkpath(QFileInfo(dest).absolutePath());
+        if (QFileInfo::exists(dest)) {
+            m_lastError = QStringLiteral("a live skill already exists at: ") + dest;
+            return false;
+        }
+        if (!QDir().rename(src, dest)) {
+            m_lastError = QStringLiteral("failed to restore skill: ") + src;
+            return false;
+        }
+        // Re-mirror so the CLI brains regain the skill without a daemon restart.
+        if (m_root.isEmpty()) {
+            QFile f(dest + QStringLiteral("/SKILL.md"));
+            if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                const QString md = QString::fromUtf8(f.readAll());
+                f.close();
+                QVector<SkillScript> scripts;
+                const QDir sd(dest + QStringLiteral("/scripts"));
+                if (sd.exists()) {
+                    const QFileInfoList files =
+                        sd.entryInfoList(QDir::Files | QDir::NoDotAndDotDot);
+                    for (const QFileInfo &si : files) {
+                        QFile sf(si.absoluteFilePath());
+                        if (sf.open(QIODevice::ReadOnly))
+                            scripts.push_back({si.fileName(),
+                                               QString::fromUtf8(sf.readAll())});
+                    }
+                }
+                mirrorToCli(grp, dirName, md, scripts);
+            }
+        }
+        return true;
+    }
+    m_lastError = QStringLiteral("no archived skill: ") + name;
+    return false;
+}
+
+QVector<SkillRow> SkillStore::listArchived()
+{
+    QVector<SkillRow> out;
+    QDir dir(archivedRoot());
+    if (!dir.exists())
+        return out;
+    QDirIterator it(archivedRoot(), QStringList{QStringLiteral("SKILL.md")},
+                    QDir::Files, QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString path = it.next();
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        const QString text = QString::fromUtf8(f.readAll());
+        f.close();
+        SkillFrontmatter fm;
+        QString body;
+        parse(text, &fm, &body);
+        const QDir skillDir = QFileInfo(path).absoluteDir();
+        if (fm.name.isEmpty())
+            fm.name = skillDir.dirName();
+        if (fm.group.isEmpty())
+            fm.group = QFileInfo(skillDir.absolutePath()).absoluteDir().dirName();
+        SkillRow row;
+        row.fm = fm;
+        row.path = path;
+        out.push_back(row);
+    }
+    std::sort(out.begin(), out.end(), [](const SkillRow &a, const SkillRow &b) {
+        if (a.fm.group != b.fm.group)
+            return a.fm.group < b.fm.group;
+        return a.fm.name < b.fm.name;
+    });
+    return out;
+}
+
+int SkillStore::sweepStale(qint64 thresholdMs, QStringList *archivedNames)
+{
+    if (thresholdMs <= 0)
+        return 0; // disabled
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    int archived = 0;
+    const QVector<SkillRow> rows = list(); // Jarvis root only (never CLI dirs)
+    for (const SkillRow &row : rows) {
+        if (!row.fm.selfAuthored)
+            continue; // only agent-created skills are curated
+        if (row.fm.group == QLatin1String("builtin"))
+            continue; // seeded internals (internal_docs, phone) never expire
+        const QString dir = QFileInfo(row.path).absoluteDir().absolutePath();
+        const SkillStats stats = readStats(dir);
+        if (stats.pinned)
+            continue;
+        // Never-invoked skills age from their SKILL.md mtime so a fresh skill
+        // gets the full threshold before it is considered stale.
+        const qint64 last = stats.lastUsedAt > 0
+            ? stats.lastUsedAt
+            : QFileInfo(row.path).lastModified().toMSecsSinceEpoch();
+        if (now - last < thresholdMs)
+            continue;
+        if (archive(row.fm.name)) {
+            ++archived;
+            if (archivedNames)
+                archivedNames->append(row.fm.name);
+        }
+    }
+    return archived;
 }
 
 QString SkillStore::invoke(const QString &name, const QString &args,

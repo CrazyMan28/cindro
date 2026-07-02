@@ -241,6 +241,13 @@ bool ControlServer::start()
     connect(m_deskIdleTimer, &QTimer::timeout, this, &ControlServer::sweepIdleDesktops);
     m_deskIdleTimer->start();
 
+    // Skill lifecycle curation (jarvis#76 item 2): hourly, archive (never
+    // delete) agent-created unpinned skills idle past skill_archive_days.
+    m_skillSweepTimer = new QTimer(this);
+    m_skillSweepTimer->setInterval(3600000); // hourly
+    connect(m_skillSweepTimer, &QTimer::timeout, this, &ControlServer::sweepStaleSkills);
+    m_skillSweepTimer->start();
+
     // Widget bus tail -> control-WS broadcast for opted-in clients (the Chrome
     // extension). The desktop tails the file itself, so it never subscribes here.
     startWidgetWatch();
@@ -726,6 +733,13 @@ Response ControlServer::handleSettingsGet(const Request &req)
     s.insert(QStringLiteral("agent_mode"), m_settings.agentMode());
     s.insert(QStringLiteral("wake_notify"), m_settings.wakeNotify());
 
+    // jarvis#76: skill curation cadence, post-turn self-review, goal
+    // auto-continuation, and the api-brain context-compression threshold.
+    s.insert(QStringLiteral("skill_archive_days"), m_settings.skillArchiveDays());
+    s.insert(QStringLiteral("self_improve"), m_settings.selfImprove());
+    s.insert(QStringLiteral("auto_continue"), m_settings.autoContinue());
+    s.insert(QStringLiteral("api_context_max_tokens"), m_settings.apiContextMaxTokens());
+
     // Whether a desktop unlock PIN is set (boolean only — never the PIN/hash).
     s.insert(QStringLiteral("has_desktop_pin"), m_settings.hasDesktopPin());
 
@@ -797,6 +811,24 @@ Response ControlServer::handleSettingsSet(const Request &req)
     }
     if (patch.contains(QStringLiteral("wake_notify"))) {
         m_settings.setWakeNotify(patch.value(QStringLiteral("wake_notify")).toString());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("skill_archive_days"))) {
+        m_settings.setSkillArchiveDays(
+            patch.value(QStringLiteral("skill_archive_days")).toInt());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("self_improve"))) {
+        m_settings.setSelfImprove(patch.value(QStringLiteral("self_improve")).toString());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("auto_continue"))) {
+        m_settings.setAutoContinue(patch.value(QStringLiteral("auto_continue")).toString());
+        prefsTouched = true;
+    }
+    if (patch.contains(QStringLiteral("api_context_max_tokens"))) {
+        m_settings.setApiContextMaxTokens(
+            patch.value(QStringLiteral("api_context_max_tokens")).toInt());
         prefsTouched = true;
     }
     if (patch.contains(QStringLiteral("desktop_pin"))) {
@@ -1617,6 +1649,23 @@ void ControlServer::sweepIdleDesktops()
         m_agentDesktops.teardown(sid);
         qInfo("jarvisd: idle-teardown agent desktop for unviewed session %s (battery)",
               qPrintable(sid));
+    }
+}
+
+void ControlServer::sweepStaleSkills()
+{
+    const int days = m_settings.skillArchiveDays();
+    if (days <= 0)
+        return; // curation disabled
+    const qint64 thresholdMs = qint64(days) * 24 * 60 * 60 * 1000;
+    QStringList archived;
+    const int n = m_skills.sweepStale(thresholdMs, &archived);
+    if (n > 0) {
+        qInfo("jarvisd: archived %d stale skill(s): %s (idle > %d days; restore via"
+              " skills.unarchive)",
+              n, qPrintable(archived.join(QStringLiteral(", "))), days);
+        m_audit.record(QStringLiteral("skills.archive"), true, QStringLiteral("low"),
+                       QStringLiteral("stale sweep archived: ") + archived.join(QStringLiteral(",")));
     }
 }
 
@@ -3925,6 +3974,12 @@ Response ControlServer::dispatchMemoryOrSkill(const Request &req)
         return handleSkillsRemove(req);
     if (m == QStringLiteral("skills.today"))
         return handleSkillsToday(req);
+    if (m == QStringLiteral("skills.pin"))
+        return handleSkillsPin(req);
+    if (m == QStringLiteral("skills.list_archived"))
+        return handleSkillsListArchived(req);
+    if (m == QStringLiteral("skills.unarchive"))
+        return handleSkillsUnarchive(req);
     if (m == QStringLiteral("agents.list"))
         return handleAgentsList(req);
     if (m == QStringLiteral("agents.get"))
@@ -4350,9 +4405,45 @@ Response ControlServer::handleSkillsInvoke(const Request &req)
     const QString message = m_skills.invoke(name, argsStr, argsObj, &err);
     if (message.isEmpty())
         return Response::failure(req.id, QStringLiteral("no_skill"), err);
+    // Lifecycle curation (jarvis#76 item 2): every invoke path — skill_load
+    // tool, extension /slash, phone, desktop — converges here, so this single
+    // bump covers them all.
+    m_skills.trackUsage(name);
     QJsonObject result;
     result.insert(QStringLiteral("message"), message);
     return Response::success(req.id, result);
+}
+
+Response ControlServer::handleSkillsPin(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    const bool pinned = req.params.value(QStringLiteral("pinned")).toBool(true);
+    if (!m_skills.setPinned(name, pinned))
+        return Response::failure(req.id, QStringLiteral("no_skill"), m_skills.lastError());
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    ok.insert(QStringLiteral("pinned"), pinned);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleSkillsListArchived(const Request &req)
+{
+    QJsonArray arr;
+    for (const SkillRow &row : m_skills.listArchived())
+        arr.append(row.toListJson());
+    QJsonObject result;
+    result.insert(QStringLiteral("skills"), arr);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleSkillsUnarchive(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    if (!m_skills.unarchive(name))
+        return Response::failure(req.id, QStringLiteral("no_skill"), m_skills.lastError());
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
 }
 
 Response ControlServer::handleSkillsRemove(const Request &req)

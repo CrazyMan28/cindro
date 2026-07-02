@@ -128,6 +128,78 @@ int main(int argc, char **argv)
         check(msg.isEmpty() && !err.isEmpty(), "invoke unknown skill errors");
     }
 
+    // --- lifecycle curation (jarvis#76 item 2) ------------------------------
+    {
+        // trackUsage bumps count + timestamp; stats ride toListJson.
+        check(store.trackUsage(QStringLiteral("Backup Postgres")), "trackUsage #1");
+        check(store.trackUsage(QStringLiteral("Backup Postgres")), "trackUsage #2");
+        const QString dir = QFileInfo(path).absoluteDir().absolutePath();
+        const jarvis::SkillStats s = SkillStore::readStats(dir);
+        check(s.useCount == 2, "use_count incremented twice");
+        check(s.lastUsedAt > 0, "last_used_at stamped");
+        check(!store.trackUsage(QStringLiteral("does-not-exist")),
+              "trackUsage unknown skill returns false");
+        const QJsonObject lj = store.list().first().toListJson();
+        check(lj.value(QStringLiteral("use_count")).toInt() == 2,
+              "list json carries use_count");
+
+        // pin round-trip.
+        check(store.setPinned(QStringLiteral("Backup Postgres"), true), "pin succeeds");
+        check(SkillStore::readStats(dir).pinned, "pinned persisted");
+        check(SkillStore::readStats(dir).useCount == 2, "pin preserves use_count");
+
+        // pinned skills survive the stale sweep even when ancient.
+        check(store.sweepStale(1) == 0, "sweep spares the pinned skill");
+        check(store.get(QStringLiteral("Backup Postgres")).has_value(),
+              "pinned skill still live");
+
+        // unpinned + stale -> archived (never deleted). Backdate the sidecar so
+        // the staleness is deterministic (not a race against the wall clock).
+        check(store.setPinned(QStringLiteral("Backup Postgres"), false), "unpin");
+        {
+            QFile sf(dir + QStringLiteral("/_stats.json"));
+            check(sf.open(QIODevice::WriteOnly), "backdate stats sidecar");
+            sf.write("{\"use_count\":2,\"last_used_at\":1000,\"pinned\":false}");
+            sf.close();
+        }
+        QStringList names;
+        check(store.sweepStale(24LL * 60 * 60 * 1000, &names) == 1,
+              "sweep archives the stale skill");
+        check(names.contains(QStringLiteral("Backup Postgres")), "sweep reports the name");
+        check(!store.get(QStringLiteral("Backup Postgres")).has_value(),
+              "archived skill hidden from get()");
+        check(store.list().isEmpty(), "archived skill hidden from list()");
+        const auto archived = store.listArchived();
+        check(archived.size() == 1 &&
+                  archived.first().fm.name == QStringLiteral("Backup Postgres"),
+              "listArchived shows it");
+        check(!archived.isEmpty() &&
+                  QFile::exists(QFileInfo(archived.first().path).absoluteDir().absolutePath() +
+                                QStringLiteral("/scripts/backup.sh")),
+              "archive preserved bundled scripts");
+
+        // a fresh (recently-modified) skill is NOT swept.
+        const QString p2 = store.create(QStringLiteral("Fresh Skill"),
+                                        QStringLiteral("brand new"),
+                                        QStringLiteral("body\n"));
+        check(!p2.isEmpty(), "second skill created");
+        check(store.sweepStale(24LL * 60 * 60 * 1000) == 0,
+              "sweep spares a fresh skill (mtime fallback)");
+
+        // unarchive restores it to the live list.
+        check(store.unarchive(QStringLiteral("Backup Postgres")), "unarchive succeeds");
+        check(store.get(QStringLiteral("Backup Postgres")).has_value(),
+              "unarchived skill live again");
+        check(store.listArchived().isEmpty(), "archive empty after restore");
+        check(SkillStore::readStats(
+                  QFileInfo(store.get(QStringLiteral("Backup Postgres"))->path)
+                      .absoluteDir().absolutePath()).useCount == 2,
+              "stats survived the archive round-trip");
+        check(!store.unarchive(QStringLiteral("never-existed")),
+              "unarchive unknown skill errors");
+        check(store.remove(QStringLiteral("Fresh Skill")), "cleanup second skill");
+    }
+
     // --- remove() ----------------------------------------------------------
     check(store.remove(QStringLiteral("Backup Postgres")), "remove() succeeds");
     check(!store.get(QStringLiteral("Backup Postgres")).has_value(), "removed skill gone");

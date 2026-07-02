@@ -422,6 +422,7 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("skills.list") ||
         method == QStringLiteral("skills.get") ||
         method == QStringLiteral("skills.today") ||
+        method == QStringLiteral("skills.list_archived") ||
         method == QStringLiteral("agents.list") ||
         method == QStringLiteral("agents.get") ||
         method == QStringLiteral("agents.running") ||
@@ -453,6 +454,10 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("skills.create") ||
         method == QStringLiteral("skills.invoke") ||
         method == QStringLiteral("skills.remove") ||
+        // Skill lifecycle curation (jarvis#76 item 2): pin/unarchive are plain
+        // config actions (archive list is read tier below).
+        method == QStringLiteral("skills.pin") ||
+        method == QStringLiteral("skills.unarchive") ||
         // Wave 8 ops actions that aren't security-sensitive (toggling/removing a
         // schedule, managing the ssh allow-list). schedule.create + ssh.exec are
         // biometric (below).

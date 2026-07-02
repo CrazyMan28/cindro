@@ -384,6 +384,10 @@ private:
     Response handleSkillsInvoke(const Request &req);
     Response handleSkillsRemove(const Request &req);
     Response handleSkillsToday(const Request &req);
+    // Lifecycle curation (jarvis#76 item 2).
+    Response handleSkillsPin(const Request &req);
+    Response handleSkillsListArchived(const Request &req);
+    Response handleSkillsUnarchive(const Request &req);
 
     // Custom agents (subagents): definitions CRUD + dispatch a task to a child
     // session that runs as the agent (parent_session_id links it). agents.running
@@ -601,6 +605,9 @@ private:
     // port/bearer reservation is kept so the next turn re-provisions it identically.
     QTimer *m_deskIdleTimer = nullptr;
     void sweepIdleDesktops();
+    // Skill lifecycle curation (jarvis#76 item 2): hourly stale-skill archive.
+    QTimer *m_skillSweepTimer = nullptr;
+    void sweepStaleSkills();
 
     // Authenticated client sockets.
     QSet<QWebSocket *> m_clients;

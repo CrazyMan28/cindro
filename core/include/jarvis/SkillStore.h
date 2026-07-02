@@ -51,6 +51,15 @@ struct SkillScript {
     QString content;
 };
 
+// Per-skill usage stats (jarvis#76 item 2), stored as a _stats.json sidecar in
+// the skill dir. The sidecar is invisible to the SKILL.md scanners and is never
+// mirrored to the CLI dirs (mirrorToCli copies only SKILL.md + scripts/).
+struct SkillStats {
+    int useCount = 0;
+    qint64 lastUsedAt = 0; // unix ms of the last invoke (0 = never)
+    bool pinned = false;   // pinned skills are exempt from the stale sweep
+};
+
 class SkillStore {
 public:
     SkillStore() = default;
@@ -109,6 +118,26 @@ public:
     QString invoke(const QString &name, const QString &args,
                    const QJsonObject &vars, QString *err = nullptr);
 
+    // --- lifecycle curation (jarvis#76 item 2) ------------------------------
+    // Bump use_count / last_used_at for a skill in the Jarvis root. CLI-only
+    // skills (no writable Jarvis dir) are skipped silently (returns false).
+    bool trackUsage(const QString &name);
+    // Read/write the _stats.json sidecar for a skill directory.
+    static SkillStats readStats(const QString &skillDirPath);
+    bool setPinned(const QString &name, bool pinned);
+    // Move a skill into <root>/_archived/<group>/<name> (never deletes) and
+    // drop its CLI mirror copies (production only). Only Jarvis-root skills
+    // can be archived.
+    bool archive(const QString &name);
+    // Restore an archived skill into the live root and re-mirror it to the
+    // CLI dirs so the brain regains access immediately.
+    bool unarchive(const QString &name);
+    QVector<SkillRow> listArchived();
+    // Archive every self-authored, unpinned, non-builtin skill whose last
+    // activity (last_used_at, else SKILL.md mtime) is older than thresholdMs.
+    // Returns the number archived; names reported via archivedNames.
+    int sweepStale(qint64 thresholdMs, QStringList *archivedNames = nullptr);
+
     // Pure helpers (also unit-tested):
     // Parse a SKILL.md text into (frontmatter, body).
     static bool parse(const QString &text, SkillFrontmatter *fmOut, QString *bodyOut);
@@ -122,6 +151,8 @@ public:
 private:
     void mirrorToCli(const QString &group, const QString &name, const QString &md,
                      const QVector<SkillScript> &scripts);
+    void writeStats(const QString &skillDirPath, const SkillStats &stats);
+    QString archivedRoot() const; // <root>/_archived
 
     QString m_root;          // overrides defaultRoot() when set
     QString m_lastError;

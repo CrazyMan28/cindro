@@ -195,6 +195,34 @@ def register(mcp: FastMCP) -> None:
             return _err(exc)
 
     @mcp.tool()
+    def pin_skill(name: str, pinned: bool = True) -> str:
+        """Pin (or unpin) a skill. Pinned skills are exempt from the automatic
+        stale-skill archive sweep — pin anything the user wants kept forever."""
+        try:
+            return json.dumps(daemon_client.call("skills.pin",
+                                                 {"name": name, "pinned": pinned}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def list_archived_skills() -> str:
+        """List skills that were auto-archived after long inactivity (they are
+        never deleted). Restore one with unarchive_skill."""
+        try:
+            return json.dumps(daemon_client.call("skills.list_archived"))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def unarchive_skill(name: str) -> str:
+        """Restore an archived skill back into the live library (and the CLI
+        mirrors) so it can be invoked again."""
+        try:
+            return json.dumps(daemon_client.call("skills.unarchive", {"name": name}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
     def edit_skill(name: str, description: str, body: str,
                    group: str = "", tags: list[str] | None = None) -> str:
         """Edit an existing skill — re-create it with the same name to overwrite its
