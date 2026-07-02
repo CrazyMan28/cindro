@@ -214,6 +214,12 @@ add_executable(memory_store_test tests/memory_store_test.cpp)
 target_link_libraries(memory_store_test PRIVATE jarvis-core Qt6::Core Qt6::Sql)
 add_test(NAME memory_store_test COMMAND memory_store_test)
 
+# SessionStore: events_fts cross-session search (+context window, backfill,
+# delete cleanup) and the goals/continuation columns (temp DB).
+add_executable(session_store_test tests/session_store_test.cpp)
+target_link_libraries(session_store_test PRIVATE jarvis-core Qt6::Core Qt6::Sql)
+add_test(NAME session_store_test COMMAND session_store_test)
+
 # SkillStore: frontmatter parse + create (self-authoring) + invoke (template
 # render) roundtrip (temp skills root).
 add_executable(skill_store_test tests/skill_store_test.cpp)

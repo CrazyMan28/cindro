@@ -398,6 +398,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionList(req);
     else if (m == QStringLiteral("session.history"))
         resp = handleSessionHistory(req);
+    else if (m == QStringLiteral("session.search"))
+        resp = handleSessionSearch(req);
     else if (m == QStringLiteral("hooks.list"))
         resp = handleHooksList(req);
     else if (m == QStringLiteral("hooks.add"))
@@ -2730,6 +2732,46 @@ Response ControlServer::handleSessionHistory(const Request &req)
     QJsonObject result;
     result.insert(QStringLiteral("session"), sess->toJson());
     result.insert(QStringLiteral("events"), events);
+    return Response::success(req.id, result);
+}
+
+// Cross-session full-text search (jarvis#76 item 1): ranked hits over every
+// stored turn + tool output, each with a small context window. Also proxied to
+// the model as the session_search MCP tool and to the phone (read tier).
+Response ControlServer::handleSessionSearch(const Request &req)
+{
+    const QString q = req.params.value(QStringLiteral("q")).toString();
+    if (q.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("q is required"));
+    const int limit = req.params.value(QStringLiteral("limit")).toInt(20);
+    const int ctxWin = req.params.value(QStringLiteral("context_window")).toInt(2);
+    const QString sessionFilter =
+        req.params.value(QStringLiteral("session_id")).toString();
+
+    QJsonArray hits;
+    for (const SessionSearchHit &h :
+         m_store.searchEvents(q, limit, ctxWin, sessionFilter)) {
+        QJsonObject o;
+        o.insert(QStringLiteral("session_id"), h.sessionId);
+        o.insert(QStringLiteral("session_title"), h.sessionTitle);
+        o.insert(QStringLiteral("seq"), h.seq);
+        o.insert(QStringLiteral("ts"), h.ts);
+        o.insert(QStringLiteral("score"), h.score);
+        o.insert(QStringLiteral("ev"), h.ev.toJson());
+        QJsonArray ctx;
+        for (const StoredEvent &se : h.context) {
+            QJsonObject c;
+            c.insert(QStringLiteral("seq"), se.seq);
+            c.insert(QStringLiteral("ts"), se.ts);
+            c.insert(QStringLiteral("ev"), se.ev.toJson());
+            ctx.append(c);
+        }
+        o.insert(QStringLiteral("context"), ctx);
+        hits.append(o);
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("hits"), hits);
     return Response::success(req.id, result);
 }
 

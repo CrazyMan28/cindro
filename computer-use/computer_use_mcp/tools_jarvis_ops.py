@@ -108,6 +108,24 @@ def register(mcp: FastMCP) -> None:
             return _err(exc)
 
     @mcp.tool()
+    def session_search(query: str, limit: int = 20, context_window: int = 2,
+                       session_id: str = "") -> str:
+        """Full-text search across ALL past session transcripts and tool
+        outputs (not just saved memories). Use when the user asks about
+        something done or discussed in an earlier conversation ("what did we
+        do last Tuesday", "find that pg_dump command"). Returns ranked hits
+        with +/- context_window surrounding events each so you can read the
+        exchange around the match. Pass session_id to search one session."""
+        try:
+            params: dict = {"q": query, "limit": limit,
+                            "context_window": context_window}
+            if session_id:
+                params["session_id"] = session_id
+            return json.dumps(daemon_client.call("session.search", params))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
     def forget(id: str) -> str:
         """Delete a memory by id (from recall / list_memories)."""
         try:

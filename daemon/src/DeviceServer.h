@@ -116,6 +116,7 @@ private:
     Response devSessionCancel(const Request &req);
     Response devSessionDelete(const Request &req);
     Response devSessionHistory(const Request &req);
+    Response devSessionSearch(const Request &req);
     Response devTaskQueue(Conn &c, const Request &req);
     Response devTaskList(Conn &c, const Request &req);
     Response devPushRegister(Conn &c, const Request &req);

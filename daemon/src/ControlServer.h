@@ -260,6 +260,7 @@ private:
     Response handleSessionDelete(const Request &req);
     Response handleSessionList(const Request &req);
     Response handleSessionHistory(const Request &req);
+    Response handleSessionSearch(const Request &req);
     // Claude-Code-style hooks (hooks.* Contract A): list/add/remove/test.
     Response handleHooksList(const Request &req);
     Response handleHooksAdd(const Request &req);

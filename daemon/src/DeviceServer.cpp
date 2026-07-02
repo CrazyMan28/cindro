@@ -415,6 +415,7 @@ QString DeviceServer::tierFor(const QString &method)
 {
     if (method == QStringLiteral("session.list") ||
         method == QStringLiteral("session.history") ||
+        method == QStringLiteral("session.search") ||
         method == QStringLiteral("task.list") ||
         method == QStringLiteral("memory.list") ||
         method == QStringLiteral("memory.search") ||
@@ -520,7 +521,8 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("session.list"),    QStringLiteral("session.create"),
         QStringLiteral("session.send"),    QStringLiteral("session.cancel"),
         QStringLiteral("session.delete"),
-        QStringLiteral("session.history"), QStringLiteral("task.queue"),
+        QStringLiteral("session.history"), QStringLiteral("session.search"),
+        QStringLiteral("task.queue"),
         QStringLiteral("task.list"),       QStringLiteral("push.register"),
         QStringLiteral("approval.respond"),
         QStringLiteral("mirror.start"),    QStringLiteral("mirror.stop"),
@@ -601,6 +603,8 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         resp = devSessionDelete(req);
     } else if (m == QStringLiteral("session.history")) {
         resp = devSessionHistory(req);
+    } else if (m == QStringLiteral("session.search")) {
+        resp = devSessionSearch(req);
     } else if (m == QStringLiteral("task.queue")) {
         resp = devTaskQueue(c, req);
     } else if (m == QStringLiteral("task.list")) {
@@ -800,6 +804,44 @@ Response DeviceServer::devSessionHistory(const Request &req)
     QJsonObject result;
     result.insert(QStringLiteral("session"), sess->toJson());
     result.insert(QStringLiteral("events"), events);
+    return Response::success(req.id, result);
+}
+
+Response DeviceServer::devSessionSearch(const Request &req)
+{
+    // Same shape as the control-channel session.search (jarvis#76 item 1).
+    const QString q = req.params.value(QStringLiteral("q")).toString();
+    if (q.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("q is required"));
+    const int limit = req.params.value(QStringLiteral("limit")).toInt(20);
+    const int ctxWin = req.params.value(QStringLiteral("context_window")).toInt(2);
+    const QString sessionFilter =
+        req.params.value(QStringLiteral("session_id")).toString();
+
+    QJsonArray hits;
+    for (const SessionSearchHit &h :
+         m_control->store().searchEvents(q, limit, ctxWin, sessionFilter)) {
+        QJsonObject o;
+        o.insert(QStringLiteral("session_id"), h.sessionId);
+        o.insert(QStringLiteral("session_title"), h.sessionTitle);
+        o.insert(QStringLiteral("seq"), h.seq);
+        o.insert(QStringLiteral("ts"), h.ts);
+        o.insert(QStringLiteral("score"), h.score);
+        o.insert(QStringLiteral("ev"), h.ev.toJson());
+        QJsonArray ctx;
+        for (const StoredEvent &se : h.context) {
+            QJsonObject ce;
+            ce.insert(QStringLiteral("seq"), se.seq);
+            ce.insert(QStringLiteral("ts"), se.ts);
+            ce.insert(QStringLiteral("ev"), se.ev.toJson());
+            ctx.append(ce);
+        }
+        o.insert(QStringLiteral("context"), ctx);
+        hits.append(o);
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("hits"), hits);
     return Response::success(req.id, result);
 }
 

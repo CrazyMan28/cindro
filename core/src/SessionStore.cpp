@@ -9,6 +9,60 @@
 
 namespace jarvis {
 
+namespace {
+
+// Cap the text indexed per event so a huge tool output (file dump, screenshot
+// OCR) can't bloat the FTS table; the full event JSON stays in events.json.
+constexpr int kFtsBodyMaxChars = 8192;
+
+// Extract the searchable plaintext of an event. Only kinds that carry human-
+// meaningful text are indexed: messages, thinking, and tool results (tool name
+// + output). Everything else (tool_call args, usage, state) is noise.
+QString eventFtsBody(const NormalizedBrainEvent &ev)
+{
+    using Kind = NormalizedBrainEvent::Kind;
+    QString body;
+    switch (ev.kind) {
+    case Kind::Message:
+    case Kind::Thinking:
+        body = ev.fields.value(QStringLiteral("text")).toString();
+        break;
+    case Kind::ToolResult:
+        body = ev.fields.value(QStringLiteral("name")).toString()
+             + QLatin1Char(' ')
+             + ev.fields.value(QStringLiteral("output")).toString();
+        break;
+    default:
+        return {};
+    }
+    body = body.trimmed();
+    if (body.size() > kFtsBodyMaxChars)
+        body.truncate(kFtsBodyMaxChars);
+    return body;
+}
+
+// Build a safe FTS5 MATCH query from arbitrary user text (same contract as
+// MemoryStore's helper): word tokens ≥2 chars, OR-joined as prefix terms.
+QString toFtsQuery(const QString &raw)
+{
+    QStringList terms;
+    QString cur;
+    for (const QChar &ch : raw) {
+        if (ch.isLetterOrNumber()) {
+            cur.append(ch.toLower());
+        } else {
+            if (cur.size() >= 2)
+                terms << cur + QStringLiteral("*");
+            cur.clear();
+        }
+    }
+    if (cur.size() >= 2)
+        terms << cur + QStringLiteral("*");
+    return terms.join(QStringLiteral(" OR "));
+}
+
+} // namespace
+
 QJsonObject SessionRow::toJson() const
 {
     QJsonObject obj;
@@ -21,6 +75,8 @@ QJsonObject SessionRow::toJson() const
     obj.insert(QStringLiteral("state"), state);
     obj.insert(QStringLiteral("parent_session_id"), parentSessionId);
     obj.insert(QStringLiteral("agent"), agent);
+    obj.insert(QStringLiteral("goals"), goals);
+    obj.insert(QStringLiteral("continuation_count"), continuationCount);
     obj.insert(QStringLiteral("created"), created);
     obj.insert(QStringLiteral("updated"), updated);
     return obj;
@@ -115,6 +171,10 @@ bool SessionStore::migrate()
     // a duplicate-column error on an already-migrated DB is expected and ignored.
     exec(QStringLiteral("ALTER TABLE sessions ADD COLUMN parent_session_id TEXT DEFAULT ''"));
     exec(QStringLiteral("ALTER TABLE sessions ADD COLUMN agent TEXT DEFAULT ''"));
+    // Persistent goals / auto-continuation (jarvis#76 item 9) — additive, same
+    // ignore-duplicate-column pattern as above.
+    exec(QStringLiteral("ALTER TABLE sessions ADD COLUMN goals TEXT DEFAULT ''"));
+    exec(QStringLiteral("ALTER TABLE sessions ADD COLUMN continuation_count INTEGER DEFAULT 0"));
 
     if (!exec(QStringLiteral(
             "CREATE TABLE IF NOT EXISTS events ("
@@ -127,6 +187,15 @@ bool SessionStore::migrate()
 
     exec(QStringLiteral(
         "CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, seq)"));
+
+    // Cross-session full-text search (jarvis#76 item 1): FTS5 mirror of the
+    // searchable text of each event, kept in sync manually like memories_fts.
+    // Soft-fail: if FTS5 is unavailable searchEvents() degrades to LIKE.
+    if (exec(QStringLiteral(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS events_fts"
+            " USING fts5(session_id UNINDEXED, seq UNINDEXED, body)"))) {
+        backfillEventsFts();
+    }
 
     if (!exec(QStringLiteral(
             "CREATE TABLE IF NOT EXISTS mcp_servers ("
@@ -219,8 +288,9 @@ bool SessionStore::create(const SessionRow &row)
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
         "INSERT INTO sessions"
-        " (id,title,profile,brain,model,thread_id,state,parent_session_id,agent,created,updated)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?)"));
+        " (id,title,profile,brain,model,thread_id,state,parent_session_id,agent,"
+        "  goals,continuation_count,created,updated)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"));
     q.addBindValue(row.id);
     q.addBindValue(row.title);
     q.addBindValue(row.profile);
@@ -230,6 +300,8 @@ bool SessionStore::create(const SessionRow &row)
     q.addBindValue(row.state);
     q.addBindValue(row.parentSessionId);
     q.addBindValue(row.agent);
+    q.addBindValue(row.goals);
+    q.addBindValue(row.continuationCount);
     q.addBindValue(row.created != 0 ? row.created : now);
     q.addBindValue(row.updated != 0 ? row.updated : now);
     if (!q.exec()) {
@@ -239,20 +311,13 @@ bool SessionStore::create(const SessionRow &row)
     return true;
 }
 
-std::optional<SessionRow> SessionStore::get(const QString &id)
-{
-    QSqlQuery q(m_db);
-    q.prepare(QStringLiteral(
-        "SELECT id,title,profile,brain,model,thread_id,state,parent_session_id,agent,created,updated"
-        " FROM sessions WHERE id=?"));
-    q.addBindValue(id);
-    if (!q.exec()) {
-        m_lastError = q.lastError().text();
-        return std::nullopt;
-    }
-    if (!q.next())
-        return std::nullopt;
+namespace {
+constexpr const char *kSessionCols =
+    "id,title,profile,brain,model,thread_id,state,parent_session_id,agent,"
+    "goals,continuation_count,created,updated";
 
+SessionRow sessionRowFromQuery(const QSqlQuery &q)
+{
     SessionRow row;
     row.id = q.value(0).toString();
     row.title = q.value(1).toString();
@@ -263,36 +328,40 @@ std::optional<SessionRow> SessionStore::get(const QString &id)
     row.state = q.value(6).toString();
     row.parentSessionId = q.value(7).toString();
     row.agent = q.value(8).toString();
-    row.created = q.value(9).toLongLong();
-    row.updated = q.value(10).toLongLong();
+    row.goals = q.value(9).toString();
+    row.continuationCount = q.value(10).toInt();
+    row.created = q.value(11).toLongLong();
+    row.updated = q.value(12).toLongLong();
     return row;
+}
+} // namespace
+
+std::optional<SessionRow> SessionStore::get(const QString &id)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("SELECT %1 FROM sessions WHERE id=?")
+                  .arg(QLatin1String(kSessionCols)));
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return std::nullopt;
+    }
+    if (!q.next())
+        return std::nullopt;
+    return sessionRowFromQuery(q);
 }
 
 QVector<SessionRow> SessionStore::list()
 {
     QVector<SessionRow> out;
     QSqlQuery q(m_db);
-    if (!q.exec(QStringLiteral(
-            "SELECT id,title,profile,brain,model,thread_id,state,parent_session_id,agent,created,updated"
-            " FROM sessions ORDER BY created DESC"))) {
+    if (!q.exec(QStringLiteral("SELECT %1 FROM sessions ORDER BY created DESC")
+                    .arg(QLatin1String(kSessionCols)))) {
         m_lastError = q.lastError().text();
         return out;
     }
-    while (q.next()) {
-        SessionRow row;
-        row.id = q.value(0).toString();
-        row.title = q.value(1).toString();
-        row.profile = q.value(2).toString();
-        row.brain = q.value(3).toString();
-        row.model = q.value(4).toString();
-        row.threadId = q.value(5).toString();
-        row.state = q.value(6).toString();
-        row.parentSessionId = q.value(7).toString();
-        row.agent = q.value(8).toString();
-        row.created = q.value(9).toLongLong();
-        row.updated = q.value(10).toLongLong();
-        out.push_back(row);
-    }
+    while (q.next())
+        out.push_back(sessionRowFromQuery(q));
     return out;
 }
 
@@ -338,11 +407,46 @@ bool SessionStore::updateThreadId(const QString &id, const QString &threadId)
     return true;
 }
 
+bool SessionStore::setGoals(const QString &id, const QString &goals)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("UPDATE sessions SET goals=?, updated=? WHERE id=?"));
+    q.addBindValue(goals);
+    q.addBindValue(QDateTime::currentMSecsSinceEpoch());
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return q.numRowsAffected() > 0;
+}
+
+bool SessionStore::setContinuationCount(const QString &id, int count)
+{
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral("UPDATE sessions SET continuation_count=? WHERE id=?"));
+    q.addBindValue(count);
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return true;
+}
+
 bool SessionStore::deleteSession(const QString &id)
 {
     // Remove the session row and its event stream. Done in a transaction so a
     // crash can't leave orphaned events behind.
     m_db.transaction();
+
+    // FTS mirror rows go first so the index can't outlive the base rows.
+    {
+        QSqlQuery delFts(m_db);
+        delFts.prepare(QStringLiteral("DELETE FROM events_fts WHERE session_id=?"));
+        delFts.addBindValue(id);
+        delFts.exec(); // soft: absent events_fts (no FTS5) must not block delete
+    }
 
     QSqlQuery delEvents(m_db);
     delEvents.prepare(QStringLiteral("DELETE FROM events WHERE session_id=?"));
@@ -401,7 +505,166 @@ int SessionStore::appendEvent(const QString &sessionId, const NormalizedBrainEve
         m_lastError = q.lastError().text();
         return -1;
     }
+
+    // Keep the FTS mirror in sync (delete-then-insert, like memories_fts).
+    const QString body = eventFtsBody(ev);
+    if (!body.isEmpty()) {
+        QSqlQuery del(m_db);
+        del.prepare(QStringLiteral(
+            "DELETE FROM events_fts WHERE session_id=? AND seq=?"));
+        del.addBindValue(sessionId);
+        del.addBindValue(seq);
+        del.exec();
+        QSqlQuery ins(m_db);
+        ins.prepare(QStringLiteral(
+            "INSERT INTO events_fts (session_id,seq,body) VALUES (?,?,?)"));
+        ins.addBindValue(sessionId);
+        ins.addBindValue(seq);
+        ins.addBindValue(body);
+        ins.exec(); // soft: base row already written; search just won't see it
+    }
     return seq;
+}
+
+void SessionStore::backfillEventsFts()
+{
+    // Only when the mirror is empty but events exist (fresh index on an old DB).
+    {
+        QSqlQuery cnt(m_db);
+        if (!cnt.exec(QStringLiteral("SELECT COUNT(*) FROM events_fts")) || !cnt.next()
+            || cnt.value(0).toLongLong() > 0)
+            return;
+    }
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral("SELECT session_id,seq,json FROM events")))
+        return;
+    m_db.transaction();
+    QSqlQuery ins(m_db);
+    ins.prepare(QStringLiteral(
+        "INSERT INTO events_fts (session_id,seq,body) VALUES (?,?,?)"));
+    while (q.next()) {
+        const auto obj = QJsonDocument::fromJson(q.value(2).toString().toUtf8()).object();
+        const auto ev = NormalizedBrainEvent::fromJson(obj);
+        if (!ev)
+            continue;
+        const QString body = eventFtsBody(*ev);
+        if (body.isEmpty())
+            continue;
+        ins.addBindValue(q.value(0).toString());
+        ins.addBindValue(q.value(1).toInt());
+        ins.addBindValue(body);
+        ins.exec();
+    }
+    m_db.commit();
+}
+
+QVector<SessionSearchHit> SessionStore::searchEvents(const QString &query, int limit,
+                                                     int contextWindow,
+                                                     const QString &sessionId)
+{
+    QVector<SessionSearchHit> out;
+    limit = qBound(1, limit <= 0 ? 20 : limit, 50);
+    contextWindow = qBound(0, contextWindow, 5);
+
+    struct RawHit { QString sid; int seq; qint64 ts; QString json; double score; };
+    QVector<RawHit> raw;
+
+    const QString fts = toFtsQuery(query);
+    if (!fts.isEmpty()) {
+        QSqlQuery q(m_db);
+        QString sql = QStringLiteral(
+            "SELECT e.session_id, e.seq, e.ts, e.json, bm25(events_fts) AS rank"
+            " FROM events_fts f JOIN events e"
+            "   ON e.session_id=f.session_id AND e.seq=f.seq"
+            " WHERE events_fts MATCH ?");
+        if (!sessionId.isEmpty())
+            sql += QStringLiteral(" AND f.session_id = ?");
+        sql += QStringLiteral(" ORDER BY rank ASC LIMIT ?");
+        q.prepare(sql);
+        q.addBindValue(fts);
+        if (!sessionId.isEmpty())
+            q.addBindValue(sessionId);
+        q.addBindValue(limit);
+        if (q.exec()) {
+            while (q.next()) {
+                const double rank = q.value(4).toDouble();
+                raw.push_back({q.value(0).toString(), q.value(1).toInt(),
+                               q.value(2).toLongLong(), q.value(3).toString(),
+                               1.0 / (1.0 + (rank < 0 ? -rank : rank))});
+            }
+        } else {
+            m_lastError = q.lastError().text();
+        }
+    }
+
+    if (raw.isEmpty()) {
+        // Fallback: LIKE scan over raw event JSON (covers FTS-tokenless queries
+        // and builds without FTS5). Recency-ordered, unranked.
+        QSqlQuery q(m_db);
+        QString sql = QStringLiteral(
+            "SELECT session_id, seq, ts, json FROM events WHERE json LIKE ?");
+        if (!sessionId.isEmpty())
+            sql += QStringLiteral(" AND session_id = ?");
+        sql += QStringLiteral(" ORDER BY ts DESC LIMIT ?");
+        q.prepare(sql);
+        q.addBindValue(QStringLiteral("%") + query.trimmed() + QStringLiteral("%"));
+        if (!sessionId.isEmpty())
+            q.addBindValue(sessionId);
+        q.addBindValue(limit);
+        if (!q.exec()) {
+            m_lastError = q.lastError().text();
+            return out;
+        }
+        while (q.next())
+            raw.push_back({q.value(0).toString(), q.value(1).toInt(),
+                           q.value(2).toLongLong(), q.value(3).toString(), 0.5});
+    }
+
+    // Session titles for hit labelling (one query per distinct session).
+    QHash<QString, QString> titles;
+    for (const RawHit &h : raw) {
+        const auto obj = QJsonDocument::fromJson(h.json.toUtf8()).object();
+        const auto ev = NormalizedBrainEvent::fromJson(obj);
+        if (!ev)
+            continue;
+        SessionSearchHit hit;
+        hit.sessionId = h.sid;
+        hit.seq = h.seq;
+        hit.ts = h.ts;
+        hit.ev = *ev;
+        hit.score = h.score;
+        if (!titles.contains(h.sid)) {
+            const auto row = get(h.sid);
+            titles.insert(h.sid, row ? row->title : QString());
+        }
+        hit.sessionTitle = titles.value(h.sid);
+        if (contextWindow > 0) {
+            QSqlQuery c(m_db);
+            c.prepare(QStringLiteral(
+                "SELECT session_id,seq,json,ts FROM events"
+                " WHERE session_id=? AND seq BETWEEN ? AND ? ORDER BY seq ASC"));
+            c.addBindValue(h.sid);
+            c.addBindValue(h.seq - contextWindow);
+            c.addBindValue(h.seq + contextWindow);
+            if (c.exec()) {
+                while (c.next()) {
+                    const auto cobj =
+                        QJsonDocument::fromJson(c.value(2).toString().toUtf8()).object();
+                    const auto cev = NormalizedBrainEvent::fromJson(cobj);
+                    if (!cev)
+                        continue;
+                    StoredEvent se;
+                    se.sessionId = c.value(0).toString();
+                    se.seq = c.value(1).toInt();
+                    se.ev = *cev;
+                    se.ts = c.value(3).toLongLong();
+                    hit.context.push_back(se);
+                }
+            }
+        }
+        out.push_back(hit);
+    }
+    return out;
 }
 
 QVector<StoredEvent> SessionStore::listEvents(const QString &sessionId, int limit)
