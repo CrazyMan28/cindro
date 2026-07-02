@@ -1238,14 +1238,21 @@ bool Bridge::hasExecutable(const QString &name)
 
 bool Bridge::voiceAvailable() const
 {
-    // pw-record (PipeWire) is the proven capture path on Linux. Where it doesn't
-    // exist (Windows/WASAPI, non-PipeWire boxes) we capture with Qt Multimedia
-    // instead, so voice is available whenever ANY input device is present —
-    // gating on pw-record alone hid the mic button on every Windows install.
-    // defaultAudioInput() (not audioInputs()) so the button only shows when the
-    // capture paths' device lookup will actually succeed.
-    return hasExecutable(QStringLiteral("pw-record")) ||
-           !QMediaDevices::defaultAudioInput().isNull();
+#ifdef Q_OS_WIN
+    // Windows has no pw-record; a present default input device (WASAPI via Qt
+    // Multimedia) is what makes the mic usable — gating on pw-record alone hid
+    // the mic button on every Windows install. defaultAudioInput() (not
+    // audioInputs()) so the button only shows when the capture paths' device
+    // lookup will actually succeed.
+    return !QMediaDevices::defaultAudioInput().isNull();
+#else
+    // Linux: PipeWire is the product target — pw-record IS the probe. Don't
+    // consult QMediaDevices here: this runs inside QML `visible:` bindings at
+    // UI load, and initializing the multimedia backend / enumerating devices on
+    // an audio-less box (the CI container's FFmpeg backend) blew gui_selftest's
+    // 30s budget.
+    return hasExecutable(QStringLiteral("pw-record"));
+#endif
 }
 
 void Bridge::setRecordingState(const QString &s)
