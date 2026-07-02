@@ -62,7 +62,12 @@ int main()
         check(hasPair(args, QStringLiteral("-c"),
                       QStringLiteral("approval_policy=\"never\"")),
               "drive mode sets -c approval_policy=\"never\"");
-        check(args.last() == prompt, "prompt is the trailing positional");
+        // The prompt is fed on STDIN (cmd.exe-safe on Windows), so the trailing
+        // positional is codex's `-` stdin sentinel and the prompt is NEVER in argv.
+        check(args.last() == QStringLiteral("-"),
+              "trailing positional is `-` (prompt read from stdin)");
+        check(!args.contains(prompt),
+              "prompt is NOT on the command line (fed via stdin, cmd.exe-safe)");
         // never workspace-write in drive mode
         check(!hasPair(args, QStringLiteral("--sandbox"),
                        QStringLiteral("workspace-write")),
@@ -100,15 +105,20 @@ int main()
               "image 1 passed as --image <path>");
         check(hasPair(args, QStringLiteral("--image"), QStringLiteral("/tmp/b.jpg")),
               "image 2 passed as --image <path>");
-        check(args.last() == prompt, "prompt still trailing after images");
+        check(args.last() == QStringLiteral("-"),
+              "stdin sentinel `-` still trailing after images");
+        check(!args.contains(prompt),
+              "prompt still off the command line with images attached");
         // `-i/--image <FILE>...` is variadic, so without a `--` terminator codex
-        // swallows the prompt as another image path and exits with
-        // "No prompt provided via stdin". The prompt MUST be preceded by `--`.
-        const int pIdx = args.lastIndexOf(prompt);
-        check(pIdx > 0 && args.at(pIdx - 1) == QStringLiteral("--"),
-              "prompt is separated from variadic --image by a `--` terminator");
-        // no spurious --image when there are no attachments
+        // swallows the `-` stdin sentinel as another image path. The `-` MUST be
+        // preceded by `--` whenever images are attached.
+        const int dashIdx = args.lastIndexOf(QStringLiteral("-"));
+        check(dashIdx > 0 && args.at(dashIdx - 1) == QStringLiteral("--"),
+              "stdin `-` is separated from variadic --image by a `--` terminator");
+        // no spurious --image / `--` when there are no attachments
         const QStringList none = brain.buildArgs(prompt);
+        check(none.last() == QStringLiteral("-"),
+              "stdin sentinel `-` trailing with no images");
         check(!none.contains(QStringLiteral("--image")),
               "no --image when no attachments");
         check(!none.contains(QStringLiteral("--")),

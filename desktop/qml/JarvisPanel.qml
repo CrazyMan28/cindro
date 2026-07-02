@@ -548,12 +548,18 @@ Item {
             var twid = (w.id !== undefined) ? ("" + w.id) : ""
             if (twid.indexOf("__todo__") === 0) {
                 var tsid = (w.session_id !== undefined) ? ("" + w.session_id) : ""
-                // A plan MUST belong to the current session. A sessionless chat
-                // (bridge.sessionId "") owns NO plan — reject a replayed/foreign
-                // __todo__ so it can't paint into a fresh chat.
-                if (tsid.length === 0 || tsid !== ("" + bridge.sessionId)) return
+                var curSid = ("" + bridge.sessionId)
+                // A plan MUST belong to the current session. On Windows v1 there is no
+                // per-session engine, so the shared global :8794 engine stamps an EMPTY
+                // session_id — a LIVE plan for whatever chat is active. Replayed/foreign
+                // plans ALWAYS carry a non-empty id (replaySessionWidgets only re-emits
+                // records whose session_id matches), so an empty id is unambiguously a
+                // live plan: adopt it into the active chat, and reject only a non-empty
+                // MISMATCH. A sessionless chat (curSid "") still owns no plan.
+                if (curSid.length === 0) return
+                if (tsid.length > 0 && tsid !== curSid) return
                 panel.todoSpec = JSON.stringify(w.spec)
-                panel.todoSpecSession = tsid
+                panel.todoSpecSession = tsid.length > 0 ? tsid : curSid
                 panel.todoOpen = true
                 return
             }

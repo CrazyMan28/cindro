@@ -1731,6 +1731,8 @@ Item {
                 ColumnLayout {
                     id: extCol
                     property bool extCopied: false
+                    property string extPairCode: ""
+                    property bool pairCopied: false
                     Layout.fillWidth: true
                     spacing: 10
 
@@ -1795,6 +1797,66 @@ Item {
                         Item { Layout.fillWidth: true }
                     }
                     Timer { id: extCopyReset; interval: 1500; onTriggered: extCol.extCopied = false }
+
+                    // --- One-paste pairing (no hand-copying two tokens) ---------
+                    Rectangle {
+                        Layout.fillWidth: true; Layout.topMargin: 4
+                        height: 1; color: Theme.hairlineSoft
+                    }
+                    Text {
+                        text: "Or pair in one paste: generate a code here, then paste it into the extension's Options → \"Pair with a code\". It fills in both tokens for you. Single-use, expires in 5 minutes."
+                        color: Theme.textMuted
+                        font.family: Theme.fontSans
+                        font.pixelSize: 11
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Widgets.PillButton {
+                            label: "Generate pairing code"
+                            primary: true
+                            enabledBtn: bridge.connected
+                            onClicked: bridge.extensionPairStart()
+                        }
+                        Rectangle {
+                            visible: extCol.extPairCode.length > 0
+                            radius: 6
+                            color: "#0C141D"
+                            border.color: Theme.accent
+                            border.width: 1
+                            implicitHeight: extPairText.implicitHeight + 12
+                            implicitWidth: extPairText.implicitWidth + 24
+                            Text {
+                                id: extPairText
+                                anchors.centerIn: parent
+                                text: extCol.extPairCode
+                                color: Theme.accent
+                                font.family: Theme.fontMono
+                                font.pixelSize: 20
+                                font.letterSpacing: 4
+                            }
+                        }
+                        Widgets.PillButton {
+                            visible: extCol.extPairCode.length > 0
+                            label: extCol.pairCopied ? "Copied ✓" : "Copy code"
+                            onClicked: {
+                                bridge.copyToClipboard(extCol.extPairCode)
+                                extCol.pairCopied = true
+                                extPairCopyReset.restart()
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                    }
+                    Timer { id: extPairCopyReset; interval: 1500; onTriggered: extCol.pairCopied = false }
+                    Connections {
+                        target: bridge
+                        function onExtensionPairingStarted(code, expiresAt) {
+                            extCol.extPairCode = code
+                            extCol.pairCopied = false
+                        }
+                    }
                 }
             }
 

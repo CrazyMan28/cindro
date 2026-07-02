@@ -1,5 +1,6 @@
 #include "jarvis/WidgetLeaseRegistry.h"
 
+#include "jarvis/DataPaths.h"
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -31,7 +32,10 @@ QString WidgetLeaseRegistry::defaultDir()
     const QByteArray override = qgetenv("JARVIS_WIDGET_VIEWERS");
     if (!override.isEmpty())
         return QString::fromLocal8Bit(override);
-    return QDir::homePath() + QStringLiteral("/.local/share/jarvis/widget_viewers");
+    // Honor XDG_DATA_HOME like the engine's live-widget supervisor so the daemon
+    // writes leases to the SAME dir the supervisor reads (DataPaths.h). Unchanged on
+    // the default (~/.local/share/jarvis/widget_viewers) on Linux and Windows.
+    return jarvis::dataDir() + QStringLiteral("/widget_viewers");
 }
 
 WidgetLeaseRegistry::WidgetLeaseRegistry(const QString &dir)

@@ -1,5 +1,6 @@
 #include "Bridge.h"
 #include "FrameProvider.h"
+#include "jarvis/DataPaths.h"
 
 #include <QWebSocket>
 #include <QSet>
@@ -771,6 +772,11 @@ void Bridge::loadReplay(const QString &sessionId)
 void Bridge::devicesPairStart()
 {
     request(QStringLiteral("devices.pair_start"), {});
+}
+
+void Bridge::extensionPairStart()
+{
+    request(QStringLiteral("extension.pair_start"), {});
 }
 
 void Bridge::devicesList()
@@ -2611,10 +2617,7 @@ void Bridge::startPointerTail()
 {
     if (m_pointerWatcher)
         return;
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
-    const QString path = (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share")
-                                         : base)
-                         + QStringLiteral("/jarvis/agent_pointer.jsonl");
+    const QString path = jarvis::dataDir() + QStringLiteral("/agent_pointer.jsonl");
     // Start reading from the end so we only see new pointer events.
     QFileInfo fi(path);
     m_pointerOffset = fi.exists() ? fi.size() : 0;
@@ -2648,9 +2651,8 @@ void Bridge::stopPointerTail()
 
 QString Bridge::questionsDir() const
 {
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
-    return (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share") : base)
-           + QStringLiteral("/jarvis/questions");
+    // Must match the engine's ask_bus.py EXACTLY on every OS — see DataPaths.h.
+    return jarvis::dataDir() + QStringLiteral("/questions");
 }
 
 void Bridge::startQuestionWatch()
@@ -2730,9 +2732,8 @@ void Bridge::answerQuestion(const QString &id, const QString &answer)
 
 QString Bridge::widgetsPath() const
 {
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
-    return (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share") : base)
-           + QStringLiteral("/jarvis/widgets.jsonl");
+    // Must match the engine's widgets_bus.py EXACTLY on every OS — see DataPaths.h.
+    return jarvis::dataDir() + QStringLiteral("/widgets.jsonl");
 }
 
 void Bridge::startWidgetWatch()
@@ -2981,9 +2982,8 @@ void Bridge::popOutWidget(const QString &id, const QString &title, const QVarian
 
 static QString jarvisDataDir()
 {
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
-    return (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share") : base)
-           + QStringLiteral("/jarvis");
+    // Shared file bus with the engine — resolve identically on every OS (DataPaths.h).
+    return jarvis::dataDir();
 }
 
 static QString savedWidgetsFile() { return jarvisDataDir() + QStringLiteral("/saved_widgets.json"); }
@@ -3051,9 +3051,7 @@ void Bridge::canvasDelete(const QString &id)
 // ---- Home dashboard widget order (user drag/move + model home_move) ---------
 QString Bridge::homeOrderPath() const
 {
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
-    return (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share") : base)
-           + QStringLiteral("/jarvis/home_order.json");
+    return jarvis::dataDir() + QStringLiteral("/home_order.json");
 }
 
 void Bridge::saveHomeOrder(const QStringList &ids)
@@ -3173,10 +3171,7 @@ void Bridge::renderSavedWidget(const QString &id, const QString &target)
 
 void Bridge::readPointerTail()
 {
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
-    const QString path = (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share")
-                                         : base)
-                         + QStringLiteral("/jarvis/agent_pointer.jsonl");
+    const QString path = jarvis::dataDir() + QStringLiteral("/agent_pointer.jsonl");
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
         return;
@@ -3979,6 +3974,11 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         // only needs a numeric epoch for the countdown, so coerce defensively.
         const QVariant exp = result.value(QStringLiteral("expires_at"));
         emit pairingStarted(qrSvg, code, payload, exp.toDouble());
+    } else if (method == QStringLiteral("extension.pair_start")) {
+        // { code, expires_at, control_port } — one-paste extension pairing code.
+        emit extensionPairingStarted(
+            result.value(QStringLiteral("code")).toString(),
+            result.value(QStringLiteral("expires_at")).toDouble());
     } else if (method == QStringLiteral("devices.list")) {
         emit devicesListed(result.value(QStringLiteral("devices")).toList());
     } else if (method == QStringLiteral("devices.revoke")) {

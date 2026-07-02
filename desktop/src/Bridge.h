@@ -247,6 +247,9 @@ public:
     // ---- Devices (Contract A v2 pairing, surfaced in Settings) --------------
     // devices.pair_start -> pairingStarted(qrSvg, code, payload, expiresAt).
     Q_INVOKABLE void devicesPairStart();
+    // extension.pair_start -> extensionPairingStarted(code, expiresAt). Mints a
+    // one-paste code the user drops into the Jarvis Chrome/Edge extension.
+    Q_INVOKABLE void extensionPairStart();
     // devices.list -> devicesListed(QVariantList).
     Q_INVOKABLE void devicesList();
     // devices.revoke { id } -> on success refreshes the list.
@@ -647,6 +650,9 @@ signals:
     // full jarvis://pair?... payload, and the epoch-seconds expiry.
     void pairingStarted(const QString &qrSvg, const QString &code,
                         const QString &payload, double expiresAt);
+    // extension.pair_start result: the 6-digit code + epoch-ms expiry to paste
+    // into the Jarvis Chrome/Edge extension.
+    void extensionPairingStarted(const QString &code, double expiresAt);
     void devicesListed(const QVariantList &devices);
     void devicesChanged();   // emitted after a revoke so the UI refreshes
 
