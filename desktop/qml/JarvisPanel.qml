@@ -41,7 +41,13 @@ Item {
     // (PLAN card on top of the desktop view) instead of cluttering the transcript.
     property string todoSpec: ""
     property bool todoOpen: true
+    // The session the current plan BELONGS to. hasPlan is true only when a plan
+    // exists AND it's this session's — so a plan NEVER shows on a fresh/other
+    // chat no matter how it got set (new chat, session switch, app reopen, widget
+    // replay). This is the robust fix for "old chat's plan showed on a new chat".
+    property string todoSpecSession: ""
     readonly property bool hasPlan: panel.todoSpec.length > 0
+                                    && panel.todoSpecSession === ("" + bridge.sessionId)
     // Live subagents (child sessions of THIS chat) — filled from the sub-agent tree.
     // Each: {id,title,agent,status}. Click one to open it + watch its tool calls.
     property var subagents: []
@@ -542,8 +548,12 @@ Item {
             var twid = (w.id !== undefined) ? ("" + w.id) : ""
             if (twid.indexOf("__todo__") === 0) {
                 var tsid = (w.session_id !== undefined) ? ("" + w.session_id) : ""
-                if (tsid.length > 0 && tsid !== bridge.sessionId) return
+                // A plan MUST belong to the current session. A sessionless chat
+                // (bridge.sessionId "") owns NO plan — reject a replayed/foreign
+                // __todo__ so it can't paint into a fresh chat.
+                if (tsid.length === 0 || tsid !== ("" + bridge.sessionId)) return
                 panel.todoSpec = JSON.stringify(w.spec)
+                panel.todoSpecSession = tsid
                 panel.todoOpen = true
                 return
             }
@@ -1975,6 +1985,16 @@ Item {
         panel.chatSessionId = ""
         bridge.newSession()
         chatModel.clear()
+        // A fresh chat starts with a BLANK plan + no subagents. newSession() may
+        // not emit sessionIdChanged (a fresh-on-fresh + New leaves the id already
+        // empty), so the onSessionIdChanged cleanup never runs — clear the
+        // per-session PLAN card / subagents / snooze here too, else an old chat's
+        // plan haunts the new one (reported: "new chat had an old chat's plan").
+        panel.todoSpec = ""
+        panel.todoSpecSession = ""
+        panel.subagents = []
+        panel.peekSnoozedSession = "__none__"
+        panel.peekOpen = false
         panel.busy = false
         panel.thinking = false
         inputArea.text = ""
