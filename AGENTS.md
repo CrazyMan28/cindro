@@ -227,6 +227,52 @@ Design pillars:
 - **Modes & wake-notify are SOFT** (`agent_mode`, `wake_notify` in SettingsStore, like
   `permission_level`) — preamble clauses only, never the sandbox.
 
+## New subsystems (2026-07-01) — gotchas
+
+- **Trust policies are ENFORCED, not advisory (jarvis#71).** The daemon owns
+  `~/.config/jarvis/trust_policies.json` (`core/TrustPolicyStore`, Contract A
+  `policy.*`); the computer-use engine ENFORCES it by wrapping FastMCP's
+  `ToolManager.call_tool` in `computer_use_mcp/policy.py` (`policy.install(mcp)`
+  in `server.py`). deny → the tool raises; ask → blocks on the ask-bus. The C++
+  `TrustPolicyStore::evaluate` is a MIRROR of the Python matcher (most-specific
+  wins, tie→earliest, tool case-sensitive, app case-insensitive) — keep the two
+  in sync if you change matching. `permission_level` is the SOFT policy; this is
+  the enforced one. Both are separate from the capability sandbox.
+- **Self-heal wraps input tools (jarvis#67).** `selfheal.run(tool, which, action)`
+  in `tools_desktop.py` wraps click/drag/scroll/key/type: transient retry +
+  before/after screen-hash → adds a `self_heal` block to the (dict) result. Do
+  NOT wrap read-only tools (screenshots etc.) in it — only screen-mutating ones,
+  and pass `expect_change=false` if a mutation legitimately may not repaint.
+- **Committee mode is a plain tool (jarvis#69).** `agent_committee` in
+  `tools_jarvis_ops.py` just fans out `agents.dispatch` + polls `agents.result`
+  + an optional judge dispatch — no daemon change. It relies on the subagent
+  parent-link + done-wake, so don't break those.
+- **Anomaly watcher = a bg_jobs "watch" kind (jarvis#68).** Runner `_run_watch`
+  in `bg_jobs.py` drives the PURE `anomaly.py` core (JSON-roundtrippable state
+  persisted in job.json across the detached runner). If you add a bg tool, update
+  `tests/test_tools_bg_register.py`'s pinned `EXPECTED_TOOLS`.
+- **Replay reuses session.history, un-gated (jarvis#66).** `bridge.loadReplay`
+  tags its request `__replay__:<sid>` so the reply is NOT dropped by the
+  active-session guard and KEEPS per-event `ts`. `ReplayPage.qml` rebuilds the
+  transcript to a scrub cursor with the SAME ChatDelegate. `agent_desktop.info`
+  is likewise now tagged `__agentdesk__:<sid>` and dropped on session mismatch —
+  don't remove those guards (they stop stale replies painting the wrong session).
+- **Subagents ≠ chats, everywhere.** Child sessions (non-empty
+  `parent_session_id`) are filtered out of the top-level session list on ALL
+  three surfaces (desktop `SessionsPage`, Android `SessionsViewModel`, extension
+  `loadSessions`), never fan `session.opened`/FCM (createSession gates on
+  `parentSessionId.isEmpty()`), and don't raise the "task done" toast. The peek
+  SUBAGENTS card only shows running/error children (finished ones disappear).
+- **The peek panel's auto-open is snooze-aware.** `JarvisPanel` records
+  `peekSnoozedSession` on ✕ / "▣ Hide"; `autoOpenPeek()` respects it. Don't
+  reintroduce a bare `peekOpen = true` on a level signal (that was the
+  un-dismissable-panel bug) and don't auto-open on `hasSubagents` (it flickers
+  on every session switch).
+- **AppShell page count is DERIVED.** The page `Repeater` uses
+  `rail.items.length`, not a literal — adding a NavRail item automatically gets a
+  page slot (the old `model: 17` vs 18 items left Settings blank). Keep the
+  switch cases in lock-step with the item order.
+
 ## Branches & flow
 
 Three long-lived branches; **`main` is protected** (PR-only, no direct pushes, no

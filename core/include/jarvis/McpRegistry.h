@@ -61,8 +61,11 @@ public:
     QString add(const QString &name, const QString &transport,
                 const QString &endpoint, const QString &token, bool enabled,
                 const QString &risk = QStringLiteral("medium"),
-                const QJsonObject &env = {});
-    bool remove(const QString &id) { return m_store.removeMcpServer(id); }
+                const QJsonObject &env = {}, bool builtin = false,
+                const QString &fixedId = QString());
+    // Refuses to remove a built-in server (computer-use / phone) — they're seeded
+    // by the daemon and must always be present. Returns false for a builtin id.
+    bool remove(const QString &id);
     bool setEnabled(const QString &id, bool enabled) { return m_store.setMcpEnabled(id, enabled); }
 
     // --- live test ---------------------------------------------------------

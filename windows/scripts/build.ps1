@@ -39,6 +39,83 @@ Write-Host "==> Jarvis Windows build  (repo=$repo  version=$Version)" -Foregroun
 if (-not $VcpkgRoot) { throw "Set VCPKG_ROOT (vcpkg provides libsodium/libqrencode for Windows)." }
 $toolchain = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
 if (-not (Test-Path $toolchain)) { throw "vcpkg toolchain file not found: $toolchain" }
+
+# Locate Qt6 robustly and pass it to CMake explicitly. Relying on the runner's
+# machine CMAKE_PREFIX_PATH alone is fragile — after a winvm reboot that env var
+# can go missing for the runner process, and find_package(Qt6) then fails at
+# configure ("Could not find a package configuration file provided by Qt6").
+# Probe: existing CMAKE_PREFIX_PATH -> Qt6_DIR -> newest C:\Qt\<ver>\msvc*_64.
+# A prefix counts as usable only if it has Qt6Config AND the modules this build
+# links (WebSockets + Multimedia) — an INCOMPLETE Qt (e.g. a build cancelled
+# mid-aqt-download, leaving qtmultimedia missing) must NOT be accepted, or the
+# build passes configure then fails at link/windeployqt. Treating "incomplete"
+# as "not found" makes the self-heal below reinstall the missing modules.
+function Test-QtComplete($prefix) {
+  if (-not $prefix) { return $false }
+  # $prefix may be the Qt root (…/msvc2022_64) or already …/lib/cmake/Qt6.
+  $cm = if (Test-Path (Join-Path $prefix "lib\cmake")) { Join-Path $prefix "lib\cmake" }
+        elseif ($prefix -like "*lib\cmake\Qt6") { Split-Path $prefix -Parent }
+        else { return $false }
+  foreach ($mod in @("Qt6\Qt6Config.cmake", "Qt6WebSockets\Qt6WebSocketsConfig.cmake",
+                     "Qt6Multimedia\Qt6MultimediaConfig.cmake", "Qt6Sql\Qt6SqlConfig.cmake")) {
+    if (-not (Test-Path (Join-Path $cm $mod))) { return $false }
+  }
+  return $true
+}
+function Resolve-QtPrefix {
+  foreach ($p in @($env:CMAKE_PREFIX_PATH, $env:Qt6_DIR)) {
+    if (Test-QtComplete $p) {
+      # Normalize a Qt6_DIR that points at lib/cmake/Qt6 back to the Qt root.
+      if ($p -like "*lib\cmake\Qt6") { return (Split-Path (Split-Path (Split-Path $p -Parent) -Parent) -Parent) }
+      return $p
+    }
+  }
+  $roots = @("C:\Qt") | Where-Object { Test-Path $_ }
+  foreach ($root in $roots) {
+    $cand = Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -match '^\d+\.\d+' } |
+      Sort-Object Name -Descending |
+      ForEach-Object {
+        Get-ChildItem -Path $_.FullName -Directory -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -like 'msvc*_64' } | Select-Object -First 1
+      } | Where-Object { Test-QtComplete $_.FullName } |
+      Select-Object -First 1
+    if ($cand) { return $cand.FullName }
+  }
+  return $null
+}
+$qtPrefix = Resolve-QtPrefix
+if (-not $qtPrefix) {
+  # SELF-HEAL: a runner whose Qt install is missing/incomplete (e.g. win-runner-2
+  # after a reset — C:\Qt\6.10.3 present but no lib\cmake\Qt6\Qt6Config.cmake) would
+  # otherwise fail configure with "Could not find a package configuration file
+  # provided by Qt6" and stay broken build after build. Install Qt the SAME way the
+  # runner-provisioning script does (aqtinstall -> C:\Qt) so the runner repairs
+  # itself, then re-resolve. On a healthy runner this branch never runs.
+  Write-Host "==> Qt6 not found on this runner — installing via aqtinstall (self-heal)…" -ForegroundColor Yellow
+  $py = (Get-Command python -ErrorAction SilentlyContinue).Source
+  if (-not $py) { $py = (Get-Command py -ErrorAction SilentlyContinue).Source }
+  if ($py) {
+    & $py -m pip install --upgrade pip aqtinstall 2>&1 | Select-Object -Last 2
+    & $py -m aqt install-qt windows desktop 6.10.3 win64_msvc2022_64 --modules qtwebsockets qtmultimedia --outputdir C:\Qt 2>&1 | Select-Object -Last 3
+    $qtPrefix = Resolve-QtPrefix
+    if ($qtPrefix) {
+      # Persist the machine env so future runs (and the workflow's preflight) see it.
+      try {
+        [Environment]::SetEnvironmentVariable("CMAKE_PREFIX_PATH", $qtPrefix, "Machine")
+        [Environment]::SetEnvironmentVariable("Qt6_DIR", (Join-Path $qtPrefix "lib\cmake\Qt6"), "Machine")
+      } catch { Write-Host "WARN: could not persist Qt machine env: $_" -ForegroundColor Yellow }
+    }
+  } else {
+    Write-Host "WARN: python not found — cannot self-heal Qt" -ForegroundColor Yellow
+  }
+}
+if ($qtPrefix) {
+  Write-Host "==> Qt6 prefix: $qtPrefix" -ForegroundColor Cyan
+} else {
+  Write-Host "WARN: could not resolve a Qt6 prefix; relying on env (configure may fail)" -ForegroundColor Yellow
+}
+
 # Ninja generator + the MSVC env that the CI's msvc-dev-cmd step provides (cl +
 # ninja on PATH). Splat the args (the -D value is a double-quoted string so
 # $toolchain expands — passing it bare made cmake see the literal "$toolchain").
@@ -48,6 +125,7 @@ $cfgArgs = @(
   "-DCMAKE_BUILD_TYPE=$Config",
   "-DCMAKE_TOOLCHAIN_FILE=$toolchain"
 )
+if ($qtPrefix) { $cfgArgs += "-DCMAKE_PREFIX_PATH=$qtPrefix" }
 cmake @cfgArgs
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed (exit $LASTEXITCODE)" }
 cmake --build $build --config $Config

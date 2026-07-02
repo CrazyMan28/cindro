@@ -73,16 +73,40 @@ AgentDesktop::~AgentDesktop()
 
 QString AgentDesktop::defaultEngineDir()
 {
-    // The daemon binary lives in <root>/build/daemon; the engine in
-    // <root>/computer-use. Prefer a path relative to the executable; fall back
-    // to the known monorepo location.
-    const QString fromExe = QDir(QCoreApplication::applicationDirPath())
-                                .absoluteFilePath(QStringLiteral("../../computer-use"));
-    if (QFileInfo::exists(QDir(fromExe).absoluteFilePath(QStringLiteral("pyproject.toml"))))
-        return QDir(fromExe).absolutePath();
-    // Last resort: an explicit override, else the exe-relative guess.
+    // Find the computer-use engine (must contain pyproject.toml). The daemon may
+    // run from the DEV build (<root>/build/daemon) OR the INSTALLED path
+    // (~/.local/bin) — the installed case is why an exe-relative-only guess broke:
+    // ~/.local/bin/../../computer-use = ~/computer-use, which doesn't exist, so the
+    // engine failed to start ("chdir: No such file or directory") and took down
+    // ALL computer-use (agent desktop, browser tools). Probe, in order:
+    //   1. $JARVIS_ENGINE_DIR (explicit override — set by the systemd unit)
+    //   2. exe-relative dev-build + installed layouts
+    //   3. the known monorepo checkout
+    // Return the first that actually holds the engine; else the dev-build guess.
+    auto hasEngine = [](const QString &dir) {
+        return !dir.isEmpty()
+            && QFileInfo::exists(QDir(dir).absoluteFilePath(QStringLiteral("pyproject.toml")))
+            && QFileInfo::exists(QDir(dir).absoluteFilePath(QStringLiteral("computer_use_mcp")));
+    };
+    const QString exeDir = QCoreApplication::applicationDirPath();
+    const QString home = QDir::homePath();
+    QStringList candidates;
     const QString fromEnv = qEnvironmentVariable("JARVIS_ENGINE_DIR");
-    return fromEnv.isEmpty() ? QDir(fromExe).absolutePath() : fromEnv;
+    if (!fromEnv.isEmpty())
+        candidates << fromEnv;
+    candidates
+        << QDir(exeDir).absoluteFilePath(QStringLiteral("../../computer-use"))  // dev: build/daemon
+        << QDir(exeDir).absoluteFilePath(QStringLiteral("../computer-use"))      // alt layout
+        << QDir(exeDir).absoluteFilePath(QStringLiteral("../share/jarvis/computer-use")) // installed share
+        << home + QStringLiteral("/projects/computer_use/computer-use")          // known checkout
+        << home + QStringLiteral("/.local/share/jarvis/computer-use");            // installed data
+    for (const QString &c : std::as_const(candidates)) {
+        const QString abs = QDir(c).absolutePath();
+        if (hasEngine(abs))
+            return abs;
+    }
+    // Nothing found — return the dev-build guess (the caller logs the failure).
+    return QDir(exeDir).absoluteFilePath(QStringLiteral("../../computer-use"));
 }
 
 QString AgentDesktop::genBearer()

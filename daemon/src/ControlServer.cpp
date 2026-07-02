@@ -368,6 +368,18 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleHooksRemove(req);
     else if (m == QStringLiteral("hooks.test"))
         resp = handleHooksTest(req);
+    else if (m == QStringLiteral("policy.list"))
+        resp = handlePolicyList(req);
+    else if (m == QStringLiteral("policy.add"))
+        resp = handlePolicyAdd(req);
+    else if (m == QStringLiteral("policy.update"))
+        resp = handlePolicyUpdate(req);
+    else if (m == QStringLiteral("policy.remove"))
+        resp = handlePolicyRemove(req);
+    else if (m == QStringLiteral("policy.set_default"))
+        resp = handlePolicySetDefault(req);
+    else if (m == QStringLiteral("policy.test"))
+        resp = handlePolicyTest(req);
     else if (m == QStringLiteral("phone.mcp"))
         resp = handlePhoneMcp(req);
     else if (m == QStringLiteral("phone.http"))
@@ -871,6 +883,78 @@ Response ControlServer::handleHooksTest(const Request &req)
     result.insert(QStringLiteral("block_reason"), o.blockReason);
     result.insert(QStringLiteral("injected_context"), o.injectedContext);
     result.insert(QStringLiteral("notes"), QJsonArray::fromStringList(o.notes));
+    return Response::success(req.id, result);
+}
+
+// --- Trust policies (jarvis#71) ---------------------------------------------
+// The daemon owns trust_policies.json; the computer-use engine's policy gate
+// enforces it on every tool call. Mutations reload-then-save so concurrent
+// editors (desktop + phone) can't clobber each other's rules.
+
+Response ControlServer::handlePolicyList(const Request &req)
+{
+    m_trustPolicies.load();
+    return Response::success(req.id, m_trustPolicies.toJson());
+}
+
+Response ControlServer::handlePolicyAdd(const Request &req)
+{
+    m_trustPolicies.load();
+    const QString id = m_trustPolicies.addRule(
+        req.params.value(QStringLiteral("tool")).toString(),
+        req.params.value(QStringLiteral("app")).toString(),
+        req.params.value(QStringLiteral("action")).toString(),
+        req.params.value(QStringLiteral("note")).toString(),
+        req.params.value(QStringLiteral("id")).toString());
+    if (id.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 m_trustPolicies.lastError());
+    QJsonObject result;
+    result.insert(QStringLiteral("id"), id);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handlePolicyUpdate(const Request &req)
+{
+    m_trustPolicies.load();
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    QJsonObject fields = req.params;
+    fields.remove(QStringLiteral("id"));
+    if (!m_trustPolicies.updateRule(id, fields))
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 m_trustPolicies.lastError());
+    return Response::success(req.id, {});
+}
+
+Response ControlServer::handlePolicyRemove(const Request &req)
+{
+    m_trustPolicies.load();
+    if (!m_trustPolicies.removeRule(req.params.value(QStringLiteral("id")).toString()))
+        return Response::failure(req.id, QStringLiteral("not_found"),
+                                 QStringLiteral("no such rule"));
+    return Response::success(req.id, {});
+}
+
+Response ControlServer::handlePolicySetDefault(const Request &req)
+{
+    m_trustPolicies.load();
+    if (!m_trustPolicies.setDefaultAction(
+            req.params.value(QStringLiteral("action")).toString()))
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 m_trustPolicies.lastError());
+    return Response::success(req.id, {});
+}
+
+Response ControlServer::handlePolicyTest(const Request &req)
+{
+    m_trustPolicies.load();
+    const TrustDecision d = m_trustPolicies.evaluate(
+        req.params.value(QStringLiteral("tool")).toString(),
+        req.params.value(QStringLiteral("app")).toString());
+    QJsonObject result;
+    result.insert(QStringLiteral("action"), d.action);
+    result.insert(QStringLiteral("rule_id"), d.ruleId);
+    result.insert(QStringLiteral("note"), d.note);
     return Response::success(req.id, result);
 }
 
@@ -1780,8 +1864,14 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     // signal the apps to OPEN/FOCUS this session's chat. This fires on the SINGLE
     // shared success exit so it covers BOTH the control-WS caller path and the
     // scheduler path; all early-error returns are above this point.
-    broadcastSessionOpened(row.id, row.title);  // control-WS fan-out (desktop)
-    emit sessionOpened(row.id, row.title);      // device-WS + FCM fan-out (phone)
+    // TOP-LEVEL sessions only: a subagent CHILD session is internal — it renders
+    // inside its parent chat's sub-agent tree. Fanning children out here raised
+    // windows and pushed a "New session" notification to every phone PER dispatched
+    // subagent (part of the jarvis#72 "chats keep popping out as subagents" mess).
+    if (row.parentSessionId.isEmpty()) {
+        broadcastSessionOpened(row.id, row.title);  // control-WS fan-out (desktop)
+        emit sessionOpened(row.id, row.title);      // device-WS + FCM fan-out (phone)
+    }
 
     // SessionStart hook — top-level sessions only (a child session = a subagent).
     // Any additionalContext is stashed and prepended to the session's FIRST turn
@@ -2236,7 +2326,13 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "shell hooks that fire on your lifecycle events (Claude-Code style).\n"
             "• MODES — the user selects plan / build / co-worker in Settings; follow "
             "the mode clause appended below.");
+        // Trust policies (jarvis#71): tell the model the enforced rules up
+        // front so it plans around them instead of discovering them by being
+        // blocked at the tool layer. Reload first — the file is edited live
+        // from Settings on any surface.
+        m_trustPolicies.load();
         effectiveText = guide + permissionPolicyClause() + modePolicyClause() +
+                        m_trustPolicies.preambleClause() +
                         QStringLiteral("\n---\n") + effectiveText;
     }
 
@@ -3876,16 +3972,20 @@ void ControlServer::seedPhoneMcp()
     if (token.isEmpty())
         return;
     const QString endpoint = QStringLiteral("http://127.0.0.1:%1/mcp").arg(port);
-    // Idempotent: drop any prior "phone" row so the token/port stay in sync with
-    // the env on every restart.
+    // Idempotent: drop any prior "phone" row (built-in or a legacy random-id one)
+    // so the token/port stay in sync with the env on every restart. remove()
+    // refuses builtin ids, so delete the stored row directly here.
     for (const McpServerRow &r : m_mcp->list())
-        if (r.name == QStringLiteral("phone"))
-            m_mcp->remove(r.id);
-    // risk=high: these tools call/text the user, spend money, and reach the real
-    // world — the permission policy should pause before them.
+        if (r.name == QStringLiteral("phone") || r.id == QStringLiteral("phone"))
+            m_store.removeMcpServer(r.id);
+    // Seed phone as a BUILT-IN server (stable id "phone", non-removable) — it's a
+    // core Jarvis subsystem like computer-use, not a user add-on. risk=high: these
+    // tools call/text the user, spend money, and reach the real world, so the
+    // permission policy should pause before them.
     m_mcp->add(QStringLiteral("phone"), QStringLiteral("http"), endpoint, token,
-               true, QStringLiteral("high"));
-    qInfo("jarvisd: seeded phone MCP server -> %s", qPrintable(endpoint));
+               /*enabled=*/true, QStringLiteral("high"), /*env=*/{},
+               /*builtin=*/true, /*fixedId=*/QStringLiteral("phone"));
+    qInfo("jarvisd: seeded phone MCP server (built-in) -> %s", qPrintable(endpoint));
 }
 
 void ControlServer::seedInternalDocsSkill()
@@ -4210,17 +4310,24 @@ Response ControlServer::handleAgentsDispatch(const Request &req, bool remote)
     // but the SHARED real-screen engine (the global :8794 server, reused by every
     // session) has no per-session id — so when the model invokes agent_start
     // through it, parent arrives empty and the subagent would be ORPHANED (no
-    // tree link, no done-wake). Fall back to the session that is mid-turn right
-    // now: the caller is necessarily in state "running" while it calls this tool,
-    // and a top-level chat has no parent of its own. This keeps the parent link
-    // — and therefore the subagent pop-out + the done-wake — working no matter
-    // which computer-use server the call came through.
+    // tree link, no done-wake). Fall back CAREFULLY: pick the session mid-turn
+    // right now (the caller is necessarily "running" while it calls this tool).
+    // But if MORE THAN ONE top-level session is running concurrently we can't
+    // tell which one called — guessing "the first" attached the subagent to the
+    // WRONG chat. So: prefer the take-over session if it's the one running;
+    // otherwise only auto-attach when EXACTLY ONE top-level session is running;
+    // if it's ambiguous, leave parent empty (a correctly-orphaned subagent still
+    // runs — better than surfacing under the wrong chat).
     if (parent.isEmpty()) {
-        for (const SessionRow &s : m_store.list()) {
-            if (s.state == QStringLiteral("running") && s.parentSessionId.isEmpty()) {
-                parent = s.id;
-                break;
-            }
+        QStringList runningTop;
+        for (const SessionRow &s : m_store.list())
+            if (s.state == QStringLiteral("running") && s.parentSessionId.isEmpty())
+                runningTop << s.id;
+        if (runningTop.size() == 1) {
+            parent = runningTop.first();
+        } else if (runningTop.size() > 1) {
+            for (const QString &sid : runningTop)
+                if (m_takeOverActive.contains(sid)) { parent = sid; break; }
         }
     }
     // Inline (ad-hoc subagent) overrides: the model can pick brain/model and give
@@ -4917,6 +5024,10 @@ bool ControlServer::isConfigMethod(const QString &method)
         QStringLiteral("voice.create_clone"), QStringLiteral("voice.delete_clone"),
         QStringLiteral("voice.set_default"),  QStringLiteral("voice.rename_clone"),
         QStringLiteral("voice.preview_clone"),
+        // Trust policies (jarvis#71) — mirrored to the phone (Settings → Permissions).
+        QStringLiteral("policy.list"),       QStringLiteral("policy.add"),
+        QStringLiteral("policy.update"),     QStringLiteral("policy.remove"),
+        QStringLiteral("policy.set_default"), QStringLiteral("policy.test"),
         QStringLiteral("take_over.request"), QStringLiteral("file.push"),
         QStringLiteral("file.get"),
         QStringLiteral("devices.pair_start"), QStringLiteral("devices.list"),
@@ -4945,6 +5056,12 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
     if (m == QStringLiteral("hooks.add"))       return handleHooksAdd(req);
     if (m == QStringLiteral("hooks.remove"))    return handleHooksRemove(req);
     if (m == QStringLiteral("hooks.test"))      return handleHooksTest(req);
+    if (m == QStringLiteral("policy.list"))     return handlePolicyList(req);
+    if (m == QStringLiteral("policy.add"))      return handlePolicyAdd(req);
+    if (m == QStringLiteral("policy.update"))   return handlePolicyUpdate(req);
+    if (m == QStringLiteral("policy.remove"))   return handlePolicyRemove(req);
+    if (m == QStringLiteral("policy.set_default")) return handlePolicySetDefault(req);
+    if (m == QStringLiteral("policy.test"))     return handlePolicyTest(req);
     if (m == QStringLiteral("model.list"))      return handleModelList(req);
     if (m == QStringLiteral("mcp.list"))        return handleMcpList(req);
     if (m == QStringLiteral("mcp.add"))         return handleMcpAdd(req);
@@ -5243,7 +5360,13 @@ void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrain
                        ev.fields.value(QStringLiteral("risk")).toString(QStringLiteral("high")),
                        ev.fields.value(QStringLiteral("summary")).toString(), sessionId);
     } else if (ev.kind == NormalizedBrainEvent::Kind::Final) {
-        m_notify.taskDone(QStringLiteral("Session ") + sessionId + QStringLiteral(" finished a turn."));
+        // Only TOP-LEVEL sessions raise the OS "task done" toast. A subagent
+        // finishing already wakes its parent with a [SUBAGENT DONE] summary
+        // (wakeParentForSubagent); toasting each child too spammed the desktop
+        // with raw session ids for internal agents the user never launched.
+        if (auto r = m_store.get(sessionId); !r || r->parentSessionId.isEmpty())
+            m_notify.taskDone(QStringLiteral("Session ") + sessionId
+                              + QStringLiteral(" finished a turn."));
         // Notification hook (observational).
         QJsonObject nh;
         nh.insert(QStringLiteral("session_id"), sessionId);

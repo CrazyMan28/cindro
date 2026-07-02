@@ -13,6 +13,13 @@ Item {
     property int currentIndex: 0
     signal navigate(int index)
 
+    // Bound by AppShell: true while a live agent desktop exists or the Computer
+    // page is the current page. Gates the COMPUTER item so it's discoverable the
+    // moment it has content, and NEVER a hidden page the user can be teleported
+    // to (the chat peek's "⛶ Full" used to land on a rail with no visible/active
+    // item — an "invisible" place).
+    property bool computerAvailable: false
+
     // Grouped into sections so the rail reads as a hierarchy instead of a flat
     // 15-deep list. Chat=0 / Voice=1 stay put (Main.qml + voiceIndex depend on
     // them); the rest are clustered. Keep this order in lock-step with the page
@@ -21,9 +28,9 @@ Item {
         { key: "home",      label: "HOME",      section: "WORKSPACE" },
         { key: "chat",      label: "CHAT",      section: "WORKSPACE" },
         { key: "voice",     label: "VOICE",     section: "WORKSPACE" },
-        // Computer page stays reachable via the chat peek's "⛶ Full" button, but
-        // it's hidden from the rail — the live agent desktop is in-chat now.
-        { key: "computer",  label: "COMPUTER",  section: "WORKSPACE", hidden: true },
+        // Computer appears when there's a live agent desktop to show (or the user
+        // is already on the page) — see `computerAvailable` + the delegate.
+        { key: "computer",  label: "COMPUTER",  section: "WORKSPACE", gated: "computer" },
         { key: "canvas",    label: "CANVAS",    section: "WORKSPACE" },
         { key: "widgets",   label: "WIDGETS",   section: "WORKSPACE" },
         { key: "sessions",  label: "SESSIONS",  section: "WORKSPACE" },
@@ -33,6 +40,7 @@ Item {
         { key: "schedules", label: "SCHEDULES", section: "MIND" },
         { key: "activity",  label: "ACTIVITY",  section: "MIND" },
         { key: "memgraph",  label: "GRAPH",     section: "MIND" },
+        { key: "replay",    label: "REPLAY",    section: "MIND" },
         { key: "mcp",       label: "MCP",       section: "SYSTEM" },
         { key: "plugins",   label: "PLUGINS",   section: "SYSTEM" },
         { key: "ssh",       label: "SSH",       section: "SYSTEM" },
@@ -186,11 +194,13 @@ Item {
                 id: navItem
                 required property int index
                 required property var modelData
-                readonly property bool hidden: modelData.hidden === true
+                readonly property bool hidden: modelData.gated === "computer" ? !rail.computerAvailable
+                                             : modelData.hidden === true
                 width: navList.width
                 height: hidden ? 0 : 40
                 visible: !hidden
                 enabled: !hidden
+                Behavior on height { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
                 readonly property bool active: rail.currentIndex === index
 
                 // entrance: stagger each row in from the left on first paint
@@ -457,6 +467,13 @@ Item {
                     ctx.strokeRect(2.5, 2.5, 13, 3.5)
                     ctx.strokeRect(2.5, 7.5, 13, 3.5)
                     ctx.strokeRect(2.5, 12.5, 13, 3.5)
+                    break
+                case "replay":
+                    // play triangle inside a circle (scrub/replay)
+                    ctx.beginPath(); ctx.arc(9, 9, 7, 0, Math.PI * 2); ctx.stroke()
+                    ctx.beginPath()
+                    ctx.moveTo(7, 5.5); ctx.lineTo(13, 9); ctx.lineTo(7, 12.5)
+                    ctx.closePath(); ctx.stroke()
                     break
                 case "settings":
                     ctx.beginPath(); ctx.arc(w/2, h/2, 3.2, 0, Math.PI*2); ctx.stroke()

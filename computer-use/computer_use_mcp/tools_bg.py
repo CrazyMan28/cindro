@@ -116,6 +116,35 @@ def register(mcp: FastMCP) -> None:
             return _err(exc)
 
     @mcp.tool()
+    def watch(command: str, interval_sec: int = 60, learn_checks: int = 5,
+              sensitivity: str = "medium", mode: str = "auto",
+              max_checks: int = 0, name: str = "") -> str:
+        """PROACTIVE ANOMALY WATCHER (jarvis#68): silently watch something in the
+        background and only WAKE you when it does something UNUSUAL — a low-noise
+        guardian, not a firehose.
+
+        Runs COMMAND every interval_sec. The first `learn_checks` runs LEARN a
+        baseline (nothing fires during learning). After that:
+          - if the output is a NUMBER (cpu %, queue depth, error count), it wakes
+            you when the value deviates from the learned mean by more than the
+            sensitivity threshold;
+          - otherwise it treats output as LINES and wakes you when a NEW line
+            appears that wasn't in the baseline (a new error in a log).
+        sensitivity: low (only wild swings) | medium | high (twitchy). `mode`:
+        auto|numeric|lines. max_checks=0 = watch forever (until bg_stop).
+
+        A given anomaly alerts ONCE, not every interval — a persistent condition
+        won't spam you. Examples:
+        watch("cat /proc/loadavg", name="load"),
+        watch("tail -n 40 /var/log/app.log", mode="lines", name="app-errors"),
+        watch("systemctl is-failed --quiet x && echo DOWN || echo UP", name="svc")."""
+        try:
+            return json.dumps(bg_jobs.watch(command, interval_sec, learn_checks,
+                                            sensitivity, mode, max_checks, name))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
     def wake_me_in(seconds: int, note: str = "") -> str:
         """Sleep, then WAKE yourself after `seconds`, optionally with a note-to-self
         that's handed back to you on wake. Use to pause and resume later

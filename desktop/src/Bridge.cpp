@@ -602,6 +602,54 @@ void Bridge::setAgentMode(const QString &mode)
     saveSettings(patch);
 }
 
+// --- Trust policies (jarvis#71) ---------------------------------------------
+
+void Bridge::policyList()
+{
+    request(QStringLiteral("policy.list"), {});
+}
+
+void Bridge::policyAdd(const QString &tool, const QString &app,
+                       const QString &action, const QString &note)
+{
+    QVariantMap p;
+    p.insert(QStringLiteral("tool"), tool);
+    p.insert(QStringLiteral("app"), app);
+    p.insert(QStringLiteral("action"), action);
+    p.insert(QStringLiteral("note"), note);
+    request(QStringLiteral("policy.add"), p);
+}
+
+void Bridge::policyUpdate(const QString &id, const QString &action)
+{
+    QVariantMap p;
+    p.insert(QStringLiteral("id"), id);
+    p.insert(QStringLiteral("action"), action);
+    request(QStringLiteral("policy.update"), p);
+}
+
+void Bridge::policyRemove(const QString &id)
+{
+    QVariantMap p;
+    p.insert(QStringLiteral("id"), id);
+    request(QStringLiteral("policy.remove"), p);
+}
+
+void Bridge::policySetDefault(const QString &action)
+{
+    QVariantMap p;
+    p.insert(QStringLiteral("action"), action);
+    request(QStringLiteral("policy.set_default"), p);
+}
+
+void Bridge::policyTest(const QString &tool, const QString &app)
+{
+    QVariantMap p;
+    p.insert(QStringLiteral("tool"), tool);
+    p.insert(QStringLiteral("app"), app);
+    request(QStringLiteral("policy.test"), p);
+}
+
 void Bridge::listMcp()
 {
     request(QStringLiteral("mcp.list"), {});
@@ -705,6 +753,17 @@ void Bridge::loadSessionHistory(const QString &sessionId)
     QVariantMap params;
     params.insert(QStringLiteral("session_id"), sessionId);
     request(QStringLiteral("session.history"), params, sessionId);
+}
+
+void Bridge::loadReplay(const QString &sessionId)
+{
+    // Mission Control Replay (jarvis#66): fetch ANY session's full timeline for
+    // scrubbing. Tagged so its reply is NOT gated to the active chat (unlike
+    // loadSessionHistory) and KEEPS per-event ts for the timeline.
+    QVariantMap params;
+    params.insert(QStringLiteral("session_id"), sessionId);
+    request(QStringLiteral("session.history"), params,
+            QStringLiteral("__replay__:") + sessionId);
 }
 
 // ---- Devices (pairing) -----------------------------------------------------
@@ -2138,7 +2197,11 @@ void Bridge::refreshAgentDesktop()
     }
     QVariantMap params;
     params.insert(QStringLiteral("session_id"), m_sessionId);
-    request(QStringLiteral("agent_desktop.info"), params, QStringLiteral("__agentdesk__"));
+    // Tag the request with the session it's for, so a late/out-of-order reply
+    // that lands AFTER the user switched sessions can be dropped instead of
+    // repainting the peek/mirror with the WRONG session's nested desktop.
+    request(QStringLiteral("agent_desktop.info"), params,
+            QStringLiteral("__agentdesk__:") + m_sessionId);
 }
 
 void Bridge::setCoworkerSessionId(const QString &id)
@@ -3176,6 +3239,11 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         // driving a nested desktop — clear the flag quietly (no error toast) and
         // revert the video bearer to the global engine's.
         if (method == QStringLiteral("agent_desktop.info")) {
+            // Same stale-reply guard as the success branch: ignore a
+            // no_agent_desktop that arrives for a session we already left.
+            if (ctx.startsWith(QStringLiteral("__agentdesk__:"))
+                && ctx.mid(QStringLiteral("__agentdesk__:").size()) != m_sessionId)
+                return;
             m_videoBearer = computeUseBearer();
             setHasAgentDesktop(false);
             return;
@@ -3349,6 +3417,13 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
     // (and Home/Computer) can mirror it even for a plain chat (not just explicit
     // co-work). This is what makes "watch it live" work for ordinary sessions.
     if (method == QStringLiteral("agent_desktop.info")) {
+        // Drop a stale/out-of-order reply: if the user switched sessions while
+        // this query was in flight, applying it would point the peek/mirror at
+        // the OLD session's nested desktop. The ctx was tagged with the session
+        // the query was issued for (refreshAgentDesktop).
+        if (ctx.startsWith(QStringLiteral("__agentdesk__:"))
+            && ctx.mid(QStringLiteral("__agentdesk__:").size()) != m_sessionId)
+            return;
         const int port = result.value(QStringLiteral("port")).toInt();
         if (port > 0)
             setVideoEndpoint(QStringLiteral("http://127.0.0.1:") + QString::number(port));
@@ -3478,6 +3553,18 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         // too so the LockGate clears instantly.
         emit authStateChanged(result.value(QStringLiteral("challenge_id")).toString(),
                               QStringLiteral("approved"));
+    } else if (method == QStringLiteral("policy.list")) {
+        emit policyListed(result);
+    } else if (method == QStringLiteral("policy.add")
+               || method == QStringLiteral("policy.update")
+               || method == QStringLiteral("policy.remove")
+               || method == QStringLiteral("policy.set_default")) {
+        emit policyChanged();
+        policyList(); // refresh the Settings card after a mutation
+    } else if (method == QStringLiteral("policy.test")) {
+        emit policyTested(result.value(QStringLiteral("action")).toString(),
+                          result.value(QStringLiteral("rule_id")).toString(),
+                          result.value(QStringLiteral("note")).toString());
     } else if (method == QStringLiteral("mcp.list")) {
         emit mcpListed(result.value(QStringLiteral("servers")).toList());
     } else if (method == QStringLiteral("mcp.add")
@@ -3517,6 +3604,18 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
     } else if (method == QStringLiteral("session.delete")) {
         // ctx carries the deleted session id; the Sessions page refreshes on it.
         emit sessionDeleted(ctx);
+    } else if (method == QStringLiteral("session.history")
+               && ctx.startsWith(QStringLiteral("__replay__:"))) {
+        // Mission Control Replay (jarvis#66): ungated (any session) + keeps ts.
+        QVariantList events;
+        for (const QVariant &v : result.value(QStringLiteral("events")).toList()) {
+            const QVariantMap row = v.toMap();
+            QVariantMap evm = row.value(QStringLiteral("ev")).toMap();
+            evm.insert(QStringLiteral("seq"), row.value(QStringLiteral("seq")));
+            evm.insert(QStringLiteral("ts"), row.value(QStringLiteral("ts")));
+            events << evm;
+        }
+        emit replayLoaded(result.value(QStringLiteral("session")).toMap(), events);
     } else if (method == QStringLiteral("session.history")) {
         // events: [{seq,ts,ev:{kind,...}}] — fold the inner ev out for QML.
         QVariantList events;

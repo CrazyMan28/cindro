@@ -14,6 +14,8 @@ Item {
     // Start a brand-new conversation (AppShell routes this to the Chat page and
     // tells JarvisPanel.startNewChat()).
     signal newChat()
+    // Scrub a session's timeline in Mission Control Replay (jarvis#66).
+    signal replaySession(string sessionId)
 
     ListModel { id: sessionsModel }
 
@@ -27,15 +29,30 @@ Item {
         function onSessionDeleted(sessionId) { page.refresh() }
         function onSessionsListed(sessions) {
             sessionsModel.clear()
+            // Subagent CHILD sessions are not normal chats: they belong to their
+            // parent (master) chat, live in its right-side sub-agent pop-out, and
+            // disappear when done. They never render as top-level rows here — the
+            // parent row shows a live "✦ n" badge while its children run (jarvis#72).
+            var liveKids = {}
+            for (var k = 0; k < sessions.length; k++) {
+                var c = sessions[k]
+                var cpar = c.parent_session_id !== undefined ? ("" + c.parent_session_id) : ""
+                if (cpar.length > 0 && (c.state === "running" || c.state === "starting"))
+                    liveKids[cpar] = (liveKids[cpar] || 0) + 1
+            }
             for (var i = 0; i < sessions.length; i++) {
                 var s = sessions[i]
+                var spar = s.parent_session_id !== undefined ? ("" + s.parent_session_id) : ""
+                if (spar.length > 0)
+                    continue
                 sessionsModel.append({
                     "sid": s.id !== undefined ? s.id : "",
                     "title": (s.title && s.title.length > 0) ? s.title : "Untitled session",
                     "brain": s.brain !== undefined ? s.brain : "",
                     "model": s.model !== undefined ? s.model : "",
                     "sstate": s.state !== undefined ? s.state : "idle",
-                    "updated": s.updated !== undefined ? s.updated : 0
+                    "updated": s.updated !== undefined ? s.updated : 0,
+                    "liveAgents": (liveKids[s.id] !== undefined ? liveKids[s.id] : 0)
                 })
             }
         }
@@ -143,6 +160,7 @@ Item {
                 required property string model
                 required property string sstate
                 required property double updated
+                required property int liveAgents
 
                 // Inline two-step delete: the trash icon arms a "Delete?" confirm
                 // chip so a misclick can't nuke a thread.
@@ -237,23 +255,46 @@ Item {
                     ColumnLayout {
                         spacing: 4
                         Layout.alignment: Qt.AlignVCenter
-                        // state pill
-                        Rectangle {
+                        RowLayout {
                             Layout.alignment: Qt.AlignRight
-                            radius: 6
-                            implicitWidth: stTxt.implicitWidth + 14
-                            implicitHeight: 18
-                            color: "transparent"
-                            border.width: 1
-                            border.color: page.stateColor(row.sstate)
-                            Text {
-                                id: stTxt
-                                anchors.centerIn: parent
-                                text: row.sstate.toUpperCase()
-                                color: page.stateColor(row.sstate)
-                                font.family: Theme.fontDisplay
-                                font.pixelSize: 9
-                                font.letterSpacing: Theme.trackTight
+                            spacing: 6
+                            // live subagents badge: this chat's dispatched agents
+                            // still working (children hidden from the list itself)
+                            Rectangle {
+                                visible: row.liveAgents > 0
+                                radius: 6
+                                implicitWidth: liveTxt.implicitWidth + 14
+                                implicitHeight: 18
+                                color: Qt.rgba(0.694, 0.294, 1.0, 0.10)
+                                border.width: 1
+                                border.color: Qt.rgba(0.694, 0.294, 1.0, 0.45)
+                                Text {
+                                    id: liveTxt
+                                    anchors.centerIn: parent
+                                    text: "✦ " + row.liveAgents
+                                    color: Theme.violet
+                                    font.family: Theme.fontDisplay
+                                    font.pixelSize: 9
+                                    font.letterSpacing: Theme.trackTight
+                                }
+                            }
+                            // state pill
+                            Rectangle {
+                                radius: 6
+                                implicitWidth: stTxt.implicitWidth + 14
+                                implicitHeight: 18
+                                color: "transparent"
+                                border.width: 1
+                                border.color: page.stateColor(row.sstate)
+                                Text {
+                                    id: stTxt
+                                    anchors.centerIn: parent
+                                    text: row.sstate.toUpperCase()
+                                    color: page.stateColor(row.sstate)
+                                    font.family: Theme.fontDisplay
+                                    font.pixelSize: 9
+                                    font.letterSpacing: Theme.trackTight
+                                }
                             }
                         }
                         Text {
@@ -280,6 +321,43 @@ Item {
                         }
                         bridge.openSession(row.sid)
                         page.openInChat(row.sid)
+                    }
+                }
+
+                // ---- Replay button (overlay, left of the delete actions) --------
+                // Opens this session in Mission Control Replay (jarvis#66).
+                Rectangle {
+                    id: replayBtn
+                    anchors.right: actions.left
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: replayInner.implicitWidth + 16
+                    height: 26
+                    radius: Theme.radiusXs
+                    visible: !row.confirming
+                    color: replayMa.containsMouse ? Theme.accentDim : "transparent"
+                    border.width: 1
+                    border.color: replayMa.containsMouse ? Theme.accent
+                                  : (row.hot ? Theme.hairlineSoft : "transparent")
+                    Behavior on border.color { ColorAnimation { duration: 110 } }
+                    opacity: row.hot ? 1.0 : 0.0
+                    Behavior on opacity { NumberAnimation { duration: 110 } }
+                    Row {
+                        id: replayInner
+                        anchors.centerIn: parent
+                        spacing: 5
+                        Text { text: "▶"; color: replayMa.containsMouse ? Theme.accentBright : Theme.accent
+                            font.pixelSize: 10; anchors.verticalCenter: parent.verticalCenter }
+                        Text { text: "REPLAY"; color: replayMa.containsMouse ? Theme.accentBright : Theme.textMuted
+                            font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: Theme.trackMid
+                            anchors.verticalCenter: parent.verticalCenter }
+                    }
+                    MouseArea {
+                        id: replayMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: page.replaySession(row.sid)
                     }
                 }
 

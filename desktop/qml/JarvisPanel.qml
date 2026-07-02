@@ -41,7 +41,13 @@ Item {
     // (PLAN card on top of the desktop view) instead of cluttering the transcript.
     property string todoSpec: ""
     property bool todoOpen: true
+    // The session the current plan BELONGS to. hasPlan is true only when a plan
+    // exists AND it's this session's — so a plan NEVER shows on a fresh/other
+    // chat no matter how it got set (new chat, session switch, app reopen, widget
+    // replay). This is the robust fix for "old chat's plan showed on a new chat".
+    property string todoSpecSession: ""
     readonly property bool hasPlan: panel.todoSpec.length > 0
+                                    && panel.todoSpecSession === ("" + bridge.sessionId)
     // Live subagents (child sessions of THIS chat) — filled from the sub-agent tree.
     // Each: {id,title,agent,status}. Click one to open it + watch its tool calls.
     property var subagents: []
@@ -49,10 +55,19 @@ Item {
     // If the CURRENT session is itself a subagent (has a parent), this holds the
     // parent id so we can show a "← Main agent" button to jump back.
     property string currentParentId: ""
-    // Auto-open the panel on a new plan, a dispatched subagent, OR an active desktop.
-    onHasPlanChanged: if (hasPlan) peekOpen = true
-    onHasSubagentsChanged: if (hasSubagents) peekOpen = true
-    onAgentDeskActiveChanged: if (agentDeskActive) peekOpen = true
+    // Auto-open the panel on a new plan, a dispatched subagent, or an active
+    // desktop — but an explicit dismissal (✕ / "▣ Hide") STICKS for that session
+    // until the user reopens it ("▣ Watch"). Auto-opening from level signals with
+    // no snooze is what made the panel pop back open endlessly (jarvis#72).
+    // hasSubagents deliberately does NOT auto-open: it flickers false→true on
+    // every session switch (subagents=[] then reload), which re-popped the panel.
+    property string peekSnoozedSession: "__none__"
+    function autoOpenPeek() {
+        if (("" + bridge.sessionId) !== peekSnoozedSession)
+            peekOpen = true
+    }
+    onHasPlanChanged: if (hasPlan) autoOpenPeek()
+    onAgentDeskActiveChanged: if (agentDeskActive) autoOpenPeek()
     function refreshSubagents() { if (bridge.connected) bridge.loadSubAgentTree() }
     signal requestComputerPage()   // peek "Full" -> Computer page (AppShell wires it)
     // Slash-command navigation requests (AppShell wires these to page switches).
@@ -356,13 +371,22 @@ Item {
                 var r = rows[i]
                 var rid = "" + (r.id !== undefined ? r.id : "")
                 var rparent = "" + (r.parent !== undefined ? r.parent : "")
-                if (rparent === ("" + bridge.sessionId))
-                    kids.push({
-                        "id": rid,
-                        "title": "" + (r.title !== undefined ? r.title : ""),
-                        "agent": "" + (r.agent !== undefined ? r.agent : (r.brain !== undefined ? r.brain : "")),
-                        "status": "" + (r.status !== undefined ? r.status : "")
-                    })
+                // A child needs a REAL parent match. Without the length guard, a
+                // fresh chat (sessionId "") matched every root session ("" == "")
+                // and listed ALL chats as subagents (jarvis#72).
+                if (rparent.length > 0 && rparent === ("" + bridge.sessionId)) {
+                    var rstatus = "" + (r.status !== undefined ? r.status : "")
+                    // Subagents DISAPPEAR when done: only live (or failed) children
+                    // stay in the pop-out. A finished run already reported back into
+                    // this transcript as a [SUBAGENT DONE] summary turn (jarvis#72).
+                    if (rstatus === "running" || rstatus === "starting" || rstatus === "error")
+                        kids.push({
+                            "id": rid,
+                            "title": "" + (r.title !== undefined ? r.title : ""),
+                            "agent": "" + (r.agent !== undefined ? r.agent : (r.brain !== undefined ? r.brain : "")),
+                            "status": rstatus
+                        })
+                }
                 // Is the CURRENT session itself a child? remember its parent.
                 if (rid === ("" + bridge.sessionId) && rparent.length > 0)
                     pid = rparent
@@ -371,9 +395,10 @@ Item {
             panel.currentParentId = pid
         }
         // A subagent was dispatched (by the user via the palette OR by the model):
-        // open the panel + refresh the list so it shows up immediately.
+        // open the panel (unless the user dismissed it for this session) + refresh
+        // the list so it shows up immediately.
         function onAgentDispatched(sessionId, agent) {
-            panel.peekOpen = true
+            panel.autoOpenPeek()
             panel.refreshSubagents()
         }
 
@@ -436,8 +461,11 @@ Item {
                 return
             }
             // Genuine switch (open another / delete current / + New / coworker /
-            // voice / cleared): the transcript no longer belongs here — wipe it.
+            // voice / cleared): the transcript no longer belongs here — wipe it,
+            // INCLUDING the old session's PLAN card (it's per-session; a stale
+            // plan haunting a fresh chat was part of the jarvis#72 leak).
             chatModel.clear()
+            panel.todoSpec = ""
             panel.thinking = false
             panel.busy = false
             panel.pendingNewSession = false
@@ -520,8 +548,12 @@ Item {
             var twid = (w.id !== undefined) ? ("" + w.id) : ""
             if (twid.indexOf("__todo__") === 0) {
                 var tsid = (w.session_id !== undefined) ? ("" + w.session_id) : ""
-                if (tsid.length > 0 && tsid !== bridge.sessionId) return
+                // A plan MUST belong to the current session. A sessionless chat
+                // (bridge.sessionId "") owns NO plan — reject a replayed/foreign
+                // __todo__ so it can't paint into a fresh chat.
+                if (tsid.length === 0 || tsid !== ("" + bridge.sessionId)) return
                 panel.todoSpec = JSON.stringify(w.spec)
+                panel.todoSpecSession = tsid
                 panel.todoOpen = true
                 return
             }
@@ -774,10 +806,19 @@ Item {
             }
 
             // Watch the agent's desktop / chrome tab inline (the peek panel).
+            // Opening by hand clears the snooze; hiding snoozes this session.
             Widgets.PillButton {
                 label: panel.peekOpen ? "▣ Hide" : "▣ Watch"
                 Layout.alignment: Qt.AlignVCenter
-                onClicked: panel.peekOpen = !panel.peekOpen
+                onClicked: {
+                    if (panel.peekOpen) {
+                        panel.peekOpen = false
+                        panel.peekSnoozedSession = "" + bridge.sessionId
+                    } else {
+                        panel.peekSnoozedSession = "__none__"
+                        panel.peekOpen = true
+                    }
+                }
             }
 
             // + New chat — wipe the transcript and drop the current session so the
@@ -1576,7 +1617,12 @@ Item {
                 Item { Layout.fillWidth: true }
                 Text { text: "✕"; color: Theme.textMuted; font.pixelSize: 13
                     MouseArea { anchors.fill: parent; anchors.margins: -6
-                        cursorShape: Qt.PointingHandCursor; onClicked: panel.peekOpen = false } }
+                        cursorShape: Qt.PointingHandCursor
+                        // Dismissal sticks: snooze auto-open for this session (jarvis#72).
+                        onClicked: {
+                            panel.peekOpen = false
+                            panel.peekSnoozedSession = "" + bridge.sessionId
+                        } } }
             }
 
             // ---- PLAN card (the model's live todo/checklist) — ON TOP --------
@@ -1939,6 +1985,16 @@ Item {
         panel.chatSessionId = ""
         bridge.newSession()
         chatModel.clear()
+        // A fresh chat starts with a BLANK plan + no subagents. newSession() may
+        // not emit sessionIdChanged (a fresh-on-fresh + New leaves the id already
+        // empty), so the onSessionIdChanged cleanup never runs — clear the
+        // per-session PLAN card / subagents / snooze here too, else an old chat's
+        // plan haunts the new one (reported: "new chat had an old chat's plan").
+        panel.todoSpec = ""
+        panel.todoSpecSession = ""
+        panel.subagents = []
+        panel.peekSnoozedSession = "__none__"
+        panel.peekOpen = false
         panel.busy = false
         panel.thinking = false
         inputArea.text = ""

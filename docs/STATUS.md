@@ -4,7 +4,58 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-06-30._
+_Last updated: 2026-07-01._
+
+---
+
+## 🆕 Feature wave: permission engine, self-healing, committee, watcher, replay + UX bug sweep (2026-07-01)
+
+Closed the six open feature/bug issues and a full adversarial UX bug hunt, all on `dev`:
+
+- **Trust Policies — a real permission engine (#71).** Per-tool / per-app `allow`/`ask`/`deny`
+  rules ENFORCED at the tool layer, not just advice to the model. The computer-use engine wraps
+  every tool call (`computer_use_mcp/policy.py`): deny fails the call, ask pops an approval on
+  desktop **and** phone via the ask-bus. Rules live in `~/.config/jarvis/trust_policies.json`
+  (glob tool + focused-app, most-specific-wins, case-insensitive app match). Core `TrustPolicyStore`
+  (CRUD + evaluation mirror + preamble clause), Contract A `policy.*` on control + device
+  (mutations biometric-tier on the phone), and a **Settings → Permissions** card on desktop + Android
+  (default-action selector, click-to-cycle rule pills, add/remove). Tests: `trust_policy_test`
+  (ctest) + `test_policy.py` (12).
+- **Failure Self-Healing Loop (#67).** Every input tool (click/drag/scroll/key/type) runs through
+  `selfheal.run()`: transient retry with backoff, then a 32×32 screen-hash before/after to detect a
+  no-op (result carries `self_heal.screen_changed`+hint), escalating to a hard "RE-PLAN" after 3
+  consecutive misses. Audited to `selfheal_log.jsonl`. `JARVIS_SELF_HEAL=0` disables verification.
+  `test_selfheal.py` (10).
+- **Agent Committee Mode (#69).** `agent_committee(task, strategies[], judge=true)` — N subagents
+  solve one task in parallel with different strategies, an optional judge subagent picks/merges the
+  best. Rides the existing agents.dispatch/result machinery. `test_committee.py` (5).
+- **Proactive Anomaly Watcher (#68).** `watch(command, …)` background job that learns a baseline
+  then wakes the session ONLY on a genuine deviation — numeric (running mean/stddev, sensitivity
+  low/med/high with an absolute floor) or lines (a new log line). Low-noise: silent during learning;
+  one alert per anomaly then cooldown. Pure detection core `anomaly.py`; `test_anomaly.py` (10).
+- **Mission Control Replay (#66).** A desktop REPLAY page scrubs any past session like a video —
+  the full normalized timeline rebuilt through the live `ChatDelegate` (messages, thoughts, tool
+  calls, screenshots, diffs) with ⏮/step/play/⏭, a scrubber, and 0.5–4× speed. `bridge.loadReplay`
+  reuses session.history un-gated + with per-event ts; opened via a "▶ Replay" row action on Sessions.
+- **Subagent lifecycle + #72 fix.** Subagents are now first-class-distinct from chats: children
+  never list as top-level rows (desktop/Android/extension), the parent shows a live "✦ n" badge,
+  finished subagents disappear from the peek, and the daemon no longer fans `session.opened`/FCM for
+  child sessions. Fixed the root of "every chat pops out as a subagent" (empty-sessionId parent match),
+  the un-dismissable peek (sticky snooze), the blank Settings page (Repeater count derived from the
+  nav list), and the stranded COMPUTER "Full" button (contextual rail item).
+- **Adversarial bug sweep (8 fixed).** Incl. HIGH: Android app-open fingerprint gate bypassed by
+  chat deep-links (now gated on every path); extension side panel leaking other chats' events/widgets
+  into a fresh panel (strict session scoping). Plus stale `agent_desktop.info` replies, subagent
+  "task done" toast spam, `agent_start` wrong-parent attribution, extension subagent rows + missing
+  delete. See git log on `dev`.
+- **Chrome extension:** the model's todo/plan now renders in a dedicated collapsible **PLAN panel**
+  above the transcript (not inline), cleared per session.
+- **Phone auto-jump fixed:** opening the Android app no longer teleports you into a session started
+  on the desktop.
+
+Backlogs opened as issues: **#75** (Windows own-seat / second-cursor engineering plan) and **#76**
+(Hermes-comparison feature backlog). Verified: ctest 26/26, engine pytest 460, gui_selftest, Android
+`assembleDebug`, extension JS syntax.
 
 ---
 

@@ -32,6 +32,12 @@ const els = {
   sessionsClose: $("sessionsClose"),
   slashPalette: $("slashPalette"),
   quickbar: $("quickbar"),
+  planPanel: $("planPanel"),
+  planHead: $("planHead"),
+  planBody: $("planBody"),
+  planCount: $("planCount"),
+  planToggle: $("planToggle"),
+  planDismiss: $("planDismiss"),
 };
 
 // ----------------------------------------------------------------- state
@@ -272,9 +278,13 @@ function onFrame(raw) {
   let msg;
   try { msg = JSON.parse(raw); } catch (e) { return; }
 
-  // Unsolicited events.
+  // Unsolicited events. Scope STRICTLY to the panel's current session: with no
+  // session yet (fresh panel), accept NOTHING — the daemon broadcasts every
+  // session's events to unsubscribed control clients, so a null sessionId used
+  // to mean "accept everything" and leaked other chats (desktop/phone/other
+  // tabs/subagents) into a blank panel before the user sent anything.
   if (msg.event === "session.event" && msg.data) {
-    if (!sessionId || msg.data.session_id === sessionId) {
+    if (sessionId && msg.data.session_id === sessionId) {
       handleEv(msg.data.ev || {});
     }
     return;
@@ -290,13 +300,27 @@ function onFrame(raw) {
 
   // Widget bus (render_widget / todo plan / charts) over the control WS.
   if (msg.event === "widget.render" && msg.data) {
-    // Only show widgets scoped to the current session (or session-less/global).
+    // Scope to the current session. No active session yet -> drop it, so another
+    // chat's widgets (incl. its PLAN card) can't paint into a blank panel. A
+    // session-less/global widget (empty session_id) is allowed only once THIS
+    // panel has a session, matching the transcript gate above.
     const wsid = msg.data.session_id || "";
-    if (!wsid || !sessionId || wsid === sessionId) renderWidget(msg.data);
+    if (!sessionId) return;
+    if (wsid && wsid !== sessionId) return;
+    // The model's live plan/checklist (id "__todo__:<session>") goes to the
+    // dedicated PLAN panel above the transcript, NOT inline in chat — matches
+    // the desktop peek's PLAN card so todos don't scroll away or clutter chat.
+    if (String(msg.data.id || "").indexOf("__todo__") === 0) { renderPlan(msg.data); return; }
+    renderWidget(msg.data);
     return;
   }
-  if (msg.event === "widget.remove" && msg.data) { removeWidget(msg.data.id || ""); return; }
-  if (msg.event === "widget.clear") { clearWidgets(); return; }
+  if (msg.event === "widget.remove" && msg.data) {
+    const rid = String(msg.data.id || "");
+    if (rid.indexOf("__todo__") === 0) { dismissPlan(); return; }
+    removeWidget(rid);
+    return;
+  }
+  if (msg.event === "widget.clear") { clearWidgets(); dismissPlan(); return; }
 
   // RPC reply.
   if (typeof msg.id === "number" && pending.has(msg.id)) {
@@ -725,6 +749,62 @@ function removeWidget(id) {
   if (el) { const row = el.closest(".row") || el; row.remove(); widgetEls.delete(id); }
 }
 
+// ----- PLAN panel (the model's todo checklist, pinned above the transcript) --
+let planDismissed = false;
+
+function renderPlan(data) {
+  let spec = data.spec;
+  if (typeof spec === "string") { try { spec = JSON.parse(spec); } catch (e) { return; } }
+  if (!spec) return;
+  planDismissed = false;
+  els.planBody.innerHTML = "";
+  // The todo spec is a column: [header row (title + "done/total" badge),
+  // divider, then one row per item]. Render items as clean plan rows; pull the
+  // count out of the badge for the header. We walk the spec instead of using the
+  // generic widget renderer so the plan reads as a checklist, not a raw card.
+  const kids = asArray(spec.children);
+  let count = "";
+  const items = [];
+  for (const k of kids) {
+    if (k && k.type === "row" && Array.isArray(k.children)) {
+      // header row carries a badge with "done/total"
+      const badge = k.children.find((c) => c && c.type === "badge");
+      if (badge && /\d+\s*\/\s*\d+/.test(String(badge.text || ""))) { count = String(badge.text); continue; }
+      // item row: [glyph text, label text]
+      const texts = k.children.filter((c) => c && c.type === "text");
+      if (texts.length >= 2) {
+        const label = String(texts[texts.length - 1].text || "");
+        const strike = !!texts[texts.length - 1].strike;
+        const glyph = String(texts[0].text || "○");
+        let status = "pending";
+        if (strike || glyph === "✓" || glyph === "✔") status = "done";
+        else if (texts[texts.length - 1].weight >= 700) status = "in_progress";
+        items.push({ label, status, glyph });
+      }
+    }
+  }
+  if (items.length === 0) { dismissPlan(); return; }
+  for (const it of items) {
+    const row = document.createElement("div");
+    row.className = "plan-item " + it.status;
+    const box = document.createElement("span");
+    box.className = "box";
+    box.textContent = it.status === "done" ? "✓" : (it.status === "in_progress" ? "◔" : "○");
+    const lab = document.createElement("span");
+    lab.textContent = it.label;
+    row.appendChild(box); row.appendChild(lab);
+    els.planBody.appendChild(row);
+  }
+  els.planCount.textContent = count || (items.filter((i) => i.status === "done").length + "/" + items.length);
+  els.planPanel.classList.remove("hidden");
+}
+
+function dismissPlan() {
+  els.planPanel.classList.add("hidden");
+  els.planBody.innerHTML = "";
+  els.planCount.textContent = "";
+}
+
 function clearWidgets() {
   for (const [, el] of widgetEls) { const row = el.closest(".row") || el; row.remove(); }
   widgetEls.clear();
@@ -917,7 +997,11 @@ async function loadSessions() {
   renderSessions(null, "Loading…");
   try {
     const res = await rpc("session.list", {});
-    const list = (res && res.sessions) || [];
+    let list = (res && res.sessions) || [];
+    // Subagent CHILD sessions are not standalone conversations — they belong to
+    // their parent chat and disappear when done. Never list them as top-level
+    // rows (parity with desktop SessionsPage + Android SessionsViewModel).
+    list = list.filter((s) => !(s.parent_session_id && String(s.parent_session_id).length));
     // Newest first by `updated` (falls back to created, then id order).
     list.sort((a, b) => (b.updated || b.created || 0) - (a.updated || a.created || 0));
     renderSessions(list);
@@ -956,9 +1040,30 @@ function renderSessions(list, note) {
     const meta = document.createElement("div");
     meta.className = "sess-meta";
     meta.textContent = [s.brain, s.state].filter(Boolean).join(" · ");
-    item.appendChild(title);
-    item.appendChild(meta);
-    item.addEventListener("click", () => pickSession(s));
+    const texts = document.createElement("div");
+    texts.className = "sess-texts";
+    texts.appendChild(title);
+    texts.appendChild(meta);
+    texts.addEventListener("click", () => pickSession(s));
+    item.appendChild(texts);
+    // Delete affordance (parity with desktop/Android). Two-step: first click
+    // arms, second confirms — so a misclick can't nuke a thread.
+    const del = document.createElement("button");
+    del.className = "sess-del";
+    del.textContent = "✕";
+    del.title = "Delete conversation";
+    let armed = false;
+    del.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!armed) { armed = true; del.textContent = "Delete?"; del.classList.add("armed");
+        setTimeout(() => { armed = false; del.textContent = "✕"; del.classList.remove("armed"); }, 2500); return; }
+      try {
+        await rpc("session.delete", { session_id: s.id });
+        if (s.id === sessionId) newSession();
+        loadSessions();
+      } catch (err) { /* leave the row; list reloads on next open */ }
+    });
+    item.appendChild(del);
     box.appendChild(item);
   }
 }
@@ -1024,6 +1129,7 @@ function clearTranscript() {
   endLiveBubble();
   lastToolEl = null;
   els.transcript.innerHTML = "";
+  dismissPlan();   // the plan is per-session — never carry it into another chat
 }
 
 // "+ New": drop the session id so the next Send creates a fresh one (re-priming
@@ -1270,6 +1376,15 @@ els.brain.addEventListener("change", onBrainChange);
 els.sessionsBtn.addEventListener("click", toggleSessions);
 els.sessionsClose.addEventListener("click", closeSessions);
 els.newBtn.addEventListener("click", newSession);
+
+// PLAN panel: collapse on header click, dismiss on ✕ (stops event bubbling so
+// the ✕ doesn't also toggle the collapse).
+if (els.planHead) {
+  els.planHead.addEventListener("click", () => els.planPanel.classList.toggle("collapsed"));
+}
+if (els.planDismiss) {
+  els.planDismiss.addEventListener("click", (e) => { e.stopPropagation(); dismissPlan(); });
+}
 
 // Quick-flow chips (Agents / Skills / Running / Commands).
 if (els.quickbar) {

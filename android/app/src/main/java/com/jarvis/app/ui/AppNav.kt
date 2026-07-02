@@ -163,16 +163,13 @@ fun AppNav(
         }
     }
 
-    // A session was created on ANY surface (phone/desktop/MCP/scheduler): the daemon
-    // fanned out a 'session.opened' event. While the app is in the foreground, open
-    // that session's chat — same route the FCM/wake deep-link uses.
-    LaunchedEffect(Unit) {
-        app.repository.sessionOpened.collect { opened ->
-            if (app.pairingStore.isPaired && opened.sessionId.isNotEmpty()) {
-                nav.navigate(Routes.chat(opened.sessionId))
-            }
-        }
-    }
+    // A session created on ANOTHER surface (desktop/MCP/scheduler) must NEVER yank
+    // this phone into its chat — starting a chat on the desktop and then opening
+    // the app dropped you straight inside that session. The phone's OWN creations
+    // navigate from the session.create reply (HomeScreen/SessionsScreen onCreated),
+    // and JarvisConnectionService already posts a notification for every foreign
+    // session.opened whose tap deep-links into chat (deepLinkSessionId above). So
+    // there is deliberately NO auto-navigation collector here.
 
     // Deep-link from a tapped "Unlock Jarvis" push into the Approve screen (the
     // phone leg of the 2FA + fingerprint cross-device unlock).
@@ -268,18 +265,27 @@ fun AppNav(
         }
 
         composable(Routes.CHAT) { entry ->
-            val sessionId = entry.arguments?.getString("sessionId").orEmpty()
-            val wake = entry.arguments?.getString("wake") == "true"
-            val vm: ChatViewModel = viewModel(
-                key = "chat-$sessionId",
-                factory = ChatViewModel.factory(app, sessionId),
-            )
-            ChatScreen(
-                viewModel = vm,
-                activity = activity,
-                onBack = { nav.popBackStack() },
-                autoStartVoice = wake,
-            )
+            // The app-open fingerprint gate must hold on EVERY path into chat —
+            // a notification tap / "Hey Jarvis" wake deep-links straight here, so
+            // without this check anyone could read private chat history from the
+            // lock screen while SHELL was still gated underneath. Gate the chat
+            // route itself (same GateScreen as SHELL) so no entry bypasses it.
+            if (!appUnlocked) {
+                GateScreen(activity = activity, onUnlocked = { appUnlocked = true })
+            } else {
+                val sessionId = entry.arguments?.getString("sessionId").orEmpty()
+                val wake = entry.arguments?.getString("wake") == "true"
+                val vm: ChatViewModel = viewModel(
+                    key = "chat-$sessionId",
+                    factory = ChatViewModel.factory(app, sessionId),
+                )
+                ChatScreen(
+                    viewModel = vm,
+                    activity = activity,
+                    onBack = { nav.popBackStack() },
+                    autoStartVoice = wake,
+                )
+            }
         }
     }
 }

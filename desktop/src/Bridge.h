@@ -196,6 +196,16 @@ public:
     // agentMode property WRITE so QML can two-way bind or call it directly.
     Q_INVOKABLE void setAgentMode(const QString &mode);
 
+    // policy.* — trust policies (jarvis#71): per-tool/per-app allow/ask/deny
+    // rules enforced by the computer-use engine on every tool call.
+    Q_INVOKABLE void policyList();
+    Q_INVOKABLE void policyAdd(const QString &tool, const QString &app,
+                               const QString &action, const QString &note);
+    Q_INVOKABLE void policyUpdate(const QString &id, const QString &action);
+    Q_INVOKABLE void policyRemove(const QString &id);
+    Q_INVOKABLE void policySetDefault(const QString &action);
+    Q_INVOKABLE void policyTest(const QString &tool, const QString &app);
+
     // mcp.* registry.
     Q_INVOKABLE void listMcp();
     Q_INVOKABLE void addMcp(const QVariantMap &server);
@@ -230,6 +240,9 @@ public:
     Q_INVOKABLE void listSessions();
     // session.history { session_id } -> sessionHistory(sessionId, events).
     Q_INVOKABLE void loadSessionHistory(const QString &sessionId);
+    // Mission Control Replay (jarvis#66): load ANY session's full timeline
+    // (ungated + keeps per-event ts) -> replayLoaded(session, events).
+    Q_INVOKABLE void loadReplay(const QString &sessionId);
 
     // ---- Devices (Contract A v2 pairing, surfaced in Settings) --------------
     // devices.pair_start -> pairingStarted(qrSvg, code, payload, expiresAt).
@@ -595,6 +608,11 @@ signals:
     void updateChecked(const QString &current, const QString &latest,
                        bool behind, const QString &version, const QString &reason);
     void updateApplied(bool updated, const QString &to, const QString &reason);
+    // Trust policies (jarvis#71). policyListed carries {default, rules:[...]};
+    // policyChanged fires after any mutation so the Settings card refreshes.
+    void policyListed(const QVariantMap &doc);
+    void policyChanged();
+    void policyTested(const QString &action, const QString &ruleId, const QString &note);
     void mcpListed(const QVariantList &servers);
     void mcpTested(const QString &id, bool ok, int toolsCount, const QString &error);
     void mcpChanged();   // emitted after add/remove/set_enabled so the UI refreshes
@@ -611,6 +629,8 @@ signals:
     void connectorsChanged(); // emitted after connectors.add so the UI refreshes
     void sessionsListed(const QVariantList &sessions);
     void sessionHistory(const QString &sessionId, const QVariantList &events);
+    // Mission Control Replay: {session metadata map} + [{seq,ts,kind,...}].
+    void replayLoaded(const QVariantMap &session, const QVariantList &events);
     // Fired when openSession finishes wiring a chosen session as current.
     void sessionOpened(const QString &sessionId);
     // Fired when a FOREIGN session opened but the desktop already has an active chat:

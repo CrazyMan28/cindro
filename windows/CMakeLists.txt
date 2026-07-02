@@ -105,6 +105,7 @@ add_library(jarvis-core STATIC
     ${CORE_DIR}/src/MemoryStore.cpp
     ${CORE_DIR}/src/SkillStore.cpp
     ${CORE_DIR}/src/HookStore.cpp
+    ${CORE_DIR}/src/TrustPolicyStore.cpp    # jarvis#71 trust policies (must match core/CMakeLists.txt)
     ${CORE_DIR}/src/AgentStore.cpp
     ${CORE_DIR}/src/DeviceRegistry.cpp
     ${CORE_DIR}/src/PairingManager.cpp
@@ -142,6 +143,7 @@ add_library(jarvis-core STATIC
     ${CORE_DIR}/include/jarvis/MemoryStore.h
     ${CORE_DIR}/include/jarvis/SkillStore.h
     ${CORE_DIR}/include/jarvis/HookStore.h
+    ${CORE_DIR}/include/jarvis/TrustPolicyStore.h
     ${CORE_DIR}/include/jarvis/AgentStore.h
     ${CORE_DIR}/include/jarvis/DeviceRegistry.h
     ${CORE_DIR}/include/jarvis/PairingManager.h
