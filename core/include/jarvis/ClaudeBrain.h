@@ -65,6 +65,11 @@ private:
     void emitEvent(const NormalizedBrainEvent &ev);
     void drainBuffer(bool flushIncomplete);
     void handleLine(const QByteArray &line);
+    // Mark the workspace (cwd) trusted in CLAUDE_CONFIG_DIR/.claude.json so headless
+    // `claude -p` honors the project's permissions.allow instead of "Ignoring N
+    // permissions.allow entries ... this workspace has not been trusted". No CLI flag
+    // skips the trust gate, so the config must be pre-populated. Idempotent; merges.
+    void ensureWorkspaceTrusted();
 
     Options m_opts;
     QProcess *m_proc = nullptr;

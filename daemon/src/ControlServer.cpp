@@ -576,6 +576,24 @@ static QString firstModelForBrain(const QString &brain)
     return models.isEmpty() ? QString() : models.first().toString();
 }
 
+// Guard a brain/model MISMATCH. Brain and model are picked independently, so
+// switching the brain (e.g. claude -> codex) without touching the model leaves a
+// stale foreign model selected. Sending it to the CLI is fatal: codex on a ChatGPT
+// account rejects a claude model with `invalid_request_error: "claude-haiku-4-5" is
+// not supported when using Codex with a ChatGPT account` and `codex exited with
+// code 1`. If the stored model isn't valid for this brain, fall back to the brain's
+// own default. Empty stays empty (the brain resolves its own default). Only used for
+// the CLI brains (codex/claude) — the `api` brain accepts arbitrary provider/ollama
+// model ids not in the static list.
+static QString coerceModelForBrain(const QString &brain, const QString &model)
+{
+    if (model.isEmpty())
+        return model;
+    if (modelsForBrain(brain).contains(QJsonValue(model)))
+        return model;
+    return firstModelForBrain(brain);
+}
+
 Response ControlServer::handleSettingsGet(const Request &req)
 {
     QJsonObject s;
@@ -1243,7 +1261,7 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
     if (row.brain == QStringLiteral("codex")) {
         CodexBrain::Options opts;
         opts.cwd = cwdOverride.isEmpty() ? m_config.effectiveCwd() : cwdOverride;
-        opts.model = row.model;
+        opts.model = coerceModelForBrain(row.brain, row.model);
         opts.profile = row.profile;
         opts.sandboxMode = CodexBrain::sandboxForProfile(row.profile);
         // coworker sessions get every enabled MCP server (incl the built-in
@@ -1291,7 +1309,7 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
     if (row.brain == QStringLiteral("claude")) {
         ClaudeBrain::Options opts;
         opts.cwd = cwdOverride.isEmpty() ? m_config.effectiveCwd() : cwdOverride;
-        opts.model = row.model;
+        opts.model = coerceModelForBrain(row.brain, row.model);
         opts.profile = row.profile;
         // Pin the claude OAuth account: pro -> ~/.claude (default), max ->
         // ~/.claude-secondary. The brain ctor also defaults to Pro if empty, so

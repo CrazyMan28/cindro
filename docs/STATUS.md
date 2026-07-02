@@ -8,6 +8,37 @@ _Last updated: 2026-07-02._
 
 ---
 
+## 🆕 Windows live-test round 2: codex model mismatch, Claude workspace-trust, canvas widgets (2026-07-02)
+
+Live Windows testing after the first Windows sweep surfaced three more (all fixed on `dev`):
+
+- **codex "model not supported" crash.** With brain=**codex** but a **claude** model still
+  selected (e.g. `claude-haiku-4-5`, left over from a claude session or a global
+  `default_model`), the daemon passed `-m claude-haiku-4-5` to codex → `invalid_request_error:
+  "claude-haiku-4-5" is not supported when using Codex with a ChatGPT account` → `codex exited
+  with code 1`. New `coerceModelForBrain()` in `makeBrain` (daemon) coerces any model that
+  isn't valid for the chosen CLI brain to that brain's default (codex→gpt-5.5, claude→its
+  default) — a universal guard that protects every client (desktop/extension/phone). The
+  extension already resets the model on brain-change; this is the safety net.
+- **Claude "workspace has not been trusted".** Headless `claude -p` ignored the project's
+  `permissions.allow` ("Ignoring N permissions.allow entries … run Claude Code interactively
+  here once … or set `projects[cwd].hasTrustDialogAccepted: true`"). NO CLI flag skips the
+  trust gate (bypassPermissions / --dangerously-skip-permissions don't cover it, by design —
+  CVE-2026-33068), so `ClaudeBrain` now pre-populates `CLAUDE_CONFIG_DIR/.claude.json` (merging,
+  never clobbering) with the workspace trusted before spawning claude. Verified in
+  `claude_buildargs_test`.
+- **Canvas widgets never appeared** (todos already showed after round 1). `render_widget` /
+  `widget_live` write to the same bus, but the **Canvas page is lazy-loaded**, so AppShell's
+  `replayAllWidgets()` on tab-switch fired BEFORE the page's `Connections` handler existed and
+  the replayed signals were lost. `CanvasPage.qml` now requests the replay itself in
+  `Component.onCompleted` (after its handler is registered) — mirroring how the chat panel
+  replays on session open. (The saved-Widgets tab already refreshed on load.)
+
+Verified: Linux `ctest` 26/26 (incl. `gui_selftest` + the new trust assertion). Windows
+runtime confirmation via CI build + the user's box.
+
+---
+
 ## 🆕 Windows follow-ups: codex message/memory, widgets/todos display, one-paste extension pairing (2026-07-02)
 
 Three field-reported Windows issues (#81, #82) root-caused and fixed on `dev` — the

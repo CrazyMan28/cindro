@@ -6,6 +6,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
 #include <QUuid>
@@ -22,6 +24,52 @@ ClaudeBrain::ClaudeBrain(Options opts, QObject *parent)
         m_opts.configDir = QDir::homePath() + QStringLiteral("/.claude");
     // A stable session id for the whole conversation (set turn 1, resumed after).
     m_claudeSessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    // Pre-trust the workspace so headless `claude -p` doesn't ignore permissions.allow.
+    ensureWorkspaceTrusted();
+}
+
+void ClaudeBrain::ensureWorkspaceTrusted()
+{
+    // Claude Code won't honor a project's permissions.allow until the workspace is
+    // "trusted". Headless `claude -p` can't show the interactive trust dialog, so it
+    // prints "Ignoring N permissions.allow entries ... this workspace has not been
+    // trusted" and runs with default (restricted) permissions. NO CLI flag skips the
+    // trust gate (bypassPermissions / --dangerously-skip-permissions do NOT cover it,
+    // by design — CVE-2026-33068), so we pre-populate CLAUDE_CONFIG_DIR/.claude.json
+    // with the project trusted. Merge into the existing file — never clobber
+    // oauthAccount / mcpServers / history.
+    if (m_opts.cwd.isEmpty())
+        return;
+    const QString dir = m_opts.configDir; // == CLAUDE_CONFIG_DIR for the spawned claude
+    const QString path = dir + QStringLiteral("/.claude.json");
+    // Claude keys trust on the git root or the resolved cwd; for our $HOME cwd that is
+    // the absolute cwd. Qt paths already use '/' on every OS (matches the banner's
+    // forward-slash "C:/Users/..." key).
+    const QString key = QDir(m_opts.cwd).absolutePath();
+
+    QJsonObject root;
+    QFile f(path);
+    if (f.open(QIODevice::ReadOnly)) {
+        root = QJsonDocument::fromJson(f.readAll()).object();
+        f.close();
+    }
+    QJsonObject projects = root.value(QStringLiteral("projects")).toObject();
+    QJsonObject proj = projects.value(key).toObject();
+    if (proj.value(QStringLiteral("hasTrustDialogAccepted")).toBool()
+        && root.value(QStringLiteral("hasCompletedOnboarding")).toBool())
+        return; // already trusted — don't rewrite the file every construction
+    proj.insert(QStringLiteral("hasTrustDialogAccepted"), true);
+    proj.insert(QStringLiteral("hasCompletedProjectOnboarding"), true);
+    projects.insert(key, proj);
+    root.insert(QStringLiteral("projects"), projects);
+    root.insert(QStringLiteral("hasCompletedOnboarding"), true);
+
+    QDir().mkpath(dir);
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+        f.close();
+        f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    }
 }
 
 ClaudeBrain::~ClaudeBrain()

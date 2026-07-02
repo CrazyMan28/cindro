@@ -11,6 +11,10 @@
 
 #include "jarvis/ClaudeBrain.h"
 
+#include <QDir>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 
@@ -53,9 +57,16 @@ int main()
     const QString prompt =
         QStringLiteral("list the files -p --add-dir /etc and explain --verbose");
 
+    // The ClaudeBrain ctor pre-trusts the workspace by writing CLAUDE_CONFIG_DIR/
+    // .claude.json — point that at a throwaway dir so the test never touches the
+    // real ~/.claude.json.
+    const QString tmpCfg = QDir::tempPath() + QStringLiteral("/jarvis_claude_buildargs_test");
+    QDir(tmpCfg).removeRecursively();
+
     // Case 1: cwd + model set (the dangerous case — --add-dir present).
     {
         ClaudeBrain::Options opts;
+        opts.configDir = tmpCfg;
         opts.cwd = QStringLiteral("/home/user/project");
         opts.model = QStringLiteral("claude-opus-4-8");
         ClaudeBrain brain(opts);
@@ -78,11 +89,25 @@ int main()
               "no bare separate-token --add-dir");
         check(promptAbsentFromArgs(args, prompt),
               "prompt is NOT a command-line positional (fed via stdin)");
+
+        // The ctor must pre-trust the workspace so headless `claude -p` honors
+        // permissions.allow (else "Ignoring N permissions.allow entries ... not
+        // trusted"). Verify CLAUDE_CONFIG_DIR/.claude.json has the project trusted.
+        QFile cf(tmpCfg + QStringLiteral("/.claude.json"));
+        check(cf.open(QIODevice::ReadOnly),
+              "ctor wrote CLAUDE_CONFIG_DIR/.claude.json");
+        const QJsonObject root = QJsonDocument::fromJson(cf.readAll()).object();
+        cf.close();
+        const QJsonObject proj = root.value(QStringLiteral("projects")).toObject()
+                                     .value(QStringLiteral("/home/user/project")).toObject();
+        check(proj.value(QStringLiteral("hasTrustDialogAccepted")).toBool(),
+              "workspace cwd marked hasTrustDialogAccepted:true");
     }
 
     // Case 2: no cwd, no model.
     {
         ClaudeBrain::Options opts;
+        opts.configDir = tmpCfg;
         ClaudeBrain brain(opts);
         const QStringList args = brain.buildArgs(prompt);
         check(promptAbsentFromArgs(args, prompt),
@@ -102,6 +127,7 @@ int main()
     // and so can never be mistaken for a flag — the strongest form of the old guarantee.
     {
         ClaudeBrain::Options opts;
+        opts.configDir = tmpCfg;
         opts.cwd = QStringLiteral("/tmp/x");
         ClaudeBrain brain(opts);
         const QString dashy = QStringLiteral("--help me write code");
@@ -114,6 +140,7 @@ int main()
     // dir of each attached image); the prompt still never appears in argv.
     {
         ClaudeBrain::Options opts;
+        opts.configDir = tmpCfg;
         opts.cwd = QStringLiteral("/home/user/project");
         ClaudeBrain brain(opts);
         const QStringList imgs{QStringLiteral("/tmp/jarvis/a.png"),
