@@ -182,15 +182,21 @@ QStringList CodexBrain::buildArgs(const QString &prompt, const QStringList &imag
         if (!img.isEmpty())
             args << QStringLiteral("--image") << img;
     }
-    // `-i/--image <FILE>...` is VARIADIC, so a prompt placed after it is swallowed
-    // as another image path — codex then finds no PROMPT positional and reads stdin
-    // ("Reading prompt from stdin… / No prompt provided via stdin.", exit 1) the
-    // moment you send a photo with text. Terminate option parsing with `--` so the
-    // prompt is unambiguously the positional whenever images are attached.
+    // The prompt is fed on STDIN, not the command line. On Windows a global `codex`
+    // is a `.cmd` shim and cmd.exe drops/mangles a multi-word quoted positional, so
+    // codex would receive NO prompt (and, since the first turn never really ran, no
+    // thread id to resume -> NO memory either) and just answer from nothing — the
+    // exact bug ClaudeBrain had before it was switched to stdin. `-` is codex's
+    // sentinel for "read the PROMPT from stdin" and it works for BOTH `exec` and
+    // `exec resume <id>` (verified: `codex exec [resume <id>] ... -`); send() writes
+    // the text then EOFs the pipe. `-` is a single ASCII char, so cmd.exe cannot
+    // mangle it. `-i/--image <FILE>...` is VARIADIC, so when images are attached we
+    // must terminate option parsing with `--` first, else the `-` is swallowed as
+    // another image path.
+    Q_UNUSED(prompt);
     if (!images.isEmpty())
         args << QStringLiteral("--");
-    // Prompt is the positional argument.
-    args << prompt;
+    args << QStringLiteral("-");
     return args;
 }
 
@@ -238,10 +244,11 @@ void CodexBrain::send(const QString &text, const QStringList &images)
             env.insert(QStringLiteral("CODEX_HOME"), isoHome);
         m_proc->setProcessEnvironment(env);
     }
-    // Redirect stdin from /dev/null BEFORE start so codex sees EOF immediately
-    // and never blocks "Reading additional input from stdin..." (verified
-    // gotcha, spikes/RESULTS.md). This is the equivalent of `</dev/null`.
-    m_proc->setStandardInputFile(QProcess::nullDevice());
+    // stdin is intentionally left OPEN: the prompt is written to it after start()
+    // (see below). buildArgs() passes `-` as the PROMPT positional so codex reads
+    // the prompt from stdin — command-line-safe on every platform (a global `codex`
+    // on Windows is a `.cmd` shim and cmd.exe would mangle a multi-word quoted
+    // positional; stdin is quoting-safe).
 
     connect(m_proc, &QProcess::readyReadStandardOutput, this, &CodexBrain::onReadyReadStdout);
     connect(m_proc, &QProcess::readyReadStandardError, this, &CodexBrain::onReadyReadStderr);
@@ -256,6 +263,12 @@ void CodexBrain::send(const QString &text, const QStringList &images)
         emit turnFinished(m_sessionId);
         return;
     }
+    // Feed the prompt via stdin (codex reads it because the PROMPT positional is
+    // `-`), then EOF so the one-shot turn runs. Command-line-safe on every platform
+    // — no cmd.exe / `.cmd` mangling of a multi-word prompt (on Windows codex was
+    // getting NO message and NO memory). Mirrors ClaudeBrain.
+    m_proc->write(text.toUtf8());
+    m_proc->closeWriteChannel();
 }
 
 void CodexBrain::cancel()

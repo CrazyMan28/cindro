@@ -69,6 +69,7 @@ add_library(jarvis-core STATIC
     # generating their staticMetaObject + vtable into this static lib.
     include/jarvis/Protocol.h
     include/jarvis/Config.h
+    include/jarvis/DataPaths.h
     include/jarvis/SessionStore.h
     include/jarvis/SettingsStore.h
     include/jarvis/McpRegistry.h

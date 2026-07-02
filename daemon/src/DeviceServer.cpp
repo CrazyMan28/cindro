@@ -2,6 +2,7 @@
 
 #include "ControlServer.h"
 
+#include "jarvis/DataPaths.h"
 #include "jarvis/DeviceRegistry.h"
 #include "jarvis/FcmSender.h"
 #include "jarvis/PairingManager.h"
@@ -122,9 +123,8 @@ bool DeviceServer::start()
 
 QString DeviceServer::widgetsPath() const
 {
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
-    return (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share") : base)
-           + QStringLiteral("/jarvis/widgets.jsonl");
+    // Shared file bus with the engine — resolve identically on every OS (DataPaths.h).
+    return jarvis::dataDir() + QStringLiteral("/widgets.jsonl");
 }
 
 void DeviceServer::startWidgetWatch()

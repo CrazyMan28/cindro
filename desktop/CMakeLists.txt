@@ -91,6 +91,11 @@ qt_add_qml_module(jarvis-sidebar
 # include path or registration of `Bridge` fails to compile.
 target_include_directories(jarvis-sidebar PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    # Header-only shared resolver jarvis/DataPaths.h — keeps the desktop's file-bus
+    # paths in lock-step with the engine + daemon on every OS. No link dependency on
+    # jarvis-core (the header is inline). The Windows build already exposes this via
+    # jarvis-core's PUBLIC include dir.
+    ${CMAKE_CURRENT_SOURCE_DIR}/../core/include
 )
 
 target_link_libraries(jarvis-sidebar PRIVATE

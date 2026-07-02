@@ -8,6 +8,47 @@ _Last updated: 2026-07-02._
 
 ---
 
+## 🆕 Windows follow-ups: codex message/memory, widgets/todos display, one-paste extension pairing (2026-07-02)
+
+Three field-reported Windows issues (#81, #82) root-caused and fixed on `dev` — the
+layer *underneath* the earlier 07-02 sweep (codex now runs, but…):
+
+- **#82 — codex could reply but got NO message and NO memory.** `CodexBrain` passed the
+  prompt as an argv positional with stdin nulled (`core/src/CodexBrain.cpp`). A global
+  `codex` on Windows is a `.cmd` shim; cmd.exe drops/mangles a multi-word quoted
+  positional → codex received an empty prompt (and, with no real first turn, no
+  `thread_id` to `resume` → no memory) — the exact bug `ClaudeBrain` already had fixed.
+  Now the prompt is fed on **stdin** (`-` is codex's "read prompt from stdin" sentinel,
+  cmd.exe-safe) for both `exec` and `exec resume <id>`. Verified end-to-end with real
+  codex 0.135: turn 1 got the stdin message; turn 2's `resume … -` read stdin AND
+  remembered turn 1. `codex_buildargs_test` updated to assert the prompt is never on
+  argv.
+- **#81a — the model's widgets/todos never showed.** The C++ desktop/daemon *readers*
+  resolved the file bus via `QStandardPaths::GenericDataLocation` — `~/.local/share` on
+  Linux (so it worked) but `%LOCALAPPDATA%` on Windows, while the Python engine + the
+  SQLite DB + every store write to `~/.local/share/jarvis`. So on Windows the desktop
+  read a different directory than the engine wrote. New header-only `jarvis/DataPaths.h`
+  (`$XDG_DATA_HOME` or `~/.local/share`, mirroring the engine) now backs every reader
+  (`Bridge`, `DeviceServer`, `ControlServer`, `WidgetLeaseRegistry`) — Linux byte-
+  identical, Windows fixed. Plus: the shared global engine on Windows stamps an empty
+  `session_id`, so a live plan is adopted into the active chat (replayed/foreign plans
+  always carry a non-empty id, so only those are rejected — `JarvisPanel.qml`).
+- **#81b — user-friendly extension pairing.** Instead of hand-copying two secrets into
+  the extension, the app now mints a single-use code: **Settings → Browser Extension →
+  “Generate pairing code”** (`extension.pair_start`, reusing the device `PairingManager`
+  pool). The extension's Options has a **“Pair with a code”** field that redeems it at
+  the loopback-only `ws://127.0.0.1:<control>/control/pair?code=…`, which vends the
+  bearer + control tokens and self-closes. Same-user localhost + single-use + 5-min TTL
+  (exposes nothing a local process couldn't already read from the 0600 token files); the
+  manual token fields remain as a fallback. Verified end-to-end against an isolated
+  jarvisd (valid code → tokens; consumed/bogus codes rejected).
+
+Verified: Linux `ctest` 26/26 (incl. `gui_selftest` loading the full QML), extension JS
+`node --check` clean, isolated-daemon pairing E2E. Windows runtime confirmation is via
+the CI Windows build + the winlab VM / the user's box.
+
+---
+
 ## 🆕 Bug sweep: Windows CLI-brain tools/skills/codex/mic + api-brain streaming (2026-07-02)
 
 Four field-reported bugs root-caused (multi-agent investigation, each cause adversarially

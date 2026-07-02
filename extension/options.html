@@ -18,8 +18,23 @@
 </head>
 <body>
   <h1>Computer Use Bridge</h1>
-  <p>Connects to the local computer-use MCP server. The token is in
-     <code>~/.computer-use/config.yaml</code> on this machine.</p>
+  <p>Connects to the local computer-use MCP server + the Jarvis desktop daemon.</p>
+
+  <h2 style="margin-top:0.5rem;border:0;padding:0">Pair with a code (easy)</h2>
+  <p class="hint">In the Jarvis app open <b>Settings → Browser Extension → “Generate
+     pairing code”</b>, then paste the code here. Jarvis fills in both tokens for you —
+     no hunting through config files.</p>
+  <label for="pairCode">Pairing code</label>
+  <input id="pairCode" type="text" inputmode="numeric" autocomplete="off"
+         placeholder="6-digit code from the Jarvis app">
+  <label for="pairPort">Jarvis control port</label>
+  <input id="pairPort" type="number" value="8795">
+  <button id="pair">Pair</button>
+  <div id="pairStatus" class="hint"></div>
+
+  <h2>Or enter tokens manually</h2>
+  <p class="hint">The bearer token is in <code>~/.computer-use/config.yaml</code> on
+     this machine.</p>
   <label for="port">Server port</label>
   <input id="port" type="number" value="8794">
   <label for="token">Bearer token</label>

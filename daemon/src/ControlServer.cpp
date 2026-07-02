@@ -2,6 +2,7 @@
 
 #include "jarvis/ApiBrain.h"
 #include "jarvis/Brain.h"
+#include "jarvis/DataPaths.h"
 #include "jarvis/ClaudeBrain.h"
 #include "jarvis/CodexBrain.h"
 #include "jarvis/Connectors.h"
@@ -273,9 +274,40 @@ void ControlServer::onNewConnection()
             continue;
         }
 
-        // Verify request path and ?token=.
         const QUrl url = client->requestUrl();
         const QUrlQuery query(url);
+
+        // Extension pairing (loopback already enforced above). The desktop app
+        // mints a single-use code via extension.pair_start; the Chrome/Edge
+        // extension connects here as ?code=<6 digits> to CLAIM the bearer + control
+        // tokens in one paste — no hand-copying two secrets. Same-user localhost, so
+        // it exposes nothing a local process couldn't already read from the 0600
+        // token files. Single-use + 5-min TTL (the device PairingManager pool).
+        if (url.path() == QStringLiteral("/control/pair")) {
+            const QString code = query.queryItemValue(QStringLiteral("code"));
+            QJsonObject rsp;
+            if (!code.isEmpty() && m_pairing.consume(code)) {
+                rsp.insert(QStringLiteral("ok"), true);
+                rsp.insert(QStringLiteral("bearer"), McpRegistry::computerUseBearer());
+                rsp.insert(QStringLiteral("bearer_port"),
+                           QUrl(McpRegistry::builtinEndpoint()).port(8794));
+                rsp.insert(QStringLiteral("control_token"), m_controlToken);
+                rsp.insert(QStringLiteral("control_port"), m_config.controlPort);
+            } else {
+                rsp.insert(QStringLiteral("ok"), false);
+                rsp.insert(QStringLiteral("error"),
+                           QStringLiteral("invalid or expired pairing code"));
+            }
+            client->sendTextMessage(QString::fromUtf8(
+                QJsonDocument(rsp).toJson(QJsonDocument::Compact)));
+            client->flush();
+            client->close(QWebSocketProtocol::CloseCodeNormal,
+                          QStringLiteral("pairing complete"));
+            client->deleteLater();
+            continue;
+        }
+
+        // Verify request path and ?token=.
         const QString token = query.queryItemValue(QStringLiteral("token"));
         if (url.path() != QStringLiteral("/control/ws") || token != m_controlToken) {
             client->close(QWebSocketProtocol::CloseCodePolicyViolated,
@@ -426,6 +458,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handlePluginsRemove(req);
     else if (m == QStringLiteral("devices.pair_start"))
         resp = handleDevicesPairStart(req);
+    else if (m == QStringLiteral("extension.pair_start"))
+        resp = handleExtensionPairStart(req);
     else if (m == QStringLiteral("devices.list"))
         resp = handleDevicesList(req);
     else if (m == QStringLiteral("devices.revoke"))
@@ -3360,6 +3394,24 @@ Response ControlServer::handleDevicesPairStart(const Request &req)
     return Response::success(req.id, pc.toJson());
 }
 
+Response ControlServer::handleExtensionPairStart(const Request &req)
+{
+    // Mint a single-use code (reusing the device PairingManager pool: 6 digits,
+    // 5-min TTL, consumed on use) that the Chrome/Edge extension redeems at
+    // ws://127.0.0.1:<control>/control/pair?code=... to claim the bearer + control
+    // tokens in one paste. The QR/payload are irrelevant here — only the code +
+    // expiry matter. host/fp are passed so start()'s payload is well-formed.
+    const QString host = tailnetHost() + QStringLiteral(":") +
+                         QString::number(m_config.devicePort);
+    const QString fp = m_deviceReg.identityFingerprint();
+    const PairingCode pc = m_pairing.start(host, fp);
+    QJsonObject out;
+    out.insert(QStringLiteral("code"), pc.code);
+    out.insert(QStringLiteral("expires_at"), pc.expiresAt);
+    out.insert(QStringLiteral("control_port"), m_config.controlPort);
+    return Response::success(req.id, out);
+}
+
 Response ControlServer::handleDevicesList(const Request &req)
 {
     QJsonArray arr;
@@ -3689,9 +3741,8 @@ void ControlServer::broadcastSessionOpened(const QString &sessionId, const QStri
 
 QString ControlServer::widgetsBusPath() const
 {
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
-    return (base.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share") : base)
-           + QStringLiteral("/jarvis/widgets.jsonl");
+    // Shared file bus with the engine — resolve identically on every OS (DataPaths.h).
+    return jarvis::dataDir() + QStringLiteral("/widgets.jsonl");
 }
 
 void ControlServer::startWidgetWatch()

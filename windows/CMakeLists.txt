@@ -127,6 +127,7 @@ add_library(jarvis-core STATIC
     # Headers (AUTOMOC) — same set as core/CMakeLists.txt.
     ${CORE_DIR}/include/jarvis/Protocol.h
     ${CORE_DIR}/include/jarvis/Config.h
+    ${CORE_DIR}/include/jarvis/DataPaths.h
     ${CORE_DIR}/include/jarvis/SessionStore.h
     ${CORE_DIR}/include/jarvis/SettingsStore.h
     ${CORE_DIR}/include/jarvis/McpRegistry.h
@@ -280,6 +281,9 @@ qt_add_qml_module(jarvis-sidebar
 target_include_directories(jarvis-sidebar PRIVATE
     ${SHELL_DIR}
     ${DESKTOP_DIR}/src
+    # Header-only shared resolver jarvis/DataPaths.h — keeps the desktop's file-bus
+    # paths in lock-step with the engine + daemon (no link dep; the header is inline).
+    ${CORE_DIR}/include
 )
 
 target_link_libraries(jarvis-sidebar PRIVATE

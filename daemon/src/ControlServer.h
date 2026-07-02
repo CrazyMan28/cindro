@@ -334,6 +334,10 @@ private:
     Response handleDevicesPairStart(const Request &req);
     Response handleDevicesList(const Request &req);
     Response handleDevicesRevoke(const Request &req);
+    // Mint a single-use code the Chrome/Edge extension redeems (unauthenticated,
+    // localhost-only, at /control/pair?code=...) to claim the bearer + control
+    // tokens — no hand-copying two secrets. Reuses the device PairingManager pool.
+    Response handleExtensionPairStart(const Request &req);
 
     // Wave 5: nested agent desktop status + real-session take-over.
     Response handleAgentDesktopInfo(const Request &req);
