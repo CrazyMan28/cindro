@@ -420,6 +420,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionHistory(req);
     else if (m == QStringLiteral("session.search"))
         resp = handleSessionSearch(req);
+    else if (m == QStringLiteral("session.set_goals"))
+        resp = handleSessionSetGoals(req);
     else if (m == QStringLiteral("hooks.list"))
         resp = handleHooksList(req);
     else if (m == QStringLiteral("hooks.add"))
@@ -2118,6 +2120,55 @@ void ControlServer::onTurnFinished(const QString &sessionId)
     m_lastToolCall.remove(sessionId);
     m_toolLoopWarned.remove(sessionId);
 
+    // Post-turn self-improvement review (jarvis#76 item 8): a cheap async
+    // auxiliary model call decides whether anything from the finished turn is
+    // worth persisting to long-term memory. Top-level sessions only (subagent
+    // turns are isolated task runs) and strictly opt-in.
+    if (auto r = m_store.get(sessionId);
+        r && r->parentSessionId.isEmpty()
+        && m_settings.selfImprove() == QStringLiteral("on")) {
+        firePostTurnReview(sessionId);
+    }
+
+    // Persistent-goal auto-continuation (jarvis#76 item 9): while a goal is set
+    // and the continuation budget allows, re-wake the session so it keeps
+    // working unattended. Deferred one tick so the brain fully settles first.
+    if (auto r = m_store.get(sessionId);
+        r && r->parentSessionId.isEmpty()
+        && m_settings.autoContinue() != QStringLiteral("off")
+        && !r->goals.trimmed().isEmpty()
+        && r->state != QStringLiteral("error")
+        && !m_pendingTurns.contains(sessionId)
+        && !m_queueItemBySession.contains(sessionId)) {
+        // "capped" bounds an unattended run to 3 continuations per real user
+        // turn; "on" keeps a generous safety ceiling so a never-met goal can't
+        // loop forever. The count resets on every real session.send.
+        const int cap = m_settings.autoContinue() == QStringLiteral("capped") ? 3 : 25;
+        if (r->continuationCount < cap) {
+            m_store.setContinuationCount(sessionId, r->continuationCount + 1);
+            const QString goal = r->goals.trimmed();
+            const int n = r->continuationCount + 1;
+            m_audit.record(QStringLiteral("session.auto_continue"), true,
+                           QStringLiteral("low"),
+                           QStringLiteral("continuation %1/%2").arg(n).arg(cap),
+                           sessionId);
+            QTimer::singleShot(0, this, [this, sessionId, goal, n, cap] {
+                if (!m_store.get(sessionId))
+                    return;
+                QString err;
+                sendToSession(sessionId, QStringLiteral(
+                    "[AUTO-CONTINUE %1/%2] Your active goal is not marked complete "
+                    "yet:\n%3\n\nContinue working toward it now. If the goal IS "
+                    "complete, say so and call set_goal with an empty string to "
+                    "clear it and stop these continuations.")
+                    .arg(n).arg(cap).arg(goal), {}, &err);
+            });
+        } else {
+            qInfo("jarvisd: auto-continue cap reached for session %s (%d)",
+                  qPrintable(sessionId), r->continuationCount);
+        }
+    }
+
     // Work-queue worker finished its turn (jarvis#76 item 7): resolve the item.
     // A queued pending turn (e.g. a guardrail nudge) keeps the item running —
     // it only resolves when the session truly goes quiet.
@@ -2150,6 +2201,86 @@ void ControlServer::onTurnFinished(const QString &sessionId)
     QString err;
     // Re-enter the normal send path (injection gate + memory prefetch re-applied).
     sendToSession(sessionId, pending.text, pending.images, &err);
+}
+
+// Post-turn self-improvement review (jarvis#76 item 8): after a top-level turn
+// finishes, a CHEAP async model call (mistral-small, same key generateSessionTitle
+// uses) reviews the exchange and — only when there is a genuinely reusable fact
+// or lesson — writes ONE concise memory. Never injects into the session, never
+// blocks, silently no-ops without a key (matching the title generator).
+void ControlServer::firePostTurnReview(const QString &sessionId)
+{
+    const QString key = m_settings.apiKey(QStringLiteral("mistral"));
+    if (key.isEmpty())
+        return;
+
+    // Last few turns, clipped: the review only needs the gist.
+    QString transcript;
+    const auto events = m_store.listEvents(sessionId, 10);
+    for (const StoredEvent &se : events) {
+        if (se.ev.kind != NormalizedBrainEvent::Kind::Message)
+            continue;
+        const QString role = se.ev.fields.value(QStringLiteral("role")).toString();
+        QString t = se.ev.fields.value(QStringLiteral("text")).toString().simplified();
+        if (t.size() > 400)
+            t = t.left(400) + QStringLiteral("…");
+        transcript += role + QStringLiteral(": ") + t + QLatin1Char('\n');
+    }
+    if (transcript.trimmed().isEmpty())
+        return;
+
+    if (!m_reviewNam)
+        m_reviewNam = new QNetworkAccessManager(this);
+
+    QJsonArray msgs;
+    QJsonObject sys;
+    sys.insert(QStringLiteral("role"), QStringLiteral("system"));
+    sys.insert(QStringLiteral("content"), QStringLiteral(
+        "You review a finished AI-assistant turn and decide if it produced ONE "
+        "durable fact, user preference, or lesson worth saving to long-term "
+        "memory (something useful in FUTURE conversations — not task chatter). "
+        "Reply with ONLY that concise fact (max 200 chars, no preamble), or the "
+        "single word NOTHING."));
+    msgs.append(sys);
+    QJsonObject usr;
+    usr.insert(QStringLiteral("role"), QStringLiteral("user"));
+    usr.insert(QStringLiteral("content"), transcript.left(2400));
+    msgs.append(usr);
+
+    QJsonObject body;
+    body.insert(QStringLiteral("model"), QStringLiteral("mistral-small-latest"));
+    body.insert(QStringLiteral("max_tokens"), 96);
+    body.insert(QStringLiteral("temperature"), 0.2);
+    body.insert(QStringLiteral("messages"), msgs);
+
+    QNetworkRequest rq(QUrl(QStringLiteral("https://api.mistral.ai/v1/chat/completions")));
+    rq.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    rq.setRawHeader("Authorization", QByteArray("Bearer ") + key.toUtf8());
+    QNetworkReply *reply =
+        m_reviewNam->post(rq, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, sessionId]() {
+        reply->deleteLater();
+        if (reply->error() != QNetworkReply::NoError)
+            return;
+        const QJsonObject o = QJsonDocument::fromJson(reply->readAll()).object();
+        const QJsonArray choices = o.value(QStringLiteral("choices")).toArray();
+        if (choices.isEmpty())
+            return;
+        QString fact = choices.first().toObject()
+                           .value(QStringLiteral("message")).toObject()
+                           .value(QStringLiteral("content")).toString().trimmed();
+        if (fact.isEmpty() || fact.compare(QStringLiteral("NOTHING"), Qt::CaseInsensitive) == 0)
+            return;
+        if (fact.size() > 240)
+            fact = fact.left(240);
+        const QString id = m_memory.add(
+            fact, {QStringLiteral("auto"), QStringLiteral("review")});
+        if (!id.isEmpty()) {
+            m_audit.record(QStringLiteral("memory.self_improve"), true,
+                           QStringLiteral("low"), fact.left(120), sessionId);
+            qInfo("jarvisd: self-improve review saved a memory (%s)", qPrintable(id));
+        }
+    });
 }
 
 void ControlServer::generateSessionTitle(const QString &sessionId, const QString &seed)
@@ -2333,6 +2464,14 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         const QString memBlock = prefetchMemoryBlock(text);
         if (!memBlock.isEmpty())
             effectiveText = memBlock + QStringLiteral("\n---\n") + text;
+        // Active-goal reminder (jarvis#76 item 9): a session with a persistent
+        // goal always sees it, so multi-turn work stays on target. Auto-continue
+        // wakes carry the goal themselves; this covers manual turns too.
+        if (auto gr = m_store.get(sessionId); gr && !gr->goals.trimmed().isEmpty()
+            && !text.startsWith(QStringLiteral("[AUTO-CONTINUE]"))) {
+            effectiveText = QStringLiteral("[ACTIVE GOAL] ") + gr->goals.trimmed() +
+                            QStringLiteral("\n---\n") + effectiveText;
+        }
     }
     // Hook-injected context (UserPromptSubmit + SessionStart additionalContext)
     // rides at the very front so the model sees it as a system reminder.
@@ -2746,12 +2885,39 @@ Response ControlServer::handleSessionSend(const Request &req)
     const QStringList images = decodeSendImages(
         req.params.value(QStringLiteral("images")).toArray(), sessionId);
 
+    // A REAL user turn re-arms the auto-continuation budget (jarvis#76 item 9):
+    // the cap bounds unattended runs, not conversations the user is driving.
+    if (auto r = m_store.get(sessionId); r && r->continuationCount > 0)
+        m_store.setContinuationCount(sessionId, 0);
+
     QString err;
     if (!sendToSession(sessionId, text, images, &err))
         return Response::failure(req.id, QStringLiteral("no_session"), err);
 
     QJsonObject result;
     result.insert(QStringLiteral("accepted"), true);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleSessionSetGoals(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    const QString goals = req.params.value(QStringLiteral("goals")).toString();
+    if (sessionId.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("session_id is required"));
+    if (!m_store.setGoals(sessionId, goals))
+        return Response::failure(req.id, QStringLiteral("no_session"),
+                                 QStringLiteral("unknown session: ") + sessionId);
+    // A (re)set goal starts a fresh continuation budget.
+    m_store.setContinuationCount(sessionId, 0);
+    m_audit.record(QStringLiteral("session.set_goals"), true, QStringLiteral("low"),
+                   goals.isEmpty() ? QStringLiteral("goal cleared")
+                                   : QStringLiteral("goal: ") + goals.left(120),
+                   sessionId);
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("goals"), goals);
     return Response::success(req.id, result);
 }
 

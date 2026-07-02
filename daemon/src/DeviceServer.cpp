@@ -449,6 +449,7 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("session.send") ||
         method == QStringLiteral("session.cancel") ||
         method == QStringLiteral("session.delete") ||
+        method == QStringLiteral("session.set_goals") ||
         method == QStringLiteral("task.queue") ||
         method == QStringLiteral("push.register") ||
         method == QStringLiteral("memory.add") ||
@@ -617,6 +618,19 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         resp = devSessionHistory(req);
     } else if (m == QStringLiteral("session.search")) {
         resp = devSessionSearch(req);
+    } else if (m == QStringLiteral("session.set_goals")) {
+        // Same semantics as the control channel (jarvis#76 item 9).
+        const QString sid = req.params.value(QStringLiteral("session_id")).toString();
+        const QString goals = req.params.value(QStringLiteral("goals")).toString();
+        if (sid.isEmpty() || !m_control->store().setGoals(sid, goals)) {
+            resp = Response::failure(req.id, QStringLiteral("no_session"),
+                                     QStringLiteral("unknown session: ") + sid);
+        } else {
+            m_control->store().setContinuationCount(sid, 0);
+            QJsonObject r;
+            r.insert(QStringLiteral("ok"), true);
+            resp = Response::success(req.id, r);
+        }
     } else if (m == QStringLiteral("task.queue")) {
         resp = devTaskQueue(c, req);
     } else if (m == QStringLiteral("task.list")) {

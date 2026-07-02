@@ -268,6 +268,7 @@ private:
     Response handleSessionList(const Request &req);
     Response handleSessionHistory(const Request &req);
     Response handleSessionSearch(const Request &req);
+    Response handleSessionSetGoals(const Request &req);
     // Claude-Code-style hooks (hooks.* Contract A): list/add/remove/test.
     Response handleHooksList(const Request &req);
     Response handleHooksAdd(const Request &req);
@@ -533,6 +534,12 @@ private:
     QNetworkAccessManager *m_titleNam = nullptr;
     QSet<QString> m_titleGenStarted;   // fire once per session
     void generateSessionTitle(const QString &sessionId, const QString &seed);
+
+    // Post-turn self-improvement review (jarvis#76 item 8): a cheap async model
+    // call after each top-level turn that may persist ONE reusable fact to
+    // long-term memory. Opt-in via the self_improve setting; never blocks.
+    QNetworkAccessManager *m_reviewNam = nullptr;
+    void firePostTurnReview(const QString &sessionId);
 
     // Wave 5 intelligence backend: Jarvis-level long-term memory (SQLite+FTS5)
     // and self-authored skills. Memory is prefetched/injected before every brain

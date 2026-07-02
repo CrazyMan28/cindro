@@ -222,6 +222,22 @@ def register(mcp: FastMCP) -> None:
         except Exception as exc:  # noqa: BLE001
             return _err(exc)
 
+    @mcp.tool()
+    def set_goal(goals: str, session_id: str = "") -> str:
+        """Set (or clear with "") THIS session's persistent goal. While a goal
+        is set and the user enabled auto-continue, Jarvis re-wakes the session
+        after each turn until you report the goal complete and clear it. Use
+        for long multi-step objectives ("migrate all 12 services"); clear it
+        the moment the objective is done."""
+        try:
+            sid = session_id or os.environ.get("JARVIS_AGENT_SESSION", "")
+            if not sid:
+                return _err(RuntimeError("no session id (pass session_id)"))
+            return json.dumps(daemon_client.call(
+                "session.set_goals", {"session_id": sid, "goals": goals}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
     # ---- WORK QUEUE (durable kanban backlog) ---------------------------------
     @mcp.tool()
     def queue_add(prompt: str, title: str = "", priority: int = 0,
