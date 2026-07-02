@@ -7,28 +7,26 @@
 name: windows-build
 
 on:
-  # Two-branch model: qa (integration) + main (production). A build runs on a push to qa
-  # and on a pull_request into main. main-bound changes are validated by that PR build;
-  # a merge to main then fires auto-release, which tags the version -> that v* tag (below)
-  # builds AND attaches Jarvis-Setup.exe to the Release. 'main' is intentionally NOT in
-  # push.branches: a push:main build would be a redundant second build that never attaches.
-  push:
-    branches: [qa]
-    tags: ["v*"]
+  # Builds run ONLY for releases and PR validation — NEVER on a branch push. Day-to-day
+  # work pushed to dev / qa / main triggers nothing here. A build fires on exactly two
+  # events: (1) a v* tag — the release: it builds AND attaches Jarvis-Setup.exe to the
+  # GitHub Release; (2) a pull_request into main — validates main-bound changes before
+  # merge. A merge to main fires auto-release, which creates the v* tag -> case (1) builds
+  # and attaches the installer.
   pull_request:
     branches: [main]
+  push:
+    tags: ["v*"]
   workflow_dispatch:
 
 # Needed so the tag build can CREATE the GitHub Release + attach Jarvis-Setup.exe.
 permissions:
   contents: write
 
-# Concurrency: EVERY qa push and EVERY v* tag builds — nothing gets auto-cancelled.
-# We only dedup PULL-REQUEST re-pushes: pushing a new commit to a PR branch supersedes
-# that PR's still-running build (standard, saves runner time). For push/tag events the
-# group is keyed by the unique commit SHA, so no two commits ever share a group and no
-# build is ever cancelled by a newer one. With two Windows runners (win-runner-1 +
-# win-runner-2) they run in parallel instead of queueing.
+# Concurrency: a v* tag build (release) is NEVER auto-cancelled — keyed by unique SHA so
+# no two tags ever share a group. Only PULL-REQUEST re-pushes dedup: a newer commit on the
+# PR supersedes that PR's still-running build (standard, saves runner time). With two
+# Windows runners (win-runner-1 + win-runner-2) tag + PR builds run in parallel.
 concurrency:
   group: windows-build-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
