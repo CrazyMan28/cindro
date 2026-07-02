@@ -11,9 +11,8 @@
 name: linux-ci
 
 on:
-  # Two-branch model: test on a push to qa (integration) and on a pull_request into main.
-  push:
-    branches: [qa]
+  # Test gate: runs ONLY to validate a pull_request into main — never on a branch push.
+  # Day-to-day work on dev / qa / main triggers no test run here.
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -22,9 +21,8 @@ on:
 permissions:
   contents: read
 
-# Every push to qa gets its own test run — keyed by unique SHA so nothing is ever
-# cancelled by a newer commit. Only PULL-REQUEST re-pushes dedup (a newer commit on the PR
-# supersedes the stale in-flight test run).
+# Only PULL-REQUEST re-pushes dedup (a newer commit on the PR supersedes the stale in-flight
+# test run). Keyed by ref for PRs; nothing else triggers this workflow.
 concurrency:
   group: linux-ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
