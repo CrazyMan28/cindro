@@ -11,22 +11,21 @@
 name: linux-ci
 
 on:
-  push:
-    branches: [dev, main]
+  # Test gate: runs ONLY to validate a pull_request into main — never on a branch push.
+  # Day-to-day work on dev / qa / main triggers no test run here.
   pull_request:
-    branches: [dev, main]
+    branches: [main]
   workflow_dispatch:
 
 # Least privilege: this is a read-only test gate; it never writes to the repo.
 permissions:
   contents: read
 
-# Superseded dev/PR test runs auto-cancel (a newer push on the same ref wins). A merge to
-# main (refs/heads/main) is NOT cancelled — it's the canonical post-merge "is main green"
-# gate on the actual merged SHA.
+# Only PULL-REQUEST re-pushes dedup (a newer commit on the PR supersedes the stale in-flight
+# test run). Keyed by ref for PRs; nothing else triggers this workflow.
 concurrency:
-  group: linux-ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/dev' }}
+  group: linux-ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-test:
