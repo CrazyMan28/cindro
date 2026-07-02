@@ -3972,16 +3972,20 @@ void ControlServer::seedPhoneMcp()
     if (token.isEmpty())
         return;
     const QString endpoint = QStringLiteral("http://127.0.0.1:%1/mcp").arg(port);
-    // Idempotent: drop any prior "phone" row so the token/port stay in sync with
-    // the env on every restart.
+    // Idempotent: drop any prior "phone" row (built-in or a legacy random-id one)
+    // so the token/port stay in sync with the env on every restart. remove()
+    // refuses builtin ids, so delete the stored row directly here.
     for (const McpServerRow &r : m_mcp->list())
-        if (r.name == QStringLiteral("phone"))
-            m_mcp->remove(r.id);
-    // risk=high: these tools call/text the user, spend money, and reach the real
-    // world — the permission policy should pause before them.
+        if (r.name == QStringLiteral("phone") || r.id == QStringLiteral("phone"))
+            m_store.removeMcpServer(r.id);
+    // Seed phone as a BUILT-IN server (stable id "phone", non-removable) — it's a
+    // core Jarvis subsystem like computer-use, not a user add-on. risk=high: these
+    // tools call/text the user, spend money, and reach the real world, so the
+    // permission policy should pause before them.
     m_mcp->add(QStringLiteral("phone"), QStringLiteral("http"), endpoint, token,
-               true, QStringLiteral("high"));
-    qInfo("jarvisd: seeded phone MCP server -> %s", qPrintable(endpoint));
+               /*enabled=*/true, QStringLiteral("high"), /*env=*/{},
+               /*builtin=*/true, /*fixedId=*/QStringLiteral("phone"));
+    qInfo("jarvisd: seeded phone MCP server (built-in) -> %s", qPrintable(endpoint));
 }
 
 void ControlServer::seedInternalDocsSkill()

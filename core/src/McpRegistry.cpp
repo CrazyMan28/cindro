@@ -283,21 +283,33 @@ QString McpRegistry::computerUseBearer()
 
 QString McpRegistry::add(const QString &name, const QString &transport,
                          const QString &endpoint, const QString &token, bool enabled,
-                         const QString &risk, const QJsonObject &env)
+                         const QString &risk, const QJsonObject &env, bool builtin,
+                         const QString &fixedId)
 {
     McpServerRow row;
-    row.id = genId();
+    row.id = fixedId.isEmpty() ? genId() : fixedId;
     row.name = name;
     row.transport = transport;
     row.endpoint = endpoint;
     row.token = token;
     row.enabled = enabled;
-    row.builtin = false;
+    row.builtin = builtin;
     row.risk = risk;
     row.env = env;
     if (!m_store.addMcpServer(row))
         return QString();
     return row.id;
+}
+
+bool McpRegistry::remove(const QString &id)
+{
+    // Built-in servers (computer-use, phone) are daemon-seeded and non-removable.
+    if (id == builtinId())
+        return false;
+    for (const McpServerRow &r : m_store.listMcpServers())
+        if (r.id == id && r.builtin)
+            return false;
+    return m_store.removeMcpServer(id);
 }
 
 McpTestResult McpRegistry::test(const McpServerRow &server, int timeoutMs)

@@ -39,6 +39,39 @@ Write-Host "==> Jarvis Windows build  (repo=$repo  version=$Version)" -Foregroun
 if (-not $VcpkgRoot) { throw "Set VCPKG_ROOT (vcpkg provides libsodium/libqrencode for Windows)." }
 $toolchain = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
 if (-not (Test-Path $toolchain)) { throw "vcpkg toolchain file not found: $toolchain" }
+
+# Locate Qt6 robustly and pass it to CMake explicitly. Relying on the runner's
+# machine CMAKE_PREFIX_PATH alone is fragile — after a winvm reboot that env var
+# can go missing for the runner process, and find_package(Qt6) then fails at
+# configure ("Could not find a package configuration file provided by Qt6").
+# Probe: existing CMAKE_PREFIX_PATH -> Qt6_DIR -> newest C:\Qt\<ver>\msvc*_64.
+function Resolve-QtPrefix {
+  foreach ($p in @($env:CMAKE_PREFIX_PATH, $env:Qt6_DIR)) {
+    if ($p -and (Test-Path (Join-Path $p "lib\cmake\Qt6\Qt6Config.cmake"))) { return $p }
+    # Qt6_DIR may already point at lib/cmake/Qt6 — accept the file there too.
+    if ($p -and (Test-Path (Join-Path $p "Qt6Config.cmake"))) { return $p }
+  }
+  $roots = @("C:\Qt") | Where-Object { Test-Path $_ }
+  foreach ($root in $roots) {
+    $cand = Get-ChildItem -Path $root -Directory -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -match '^\d+\.\d+' } |
+      Sort-Object Name -Descending |
+      ForEach-Object {
+        Get-ChildItem -Path $_.FullName -Directory -ErrorAction SilentlyContinue |
+          Where-Object { $_.Name -like 'msvc*_64' } | Select-Object -First 1
+      } | Where-Object { $_ -and (Test-Path (Join-Path $_.FullName "lib\cmake\Qt6\Qt6Config.cmake")) } |
+      Select-Object -First 1
+    if ($cand) { return $cand.FullName }
+  }
+  return $null
+}
+$qtPrefix = Resolve-QtPrefix
+if ($qtPrefix) {
+  Write-Host "==> Qt6 prefix: $qtPrefix" -ForegroundColor Cyan
+} else {
+  Write-Host "WARN: could not resolve a Qt6 prefix; relying on env (configure may fail)" -ForegroundColor Yellow
+}
+
 # Ninja generator + the MSVC env that the CI's msvc-dev-cmd step provides (cl +
 # ninja on PATH). Splat the args (the -D value is a double-quoted string so
 # $toolchain expands — passing it bare made cmake see the literal "$toolchain").
@@ -48,6 +81,7 @@ $cfgArgs = @(
   "-DCMAKE_BUILD_TYPE=$Config",
   "-DCMAKE_TOOLCHAIN_FILE=$toolchain"
 )
+if ($qtPrefix) { $cfgArgs += "-DCMAKE_PREFIX_PATH=$qtPrefix" }
 cmake @cfgArgs
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed (exit $LASTEXITCODE)" }
 cmake --build $build --config $Config
