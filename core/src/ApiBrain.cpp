@@ -327,6 +327,7 @@ void ApiBrain::send(const QString &text, const QStringList &images)
     m_anySent = false;
     m_cancelled = false;
     m_buf.clear();
+    m_pendingText.clear();
     m_lastUsage = QJsonObject();
     // Reset per-turn tool-loop state (the tools/list catalog + MCP session are
     // cached across turns; the streamed-call accumulator + counters are not).
@@ -470,7 +471,10 @@ void ApiBrain::handleSseData(const QByteArray &data)
                 const QString t = delta.value(QStringLiteral("text")).toString();
                 if (!t.isEmpty()) {
                     m_anySent = true;
-                    emitEvent(NormalizedBrainEvent::message(QStringLiteral("assistant"), t));
+                    // Buffer, don't emit: Kind::Message means one COMPLETE chat
+                    // bubble, so per-delta emits fragment every reply downstream
+                    // (UI bubbles, history rows, TTS). Flushed in finishTurn().
+                    m_pendingText += t;
                 }
             } else if (dtype == QStringLiteral("thinking_delta")) {
                 const QString t = delta.value(QStringLiteral("thinking")).toString();
@@ -510,7 +514,8 @@ void ApiBrain::handleSseData(const QByteArray &data)
         const QString content = delta.value(QStringLiteral("content")).toString();
         if (!content.isEmpty()) {
             m_anySent = true;
-            emitEvent(NormalizedBrainEvent::message(QStringLiteral("assistant"), content));
+            // Buffer, don't emit (see the anthropic text_delta note above).
+            m_pendingText += content;
         }
         // reasoning_content (some OpenAI-compatible reasoning models / Ollama).
         const QString reasoning = delta.value(QStringLiteral("reasoning_content")).toString();
@@ -572,6 +577,10 @@ void ApiBrain::onFinished()
 
 void ApiBrain::runToolCallsAndContinue()
 {
+    // Any text streamed before the tool_calls finish becomes its own bubble now,
+    // and lands in m_history so the attach-to-last-assistant logic below sees it.
+    flushPendingText();
+
     const QJsonArray toolCalls = finalizeToolCalls(m_toolAccum);
     if (toolCalls.isEmpty()) {
         finishTurn();
@@ -651,11 +660,24 @@ void ApiBrain::runToolCallsAndContinue()
     startOpenAi(QString());
 }
 
+void ApiBrain::flushPendingText()
+{
+    if (m_pendingText.isEmpty())
+        return;
+    const QString text = m_pendingText;
+    m_pendingText.clear();
+    // emitEvent() also folds the text into m_history's trailing assistant row,
+    // which runToolCallsAndContinue() relies on when attaching tool_calls.
+    emitEvent(NormalizedBrainEvent::message(QStringLiteral("assistant"), text));
+}
+
 void ApiBrain::finishTurn()
 {
     if (m_emittedFinal)
         return;
     m_emittedFinal = true;
+
+    flushPendingText();
 
     if (!m_lastUsage.isEmpty()) {
         // Normalize anthropic/openai usage shapes to {input_tokens,output_tokens}.
@@ -815,6 +837,8 @@ void ApiBrain::cancel()
     if (m_mcpLoop)
         m_mcpLoop->quit();
     if (m_busy && !m_emittedFinal) {
+        // Show whatever streamed before the Stop as a (partial) bubble.
+        flushPendingText();
         m_emittedFinal = true;
         m_busy = false;
         emit turnFinished(m_sessionId);

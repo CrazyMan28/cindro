@@ -11,16 +11,20 @@
 // standing up a model or an MCP server.
 
 #include "jarvis/ApiBrain.h"
+#include "jarvis/Protocol.h"
 
+#include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QList>
 #include <QMap>
 #include <QString>
 
 #include <cstdio>
 
 using jarvis::ApiBrain;
+using jarvis::NormalizedBrainEvent;
 
 namespace {
 
@@ -61,8 +65,11 @@ QJsonObject toolCallDelta(int index, const QString &id, const QString &name,
 
 } // namespace
 
-int main()
+int main(int argc, char **argv)
 {
+    // ApiBrain owns a QNetworkAccessManager, which wants a QCoreApplication.
+    QCoreApplication app(argc, argv);
+
     // (a) MCP tool -> OpenAI tools-array conversion -------------------------
     {
         // A normal computer-use tool with a real inputSchema.
@@ -214,6 +221,86 @@ int main()
         const QJsonObject noChoices = parseObj(R"({"id":"x","object":"chat.completion.chunk"})");
         check(ApiBrain::finishReasonFromChunk(noChoices).isEmpty(),
               "no choices -> empty finish_reason");
+    }
+
+    // (d) streamed assistant text is ONE Message event per segment ----------
+    // Contract B: Kind::Message == one complete chat bubble. SSE deltas must be
+    // buffered and flushed as a single Message at end of stream — never one
+    // Message per delta (that fragmented every api-brain reply into a bubble
+    // per chunk: "Good" / "morning, sir.").
+    {
+        // OpenAI/Mistral dialect.
+        ApiBrain::Options opts;
+        opts.provider = QStringLiteral("mistral");
+        opts.model = QStringLiteral("mistral-large-latest");
+        opts.apiKey = QStringLiteral("test-key");
+        ApiBrain brain(opts);
+        QList<NormalizedBrainEvent> evs;
+        QObject::connect(&brain, &jarvis::Brain::event,
+                         [&](const QString &, const NormalizedBrainEvent &ev) {
+                             evs.append(ev);
+                         });
+        brain.ingestSseDataForTest(
+            QByteArray(R"({"choices":[{"index":0,"delta":{"content":"Good"}}]})"));
+        brain.ingestSseDataForTest(QByteArray(
+            R"({"choices":[{"index":0,"delta":{"content":" morning, sir."},"finish_reason":"stop"}]})"));
+
+        auto messages = [&] {
+            QList<NormalizedBrainEvent> out;
+            for (const NormalizedBrainEvent &e : evs)
+                if (e.kind == NormalizedBrainEvent::Kind::Message)
+                    out.append(e);
+            return out;
+        };
+        check(messages().isEmpty(),
+              "openai dialect: no Message emitted mid-stream (deltas buffered)");
+
+        // End of stream (m_reply is null in the test, so this falls through to
+        // finishTurn() exactly like a drained live reply).
+        QMetaObject::invokeMethod(&brain, "onFinished", Qt::DirectConnection);
+        const QList<NormalizedBrainEvent> msgs = messages();
+        check(msgs.size() == 1, "openai dialect: exactly ONE Message per segment");
+        check(msgs.size() == 1 &&
+                  msgs[0].fields.value(QStringLiteral("text")).toString() ==
+                      QStringLiteral("Good morning, sir."),
+              "openai dialect: Message carries the full concatenated text");
+        check(!evs.isEmpty() &&
+                  evs.last().kind == NormalizedBrainEvent::Kind::Final,
+              "openai dialect: Final follows the flushed Message");
+    }
+
+    {
+        // Anthropic dialect (same per-delta fragmentation bug lived here).
+        ApiBrain::Options opts;
+        opts.provider = QStringLiteral("anthropic");
+        opts.model = QStringLiteral("claude-sonnet-5");
+        opts.apiKey = QStringLiteral("test-key");
+        ApiBrain brain(opts);
+        QList<NormalizedBrainEvent> evs;
+        QObject::connect(&brain, &jarvis::Brain::event,
+                         [&](const QString &, const NormalizedBrainEvent &ev) {
+                             evs.append(ev);
+                         });
+        brain.ingestSseDataForTest(QByteArray(
+            R"({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Right"}})"));
+        brain.ingestSseDataForTest(QByteArray(
+            R"({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" away, sir."}})"));
+        brain.ingestSseDataForTest(QByteArray(R"({"type":"message_stop"})"));
+
+        int msgCount = 0;
+        QString msgText;
+        for (const NormalizedBrainEvent &e : evs) {
+            if (e.kind == NormalizedBrainEvent::Kind::Message) {
+                ++msgCount;
+                msgText = e.fields.value(QStringLiteral("text")).toString();
+            }
+        }
+        check(msgCount == 1, "anthropic dialect: exactly ONE Message per segment");
+        check(msgText == QStringLiteral("Right away, sir."),
+              "anthropic dialect: Message carries the full concatenated text");
+        check(!evs.isEmpty() &&
+                  evs.last().kind == NormalizedBrainEvent::Kind::Final,
+              "anthropic dialect: Final follows the flushed Message");
     }
 
     if (g_failures) {
