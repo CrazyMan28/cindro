@@ -20,7 +20,7 @@ platform guards; it never changes how Linux/Android build or run.
 | Nested "beside-you" agent desktop | ✅ headless Sway | ❌ → v2 | Windows can't nest an isolated GPU desktop in-process. Planned v2 via a child RDP session / Windows Sandbox / VM. |
 | Multi-seat isolated agent cursor | ✅ forked KWin | ❌ | No compositor to fork; agent shares your input queue (gated by the take-over banner + consent). |
 | Real-screen take-over (glow cursor + banner + consent + Esc) | ✅ | ✅ | Transparent click-through overlay (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST`). |
-| Voice (Voxtral STT/TTS, voice library, voice mode) | ✅ | ✅ | Voxtral is HTTP. Mic capture via WASAPI. |
+| Voice (Voxtral STT/TTS, voice library, voice mode) | ✅ | ✅ | Voxtral is HTTP. Mic capture via Qt Multimedia (WASAPI) wherever `pw-record` doesn't exist — chat dictation, hands-free voice mode, and the clip recorder all fall back to it. |
 | Generative widgets / canvas / pager / Home pins / live widgets | ✅ | ✅ | Daemon/engine-driven; QML renderer reused. |
 | Agents / subagents, scheduler, memory, skills, hooks, modes, permissions | ✅ | ✅ | Core is cross-platform. |
 | Plugins (signed Ed25519, install) | ✅ | ✅ render/install; ⚠ sandbox | The Linux `systemd-run` sandbox has no Win32 equal → Windows uses a Job-Object/restricted-token sandbox (or runs with explicit consent). |
@@ -86,6 +86,21 @@ device/pairing channel), and (4) **`jarvis-sidebar.exe`** (the UI). The engine s
 same file, so they agree with no setup. *(Known v1 limitation: the per-session **nested** agent
 desktop is Linux-only, so on Windows computer-use drives the real screen; and the daemon's
 `systemctl`-based phone-restart on a voice-default change no-ops on Windows.)*
+
+### CLI brains (claude / codex) on Windows
+
+- **MCP tools:** since the nested agent desktop can't come up on Windows v1,
+  `jarvisd` injects the **global** `:8794` engine's MCP config into claude, codex, and
+  api sessions whenever "Let Jarvis use a computer" is on (the v1 real-screen contract).
+  Claude gets `--mcp-config` + `bypassPermissions` (headless `claude -p` otherwise stalls
+  on MCP permission prompts); codex gets `-c mcp_servers.*` overrides.
+- **Skills:** Jarvis mirrors its skills into `%USERPROFILE%\.claude\skills` and
+  `%USERPROFILE%\.codex\skills` at daemon start (and at skill creation). If you install
+  Claude Code / Codex **after** Jarvis, restart Jarvis once and the mirrors (e.g.
+  `/internal_docs`) appear.
+- **Codex auth:** the per-session isolated `CODEX_HOME` mirrors `~/.codex/auth.json` via a
+  hard link (or copy) — never `QFile::link`, which on Windows plants a binary `.lnk`
+  payload that kills codex with `stream did not contain valid UTF-8`.
 
 ## Build from source (Windows)
 

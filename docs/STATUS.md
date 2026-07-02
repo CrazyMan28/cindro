@@ -4,7 +4,44 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-07-01._
+_Last updated: 2026-07-02._
+
+---
+
+## 🆕 Bug sweep: Windows CLI-brain tools/skills/codex/mic + api-brain streaming (2026-07-02)
+
+Four field-reported bugs root-caused (multi-agent investigation, each cause adversarially
+verified against the code) and fixed on `dev`:
+
+- **Windows: Claude Code got ZERO MCP tools.** The v2 ship gate means the nested agent
+  desktop never comes up on Windows, the auto-computer path degraded with empty overrides,
+  and claude's always-on `--strict-mcp-config` with no `--mcp-config` = zero servers. New
+  `AgentDesktop::nestedDesktopSupported()` predicate (Linux true; Windows only with the
+  `JARVIS_ENABLE_V2` sandbox tier) lets `makeBrain` fall back to the **global `:8794`
+  registry config** for claude (+`bypassPermissions`), codex, and api sessions — the v1
+  real-screen contract. Covers the resume path; Linux behavior unchanged.
+- **Windows: skills never reached Claude Code** (`/internal_docs` "not available") when
+  claude/codex was installed **after** Jarvis: mirrors only happened at skill creation and
+  skip a missing `~/.claude`. New `SkillStore::syncMirrorsToCli()` re-mirrors every skill
+  at daemon start — one Jarvis restart after installing a CLI heals it.
+- **Windows: codex died with `stream did not contain valid UTF-8` (exit 1)** on every turn.
+  `ensureIsolatedHome()` used `QFile::link` for `auth.json` — on Windows that writes a
+  binary IShellLink `.lnk` payload INTO the file, which codex `read_to_string`s at startup.
+  Reproduced byte-for-byte on the win10 VM (codex-cli 0.142.5). Now: hard link (write-through)
+  with copy fallback, re-mirrored every launch so corrupted session homes self-heal.
+- **api brain (mistral/openai/ollama + anthropic dialect): every reply fragmented into a
+  bubble per SSE chunk** ("Good" / "morning, sir.") on all platforms — ApiBrain emitted a
+  full `Message` event per streamed delta, but Contract B treats `Message` as one complete
+  bubble (QML appends one bubble per event; the daemon persists one history row per event;
+  TTS speaks each event). Deltas are now buffered and flushed as ONE Message per segment
+  (at `finishTurn()`, before tool_calls attach, and on cancel so a Stop still shows partial
+  text). Regression tests for both SSE dialects via a new `ingestSseDataForTest()` seam.
+- **Windows: mic didn't work at all** — every wired capture path (chat dictation,
+  hands-free voice mode, voice-clone recorder) shelled out to `pw-record` (PipeWire), and
+  `voiceAvailable()` gated on it, hiding the mic button on Windows entirely. All three paths
+  now fall back to the already-linked Qt Multimedia `QAudioSource` (WASAPI) capture when
+  `pw-record` is absent; the hands-free path feeds the same energy VAD raw PCM. STT was
+  never the blocker (cloud Voxtral over HTTP).
 
 ---
 
@@ -692,7 +729,8 @@ Verified = unit tests pass, live WS check, and/or exercised on the running daemo
 - **Voice orb animation:** smooth "breathing" while thinking/speaking + a soft mic-level swell
   while listening (replaced the abrupt size-jump).
 - **Voice mode:** hands-free (no hold-to-talk) capture via **pw-record** (the path that
-  actually works on this PipeWire box), RMS VAD calibrated to the mic noise floor (~0.5s
+  actually works on this PipeWire box; Qt Multimedia/WASAPI fallback where pw-record is
+  absent — see the 2026-07-02 sweep), RMS VAD calibrated to the mic noise floor (~0.5s
   end-of-turn), brain/model/**speaker** pickers, live mic-level orb. Mistral Voxtral
   **STT+TTS round-trip verified.**
 - **Generative renderer:** `render_widget` tool + a brain primer that tells the model to call
