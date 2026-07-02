@@ -540,6 +540,80 @@ def register(mcp: FastMCP) -> None:
         except Exception as exc:  # noqa: BLE001
             return _err(exc)
 
+    @mcp.tool()
+    def agent_moa(prompt: str, advisors: list[dict] | None = None,
+                  timeout_sec: int = 1800) -> str:
+        """MIXTURE-OF-AGENTS (jarvis#76 item 10): fan ONE hard question out to
+        several DIFFERENT brains/models in parallel and get their independent
+        answers back as ADVISORY context — you stay the decision maker (unlike
+        agent_committee, no judge decides for you).
+
+        `advisors` is a list of {brain?, model?, role?} dicts — e.g.
+        [{"brain":"codex"}, {"brain":"claude","model":"opus"},
+         {"brain":"api","model":"mistral-large-latest"}]. Empty/omitted uses
+        that trio of defaults (only advisors whose brain is available run).
+        2-4 advisors is the sweet spot.
+
+        Returns {prompt, advisors:[{brain, model, role, status, answer}]}.
+        Read every answer, weigh where they agree/disagree, then produce YOUR
+        final answer. Use for high-stakes reasoning (architecture choices,
+        tricky debugging theories, irreversible decisions)."""
+        import time
+        try:
+            plans = [a for a in (advisors or []) if isinstance(a, dict)][:4]
+            if not plans:
+                plans = [{"brain": "codex"}, {"brain": "claude"},
+                         {"brain": "api", "model": "mistral-large-latest"}]
+            parent = os.environ.get("JARVIS_AGENT_SESSION")
+            members: list[dict] = []
+            for i, plan in enumerate(plans):
+                role = str(plan.get("role", "")).strip() or (
+                    "an independent expert advisor: answer the question "
+                    "directly and thoroughly on your own")
+                sp = ("You are advisor %d of %d in a mixture-of-agents panel — "
+                      "%s. Do NOT hedge toward what others might say; give YOUR "
+                      "best independent answer. End with a concise SUMMARY "
+                      "containing your answer." % (i + 1, len(plans), role))
+                params = {"agent": "moa-advisor-%d" % (i + 1), "task": prompt,
+                          "system_prompt": sp}
+                if plan.get("brain"):
+                    params["brain"] = str(plan["brain"])
+                if plan.get("model"):
+                    params["model"] = str(plan["model"])
+                if parent:
+                    params["parent_session_id"] = parent
+                m = {"brain": str(plan.get("brain", "")),
+                     "model": str(plan.get("model", "")),
+                     "role": role, "status": "running", "answer": "",
+                     "session_id": ""}
+                try:
+                    r = daemon_client.call("agents.dispatch", params, timeout=30)
+                    m["session_id"] = r.get("session_id", "")
+                except Exception as dexc:  # noqa: BLE001
+                    m["status"] = "error"
+                    m["answer"] = str(dexc)
+                members.append(m)
+
+            end = time.time() + max(30, min(int(timeout_sec or 1800), 14400))
+            for m in members:
+                sid = m["session_id"]
+                if not sid:
+                    if m["status"] != "error":
+                        m["status"] = "error"
+                    continue
+                while time.time() < end:
+                    res = daemon_client.call("agents.result", {"session_id": sid})
+                    if not res.get("running", False):
+                        m["status"] = res.get("status", "done")
+                        m["answer"] = res.get("summary", "")
+                        break
+                    time.sleep(1.5)
+                else:
+                    m["status"] = "timeout"
+            return json.dumps({"prompt": prompt, "advisors": members})
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
     # ---- Claude-Code-style lifecycle hooks --------------------------------
     @mcp.tool()
     def hooks_list() -> str:
