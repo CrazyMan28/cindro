@@ -139,6 +139,19 @@ bool ControlServer::start()
     // names; each failure is non-fatal (that feature degrades, daemon survives).
     if (!m_audit.open())
         qWarning("jarvisd: audit log unavailable: %s", qPrintable(m_audit.lastError()));
+
+    // Durable kanban work queue (jarvis#76 item 7): reclaim any items whose
+    // worker died with the previous daemon, then start the dispatcher loop.
+    if (!m_kanban.open()) {
+        qWarning("jarvisd: work queue unavailable: %s", qPrintable(m_kanban.lastError()));
+    } else {
+        if (const int n = m_kanban.reclaimStale(kQueueStaleMs); n > 0)
+            qInfo("jarvisd: reclaimed %d orphaned work item(s) back to pending", n);
+        m_queueTimer = new QTimer(this);
+        m_queueTimer->setInterval(5000);
+        connect(m_queueTimer, &QTimer::timeout, this, &ControlServer::tickWorkQueue);
+        m_queueTimer->start();
+    }
     if (!m_sshAllow.load())
         qWarning("jarvisd: ssh allow-list load: %s", qPrintable(m_sshAllow.lastError()));
     if (!m_scheduler.open()) {
@@ -515,6 +528,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = dispatchMemoryOrSkill(req);
     else if (isOpsMethod(m))
         resp = dispatchOpsMethod(req, /*remote=*/false);
+    else if (isQueueMethod(m))
+        resp = dispatchQueueMethod(req);
     else
         resp = Response::failure(req.id, QStringLiteral("unknown_method"),
                                  QStringLiteral("unknown method: ") + m);
@@ -2102,6 +2117,24 @@ void ControlServer::onTurnFinished(const QString &sessionId)
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
     m_toolLoopWarned.remove(sessionId);
+
+    // Work-queue worker finished its turn (jarvis#76 item 7): resolve the item.
+    // A queued pending turn (e.g. a guardrail nudge) keeps the item running —
+    // it only resolves when the session truly goes quiet.
+    if (m_queueItemBySession.contains(sessionId) &&
+        !m_pendingTurns.contains(sessionId)) {
+        const QString itemId = m_queueItemBySession.take(sessionId);
+        const auto row = m_store.get(sessionId);
+        const bool failed = row && row->state == QStringLiteral("error");
+        const QString summary = subagentSummary(sessionId);
+        m_kanban.updateStatus(itemId,
+                              failed ? QStringLiteral("error") : QStringLiteral("done"),
+                              sessionId, summary);
+        m_notify.taskDone(QStringLiteral("Work item done: ") +
+                          (m_kanban.get(itemId) ? m_kanban.get(itemId)->title : itemId));
+        qInfo("jarvisd: work item %s finished (%s)", qPrintable(itemId),
+              failed ? "error" : "done");
+    }
 
     // Stop hook (observational): the agent finished responding. Fire for the main
     // agent only (a child's completion is a SubagentStop). No-op unless configured.
@@ -5358,6 +5391,165 @@ bool ControlServer::isOpsMethod(const QString &method)
     return method.startsWith(QStringLiteral("schedule.")) ||
            method.startsWith(QStringLiteral("ssh.")) ||
            method == QStringLiteral("audit.list");
+}
+
+// --- durable kanban work queue (jarvis#76 item 7) ---------------------------
+
+bool ControlServer::isQueueMethod(const QString &method)
+{
+    return method.startsWith(QStringLiteral("queue."));
+}
+
+Response ControlServer::dispatchQueueMethod(const Request &req)
+{
+    const QString &m = req.method;
+    if (!m_kanban.isOpen())
+        return Response::failure(req.id, QStringLiteral("unavailable"),
+                                 QStringLiteral("work queue store unavailable"));
+    if (m == QStringLiteral("queue.add")) {
+        const QJsonObject p = req.params;
+        const QString prompt = p.value(QStringLiteral("prompt")).toString();
+        if (prompt.trimmed().isEmpty())
+            return Response::failure(req.id, QStringLiteral("bad_request"),
+                                     QStringLiteral("prompt is required"));
+        const QString id = m_kanban.enqueue(
+            p.value(QStringLiteral("title")).toString(), prompt,
+            p.value(QStringLiteral("priority")).toInt(0),
+            p.value(QStringLiteral("brain")).toString(),
+            p.value(QStringLiteral("model")).toString(),
+            p.value(QStringLiteral("profile")).toString(),
+            p.value(QStringLiteral("tags")).toString(),
+            p.value(QStringLiteral("parent_item_id")).toString());
+        if (id.isEmpty())
+            return Response::failure(req.id, QStringLiteral("error"),
+                                     m_kanban.lastError());
+        m_audit.record(QStringLiteral("queue.add"), true, QStringLiteral("low"),
+                       QStringLiteral("enqueued: ")
+                           + p.value(QStringLiteral("title")).toString(prompt.left(60)));
+        QJsonObject r;
+        r.insert(QStringLiteral("id"), id);
+        return Response::success(req.id, r);
+    }
+    if (m == QStringLiteral("queue.list")) {
+        QJsonArray arr;
+        for (const WorkItem &w :
+             m_kanban.list(req.params.value(QStringLiteral("status")).toString(),
+                           req.params.value(QStringLiteral("limit")).toInt(200)))
+            arr.append(w.toJson());
+        QJsonObject r;
+        r.insert(QStringLiteral("items"), arr);
+        return Response::success(req.id, r);
+    }
+    if (m == QStringLiteral("queue.get")) {
+        const auto w = m_kanban.get(req.params.value(QStringLiteral("id")).toString());
+        if (!w)
+            return Response::failure(req.id, QStringLiteral("not_found"),
+                                     QStringLiteral("unknown work item"));
+        QJsonObject r;
+        r.insert(QStringLiteral("item"), w->toJson());
+        return Response::success(req.id, r);
+    }
+    if (m == QStringLiteral("queue.cancel")) {
+        const QString id = req.params.value(QStringLiteral("id")).toString();
+        const auto w = m_kanban.get(id);
+        if (!w)
+            return Response::failure(req.id, QStringLiteral("not_found"),
+                                     QStringLiteral("unknown work item"));
+        // Stop a live worker session before flipping the row.
+        if (w->status == QStringLiteral("running") && !w->sessionId.isEmpty()) {
+            QString cerr;
+            cancelSession(w->sessionId, &cerr);
+            m_queueItemBySession.remove(w->sessionId);
+        }
+        if (!m_kanban.cancel(id))
+            return Response::failure(req.id, QStringLiteral("error"),
+                                     m_kanban.lastError());
+        QJsonObject r;
+        r.insert(QStringLiteral("ok"), true);
+        return Response::success(req.id, r);
+    }
+    if (m == QStringLiteral("queue.remove")) {
+        if (!m_kanban.remove(req.params.value(QStringLiteral("id")).toString()))
+            return Response::failure(req.id, QStringLiteral("error"),
+                                     m_kanban.lastError());
+        QJsonObject r;
+        r.insert(QStringLiteral("ok"), true);
+        return Response::success(req.id, r);
+    }
+    if (m == QStringLiteral("queue.set_priority")) {
+        if (!m_kanban.setPriority(req.params.value(QStringLiteral("id")).toString(),
+                                  req.params.value(QStringLiteral("priority")).toInt(0)))
+            return Response::failure(req.id, QStringLiteral("error"),
+                                     m_kanban.lastError());
+        QJsonObject r;
+        r.insert(QStringLiteral("ok"), true);
+        return Response::success(req.id, r);
+    }
+    return Response::failure(req.id, QStringLiteral("bad_request"),
+                             QStringLiteral("unknown queue method: ") + m);
+}
+
+// Dispatcher loop: heartbeat live workers, reclaim orphans, and start pending
+// items while worker slots are free. Worker sessions are ordinary top-level
+// sessions (full memory context; visible in every surface's session list).
+void ControlServer::tickWorkQueue()
+{
+    // 1) Liveness: heartbeat every tracked worker whose session still exists.
+    for (auto it = m_queueItemBySession.begin(); it != m_queueItemBySession.end();) {
+        if (m_store.get(it.key()).has_value()) {
+            m_kanban.heartbeat(it.value());
+            ++it;
+        } else {
+            // Session deleted out from under the item — reclaim it.
+            m_kanban.updateStatus(it.value(), QStringLiteral("pending"), QString());
+            it = m_queueItemBySession.erase(it);
+        }
+    }
+
+    // 2) Reclaim items whose worker (possibly a previous daemon) went silent.
+    if (const int n = m_kanban.reclaimStale(kQueueStaleMs); n > 0)
+        qInfo("jarvisd: reclaimed %d stale work item(s)", n);
+
+    // 3) Fill free worker slots.
+    while (m_queueItemBySession.size() < kMaxQueueWorkers) {
+        // Peek cheaply: claim only if something is pending.
+        if (m_kanban.list(QStringLiteral("pending"), 1).isEmpty())
+            return;
+        auto item = m_kanban.claimNext();
+        if (!item)
+            return;
+        QString err;
+        const QString sid = createSession(
+            item->profile.isEmpty() ? QStringLiteral("coworker") : item->profile,
+            item->brain, item->model, /*cwd=*/QString(),
+            QStringLiteral("Queue: ") + item->title, &err);
+        if (sid.isEmpty()) {
+            m_kanban.updateStatus(item->id, QStringLiteral("error"), QString(),
+                                  QStringLiteral("failed to start worker: ") + err);
+            qWarning("jarvisd: work item %s failed to start: %s",
+                     qPrintable(item->id), qPrintable(err));
+            continue;
+        }
+        m_kanban.updateStatus(item->id, QStringLiteral("running"), sid);
+        m_queueItemBySession.insert(sid, item->id);
+        const QString prompt = QStringLiteral(
+            "[WORK QUEUE ITEM %1] %2\n\n%3\n\nWhen the task is complete, end with "
+            "a short SUMMARY of what was done (it becomes the item's result).")
+            .arg(item->id, item->title, item->prompt);
+        QString serr;
+        if (!sendToSession(sid, prompt, {}, &serr)) {
+            m_kanban.updateStatus(item->id, QStringLiteral("error"), sid,
+                                  QStringLiteral("failed to send task: ") + serr);
+            m_queueItemBySession.remove(sid);
+            continue;
+        }
+        m_audit.record(QStringLiteral("queue.start"), true, QStringLiteral("low"),
+                       QStringLiteral("work item %1 -> session %2")
+                           .arg(item->id, sid),
+                       sid);
+        qInfo("jarvisd: work item %s started in session %s", qPrintable(item->id),
+              qPrintable(sid));
+    }
 }
 
 Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)

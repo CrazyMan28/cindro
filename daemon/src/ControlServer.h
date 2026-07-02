@@ -23,6 +23,7 @@
 #include "jarvis/PluginSandbox.h"
 #include "jarvis/AgentStore.h"
 #include "jarvis/Protocol.h"
+#include "jarvis/KanbanStore.h"
 #include "jarvis/Scheduler.h"
 #include "jarvis/SessionStore.h"
 #include "jarvis/SettingsStore.h"
@@ -134,6 +135,11 @@ public:
     // schedule.create are biometric-tier on the device side.
     Response dispatchOpsMethod(const Request &req, bool remote = false);
     static bool isOpsMethod(const QString &method);
+
+    // Durable kanban work queue (jarvis#76 item 7), mirrored over the device
+    // channel (queue.add/list/get/cancel/remove/set_priority).
+    Response dispatchQueueMethod(const Request &req);
+    static bool isQueueMethod(const QString &method);
 
     // device->phone FILE PUSH (Contract C). Stores the bytes under the jarvis
     // inbox and returns a {file_id,name,size,mime,session_id} descriptor the
@@ -562,6 +568,15 @@ private:
     Scheduler m_scheduler;
     SshAllowList m_sshAllow;
     AuditLog m_audit;
+    // Durable kanban work queue (jarvis#76 item 7): store + dispatcher loop.
+    // Worker sessions are tracked so turn-end resolves their item, tick
+    // heartbeats prove liveness, and a daemon restart reclaims orphans.
+    static constexpr int kMaxQueueWorkers = 2;
+    static constexpr qint64 kQueueStaleMs = 3 * 60 * 1000;
+    KanbanStore m_kanban;
+    QTimer *m_queueTimer = nullptr;
+    QHash<QString, QString> m_queueItemBySession; // sessionId -> work item id
+    void tickWorkQueue();
     NotifyService m_notify;
     // Sessions currently BLOCKED awaiting an injection-gate approval, mapped to
     // the held user turn (text + image paths) so an 'allow' can resume it.

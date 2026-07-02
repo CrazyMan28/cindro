@@ -62,6 +62,7 @@ add_library(jarvis-core STATIC
     src/AuditLog.cpp
     src/InjectionGuard.cpp
     src/ToolLoopGuard.cpp
+    src/KanbanStore.cpp
     src/NotifyService.cpp
     # Live-widget viewer-lease registry (battery gating: a live widget only runs
     # while a desktop/phone viewer or a home-screen pin is watching it).
@@ -225,6 +226,11 @@ add_test(NAME session_store_test COMMAND session_store_test)
 add_executable(tool_loop_guard_test tests/tool_loop_guard_test.cpp)
 target_link_libraries(tool_loop_guard_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME tool_loop_guard_test COMMAND tool_loop_guard_test)
+
+# KanbanStore: durable work queue — enqueue/claim/heartbeat/reclaim (temp DB).
+add_executable(kanban_store_test tests/kanban_store_test.cpp)
+target_link_libraries(kanban_store_test PRIVATE jarvis-core Qt6::Core Qt6::Sql)
+add_test(NAME kanban_store_test COMMAND kanban_store_test)
 
 # SkillStore: frontmatter parse + create (self-authoring) + invoke (template
 # render) roundtrip (temp skills root).

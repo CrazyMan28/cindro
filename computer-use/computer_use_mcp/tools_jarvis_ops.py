@@ -222,6 +222,42 @@ def register(mcp: FastMCP) -> None:
         except Exception as exc:  # noqa: BLE001
             return _err(exc)
 
+    # ---- WORK QUEUE (durable kanban backlog) ---------------------------------
+    @mcp.tool()
+    def queue_add(prompt: str, title: str = "", priority: int = 0,
+                  brain: str = "", model: str = "", tags: str = "") -> str:
+        """Enqueue a DURABLE work item on Jarvis's kanban backlog. Unlike
+        agent_start (fire-and-wait), queued items survive restarts: the daemon
+        runs them one after another in their own sessions and stores each
+        result. Use for big multi-part jobs ("do these 10 things overnight") —
+        enqueue each part, then check queue_list later. Higher priority runs
+        first."""
+        try:
+            params = {"prompt": prompt, "title": title, "priority": priority,
+                      "brain": brain, "model": model, "tags": tags}
+            return json.dumps(daemon_client.call("queue.add", params))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def queue_list(status: str = "") -> str:
+        """List work-queue items (status filter: pending|running|done|error|
+        cancelled; empty = all). Each item carries its result summary once
+        finished."""
+        try:
+            return json.dumps(daemon_client.call("queue.list", {"status": status}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def queue_cancel(id: str) -> str:
+        """Cancel a pending or running work-queue item (a running worker
+        session is stopped)."""
+        try:
+            return json.dumps(daemon_client.call("queue.cancel", {"id": id}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
     @mcp.tool()
     def edit_skill(name: str, description: str, body: str,
                    group: str = "", tags: list[str] | None = None) -> str:

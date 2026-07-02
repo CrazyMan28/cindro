@@ -416,6 +416,8 @@ QString DeviceServer::tierFor(const QString &method)
     if (method == QStringLiteral("session.list") ||
         method == QStringLiteral("session.history") ||
         method == QStringLiteral("session.search") ||
+        method == QStringLiteral("queue.list") ||
+        method == QStringLiteral("queue.get") ||
         method == QStringLiteral("task.list") ||
         method == QStringLiteral("memory.list") ||
         method == QStringLiteral("memory.search") ||
@@ -458,6 +460,11 @@ QString DeviceServer::tierFor(const QString &method)
         // config actions (archive list is read tier below).
         method == QStringLiteral("skills.pin") ||
         method == QStringLiteral("skills.unarchive") ||
+        // Work queue actions (jarvis#76 item 7).
+        method == QStringLiteral("queue.add") ||
+        method == QStringLiteral("queue.cancel") ||
+        method == QStringLiteral("queue.remove") ||
+        method == QStringLiteral("queue.set_priority") ||
         // Wave 8 ops actions that aren't security-sensitive (toggling/removing a
         // schedule, managing the ssh allow-list). schedule.create + ssh.exec are
         // biometric (below).
@@ -638,6 +645,10 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         // Contract A v3 mirror: memory + skills share the SAME store as the
         // desktop, so the phone curates one coherent memory/skill world.
         resp = m_control->dispatchMemoryOrSkill(req);
+    } else if (ControlServer::isQueueMethod(m)) {
+        // Durable work queue (jarvis#76 item 7) — same handlers as the control
+        // channel; tierFor gates reads vs actions.
+        resp = m_control->dispatchQueueMethod(req);
     } else if (ControlServer::isOpsMethod(m)) {
         // Wave 8 co-worker ops mirror: schedule.* / ssh.* / audit.list share the
         // same SQLite tables + allow-list as the desktop. `remote=true` so the
