@@ -1238,7 +1238,12 @@ bool Bridge::hasExecutable(const QString &name)
 
 bool Bridge::voiceAvailable() const
 {
-    return hasExecutable(QStringLiteral("pw-record"));
+    // pw-record (PipeWire) is the proven capture path on Linux. Where it doesn't
+    // exist (Windows/WASAPI, non-PipeWire boxes) we capture with Qt Multimedia
+    // instead, so voice is available whenever ANY input device is present —
+    // gating on pw-record alone hid the mic button on every Windows install.
+    return hasExecutable(QStringLiteral("pw-record")) ||
+           !QMediaDevices::audioInputs().isEmpty();
 }
 
 void Bridge::setRecordingState(const QString &s)
@@ -1259,20 +1264,55 @@ QString Bridge::recordWavPath() const
 
 void Bridge::voiceDictate(int seconds)
 {
-    if (m_recProc) {
+    if (m_recProc || m_dictSource) {
         emit errorOccurred(QStringLiteral("already recording"));
         return;
     }
     if (!voiceAvailable()) {
-        emit errorOccurred(QStringLiteral("pw-record (PipeWire) not found; voice dictation unavailable"));
+        emit errorOccurred(QStringLiteral("no microphone found; voice dictation unavailable"));
         return;
     }
+    const int secs = (seconds > 0 && seconds <= 30) ? seconds : 6;
+
+    if (!hasExecutable(QStringLiteral("pw-record"))) {
+        // Qt Multimedia capture (Windows/WASAPI & other non-PipeWire boxes):
+        // accumulate s16 mono 16k PCM, wrapped via pcmToWav() on stop.
+        QAudioFormat fmt;
+        fmt.setSampleRate(16000);
+        fmt.setChannelCount(1);
+        fmt.setSampleFormat(QAudioFormat::Int16);
+        const QAudioDevice dev = QMediaDevices::defaultAudioInput();
+        if (dev.isNull()) {
+            emit errorOccurred(QStringLiteral("no audio input device"));
+            return;
+        }
+        m_dictSource = new QAudioSource(dev, fmt, this);
+        m_dictPcm.clear();
+        m_dictIo = m_dictSource->start();
+        if (!m_dictIo) {
+            emit errorOccurred(QStringLiteral("failed to start audio capture"));
+            m_dictSource->deleteLater();
+            m_dictSource = nullptr;
+            return;
+        }
+        connect(m_dictIo, &QIODevice::readyRead, this, [this]() {
+            if (m_dictIo)
+                m_dictPcm.append(m_dictIo->readAll());
+        });
+        m_recAutoStop = true;
+        setRecordingState(QStringLiteral("recording"));
+        QTimer::singleShot(secs * 1000, this, [this]() {
+            if (m_dictSource && m_recAutoStop)
+                voiceDictateStop();
+        });
+        return;
+    }
+
     m_recPath = recordWavPath();
     QFile::remove(m_recPath);
 
     m_recProc = new QProcess(this);
     // pw-record writes a WAV; cap the capture so a forgotten recording self-stops.
-    const int secs = (seconds > 0 && seconds <= 30) ? seconds : 6;
     m_recAutoStop = true;
     QStringList args;
     // Mono 16k is plenty for speech and keeps the upload small.
@@ -1299,6 +1339,24 @@ void Bridge::voiceDictate(int seconds)
 
 void Bridge::voiceDictateStop()
 {
+    if (m_dictSource) {
+        // Qt Multimedia path: drain, wrap the PCM as WAV, transcribe.
+        m_recAutoStop = false;
+        if (m_dictIo)
+            m_dictPcm.append(m_dictIo->readAll());
+        m_dictSource->stop();
+        m_dictSource->deleteLater();
+        m_dictSource = nullptr;
+        m_dictIo = nullptr;
+        const QByteArray pcm = m_dictPcm;
+        m_dictPcm.clear();
+        if (pcm.size() < 1024) {   // an empty/aborted capture
+            setRecordingState(QStringLiteral("idle"));
+            return;
+        }
+        finishDictationWav(pcmToWav(pcm, 16000, 1));
+        return;
+    }
     if (m_recProc && m_recProc->state() != QProcess::NotRunning) {
         m_recAutoStop = false;
         m_recProc->terminate();   // finished() -> finishDictation()
@@ -1323,6 +1381,11 @@ void Bridge::finishDictation()
         setRecordingState(QStringLiteral("idle"));
         return;
     }
+    finishDictationWav(wav);
+}
+
+void Bridge::finishDictationWav(const QByteArray &wav)
+{
     setRecordingState(QStringLiteral("transcribing"));
     QVariantMap params;
     params.insert(QStringLiteral("audio_b64"), QString::fromLatin1(wav.toBase64()));
@@ -1344,15 +1407,50 @@ void Bridge::setVoiceCloneState(const QString &s)
 
 void Bridge::recordVoiceClone(int seconds)
 {
-    if (m_cloneRecProc) {
+    if (m_cloneRecProc || m_cloneSource) {
         emit errorOccurred(QStringLiteral("already recording a voice clip"));
         return;
     }
     if (!voiceAvailable()) {
         emit errorOccurred(
-            QStringLiteral("pw-record (PipeWire) not found; can't record a voice clip"));
+            QStringLiteral("no microphone found; can't record a voice clip"));
         return;
     }
+    const int secs = (seconds > 0 && seconds <= 60) ? seconds : 20;
+
+    if (!hasExecutable(QStringLiteral("pw-record"))) {
+        // Qt Multimedia capture (Windows/WASAPI & other non-PipeWire boxes).
+        QAudioFormat fmt;
+        fmt.setSampleRate(24000);
+        fmt.setChannelCount(1);
+        fmt.setSampleFormat(QAudioFormat::Int16);
+        const QAudioDevice dev = QMediaDevices::defaultAudioInput();
+        if (dev.isNull()) {
+            emit errorOccurred(QStringLiteral("no audio input device"));
+            return;
+        }
+        m_cloneSource = new QAudioSource(dev, fmt, this);
+        m_clonePcm.clear();
+        m_cloneIo = m_cloneSource->start();
+        if (!m_cloneIo) {
+            emit errorOccurred(QStringLiteral("failed to start audio capture"));
+            m_cloneSource->deleteLater();
+            m_cloneSource = nullptr;
+            return;
+        }
+        connect(m_cloneIo, &QIODevice::readyRead, this, [this]() {
+            if (m_cloneIo)
+                m_clonePcm.append(m_cloneIo->readAll());
+        });
+        m_cloneAutoStop = true;
+        setVoiceCloneState(QStringLiteral("recording"));
+        QTimer::singleShot(secs * 1000, this, [this]() {
+            if (m_cloneSource && m_cloneAutoStop)
+                stopVoiceCloneRecording();
+        });
+        return;
+    }
+
     QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
     if (base.isEmpty())
         base = QDir::tempPath();
@@ -1360,7 +1458,6 @@ void Bridge::recordVoiceClone(int seconds)
     QFile::remove(m_cloneRecPath);
 
     m_cloneRecProc = new QProcess(this);
-    const int secs = (seconds > 0 && seconds <= 60) ? seconds : 20;
     m_cloneAutoStop = true;
     QStringList args;
     // Mono 24k is a clean reference for cloning (the server re-cleans on save).
@@ -1385,6 +1482,20 @@ void Bridge::recordVoiceClone(int seconds)
 
 void Bridge::stopVoiceCloneRecording()
 {
+    if (m_cloneSource) {
+        // Qt Multimedia path: drain, wrap the PCM as WAV, keep as the clip.
+        m_cloneAutoStop = false;
+        if (m_cloneIo)
+            m_clonePcm.append(m_cloneIo->readAll());
+        m_cloneSource->stop();
+        m_cloneSource->deleteLater();
+        m_cloneSource = nullptr;
+        m_cloneIo = nullptr;
+        const QByteArray pcm = m_clonePcm;
+        m_clonePcm.clear();
+        finishCloneWav(pcmToWav(pcm, 24000, 1));
+        return;
+    }
     if (m_cloneRecProc && m_cloneRecProc->state() != QProcess::NotRunning) {
         m_cloneAutoStop = false;
         m_cloneRecProc->terminate(); // finished() -> finishCloneRecording()
@@ -1403,8 +1514,14 @@ void Bridge::finishCloneRecording()
         emit errorOccurred(QStringLiteral("no audio captured"));
         return;
     }
-    m_voiceClipBytes = f.readAll();
+    const QByteArray wav = f.readAll();
     f.close();
+    finishCloneWav(wav);
+}
+
+void Bridge::finishCloneWav(const QByteArray &wav)
+{
+    m_voiceClipBytes = wav;
     m_voiceClipFormat = QStringLiteral("wav");
     m_voiceClipSource = QStringLiteral("record");
     setVoiceCloneState(QStringLiteral("idle"));
@@ -1657,12 +1774,15 @@ void Bridge::startConversation()
         return;
     ensureVoiceSession();
 
-    // Capture via pw-record streaming raw s16 mono 16k to stdout — the SAME proven
+    // Capture via pw-record streaming raw s16 mono 16k to stdout — the proven
     // PipeWire path the chat mic uses (Qt's QAudioSource does not capture on this
     // PipeWire setup, which is why voice mode "heard nothing" while chat dictation
     // worked). We strip the leading 44-byte WAV header, then feed PCM to the VAD.
+    // Where pw-record doesn't exist (Windows/WASAPI, non-PipeWire boxes) we
+    // capture the same s16 mono 16k stream with Qt Multimedia instead — raw PCM,
+    // no header to skip — and feed it to the SAME VAD.
     if (!voiceAvailable()) {
-        emit errorOccurred(QStringLiteral("pw-record (PipeWire) not found; voice mode unavailable"));
+        emit errorOccurred(QStringLiteral("no microphone found; voice mode unavailable"));
         return;
     }
     if (m_voiceProc) {
@@ -1671,31 +1791,63 @@ void Bridge::startConversation()
         m_voiceProc = nullptr;
     }
     m_voicePcm.clear();
-    m_pwHeaderSkip = 44;
-    m_voiceProc = new QProcess(this);
-    connect(m_voiceProc, &QProcess::readyReadStandardOutput, this, [this]() {
-        if (!m_voiceProc)
+    if (!hasExecutable(QStringLiteral("pw-record"))) {
+        QAudioFormat fmt;
+        fmt.setSampleRate(16000);
+        fmt.setChannelCount(1);
+        fmt.setSampleFormat(QAudioFormat::Int16);
+        const QAudioDevice dev = QMediaDevices::defaultAudioInput();
+        if (dev.isNull()) {
+            emit errorOccurred(QStringLiteral("no audio input device for voice mode"));
             return;
-        QByteArray chunk = m_voiceProc->readAllStandardOutput();
-        if (m_pwHeaderSkip > 0) {
-            const int drop = qMin(m_pwHeaderSkip, int(chunk.size()));
-            chunk.remove(0, drop);
-            m_pwHeaderSkip -= drop;
         }
-        if (!chunk.isEmpty())
-            handsFreeFeed(chunk);
-    });
-    QStringList args;
-    args << QStringLiteral("--rate") << QStringLiteral("16000")
-         << QStringLiteral("--channels") << QStringLiteral("1")
-         << QStringLiteral("--format") << QStringLiteral("s16")
-         << QStringLiteral("-");  // stream to stdout
-    m_voiceProc->start(QStringLiteral("pw-record"), args);
-    if (!m_voiceProc->waitForStarted(1500)) {
-        emit errorOccurred(QStringLiteral("failed to start pw-record for voice mode"));
-        m_voiceProc->deleteLater();
-        m_voiceProc = nullptr;
-        return;
+        if (m_audioSource) {
+            m_audioSource->deleteLater();
+            m_audioSource = nullptr;
+            m_voiceIo = nullptr;
+        }
+        m_audioSource = new QAudioSource(dev, fmt, this);
+        m_voiceIo = m_audioSource->start();
+        if (!m_voiceIo) {
+            emit errorOccurred(QStringLiteral("failed to start audio capture for voice mode"));
+            m_audioSource->deleteLater();
+            m_audioSource = nullptr;
+            return;
+        }
+        connect(m_voiceIo, &QIODevice::readyRead, this, [this]() {
+            if (!m_voiceIo)
+                return;
+            const QByteArray chunk = m_voiceIo->readAll();
+            if (!chunk.isEmpty())
+                handsFreeFeed(chunk);
+        });
+    } else {
+        m_pwHeaderSkip = 44;
+        m_voiceProc = new QProcess(this);
+        connect(m_voiceProc, &QProcess::readyReadStandardOutput, this, [this]() {
+            if (!m_voiceProc)
+                return;
+            QByteArray chunk = m_voiceProc->readAllStandardOutput();
+            if (m_pwHeaderSkip > 0) {
+                const int drop = qMin(m_pwHeaderSkip, int(chunk.size()));
+                chunk.remove(0, drop);
+                m_pwHeaderSkip -= drop;
+            }
+            if (!chunk.isEmpty())
+                handsFreeFeed(chunk);
+        });
+        QStringList args;
+        args << QStringLiteral("--rate") << QStringLiteral("16000")
+             << QStringLiteral("--channels") << QStringLiteral("1")
+             << QStringLiteral("--format") << QStringLiteral("s16")
+             << QStringLiteral("-");  // stream to stdout
+        m_voiceProc->start(QStringLiteral("pw-record"), args);
+        if (!m_voiceProc->waitForStarted(1500)) {
+            emit errorOccurred(QStringLiteral("failed to start pw-record for voice mode"));
+            m_voiceProc->deleteLater();
+            m_voiceProc = nullptr;
+            return;
+        }
     }
     m_handsFree = true;
     m_vadSpeech = false;
@@ -1728,6 +1880,12 @@ void Bridge::stopConversation()
         m_voiceProc->kill();
         m_voiceProc->deleteLater();
         m_voiceProc = nullptr;
+    }
+    if (m_audioSource) {  // Qt Multimedia capture (the no-pw-record path)
+        m_audioSource->stop();
+        m_audioSource->deleteLater();
+        m_audioSource = nullptr;
+        m_voiceIo = nullptr;
     }
     // Ending the conversation (Space / leaving the page) is a barge-in: drop any
     // queued utterances AND pending requests, and silence the player so Jarvis
