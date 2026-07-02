@@ -30,7 +30,9 @@ concurrency:
 jobs:
   build-test:
     runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 30
+    # 90 min (1h30) — the self-hosted Proxmox runner host gets IO/CPU-starved and a build
+    # that normally takes ~15 min can crawl. 30 min was cancelling healthy-but-slow builds.
+    timeout-minutes: 90
     # Prebuilt: all deps baked in. The local registry on the runner host serves it,
     # so the "pull" is instant + layer-cached (no 550MB download, no 533-pkg install).
     container:

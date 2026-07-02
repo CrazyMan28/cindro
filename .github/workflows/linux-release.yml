@@ -35,7 +35,8 @@ concurrency:
 jobs:
   appimage:
     runs-on: [self-hosted, Linux, X64]
-    timeout-minutes: 45
+    # 90 min (1h30) — gives slack when the Proxmox runner host is IO/CPU-starved and slow.
+    timeout-minutes: 90
     # Prebuilt: all deps (incl. curl/file/findutils/patchelf/fuse for linuxdeploy)
     # baked into the image and served from the runner's local registry — instant pull,
     # no 550MB download, no per-build install.
