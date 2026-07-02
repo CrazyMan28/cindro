@@ -356,7 +356,24 @@ void SettingsStore::setApiKey(const QString &provider, const QString &value)
 
 QString SettingsStore::apiKey(const QString &provider) const
 {
-    return m_apiKeys.value(provider).toString();
+    // Multi-credential pools (jarvis#76 item 5) keep the flat string contract:
+    // several keys live in ONE secrets.json value separated by commas or
+    // newlines. Single-key callers get the first entry.
+    const QStringList pool = apiKeyPool(provider);
+    return pool.isEmpty() ? QString() : pool.first();
+}
+
+QStringList SettingsStore::apiKeyPool(const QString &provider) const
+{
+    const QString raw = m_apiKeys.value(provider).toString();
+    QStringList out;
+    static const QRegularExpression sep(QStringLiteral("[,\\n]"));
+    for (const QString &part : raw.split(sep, Qt::SkipEmptyParts)) {
+        const QString t = part.trimmed();
+        if (!t.isEmpty())
+            out << t;
+    }
+    return out;
 }
 
 QJsonObject SettingsStore::apiKeysSet() const

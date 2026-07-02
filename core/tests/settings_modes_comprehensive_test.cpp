@@ -398,6 +398,25 @@ int main()
         for (const auto &p : providers)
             if (!after.contains(p)) { allPresent = false; break; }
         check(allPresent, "apiKeysSet: all provider keys present in result");
+        check(providers.contains(QStringLiteral("gemini")) &&
+                  providers.contains(QStringLiteral("xai")) &&
+                  providers.contains(QStringLiteral("deepseek")),
+              "providerKeys: gemini/xai/deepseek registered (jarvis#76 item 11)");
+
+        // Multi-credential pool (jarvis#76 item 5): comma/newline separated
+        // values split into an ordered pool; apiKey() returns the first.
+        s.setApiKey(QStringLiteral("gemini"),
+                    QStringLiteral("key-one, key-two\nkey-three"));
+        const QStringList pool = s.apiKeyPool(QStringLiteral("gemini"));
+        check(pool.size() == 3, "apiKeyPool: three keys parsed");
+        check(pool.first() == QStringLiteral("key-one") &&
+                  pool.last() == QStringLiteral("key-three"),
+              "apiKeyPool: order preserved, whitespace trimmed");
+        check(s.apiKey(QStringLiteral("gemini")) == QStringLiteral("key-one"),
+              "apiKey: single-key callers get the first pool entry");
+        check(s.apiKeyPool(QStringLiteral("openai")).isEmpty(),
+              "apiKeyPool: unset provider is empty");
+        s.setApiKey(QStringLiteral("gemini"), QString());
 
         // Clear
         s.setApiKey(QStringLiteral("anthropic"), QString());

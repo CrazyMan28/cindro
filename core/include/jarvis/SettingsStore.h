@@ -224,6 +224,10 @@ public:
     bool hasApiKey(const QString &provider) const;
     void setApiKey(const QString &provider, const QString &value); // empty => clear
     QString apiKey(const QString &provider) const;                 // daemon-internal only
+    // Multi-credential pool (jarvis#76 item 5): a provider's secrets.json
+    // value may hold several keys separated by commas/newlines; apiKey()
+    // returns the first. ApiBrain rotates through the pool on HTTP 429.
+    QStringList apiKeyPool(const QString &provider) const;
 
     // The {codex,claude,openai,anthropic,ollama} -> bool map for settings.get.
     QJsonObject apiKeysSet() const;

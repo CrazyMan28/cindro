@@ -555,6 +555,11 @@ static QJsonArray modelsForBrain(const QString &brain)
                << QStringLiteral("mistral-small-latest")
                << QStringLiteral("gpt-5.5") << QStringLiteral("o4-mini")
                << QStringLiteral("claude-opus-4-8")
+               // jarvis#76 item 11: providers auto-routed by model-id prefix
+               // (gemini-* / grok-* / deepseek-*), OpenAI-compatible dialect.
+               << QStringLiteral("gemini-2.5-flash")
+               << QStringLiteral("grok-4")
+               << QStringLiteral("deepseek-chat")
                << QStringLiteral("qwen2.5:3b");
     }
     return models;
@@ -1384,17 +1389,19 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         ApiBrain::Options opts;
         opts.model = row.model;
         opts.systemPrompt = memorySystemBlock();
-        // Resolve a key for the model's provider from secrets.json (write-only
-        // store). Anthropic models use the anthropic key; everything else the
-        // openai key. Ollama needs none.
+        // Resolve a key (or pool of keys — jarvis#76 item 5) for the model's
+        // provider from secrets.json. Ollama needs none; every other provider
+        // family (incl. gemini/xai/deepseek — jarvis#76 item 11) reads its own
+        // provider entry.
         const QString provider = ApiBrain::resolveProvider(opts);
-        if (provider == QStringLiteral("anthropic"))
-            opts.apiKey = m_settings.apiKey(QStringLiteral("anthropic"));
-        else if (provider == QStringLiteral("mistral"))
-            opts.apiKey = m_settings.apiKey(QStringLiteral("mistral"));
-        else if (provider == QStringLiteral("openai"))
-            opts.apiKey = m_settings.apiKey(QStringLiteral("openai"));
-        // ollama: no key.
+        if (provider != QStringLiteral("ollama")) {
+            opts.apiKey = m_settings.apiKey(provider);
+            opts.apiKeyPool = m_settings.apiKeyPool(provider);
+        }
+        // Context compression budget + the PreCompact fire point (item 6).
+        opts.contextMaxTokens = m_settings.apiContextMaxTokens();
+        opts.hooks = &m_hooks;
+        opts.sessionId = row.id;
         // FUNCTION-CALLING (computer-use) loop — the OpenAI-compatible providers
         // (openai/mistral/ollama) get the computer-use MCP tools wired the SAME
         // way codex/claude do: a coworker+agent or auto-spawned session drives its
