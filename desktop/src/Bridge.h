@@ -878,9 +878,11 @@ private:
     // ---- Voice helpers ------------------------------------------------------
     void setRecordingState(const QString &s);
     void finishDictation();          // record stopped -> read wav -> voice.stt
+    void finishDictationWav(const QByteArray &wav); // wav bytes -> voice.stt
     QString recordWavPath() const;   // temp wav path for the active capture
     void setVoiceCloneState(const QString &s);
     void finishCloneRecording();     // clone record stopped -> keep wav bytes
+    void finishCloneWav(const QByteArray &wav);     // wav bytes -> clip captured
     static bool hasExecutable(const QString &name);
 
     // ---- Voice MODE helpers -------------------------------------------------
@@ -1009,11 +1011,24 @@ private:
     QProcess *m_recProc = nullptr;      // active pw-record capture
     QString m_recPath;                  // wav path for the active capture
     bool m_recAutoStop = false;         // a duration timer will stop the capture
+    // Qt Multimedia fallback capture for dictation — used when pw-record is
+    // absent (Windows/WASAPI, non-PipeWire boxes). Raw s16 mono 16k PCM is
+    // accumulated and wrapped via pcmToWav() on stop.
+    QAudioSource *m_dictSource = nullptr;
+    QIODevice *m_dictIo = nullptr;      // pull device (owned by the source)
+    QByteArray m_dictPcm;
+    int m_dictGen = 0;                  // guards the auto-stop timer against a
+                                        // stale fire truncating a LATER recording
     // Named voice-library reference-clip recorder (separate from dictation above).
     QString m_voiceCloneState = QStringLiteral("idle");
     QProcess *m_cloneRecProc = nullptr; // active pw-record capture for a voice clip
     QString m_cloneRecPath;             // temp wav path for the clip capture
     bool m_cloneAutoStop = false;       // duration timer will stop the clip capture
+    // Qt Multimedia fallback capture for the clip recorder (s16 mono 24k).
+    QAudioSource *m_cloneSource = nullptr;
+    QIODevice *m_cloneIo = nullptr;
+    QByteArray m_clonePcm;
+    int m_cloneGen = 0;                 // same stale-timer guard as m_dictGen
     QByteArray m_voiceClipBytes;        // the captured/loaded candidate reference clip
     QString m_voiceClipFormat;          // its container ext ("wav", "mp3", ...)
     QString m_voiceClipSource = QStringLiteral("upload"); // "record" | "upload"

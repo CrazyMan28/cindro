@@ -109,6 +109,12 @@ QString AgentDesktop::defaultEngineDir()
     return QDir(exeDir).absoluteFilePath(QStringLiteral("../../computer-use"));
 }
 
+bool AgentDesktop::nestedDesktopSupported()
+{
+    // Linux always can: a nested headless sway needs no privilege or opt-in.
+    return true;
+}
+
 QString AgentDesktop::genBearer()
 {
     auto *rng = QRandomGenerator::system();

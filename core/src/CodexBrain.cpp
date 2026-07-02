@@ -9,6 +9,11 @@
 #include <QFile>
 #include <QFileInfo>
 
+#ifdef Q_OS_WIN
+#include <filesystem>
+#include <system_error>
+#endif
+
 namespace jarvis {
 
 QString CodexBrain::ensureIsolatedHome() const
@@ -21,13 +26,38 @@ QString CodexBrain::ensureIsolatedHome() const
 
     const QString realCodex = QDir::homePath() + QStringLiteral("/.codex");
 
-    // Symlink auth so the logged-in account still works (and token refresh writes
-    // through to the real file). Re-point the link each time in case it moved.
+    // Mirror auth so the logged-in account still works. POSIX: a symlink, so
+    // token refresh writes through to the real file. Windows: QFile::link()
+    // does NOT symlink — it saves a binary IShellLink (.lnk) payload into the
+    // destination file itself, and codex reading that as auth.json dies with
+    // "stream did not contain valid UTF-8" (exit 1). There we hard-link (same
+    // write-through when codex updates the file in place) and fall back to a
+    // plain copy, re-mirroring every launch so a .lnk-corrupted file left by
+    // an earlier build self-heals and the token stays fresh.
     for (const QString &f : { QStringLiteral("auth.json"), QStringLiteral("version.json") }) {
         const QString src = realCodex + QStringLiteral("/") + f;
         const QString dst = home + QStringLiteral("/") + f;
+#ifdef Q_OS_WIN
+        QFile::remove(dst);
+        if (QFile::exists(src)) {
+            std::error_code ec;
+            std::filesystem::create_hard_link(
+                std::filesystem::path(src.toStdWString()),
+                std::filesystem::path(dst.toStdWString()), ec);
+            if (ec) {
+                // Cross-volume/odd-FS fallback: a snapshot copy. No write-through,
+                // so a token codex refreshes in the isolated copy is NOT written
+                // back to ~/.codex — log it so a stale-token drift is diagnosable.
+                QFile::copy(src, dst);
+                qWarning("codex: hard-link of %s failed (%s); using a snapshot copy "
+                         "(token refresh won't write through)",
+                         qPrintable(f), ec.message().c_str());
+            }
+        }
+#else
         if (QFile::exists(src) && !QFileInfo::exists(dst))
             QFile::link(src, dst);
+#endif
     }
 
     // Copy the user's config.toml but STRIP every [mcp_servers.*] table, so codex

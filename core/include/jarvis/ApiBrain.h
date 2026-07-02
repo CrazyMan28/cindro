@@ -99,12 +99,21 @@ public:
     // The first non-empty `choices[].finish_reason` of a streamed chunk ("" if none).
     static QString finishReasonFromChunk(const QJsonObject &chunk);
 
+    // Test seam (no network): feed one SSE `data:` payload through the streaming
+    // parser exactly as drainSse() would. Lets the unit test drive the delta
+    // buffering / event contract without a live endpoint.
+    void ingestSseDataForTest(const QByteArray &data) { handleSseData(data); }
+
 private slots:
     void onReadyRead();
     void onFinished();
 
 private:
     void emitEvent(const NormalizedBrainEvent &ev);
+    // Emit the buffered streamed text as ONE Message event (Contract B: one
+    // Message == one complete chat bubble). Called at end of stream, before the
+    // tool loop attaches tool_calls, and on cancel (so partial text still shows).
+    void flushPendingText();
     void startOpenAi(const QString &text);
     void startAnthropic(const QString &text);
     // Build the user-message `content`: a plain string when there are no images,
@@ -132,6 +141,7 @@ private:
     QNetworkAccessManager *m_nam = nullptr;
     QNetworkReply *m_reply = nullptr;
     QByteArray m_buf;            // SSE line-assembly buffer
+    QString m_pendingText;       // streamed assistant text awaiting flush as ONE Message
     bool m_busy = false;
     bool m_emittedFinal = false;
     bool m_anySent = false;      // whether we streamed any assistant text

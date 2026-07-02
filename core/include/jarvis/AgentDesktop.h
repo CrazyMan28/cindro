@@ -122,6 +122,13 @@ public:
     // Resolve the default engine dir (…/computer-use) relative to this build.
     static QString defaultEngineDir();
 
+    // Whether this platform/build can provision an ISOLATED nested agent desktop
+    // at all. Linux: always (nested headless sway). Windows: only when a v2
+    // isolation tier is enabled (JARVIS_ENABLE_V2 + sandbox mode); the shipped
+    // default is the v1 real-screen take-over, where ensure() always degrades and
+    // the daemon must fall back to the GLOBAL :8794 engine for MCP injection.
+    static bool nestedDesktopSupported();
+
 private:
     struct Desk {
         AgentDesktopInfo info;
