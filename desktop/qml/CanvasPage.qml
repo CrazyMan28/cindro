@@ -20,6 +20,14 @@ Item {
     ListModel { id: widgetModel }
     readonly property int cap: 20
 
+    // Re-read the widget bus once THIS page (and its Connections handler below) is
+    // fully instantiated. The page is lazy-loaded, so AppShell's replayAllWidgets()
+    // call on tab-switch fires BEFORE the Loader finishes — those signals land in
+    // the void and the canvas stays empty (widgets "don't show"). Requesting the
+    // replay from Component.onCompleted guarantees the handler is registered first
+    // (mirrors JarvisPanel replaying its chat widgets on session open).
+    Component.onCompleted: bridge.replayAllWidgets()
+
     Connections {
         target: bridge
         function onWidgetRendered(widget) {
