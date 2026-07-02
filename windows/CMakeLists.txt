@@ -122,6 +122,7 @@ add_library(jarvis-core STATIC
     ${CORE_DIR}/src/SshAllowList.cpp
     ${CORE_DIR}/src/AuditLog.cpp
     ${CORE_DIR}/src/InjectionGuard.cpp
+    ${CORE_DIR}/src/ToolLoopGuard.cpp
     ${CORE_DIR}/src/NotifyService.cpp
     ${CORE_DIR}/src/WidgetLeaseRegistry.cpp
     # Headers (AUTOMOC) — same set as core/CMakeLists.txt.

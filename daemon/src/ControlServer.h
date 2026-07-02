@@ -28,6 +28,7 @@
 #include "jarvis/SettingsStore.h"
 #include "jarvis/SkillStore.h"
 #include "jarvis/HookStore.h"
+#include "jarvis/ToolLoopGuard.h"
 #include "jarvis/SshAllowList.h"
 #include "jarvis/TrustPolicyStore.h"
 #include "jarvis/Updater.h"
@@ -572,6 +573,17 @@ private:
     // Turns the user sent while the brain was still busy; flushed on turnFinished
     // so a fast follow-up is never rejected as "brain is busy".
     QHash<QString, HeldTurn> m_pendingTurns;
+    // Tool-loop guardrails (jarvis#76 item 4): the last ToolCall per session
+    // (paired with its ToolResult), the per-session repeat window, and a
+    // once-per-turn latch so the soft warn doesn't spam. Cleared on turn end /
+    // cancel / delete.
+    struct PendingToolCall {
+        QString name;
+        QString argsJson;
+    };
+    QHash<QString, PendingToolCall> m_lastToolCall;
+    QHash<QString, QList<ToolLoopGuard::Entry>> m_toolLoop;
+    QSet<QString> m_toolLoopWarned;
     // Sessions that have already received the one-time co-work guidance preamble.
     QSet<QString> m_coworkGuided;
     // Per-session custom-agent system prompt (set when a session runs AS an agent)
@@ -608,6 +620,8 @@ private:
     // Skill lifecycle curation (jarvis#76 item 2): hourly stale-skill archive.
     QTimer *m_skillSweepTimer = nullptr;
     void sweepStaleSkills();
+    // Tool-loop guardrail (jarvis#76 item 4).
+    void observeToolLoop(const QString &sessionId, const NormalizedBrainEvent &ev);
 
     // Authenticated client sockets.
     QSet<QWebSocket *> m_clients;

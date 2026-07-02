@@ -2090,6 +2090,12 @@ void ControlServer::onTurnFinished(const QString &sessionId)
     // Backup wake trigger (the primary is the `final` event in onBrainEvent).
     wakeParentForSubagent(sessionId);
 
+    // Tool-loop guardrail state is per-turn: a fresh turn starts a fresh window
+    // (cross-turn loops are still caught by the churn counter within each turn).
+    m_toolLoop.remove(sessionId);
+    m_lastToolCall.remove(sessionId);
+    m_toolLoopWarned.remove(sessionId);
+
     // Stop hook (observational): the agent finished responding. Fire for the main
     // agent only (a child's completion is a SubagentStop). No-op unless configured.
     if (auto r = m_store.get(sessionId); r && r->parentSessionId.isEmpty()) {
@@ -2514,6 +2520,9 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     m_agentDesktops.releaseSession(sessionId);   // drop the desktop + its reservation
     m_autoComputerSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
+    m_toolLoop.remove(sessionId);
+    m_lastToolCall.remove(sessionId);
+    m_toolLoopWarned.remove(sessionId);
     return true;
 }
 
@@ -2538,6 +2547,10 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_sessionAgentPrompt.remove(sessionId);
     m_agentGuided.remove(sessionId);
     m_subagentPendingWake.remove(sessionId);   // as a child awaiting parent-wake
+    m_toolLoop.remove(sessionId);
+    m_lastToolCall.remove(sessionId);
+    m_toolLoopWarned.remove(sessionId);
+    m_pendingTurns.remove(sessionId);
     // 4) Drop the row + its event stream from the store.
     if (!m_store.deleteSession(sessionId)) {
         if (err)
@@ -5627,18 +5640,103 @@ void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrain
         ptu.insert(QStringLiteral("tool_name"), name);
         ptu.insert(QStringLiteral("tool_input"), args);
         m_hooks.run(QStringLiteral("PreToolUse"), ptu, name);
+        // Tool-loop guardrail: remember the call so its ToolResult can be
+        // paired even when the parser omits name/args on the result event.
+        m_lastToolCall.insert(sessionId, PendingToolCall{name, argsStr});
     } else if (ev.kind == NormalizedBrainEvent::Kind::ToolResult) {
         // PostToolUse hook (observational).
         QJsonObject po;
         po.insert(QStringLiteral("session_id"), sessionId);
         po.insert(QStringLiteral("tool_result"), ev.fields.value(QStringLiteral("output")));
         m_hooks.run(QStringLiteral("PostToolUse"), po);
+        observeToolLoop(sessionId, ev);
     }
 
     broadcastSessionEvent(sessionId, ev);
 
     // Fan the (already-persisted) event out to the device channel + push.
     emit sessionEvent(sessionId, ev);
+}
+
+// Tool-loop guardrail (jarvis#76 item 4): pair a ToolResult with its ToolCall,
+// feed the (tool, args, result) triple into the per-session repeat window, and
+// act on the verdict. Soft warn -> queue a next-turn nudge (CLI brains cannot
+// be interrupted mid-loop); hard stop -> surface an error card + cancel the
+// turn, leaving a guardrail turn queued so the brain resumes with guidance.
+void ControlServer::observeToolLoop(const QString &sessionId, const NormalizedBrainEvent &ev)
+{
+    // Prefer the result's own name/args (codex emits completed calls as one
+    // item); fall back to the cached preceding ToolCall.
+    QString name = ev.fields.value(QStringLiteral("name")).toString();
+    QString argsStr;
+    if (ev.fields.contains(QStringLiteral("args"))) {
+        argsStr = QString::fromUtf8(
+            QJsonDocument(ev.fields.value(QStringLiteral("args")).toObject())
+                .toJson(QJsonDocument::Compact));
+    }
+    if (name.isEmpty()) {
+        const PendingToolCall tc = m_lastToolCall.value(sessionId);
+        if (tc.name.isEmpty())
+            return; // result without a known call (e.g. resume mid-turn) — skip
+        name = tc.name;
+        if (argsStr.isEmpty())
+            argsStr = tc.argsJson;
+    }
+
+    const QString output = ev.fields.value(QStringLiteral("output")).toString();
+    const ToolLoopGuard::Result verdict =
+        ToolLoopGuard::observe(m_toolLoop[sessionId], name, argsStr, output);
+
+    if (verdict.hardStop) {
+        const QString warnText = QStringLiteral(
+            "[TOOL LOOP GUARDRAIL] This turn was hard-stopped: '%1' was called %2 "
+            "times with identical arguments and no new outcome. Do NOT retry the "
+            "same call again — reassess, explain what is failing, and either try a "
+            "genuinely different approach or ask the user how to proceed.")
+            .arg(verdict.toolName).arg(verdict.repeatCount);
+        // Queue the guardrail turn FIRST (overwriting any queued turn — safety
+        // beats a lost follow-up here), then clear the window so the resumed
+        // turn starts clean.
+        m_pendingTurns.insert(sessionId, HeldTurn{warnText, {}});
+        m_toolLoop.remove(sessionId);
+        m_lastToolCall.remove(sessionId);
+        m_toolLoopWarned.remove(sessionId);
+        m_audit.record(QStringLiteral("tool.loop.stop"), false, QStringLiteral("high"),
+                       QStringLiteral("hard-stop: ") + verdict.toolName
+                           + QStringLiteral(" x") + QString::number(verdict.repeatCount),
+                       sessionId);
+        // Surface an error card immediately (persist + broadcast), then cancel
+        // the brain one event-loop tick later to avoid re-entering the Qt
+        // signal dispatch we are currently inside.
+        onBrainEvent(sessionId,
+                     NormalizedBrainEvent::error(QStringLiteral(
+                         "Tool loop guard: %1 repeated %2 times — turn stopped")
+                         .arg(verdict.toolName).arg(verdict.repeatCount)));
+        QTimer::singleShot(0, this, [this, sessionId] {
+            if (Brain *b = m_brains.value(sessionId, nullptr))
+                b->cancel(); // fires turnFinished -> flushes the queued guardrail turn
+        });
+        qWarning("jarvisd: tool-loop hard-stop for session %s (%s x%d)",
+                 qPrintable(sessionId), qPrintable(verdict.toolName),
+                 verdict.repeatCount);
+    } else if (verdict.softWarn && !m_toolLoopWarned.contains(sessionId)) {
+        m_toolLoopWarned.insert(sessionId);
+        m_audit.record(QStringLiteral("tool.loop.warn"), true, QStringLiteral("medium"),
+                       QStringLiteral("soft-warn: ") + verdict.toolName
+                           + QStringLiteral(" x") + QString::number(verdict.repeatCount),
+                       sessionId);
+        // Nudge the brain on its NEXT turn — but never clobber a turn the user
+        // already queued (m_pendingTurns is a single slot per session).
+        if (!m_pendingTurns.contains(sessionId)) {
+            const QString warnText = QStringLiteral(
+                "[TOOL LOOP WARNING] '%1' has now been called %2 times with the "
+                "same arguments and result. If the next attempt does not produce "
+                "a different outcome, stop retrying and change approach.")
+                .arg(verdict.toolName).arg(verdict.repeatCount);
+            QString wErr;
+            sendToSession(sessionId, warnText, {}, &wErr);
+        }
+    }
 }
 
 void ControlServer::broadcastSessionEvent(const QString &sessionId, const NormalizedBrainEvent &ev)
