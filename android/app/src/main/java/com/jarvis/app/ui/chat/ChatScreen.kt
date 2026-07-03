@@ -450,17 +450,21 @@ private fun InputRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Tap = gallery picker; LONG-PRESS = paste an image from the
-            // clipboard (jarvis#76 bonus — e.g. a screenshot you just copied).
+            // clipboard (jarvis#76 bonus). A plain Box, NOT IconButton: the
+            // button's internal clickable consumed the tap before our gesture
+            // detector could resolve it, so the picker never opened.
             val attach by rememberUpdatedState(onAttach)
             val pasteImg by rememberUpdatedState(onPasteImage)
-            IconButton(
-                onClick = {},
-                modifier = Modifier.pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = { attach() },
-                        onLongPress = { pasteImg() },
-                    )
-                },
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = { attach() },
+                            onLongPress = { pasteImg() },
+                        )
+                    },
+                contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Filled.Image, contentDescription = "Attach photo (long-press: paste from clipboard)", tint = JarvisPalette.Accent)
             }
