@@ -213,6 +213,51 @@ void Bridge::probeGpu()
                  QStringLiteral("--format=csv,noheader,nounits")});
 }
 
+namespace {
+
+// The daemon's config root, resolved EXACTLY like jarvis::Config::configDir()
+// (the sidebar deliberately does not link jarvis-core): JARVIS_CONFIG_DIR
+// override for profile isolation (jarvis#76 item 15), else ~/.config/jarvis.
+QString jarvisConfigDir()
+{
+    const QString override = qEnvironmentVariable("JARVIS_CONFIG_DIR");
+    return override.isEmpty()
+               ? QDir::homePath() + QStringLiteral("/.config/jarvis")
+               : override;
+}
+
+// The profile's control port from config.toml [ports] control=N (default 8795).
+// A hardcoded 8795 silently connected a second-profile sidebar to the WRONG
+// daemon. Mirrors jarvis::Config::parseToml's [ports] handling.
+int configuredControlPort()
+{
+    QFile f(jarvisConfigDir() + QStringLiteral("/config.toml"));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return 8795;
+    QString section;
+    for (const QString &raw :
+         QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'))) {
+        const QString line = raw.trimmed();
+        if (line.startsWith(QLatin1Char('[')) && line.endsWith(QLatin1Char(']'))) {
+            section = line.mid(1, line.size() - 2).trimmed();
+            continue;
+        }
+        if (section != QStringLiteral("ports") ||
+            !line.startsWith(QStringLiteral("control")))
+            continue;
+        const int eq = line.indexOf(QLatin1Char('='));
+        if (eq < 0)
+            continue;
+        bool ok = false;
+        const int p = line.mid(eq + 1).trimmed().toInt(&ok);
+        if (ok && p > 0 && p < 65536)
+            return p;
+    }
+    return 8795;
+}
+
+} // namespace
+
 QString Bridge::readControlToken()
 {
     // MUST match the daemon's write path byte-for-byte. jarvisd writes the token via
@@ -224,7 +269,7 @@ QString Bridge::readControlToken()
     //   * Windows: QStandardPaths::ConfigLocation == %APPDATA%\... which is a DIFFERENT
     //     directory than $HOME/.config → "control_token not found", the whole HUD stays
     //     offline, and setup re-runs every launch. Reading $HOME/.config fixes it.
-    const QString path = QDir::homePath() + QStringLiteral("/.config/jarvis/control_token");
+    const QString path = jarvisConfigDir() + QStringLiteral("/control_token");
 
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
@@ -271,7 +316,10 @@ QString Bridge::controlUrl()
     QUrl url;
     url.setScheme(QStringLiteral("ws"));
     url.setHost(QStringLiteral("127.0.0.1"));
-    url.setPort(8795);
+    // Respect the profile's configured control port (config.toml [ports]) —
+    // a second isolated daemon (JARVIS_CONFIG_DIR profile, jarvis#76 item 15)
+    // binds elsewhere; a hardcoded 8795 silently connected to the WRONG daemon.
+    url.setPort(configuredControlPort());
     url.setPath(QStringLiteral("/control/ws"));
 
     QUrlQuery q;
@@ -547,7 +595,7 @@ QString Bridge::extensionPath() const
         QCoreApplication::applicationDirPath() + QStringLiteral("/extension"));
 #else
     // Staged by packaging/install.sh
-    return QDir::homePath() + QStringLiteral("/.local/share/jarvis/extension");
+    return jarvis::dataDir() + QStringLiteral("/extension");
 #endif
 }
 

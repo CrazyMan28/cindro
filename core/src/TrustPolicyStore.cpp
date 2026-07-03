@@ -1,5 +1,7 @@
 #include "jarvis/TrustPolicyStore.h"
 
+#include "jarvis/Config.h"
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -13,10 +15,10 @@ namespace jarvis {
 
 TrustPolicyStore::TrustPolicyStore(const QString &root)
 {
-    const QString dir = root.isEmpty()
-        ? QStandardPaths::writableLocation(QStandardPaths::ConfigLocation)
-              + QStringLiteral("/jarvis")
-        : root;
+    // Config::configDir() (not QStandardPaths) so this store honors
+    // JARVIS_CONFIG_DIR profiles and never diverges from the other config
+    // stores when XDG_CONFIG_HOME is set (jarvis#76 item 15).
+    const QString dir = root.isEmpty() ? Config::configDir() : root;
     m_path = dir + QStringLiteral("/trust_policies.json");
     load();
 }

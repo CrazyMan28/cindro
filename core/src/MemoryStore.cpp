@@ -1,4 +1,5 @@
 #include "jarvis/MemoryStore.h"
+#include "jarvis/DataPaths.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -119,7 +120,7 @@ MemoryStore::~MemoryStore()
 
 QString MemoryStore::defaultDbPath()
 {
-    return QDir::homePath() + QStringLiteral("/.local/share/jarvis/jarvis.db");
+    return dataDir() + QStringLiteral("/jarvis.db");
 }
 
 bool MemoryStore::open(const QString &dbPath, const QString &connectionName)

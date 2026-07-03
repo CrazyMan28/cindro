@@ -30,7 +30,13 @@ QString unquote(QString v)
 
 QString Config::configDir()
 {
-    // BUILD_SPEC pins ~/.config/jarvis explicitly (not XDG-overridable display name).
+    // Multi-profile isolation (jarvis#76 item 15): JARVIS_CONFIG_DIR points a
+    // second daemon/desktop instance at its own config root (own control_token,
+    // secrets.json, config.toml with its own ports). Unset = today's path,
+    // byte-identical: BUILD_SPEC pins ~/.config/jarvis (not XDG-overridable).
+    const QString override = qEnvironmentVariable("JARVIS_CONFIG_DIR");
+    if (!override.isEmpty())
+        return override;
     return QDir::homePath() + QStringLiteral("/.config/jarvis");
 }
 

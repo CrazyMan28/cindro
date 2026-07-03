@@ -1,4 +1,5 @@
 #include "jarvis/Scheduler.h"
+#include "jarvis/DataPaths.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -222,10 +223,8 @@ QString Scheduler::genId()
 
 bool Scheduler::open(const QString &dbPath, const QString &connectionName)
 {
-    const QString path = dbPath.isEmpty()
-                             ? (QDir::homePath() +
-                                QStringLiteral("/.local/share/jarvis/jarvis.db"))
-                             : dbPath;
+    const QString path =
+        dbPath.isEmpty() ? dataDir() + QStringLiteral("/jarvis.db") : dbPath;
 
     const QFileInfo fi(path);
     QDir dir = fi.absoluteDir();

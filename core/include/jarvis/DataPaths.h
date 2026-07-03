@@ -27,9 +27,15 @@ inline QString dataHome()
     return xdg.isEmpty() ? QDir::homePath() + QStringLiteral("/.local/share") : xdg;
 }
 
-// The Jarvis data directory itself: <dataHome>/jarvis.
+// The Jarvis data directory itself: <dataHome>/jarvis. JARVIS_DATA_DIR
+// overrides the whole thing for multi-profile isolation (jarvis#76 item 15) —
+// a second instance keeps its own jarvis.db, skills, widgets bus, attachments.
+// Unset = byte-identical to before.
 inline QString dataDir()
 {
+    const QString override = qEnvironmentVariable("JARVIS_DATA_DIR");
+    if (!override.isEmpty())
+        return override;
     return dataHome() + QStringLiteral("/jarvis");
 }
 

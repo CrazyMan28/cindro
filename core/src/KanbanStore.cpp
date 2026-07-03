@@ -1,4 +1,5 @@
 #include "jarvis/KanbanStore.h"
+#include "jarvis/DataPaths.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -84,10 +85,8 @@ QString KanbanStore::genId()
 
 bool KanbanStore::open(const QString &dbPath, const QString &connectionName)
 {
-    const QString path = dbPath.isEmpty()
-                             ? (QDir::homePath() +
-                                QStringLiteral("/.local/share/jarvis/jarvis.db"))
-                             : dbPath;
+    const QString path =
+        dbPath.isEmpty() ? dataDir() + QStringLiteral("/jarvis.db") : dbPath;
     const QFileInfo fi(path);
     QDir dir = fi.absoluteDir();
     if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {

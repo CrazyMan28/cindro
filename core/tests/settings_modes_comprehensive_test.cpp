@@ -11,6 +11,8 @@
 // 30+ checks.
 
 #include "jarvis/Config.h"
+#include "jarvis/DataPaths.h"
+#include "jarvis/SessionStore.h"
 #include "jarvis/SettingsStore.h"
 
 #include <QByteArray>
@@ -462,6 +464,32 @@ int main()
         check(s2.agentMode()       == QStringLiteral("build"),  "coexist: agent_mode=build");
         check(s2.wakeNotify()      == QStringLiteral("always"), "coexist: wake_notify=always");
         check(s2.permissionLevel() == QStringLiteral("high"),   "coexist: permission_level=high");
+    }
+
+    // =========================================================================
+    // 21. Profile isolation env overrides (jarvis#76 item 15)
+    // =========================================================================
+    {
+        const QString cfgBefore = jarvis::Config::configDir();
+        const QString dataBefore = jarvis::dataDir();
+        qputenv("JARVIS_CONFIG_DIR", "/tmp/jarvis-profile-b/config");
+        qputenv("JARVIS_DATA_DIR", "/tmp/jarvis-profile-b/data");
+        check(jarvis::Config::configDir() == QStringLiteral("/tmp/jarvis-profile-b/config"),
+              "JARVIS_CONFIG_DIR overrides the config root");
+        check(jarvis::dataDir() == QStringLiteral("/tmp/jarvis-profile-b/data"),
+              "JARVIS_DATA_DIR overrides the data root");
+        check(jarvis::Config::controlTokenPath()
+                  == QStringLiteral("/tmp/jarvis-profile-b/config/control_token"),
+              "control_token follows the profile config root");
+        check(jarvis::SessionStore::defaultDbPath()
+                  == QStringLiteral("/tmp/jarvis-profile-b/data/jarvis.db"),
+              "jarvis.db follows the profile data root");
+        qunsetenv("JARVIS_CONFIG_DIR");
+        qunsetenv("JARVIS_DATA_DIR");
+        check(jarvis::Config::configDir() == cfgBefore,
+              "unset -> config root byte-identical to before");
+        check(jarvis::dataDir() == dataBefore,
+              "unset -> data root byte-identical to before");
     }
 
     // =========================================================================

@@ -1,4 +1,5 @@
 #include "jarvis/SessionStore.h"
+#include "jarvis/DataPaths.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -89,8 +90,8 @@ SessionStore::~SessionStore()
 
 QString SessionStore::defaultDbPath()
 {
-    // BUILD_SPEC pins ~/.local/share/jarvis/jarvis.db.
-    return QDir::homePath() + QStringLiteral("/.local/share/jarvis/jarvis.db");
+    // BUILD_SPEC pins ~/.local/share/jarvis/jarvis.db (JARVIS_DATA_DIR overrides).
+    return dataDir() + QStringLiteral("/jarvis.db");
 }
 
 bool SessionStore::open(const QString &dbPath, const QString &connectionName)

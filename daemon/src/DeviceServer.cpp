@@ -737,7 +737,7 @@ QStringList DeviceServer::storeImages(const QString &sessionId, const QJsonArray
         return paths;
 
     const QString dir = QDir::homePath() +
-                        QStringLiteral("/.local/share/jarvis/inbox/") + sessionId;
+                        QStringLiteral("/inbox/") + sessionId;
     QDir().mkpath(dir);
 
     int idx = 0;

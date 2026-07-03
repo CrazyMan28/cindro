@@ -78,7 +78,7 @@ QString cloneRefAudioB64(const QString &voiceSlug)
         name = voiceSlug.mid(6);
     if (name.isEmpty())
         return QString();
-    const QString dir = QDir::homePath() + QStringLiteral("/.config/jarvis/voices/");
+    const QString dir = Config::configDir() + QStringLiteral("/voices/");
     static const QStringList exts = { QStringLiteral("mp3"), QStringLiteral("wav"),
                                       QStringLiteral("opus"), QStringLiteral("flac"),
                                       QStringLiteral("ogg") };
@@ -1354,7 +1354,7 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         // danger sandbox that stops codex auto-cancelling MCP calls) is only forced
         // when a computer-use server was actually injected.
         opts.codexHome = QDir::homePath()
-            + QStringLiteral("/.local/share/jarvis/agent/") + row.id
+            + QStringLiteral("/agent/") + row.id
             + QStringLiteral("/codex-home");
         if (!opts.configOverrides.isEmpty())
             opts.driveMcp = true;
@@ -2832,7 +2832,7 @@ static QStringList decodeSendImages(const QJsonArray &arr, const QString &sessio
     if (arr.isEmpty())
         return paths;
     const QString dir = QDir::homePath()
-        + QStringLiteral("/.local/share/jarvis/attachments/") + sessionId;
+        + QStringLiteral("/attachments/") + sessionId;
     QDir().mkpath(dir);
     int n = 0;
     for (const QJsonValue &v : arr) {
@@ -5377,7 +5377,7 @@ namespace {
 
 QString fileInboxDir(const QString &sessionId)
 {
-    QString dir = QDir::homePath() + QStringLiteral("/.local/share/jarvis/files");
+    QString dir = dataDir() + QStringLiteral("/files");
     if (!sessionId.isEmpty())
         dir += QLatin1Char('/') + sessionId;
     QDir().mkpath(dir);

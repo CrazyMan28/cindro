@@ -1,4 +1,5 @@
 #include "jarvis/VoiceProvider.h"
+#include "jarvis/DataPaths.h"
 
 #include <QDir>
 #include <QFile>
@@ -57,7 +58,7 @@ QString piperExe()
 
 QString jarvisShareDir(const QString &sub)
 {
-    return QDir::homePath() + QStringLiteral("/.local/share/jarvis/") + sub;
+    return dataDir() + QStringLiteral("/") + sub;
 }
 
 // Find a usable whisper ggml model file. Prefers an explicit `model` path when

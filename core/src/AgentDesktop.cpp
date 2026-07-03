@@ -1,4 +1,5 @@
 #include "jarvis/AgentDesktop.h"
+#include "jarvis/DataPaths.h"
 
 #include <signal.h> // kill, SIGTERM, SIGKILL
 #include <sys/types.h>
@@ -146,7 +147,7 @@ QString AgentDesktop::writeSwayConf(const QString &sessionId, int width, int hei
     // A minimal nested-sway config: a single HEADLESS-1 output at the requested
     // size, no idle/lock, no bars. The loud cursor theme makes the agent
     // pointer visually distinct from the user's.
-    const QString dir = QDir::homePath() + QStringLiteral("/.local/share/jarvis/agent");
+    const QString dir = dataDir() + QStringLiteral("/agent");
     QDir().mkpath(dir);
     const QString path = QStringLiteral("%1/sway-%2.conf").arg(dir, sessionId);
 
@@ -432,7 +433,7 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
     // ~/.computer-use), bound to the nested compositor via the JARVIS_AGENT_*
     // env the engine's session.py detects.
     d.configDir = QDir::homePath() +
-                  QStringLiteral("/.local/share/jarvis/agent/cu-") + sessionId;
+                  QStringLiteral("/agent/cu-") + sessionId;
     QDir().mkpath(d.configDir);
     {
         // Seed a config.yaml with our bearer + port; the engine reads
@@ -675,14 +676,14 @@ int AgentDesktop::sweepOrphans()
     // (its config lives under ~/.local/share/jarvis/agent/) — never the user's
     // real `sway -c ~/.config/sway/config`.
     const QString swayConfMarker =
-        QDir::homePath() + QStringLiteral("/.local/share/jarvis/agent/sway-");
+        dataDir() + QStringLiteral("/agent/sway-");
     // Per-session engines + swaybg are bound to a per-session runtime dir under
     // the real runtime root: <runtimeRoot>/jarvis-agent-<sessionId>.
     const QString agentRuntimeMarker =
         runtimeRoot() + QStringLiteral("/jarvis-agent-");
     // Per-session engine bootstrap lives under the agent config dir.
     const QString engineMarker =
-        QDir::homePath() + QStringLiteral("/.local/share/jarvis/agent/cu-");
+        dataDir() + QStringLiteral("/agent/cu-");
 
     // Don't touch anything we currently track.
     QSet<qint64> tracked;
@@ -753,7 +754,7 @@ int AgentDesktop::sweepOrphans()
         return true;
     };
     const QString agentDir =
-        QDir::homePath() + QStringLiteral("/.local/share/jarvis/agent");
+        dataDir() + QStringLiteral("/agent");
     QDir ad(agentDir);
     for (const QString &conf : ad.entryList({QStringLiteral("sway-sess_*.conf")},
                                             QDir::Files)) {

@@ -1,4 +1,5 @@
 #include "jarvis/PluginSigner.h"
+#include "jarvis/Config.h"
 
 #include <sodium.h>
 
@@ -15,7 +16,7 @@ namespace jarvis {
 
 QString PluginSigner::trustedKeysPath()
 {
-    return QDir::homePath() + QStringLiteral("/.config/jarvis/plugin_keys.json");
+    return Config::configDir() + QStringLiteral("/plugin_keys.json");
 }
 
 QString PluginSigner::keyIdFor(const QByteArray &pubkey)

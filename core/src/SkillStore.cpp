@@ -1,4 +1,5 @@
 #include "jarvis/SkillStore.h"
+#include "jarvis/DataPaths.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -88,7 +89,7 @@ QJsonObject SkillRow::toListJson() const
 
 QString SkillStore::defaultRoot()
 {
-    return QDir::homePath() + QStringLiteral("/.local/share/jarvis/skills");
+    return dataDir() + QStringLiteral("/skills");
 }
 
 QString SkillStore::codexSkillsRoot()

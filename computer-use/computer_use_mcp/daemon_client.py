@@ -18,7 +18,10 @@ import threading
 
 from websockets.sync.client import connect
 
-_TOKEN_PATH = os.path.expanduser("~/.config/jarvis/control_token")
+# JARVIS_CONFIG_DIR points a second isolated profile at its own config root
+# (jarvis#76 item 15); unset resolves to today's ~/.config/jarvis.
+_CONFIG_DIR = os.environ.get("JARVIS_CONFIG_DIR") or os.path.expanduser("~/.config/jarvis")
+_TOKEN_PATH = os.path.join(_CONFIG_DIR, "control_token")
 _lock = threading.Lock()
 _counter = 0
 

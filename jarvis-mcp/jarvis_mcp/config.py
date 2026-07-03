@@ -19,7 +19,9 @@ from pathlib import Path
 import yaml
 
 # --- this server -----------------------------------------------------------
-JARVIS_CONFIG_DIR = Path.home() / ".config" / "jarvis"
+# JARVIS_CONFIG_DIR env points at a second isolated profile (jarvis#76 item 15).
+JARVIS_CONFIG_DIR = Path(os.environ.get("JARVIS_CONFIG_DIR")
+                         or str(Path.home() / ".config" / "jarvis"))
 TOKEN_FILE = JARVIS_CONFIG_DIR / "jarvis_mcp_token"
 
 DEFAULT_HOST = "0.0.0.0"

@@ -1,4 +1,5 @@
 #include "jarvis/AuditLog.h"
+#include "jarvis/DataPaths.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -31,7 +32,7 @@ AuditLog::~AuditLog()
 
 QString AuditLog::defaultDbPath()
 {
-    return QDir::homePath() + QStringLiteral("/.local/share/jarvis/jarvis.db");
+    return dataDir() + QStringLiteral("/jarvis.db");
 }
 
 bool AuditLog::open(const QString &dbPath, const QString &connectionName)
