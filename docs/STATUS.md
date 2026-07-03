@@ -8,6 +8,31 @@ _Last updated: 2026-07-03._
 
 ---
 
+## 🆕 The terminal wave: jarvis CLI/TUI, true self-update, Android picker fix (2026-07-03)
+
+- **`jarvis` — the terminal surface** (`cli/`, Linux + Windows): a Claude-Code-
+  style full-screen TUI agent (streamed chat with tool cards + `/y`·`/n`
+  approvals, Sessions, Memory, Skills with pin/restore, Agents, work Queue,
+  Settings knobs that cycle in place) over one streaming Contract A client —
+  plus `jarvis doctor` (health check with concrete fixes), `jarvis status`,
+  `jarvis start|stop` (headless, no GUI), `jarvis web start`, `jarvis ask "…"`
+  (one streamed turn for scripts; approvals auto-deny), `sessions`, `search`,
+  `version`. 16 tests vs a scriptable fake daemon incl. 4 textual Pilot TUI
+  smokes; verified live against the running daemon (real mistral turn).
+  Installed by `install.sh` (cli-venv + `~/.local/bin/jarvis` symlink).
+- **True release-based self-update**: AppImage replaces ITSELF in place
+  (download latest GitHub release asset → ELF-magic check → atomic rename;
+  new build on next launch) and packaged Windows silently runs the new
+  Jarvis-Setup.exe (/CLOSEAPPLICATIONS /RESTARTAPPLICATIONS relaunches).
+  Git checkouts keep pull+rebuild. New **"Install updates automatically"**
+  toggle (`auto_update_apply`, default off) turns the periodic 6h check into
+  hands-off auto-install with a result notification. Also fixed: the Windows
+  update script read an env var nobody set, so `behind` was NEVER true —
+  Windows auto-update literally could not fire before this.
+- **Android**: the attach button opens the photo picker again (IconButton's
+  internal clickable ate the tap after the long-press-paste change; now a
+  plain gesture Box — tap = picker, long-press = clipboard paste).
+
 ## 🆕 The #76 wave: all 16 Hermes-comparison backlog items + image paste + the real Windows widget fix (2026-07-03)
 
 Issue **#76** (the Hermes-comparison backlog) shipped **in full** on `dev` — all 16

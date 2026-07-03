@@ -62,6 +62,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -463,6 +468,14 @@ private fun InputRow(
                             onTap = { attach() },
                             onLongPress = { pasteImg() },
                         )
+                    }
+                    // Raw pointerInput is invisible to TalkBack/keyboard focus —
+                    // IconButton used to provide the button role + click actions,
+                    // so re-establish them explicitly.
+                    .semantics(mergeDescendants = true) {
+                        role = Role.Button
+                        onClick(label = "Attach photo") { attach(); true }
+                        onLongClick(label = "Paste image from clipboard") { pasteImg(); true }
                     },
                 contentAlignment = Alignment.Center,
             ) {

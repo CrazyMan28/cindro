@@ -132,6 +132,7 @@ private:
     QTimer *m_timer = nullptr;
     bool m_autoEnabled = false;
     bool m_autoApply = false;
+    bool m_applyInFlight = false; // one auto-apply at a time (worker thread)
     int m_intervalHours = 6;
 };
 

@@ -106,10 +106,20 @@ def cmd_stop() -> int:
                 rc = 1
         return rc
     if IS_WIN:
-        # Exact image name only — never a broad pattern.
-        r = _run(["taskkill", "/IM", "jarvisd.exe", "/F"])
-        console.print("[cyan]•[/cyan] jarvisd.exe: "
-                      + ("stopped" if r.returncode == 0 else "not running"))
+        # HARD RULE: stop by PID, never by image name — /IM would kill EVERY
+        # jarvisd.exe (multi-profile installs, dev builds, CI runners). Match
+        # only processes running THIS install's binary path.
+        binary = _daemon_binary()
+        if binary is None:
+            console.print("[yellow]jarvisd.exe not found — nothing to stop[/yellow]")
+            return 1
+        ps = ("Get-CimInstance Win32_Process -Filter \"Name='jarvisd.exe'\" | "
+              f"Where-Object {{ $_.ExecutablePath -eq '{binary}' }} | "
+              "ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $_.ProcessId }")
+        r = _run(["powershell", "-NoProfile", "-Command", ps])
+        pids = [p for p in r.stdout.split() if p.strip().isdigit()]
+        console.print(f"[cyan]•[/cyan] jarvisd ({binary}): "
+                      + (f"stopped pid {', '.join(pids)}" if pids else "not running"))
         return 0
     console.print("[yellow]no user systemd[/yellow] — stop the jarvisd process "
                   "you launched (kill <pid>); refusing to pkill by name")

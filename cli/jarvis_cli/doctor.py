@@ -46,9 +46,8 @@ async def _daemon_snapshot() -> dict:
         except Exception:
             pass
         try:
-            agents = (await c.call("agent.list", {}, timeout=6)).get("agents", [])
-            out["agents_running"] = sum(1 for a in agents
-                                        if a.get("status") in ("running", "starting"))
+            agents = (await c.call("agents.running", {}, timeout=6)).get("agents", [])
+            out["agents_running"] = sum(1 for a in agents if a.get("running"))
         except Exception:
             pass
         try:

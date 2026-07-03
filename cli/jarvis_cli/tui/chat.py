@@ -72,6 +72,7 @@ class ChatPane(Vertical):
     # -- session lifecycle -------------------------------------------------------
     async def open_session(self, session_id: str, title: str = "") -> None:
         """Attach the chat to an existing session (from the Sessions tab)."""
+        self._cancel_pump()
         self.session_id = session_id
         self.pending_approval = ""
         log = self.query_one("#transcript", RichLog)
@@ -103,16 +104,31 @@ class ChatPane(Vertical):
         if self._pump_task is None or self._pump_task.done():
             self._pump_task = asyncio.create_task(self._pump())
 
+    def _cancel_pump(self) -> None:
+        # A pump parked in q.get() on the OLD session's queue would never see
+        # a session switch — kill it; the next _ensure_pump starts fresh.
+        if self._pump_task is not None and not self._pump_task.done():
+            self._pump_task.cancel()
+        self._pump_task = None
+
     async def _pump(self) -> None:
-        """Forward this chat's session events into the textual message queue."""
-        while self.session_id:
-            q = self.client.queue_for(self.session_id)
-            if q is None:
-                await asyncio.sleep(0.2)
-                continue
-            sid = self.session_id
-            ev = await q.get()
-            self.post_message(BrainEvent(sid, ev))
+        """Forward the ACTIVE session's events into the textual message queue.
+        Bounded waits so a session switch is picked up within half a second
+        even while parked on the previous session's queue."""
+        try:
+            while self.session_id:
+                sid = self.session_id
+                q = self.client.queue_for(sid)
+                if q is None:
+                    await asyncio.sleep(0.2)
+                    continue
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+                self.post_message(BrainEvent(sid, ev))
+        except asyncio.CancelledError:
+            pass
 
     # -- input -----------------------------------------------------------------
     async def on_input_submitted(self, event: Input.Submitted) -> None:
@@ -138,6 +154,7 @@ class ChatPane(Vertical):
 
     @work(exclusive=False)
     async def new_session(self) -> None:
+        self._cancel_pump()
         if self.session_id:
             await self.client.unsubscribe(self.session_id)
         self.session_id = ""

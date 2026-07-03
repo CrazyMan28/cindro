@@ -25,13 +25,24 @@ class TablePane(Vertical):
     HINT = ""
     COLUMNS: tuple[str, ...] = ()
 
+    # Tab activation re-refreshes a pane, but on_mount already fetched and
+    # rapid tab-hopping shouldn't hammer the daemon — skip refreshes closer
+    # together than this.
+    REFRESH_THROTTLE_S = 3.0
+
     def __init__(self, **kw) -> None:
         super().__init__(**kw)
         self.rows: list[dict] = []
+        self._last_refresh = 0.0
 
     @property
     def client(self):
         return self.app.client
+
+    def refresh_if_stale(self) -> None:
+        import time
+        if time.monotonic() - self._last_refresh >= self.REFRESH_THROTTLE_S:
+            self.refresh_data()
 
     def compose(self) -> ComposeResult:
         yield Static(Text(self.HINT, style="bright_black"), classes="pane-hint")
@@ -44,6 +55,8 @@ class TablePane(Vertical):
 
     @work(exclusive=True)
     async def refresh_data(self) -> None:
+        import time
+        self._last_refresh = time.monotonic()
         try:
             self.rows = await self.fetch()
         except (ControlError, ConnectionError, TimeoutError) as exc:
@@ -207,19 +220,21 @@ class SkillsPane(TablePane):
 
 
 class AgentsPane(TablePane):
-    HINT = "background agents (agents.list) · r: refresh"
-    COLUMNS = ("id", "status", "goal")
+    HINT = "background agent sessions (agents.running) · r: refresh"
+    COLUMNS = ("agent", "state", "task")
 
     async def fetch(self) -> list[dict]:
-        res = await self.client.call("agents.list", {})
+        # agents.running returns SessionRow-shaped rows (+ live/running flags)
+        # for agent-driven sessions — NOT agents.list, which is the saved
+        # agent DEFINITIONS (name/description/brain) with no runtime state.
+        res = await self.client.call("agents.running", {})
         return list(res.get("agents", []))
 
     def to_cells(self, r: dict) -> tuple:
-        status = r.get("status", "")
-        style = {"running": "yellow", "done": "green",
-                 "error": "red"}.get(status, "bright_black")
-        return (str(r.get("id", ""))[:12], Text(status, style=style),
-                (r.get("goal") or r.get("task") or "")[:80])
+        state = r.get("state", "")
+        style = "yellow" if r.get("running") else             {"done": "green", "error": "red"}.get(state, "bright_black")
+        return (r.get("agent", ""), Text(state, style=style),
+                (r.get("title") or r.get("goals") or "")[:80])
 
     async def on_key(self, event) -> None:
         if event.key == "r":
@@ -296,7 +311,7 @@ class SettingsPane(TablePane):
         ("api_context_max_tokens", [0, 50000, 100000], "compress API-brain history over N tokens"),
         ("auto_update", [True, False], "check for new releases periodically"),
         ("auto_update_apply", [False, True], "install updates automatically"),
-        ("wake_notify", ["ping", "call", "none"], "how scheduled wakes reach you"),
+        ("wake_notify", ["ping", "always", "silent"], "how scheduled wakes reach you"),
     ]
 
     async def fetch(self) -> list[dict]:

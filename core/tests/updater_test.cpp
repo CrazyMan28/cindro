@@ -141,6 +141,10 @@ int main()
         check(!jarvis::Updater::versionGreater("0.13.2", "0.13.2"), "equal not greater");
         check(!jarvis::Updater::versionGreater("0.13.1", "0.13.2"), "older not greater");
         check(jarvis::Updater::versionGreater("1.0.0", "0.99.99"), "major wins");
+        check(jarvis::Updater::versionGreater("0.13.2", "0.13.2-rc1"),
+              "stable beats its own pre-release");
+        check(!jarvis::Updater::versionGreater("0.13.2-rc1", "0.13.2"),
+              "pre-release does not beat the stable");
         check(!jarvis::Updater::versionGreater("", "0.1.0"), "empty latest never greater");
         check(!jarvis::Updater::versionGreater("0.2.0", ""), "empty current never behind");
     }

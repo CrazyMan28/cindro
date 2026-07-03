@@ -57,9 +57,11 @@ async def test_chat_send_streams_reply(daemon):
         assert chat.session_id == daemon.created_sid
         sends = [(m, p) for (m, p) in daemon.calls if m == "session.send"]
         assert sends and sends[0][1]["text"] == "hi there"
-        # the assistant reply reached the transcript widget
+        # the assistant reply reached the transcript widget — assert on the
+        # CONTENT (a banner-only transcript once masked a dead event pump).
         transcript = chat.query_one("#transcript")
-        assert transcript.lines  # something rendered
+        rendered = "\n".join(strip.text for strip in transcript.lines)
+        assert "hello from the mock" in rendered
 
 
 @pytest.mark.asyncio

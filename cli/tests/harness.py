@@ -127,9 +127,11 @@ class MockDaemon:
                 if sk["name"] == params.get("name"):
                     sk["pinned"] = bool(params.get("pinned"))
             return {"ok": True}
-        if method == "agents.list":
-            return {"agents": [{"id": "agent1", "status": "running",
-                                "goal": "sort downloads"}]}
+        if method == "agents.running":
+            # SessionRow-shaped (like the real handleAgentsRunning) + flags.
+            return {"agents": [{"id": "s9", "agent": "researcher",
+                                "title": "sort downloads", "state": "running",
+                                "live": True, "running": True}]}
         if method == "queue.list":
             return {"items": list(self.queue_items)}
         if method == "queue.add":

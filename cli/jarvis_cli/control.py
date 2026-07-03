@@ -1,5 +1,10 @@
 """Async streaming client for the jarvisd control WebSocket (Contract A).
 
+DELIBERATE near-duplicate of acp-bridge/acp_bridge/control.py: cli/ must stay
+standalone-installable (`pip install ./cli`, incl. Windows) so it cannot import
+across packages. Protocol fixes (scoping defense, reconnect semantics) must be
+ported to BOTH copies — grep for "session-scoping defense".
+
 Adapted from acp-bridge's client (the battle-tested shape): ONE dedicated
 reader task resolves per-id reply futures and fans `session.event` frames into
 per-session asyncio.Queues, so a chat turn receives events the instant the
@@ -218,6 +223,9 @@ class ControlClient:
     async def _send_subscribe(self) -> dict[str, Any]:
         return await self.call("session.subscribe",
                                {"session_ids": sorted(self._subscribed)}, timeout=20)
+
+    def queue_for(self, session_id: str) -> Optional["asyncio.Queue[dict[str, Any]]"]:
+        return self._queues.get(session_id)
 
     async def unsubscribe(self, session_id: str) -> None:
         self._queues.pop(session_id, None)

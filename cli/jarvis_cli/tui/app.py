@@ -185,11 +185,12 @@ class JarvisTui(App):
             pass
 
     def on_tabbed_content_tab_activated(self, event) -> None:
-        """Refresh a data tab whenever it becomes visible."""
+        """Refresh a data tab when it becomes visible (throttled — mount
+        already fetched, and tab-hopping shouldn't hammer the daemon)."""
         try:
             widget_id = event.pane.id.removeprefix("tab-")
             pane = self.query_one(f"#{widget_id}")
-            if hasattr(pane, "refresh_data"):
-                pane.refresh_data()
+            if hasattr(pane, "refresh_if_stale"):
+                pane.refresh_if_stale()
         except Exception:
             pass
