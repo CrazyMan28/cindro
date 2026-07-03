@@ -34,6 +34,7 @@ Every decision that isn't a default-allow is appended to
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -41,7 +42,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
-from . import ask_bus
+from . import ask_bus, cmd_scan
 
 _DEFAULT_FILE = Path(
     os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
@@ -199,6 +200,72 @@ def gate(tool: str) -> None:
     )
 
 
+# --- pre-exec command scanner (jarvis#76 feature 12) ------------------------
+# The free-form command tools run their `command` arg via subprocess(shell=True)
+# in a DETACHED runner — this call_tool wrapper is the ONLY window to inspect it.
+_CMD_TOOLS = {"bg_start", "monitor", "watch", "widget_live"}
+
+
+def _log_cmd(tool: str, cmd: str, hit: "cmd_scan.Result",
+             decision: str, allowed: bool) -> None:
+    """Audit a command-scan decision to the same policy log (never fatal)."""
+    try:
+        _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha256(cmd.encode("utf-8", "replace")).hexdigest()[:12]
+        with _LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": int(time.time() * 1000),
+                "session": os.environ.get("JARVIS_AGENT_SESSION", ""),
+                "tool": tool, "kind": "cmd_scan",
+                "cmd_prefix": cmd[:60], "cmd_hash": digest,
+                "reason": hit.reason, "severity": hit.severity,
+                "cues": hit.cues, "decision": decision, "allowed": allowed,
+            }) + "\n")
+    except Exception:
+        pass  # audit must never break the tool path
+
+
+def _scan_command(tool: str, arguments: Any) -> None:
+    """Scan bg_start/monitor/watch/widget_live shell `command` args.
+
+    Runs inside the call_tool gate AFTER the trust-policy gate. A risky command
+    routes to the SAME ask-bus flow as an `ask` policy (Allow / Deny); anything
+    but an explicit Allow raises PermissionError, blocking the detached shell
+    runner before it spawns. Disable entirely with env ``JARVIS_CMD_SCAN=0``.
+    """
+    if os.environ.get("JARVIS_CMD_SCAN", "1") == "0":
+        return
+    if tool not in _CMD_TOOLS or not isinstance(arguments, dict):
+        return
+    # All four tools take a top-level `command`; widget_live MAY additionally
+    # carry a nested `spec.command` — scan both if present.
+    candidates: list[str] = []
+    top = arguments.get("command")
+    if isinstance(top, str) and top.strip():
+        candidates.append(top)
+    spec = arguments.get("spec")
+    if isinstance(spec, dict):
+        sc = spec.get("command")
+        if isinstance(sc, str) and sc.strip() and sc not in candidates:
+            candidates.append(sc)
+
+    for cmd in candidates:
+        hit = cmd_scan.scan(cmd)
+        if not hit.risky:
+            continue
+        q = f"Command flagged ({hit.reason}): {cmd[:120]}. Allow?"
+        try:
+            res = ask_bus.ask(q, ["Allow", "Deny"], timeout=_ASK_TIMEOUT)
+            answer = str((res or {}).get("answer", "")).strip().lower()
+        except Exception:
+            answer = ""
+        if answer == "allow":
+            _log_cmd(tool, cmd, hit, "allow", True)
+            continue
+        _log_cmd(tool, cmd, hit, "deny", False)
+        raise PermissionError(f"command blocked by scanner: {hit.reason}")
+
+
 def install(mcp) -> None:
     """Wrap FastMCP's ToolManager.call_tool so EVERY tool passes the gate."""
     mgr = mcp._tool_manager
@@ -207,7 +274,8 @@ def install(mcp) -> None:
     orig = mgr.call_tool
 
     async def gated_call_tool(name: str, arguments: dict, *args, **kwargs):
-        gate(name)  # raises to reject; FastMCP turns it into a tool error
+        gate(name)  # trust policy: raises to reject; FastMCP turns it into an error
+        _scan_command(name, arguments)  # command scanner: raises to reject
         return await orig(name, arguments, *args, **kwargs)
 
     mgr.call_tool = gated_call_tool

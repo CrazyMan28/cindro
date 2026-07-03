@@ -146,3 +146,64 @@ def test_install_wraps_tool_manager():
     before = fake._tool_manager.call_tool
     policy.install(fake)  # idempotent
     assert fake._tool_manager.call_tool is before
+
+
+def test_cmd_scanner_gates_free_form_commands(tmp_path, monkeypatch):
+    """jarvis#76 f12: the command scanner routes a risky command through the
+    ask-bus in the SAME call_tool wrapper; deny blocks, allow proceeds, and
+    JARVIS_CMD_SCAN=0 bypasses it entirely."""
+    import asyncio
+
+    from computer_use_mcp import ask_bus, cmd_scan
+
+    write_rules(tmp_path, monkeypatch, [])  # trust gate allows everything
+    monkeypatch.setattr(policy, "_LOG_FILE", tmp_path / "policy_log.jsonl")
+
+    class Mgr:
+        async def call_tool(self, name, arguments, *a, **kw):
+            return "ran:" + name
+
+    class Fake:
+        _tool_manager = Mgr()
+
+    fake = Fake()
+    policy.install(fake)
+    call = fake._tool_manager.call_tool
+    fork = ":(){ :|:& };:"
+
+    # Force the scanner to flag regardless of the actual command text.
+    monkeypatch.setattr(cmd_scan, "scan", lambda cmd: cmd_scan.Result(
+        risky=True, reason="fork bomb", cues=["fork bomb"], severity="high"))
+
+    # Deny -> PermissionError from the scanner (the detached runner never spawns).
+    monkeypatch.setattr(ask_bus, "ask", lambda *a, **k: {"answer": "Deny"})
+    with pytest.raises(PermissionError) as e:
+        asyncio.run(call("bg_start", {"command": fork}))
+    assert "blocked by scanner" in str(e.value)
+
+    # Allow -> proceeds to the real tool.
+    monkeypatch.setattr(ask_bus, "ask", lambda *a, **k: {"answer": "Allow"})
+    assert asyncio.run(call("monitor", {"command": fork})) == "ran:monitor"
+
+    # A timeout / no-answer is treated as deny.
+    monkeypatch.setattr(ask_bus, "ask", lambda *a, **k: {"answer": ""})
+    with pytest.raises(PermissionError):
+        asyncio.run(call("watch", {"command": fork}))
+
+    # Escape hatch: JARVIS_CMD_SCAN=0 skips scanning (ask must NOT be consulted).
+    def _boom(*a, **k):
+        raise AssertionError("ask_bus.ask called while scanning disabled")
+
+    monkeypatch.setattr(ask_bus, "ask", _boom)
+    monkeypatch.setenv("JARVIS_CMD_SCAN", "0")
+    assert asyncio.run(call("bg_start", {"command": fork})) == "ran:bg_start"
+
+    # Non-command tools are never scanned (scan would flag, but it isn't called).
+    monkeypatch.delenv("JARVIS_CMD_SCAN", raising=False)
+    assert asyncio.run(call("mouse_click", {"x": 1})) == "ran:mouse_click"
+
+    # The deny decision was audited to the policy log.
+    rows = [json.loads(l) for l in
+            (tmp_path / "policy_log.jsonl").read_text().splitlines() if l]
+    denials = [r for r in rows if r.get("kind") == "cmd_scan" and not r["allowed"]]
+    assert denials and denials[0]["reason"] == "fork bomb"
