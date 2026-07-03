@@ -113,6 +113,38 @@ int main()
         check(!Updater::runningSha().isEmpty(), "runningSha is stamped (non-empty)");
     }
 
+    // --- native release flow helpers (jarvis: packaged self-update) ---------
+    {
+        using RA = jarvis::Updater::ReleaseAsset;
+        const QByteArray rel = R"({
+            "tag_name": "v0.13.2",
+            "assets": [
+                {"name": "Jarvis-0.13.2-x86_64.AppImage",
+                 "browser_download_url": "https://x/app.AppImage"},
+                {"name": "Jarvis-Setup-0.13.2.exe",
+                 "browser_download_url": "https://x/setup.exe"}
+            ]
+        })";
+        const RA exe = jarvis::Updater::parseLatestRelease(rel, "Jarvis-Setup-*.exe");
+        check(exe.tag == QStringLiteral("0.13.2"), "release tag parsed, v stripped");
+        check(exe.name == QStringLiteral("Jarvis-Setup-0.13.2.exe"), "exe asset picked");
+        check(exe.url == QStringLiteral("https://x/setup.exe"), "exe url picked");
+        const RA app = jarvis::Updater::parseLatestRelease(rel, "*.AppImage");
+        check(app.name.endsWith(QStringLiteral(".AppImage")), "AppImage asset picked");
+        const RA none = jarvis::Updater::parseLatestRelease(rel, "*.dmg");
+        check(none.tag.isEmpty(), "no matching asset -> empty");
+        check(jarvis::Updater::parseLatestRelease("not json", "*").tag.isEmpty(),
+              "junk body -> empty");
+
+        check(jarvis::Updater::versionGreater("0.13.2", "0.13.1"), "patch bump greater");
+        check(jarvis::Updater::versionGreater("v0.14.0", "0.13.9"), "minor beats patch, v ok");
+        check(!jarvis::Updater::versionGreater("0.13.2", "0.13.2"), "equal not greater");
+        check(!jarvis::Updater::versionGreater("0.13.1", "0.13.2"), "older not greater");
+        check(jarvis::Updater::versionGreater("1.0.0", "0.99.99"), "major wins");
+        check(!jarvis::Updater::versionGreater("", "0.1.0"), "empty latest never greater");
+        check(!jarvis::Updater::versionGreater("0.2.0", ""), "empty current never behind");
+    }
+
     if (g_failures == 0) {
         std::fprintf(stderr, "\nPASS updater_test\n");
         return 0;

@@ -64,6 +64,7 @@ Item {
 
     // ---- Updates (auto-updater) --------------------------------------------
     property bool autoUpdate: true               // periodic auto-update-check
+    property bool autoUpdateApply: false         // AND install automatically
     property string appVersion: ""               // running JARVIS_VERSION (settings.get)
     property bool updateChecking: false          // a update.check is in flight
     property bool updateApplying: false          // a update.apply is in flight
@@ -200,6 +201,7 @@ Item {
             page.hasDesktopPin = (s.has_desktop_pin === true)
             page.pendingPin = ""
             page.autoUpdate = (s.auto_update === undefined) ? true : (s.auto_update === true)
+            page.autoUpdateApply = (s.auto_update_apply === true)
             page.appVersion = s.version !== undefined ? s.version : ""
             if (s.theme !== undefined) {
                 page.glow = s.theme.glow !== undefined ? s.theme.glow : true
@@ -425,6 +427,7 @@ Item {
             "skill_archive_days": page.skillArchiveDays,
             "api_context_max_tokens": page.apiContextMaxTokens,
             "auto_update": page.autoUpdate,
+            "auto_update_apply": page.autoUpdateApply,
             "theme": { "glow": page.glow, "compact": page.compact }
         }
         // PIN is write-only: only send when the user typed/cleared one.
@@ -1920,7 +1923,7 @@ Item {
                                 Layout.fillWidth: true
                             }
                             Text {
-                                text: "Check the main branch periodically and notify you when an update is ready. Updates are never installed without your confirmation."
+                                text: "Check for new releases periodically and notify you when an update is ready."
                                 color: Theme.textMuted
                                 font.family: Theme.fontSans
                                 font.pixelSize: 11
@@ -1931,6 +1934,40 @@ Item {
                         Widgets.StyledSwitch {
                             checked: page.autoUpdate
                             onToggled: function(v) { page.autoUpdate = v; page.dirty = true }
+                        }
+                    }
+
+                    // Auto-INSTALL (off by default): apply what the check finds
+                    // without asking — AppImage swaps in place (finishes on the
+                    // next launch); Windows runs the new installer silently and
+                    // relaunches Jarvis; source checkouts pull + rebuild.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+                        enabled: page.autoUpdate
+                        opacity: page.autoUpdate ? 1.0 : 0.45
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            Text {
+                                text: "Install updates automatically"
+                                color: Theme.text
+                                font.family: Theme.fontSans
+                                font.pixelSize: 13
+                                Layout.fillWidth: true
+                            }
+                            Text {
+                                text: "When a new release is found, download and install it without asking. Jarvis restarts itself on Windows; on Linux the update takes effect the next time you launch."
+                                color: Theme.textMuted
+                                font.family: Theme.fontSans
+                                font.pixelSize: 11
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                            }
+                        }
+                        Widgets.StyledSwitch {
+                            checked: page.autoUpdateApply
+                            onToggled: function(v) { page.autoUpdateApply = v; page.dirty = true }
                         }
                     }
 

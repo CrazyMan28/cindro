@@ -160,6 +160,13 @@ public:
                            : QStringLiteral("ping");
     }
 
+    // Auto-update behavior: auto_update turns the periodic CHECK on/off;
+    // auto_update_apply additionally INSTALLS what the check finds (AppImage
+    // self-replace / silent Windows installer / source pull+rebuild). Off by
+    // default — most users want the notification, not surprise restarts.
+    bool autoUpdateApply() const { return m_autoUpdateApply; }
+    void setAutoUpdateApply(bool v) { m_autoUpdateApply = v; }
+
     // Skill lifecycle curation (jarvis#76 item 2): agent-created, unpinned
     // skills untouched for this many days are ARCHIVED (never deleted) by the
     // hourly sweep. 0 disables the sweep. Round-trips as `skill_archive_days`.
@@ -259,6 +266,7 @@ private:
     QString m_assistantName = QStringLiteral("Jarvis"); // friendly assistant name
     QString m_userName;                                 // the human's name ("" = unset)
     bool m_autoUpdate = true;           // periodic auto update-check (default ON)
+    bool m_autoUpdateApply = false;     // AND install automatically (default OFF)
     int m_autoUpdateIntervalHours = 6;  // auto-check cadence (hours, >=1)
     QJsonObject m_theme;
     QJsonObject m_apiKeys; // provider -> value
