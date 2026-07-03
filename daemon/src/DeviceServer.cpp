@@ -108,6 +108,9 @@ bool DeviceServer::start()
         // new session (any surface) -> 'session.opened' event + FCM to phones.
         connect(m_control, &ControlServer::sessionOpened,
                 this, &DeviceServer::onSessionOpened);
+        // phone-server events (incoming_call/call_message/...) -> phone.event.
+        connect(m_control, &ControlServer::phoneEvent,
+                this, &DeviceServer::onPhoneEvent);
         // new unlock challenge -> 'auth.challenge' event to authed phones (no FCM).
         connect(m_control, &ControlServer::authChallengePush,
                 this, &DeviceServer::onAuthChallengePush);
@@ -1310,6 +1313,21 @@ void DeviceServer::onFilePushed(const QJsonObject &descriptor)
             msg.data.insert(QStringLiteral("session_id"), sessionId);
         for (const PushTokenRow &t : m_control->store().listPushTokens())
             m_control->fcm()->send(t.fcmToken, msg);
+    }
+}
+
+void DeviceServer::onPhoneEvent(const QJsonObject &data)
+{
+    // Call events are session-independent — deliver to every authed device.
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), kProtocolVersion);
+    frame.insert(QStringLiteral("event"), QStringLiteral("phone.event"));
+    frame.insert(QStringLiteral("data"), data);
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+    for (auto it = m_conns.begin(); it != m_conns.end(); ++it) {
+        if (it.value().authed)
+            it.key()->sendTextMessage(payload);
     }
 }
 

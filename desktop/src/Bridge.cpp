@@ -358,6 +358,10 @@ void Bridge::onConnected()
     setStatus(QStringLiteral("connected"));
     // Liveness check per Contract A.
     request(QStringLiteral("ping"), {});
+    // Real-time phone events (jarvis#76 item 3): opt in so incoming_call /
+    // call_message frames push to the overlay instead of it polling.
+    request(QStringLiteral("phone.event.subscribe"),
+            QVariantMap{{QStringLiteral("on"), true}});
     // Declare our (currently empty) session view so the daemon scopes event delivery
     // to us from the start — a foreign session's events are never sent here.
     syncSubscriptions();
@@ -3352,6 +3356,14 @@ void Bridge::onTextMessageReceived(const QString &message)
         const QJsonObject data = obj.value(QStringLiteral("data")).toObject();
         emit authStateChanged(data.value(QStringLiteral("challenge_id")).toString(),
                               data.value(QStringLiteral("state")).toString());
+        return;
+    }
+
+    // Real-time phone event (jarvis#76 item 3): incoming_call / call_state /
+    // call_message / screening_* forwarded from the phone server. QML overlays
+    // subscribe via onPhoneEvent instead of interval-polling list_active_calls.
+    if (obj.value(QStringLiteral("event")).toString() == QStringLiteral("phone.event")) {
+        emit phoneEvent(obj.value(QStringLiteral("data")).toObject().toVariantMap());
         return;
     }
 

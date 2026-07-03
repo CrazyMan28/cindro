@@ -757,6 +757,9 @@ signals:
     // phoneHttp().  result shape: {status:int, data:<obj|array>, text?} or
     // {error: {...}} on failure.
     void phoneHttpResult(const QString &callId, const QVariantMap &result);
+    // A pushed phone-server event (incoming_call/call_state/call_message/
+    // screening_*) — jarvis#76 item 3. Overlays react instead of polling.
+    void phoneEvent(const QVariantMap &event);
 
     // ---- Notifications ------------------------------------------------------
     void notificationsChanged();

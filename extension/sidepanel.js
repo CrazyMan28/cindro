@@ -122,6 +122,9 @@ async function connect() {
     // (charts, cards, the PLAN checklist) appears in the panel — same DSL the
     // desktop/phone render. The desktop tails the file itself and never subscribes.
     rpc("widget.subscribe", { on: true }).catch(() => {});
+    // Real-time phone events (jarvis#76 item 3): pushed incoming_call /
+    // call_state / call_message frames replace the fast polling loops.
+    rpc("phone.event.subscribe", { on: true }).catch(() => {});
     // Refresh the (shared) conversation list whenever we (re)connect so a chat
     // started on the desktop/phone shows up here immediately.
     loadSessions().catch(() => {});
@@ -283,6 +286,24 @@ function onFrame(raw) {
   // session's events to unsubscribed control clients, so a null sessionId used
   // to mean "accept everything" and leaked other chats (desktop/phone/other
   // tabs/subagents) into a blank panel before the user sent anything.
+  if (msg.event === "phone.event" && msg.data) {
+    // Pushed phone-server event (jarvis#76 item 3). Refresh only what changed:
+    // call lifecycle -> re-list calls (banner + list); call_message -> live
+    // transcript line for the call being watched.
+    const pev = msg.data;
+    if (pev.type === "call_message") {
+      if (_liveTranscriptCallId && String(pev.callId || "") === String(_liveTranscriptCallId)) {
+        refreshLiveTranscript();
+      }
+    } else if (phoneOpen) {
+      loadActiveCalls();
+    } else if (pev.type === "incoming_call") {
+      // Panel closed on another tab: still surface the ringing banner.
+      loadActiveCalls();
+    }
+    return;
+  }
+
   if (msg.event === "session.event" && msg.data) {
     if (sessionId && msg.data.session_id === sessionId) {
       handleEv(msg.data.ev || {});
@@ -1676,8 +1697,9 @@ function startLiveTranscript(calls) {
     }
     if (!_liveTranscriptTimer) {
       _liveTranscriptTimer = setInterval(() => {
+        // Fallback only — call_message push events drive the live view now.
         if (phoneTab === "calls" && phoneOpen) refreshLiveTranscript();
-      }, 3000);
+      }, 15000);
     }
   } else {
     if (_liveTranscriptTimer) { clearInterval(_liveTranscriptTimer); _liveTranscriptTimer = null; }

@@ -211,6 +211,8 @@ public:
 signals:
     // Fired after every brain event is persisted (Contract C device fan-out).
     void sessionEvent(const QString &sessionId, const jarvis::NormalizedBrainEvent &ev);
+    // A phone-server event (incoming_call/call_message/...) for device mirror.
+    void phoneEvent(const QJsonObject &data);
 
     // target="real" take-over state changed: the desktop overlay subscribes to
     // this to show / hide the "JARVIS IS DRIVING" layer-shell banner + cursor.
@@ -293,6 +295,16 @@ private:
     // keeping the bearer in the daemon. Covers the per-agent config the original
     // app drives over HTTP (not MCP). Returns {status, data|text}.
     Response handlePhoneHttp(const Request &req);
+    // Real-time phone events (jarvis#76 item 3): persistent client socket to
+    // the phone server's WS (authed as user ext 100) + opt-in control fan-out.
+    void connectPhoneWs();
+    void schedulePhoneWsReconnect(int delayMs);
+    void onPhoneWsMessage(const QString &raw);
+    void broadcastPhoneEvent(const QJsonObject &data);
+    Response handlePhoneEventSubscribe(QWebSocket *client, const Request &req);
+    QWebSocket *m_phoneWs = nullptr;
+    bool m_phoneWsReconnectPending = false;
+    QSet<QWebSocket *> m_phoneEventClients;
     // Session manager (Contract A): a client declares which session ids it is
     // currently viewing; the daemon then fans session.event frames ONLY for those
     // ids to it. Needs the socket, so it is dispatched with `client` (unlike the

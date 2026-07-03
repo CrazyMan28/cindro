@@ -227,6 +227,10 @@ bool ControlServer::start()
     m_mcp = std::make_unique<McpRegistry>(m_store);
     // Native phone subsystem: expose its MCP tools to the brain if configured.
     seedPhoneMcp();
+    // Real-time phone events (jarvis#76 item 3): subscribe to the phone
+    // server's own WS as the user extension so incoming_call / call_message /
+    // screening events PUSH to every Jarvis surface instead of being polled.
+    connectPhoneWs();
     m_plugins = std::make_unique<PluginRegistry>(m_store);
     m_plugins->ensureSeeded(); // seed sample manifests if the catalog is empty
 
@@ -355,6 +359,7 @@ void ControlServer::onSocketDisconnected()
     m_scopedClients.remove(client);
     m_subscriptions.remove(client);
     m_widgetClients.remove(client);
+    m_phoneEventClients.remove(client);
     // Drop this desktop client's live-widget viewer leases so unwatched widgets idle.
     m_widgetLeases.clearSource(
         QStringLiteral("desktop:") + QString::number(reinterpret_cast<quintptr>(client), 16));
@@ -453,6 +458,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleWidgetViewing(client, req);
     else if (m == QStringLiteral("widget.subscribe"))
         resp = handleWidgetSubscribe(client, req);
+    else if (m == QStringLiteral("phone.event.subscribe"))
+        resp = handlePhoneEventSubscribe(client, req);
     else if (m == QStringLiteral("approval.respond"))
         resp = handleApprovalRespond(req);
     else if (m == QStringLiteral("mcp.list"))
@@ -1155,6 +1162,134 @@ Response ControlServer::handlePhoneMcp(const Request &req)
     if (obj.contains(QStringLiteral("error")))
         out.insert(QStringLiteral("error"), obj.value(QStringLiteral("error")));
     return Response::success(req.id, out);
+}
+
+// --- real-time phone events (jarvis#76 item 3) ------------------------------
+//
+// The phone server's own WebSocket (/ws on :8801) already PUSHES incoming_call
+// / call_state / call_message / screening_* to connected extensions — Jarvis's
+// surfaces just never listened and polled the REST API instead. The daemon now
+// keeps ONE persistent client socket authed as the user extension (100, the
+// DEVICE role allows multiple sockets so the real phone app is never evicted)
+// and fans the events out: control clients that sent phone.event.subscribe get
+// {"event":"phone.event","data":<raw phone frame>}; paired phones get the same
+// via the device channel signal.
+
+void ControlServer::connectPhoneWs()
+{
+    // Read the device token + port fresh each (re)connect — phone.env can be
+    // (re)written after daemon start by the setup wizard.
+    QString deviceTok;
+    QString port = QStringLiteral("8801");
+    QFile f(Config::configDir() + QStringLiteral("/phone.env"));
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QList<QByteArray> lines = f.readAll().split('\n');
+        f.close();
+        for (const QByteArray &raw : lines) {
+            const QString line = QString::fromUtf8(raw).trimmed();
+            if (line.startsWith(QStringLiteral("DEVICE_TOKEN=")))
+                deviceTok = line.mid(QStringLiteral("DEVICE_TOKEN=").size()).trimmed();
+            else if (line.startsWith(QStringLiteral("SERVER_PORT=")))
+                port = line.mid(QStringLiteral("SERVER_PORT=").size()).trimmed();
+        }
+    }
+    if (deviceTok.isEmpty()) {
+        // Phone subsystem not set up (or env not written yet) — retry later so
+        // finishing the setup wizard doesn't require a daemon restart.
+        schedulePhoneWsReconnect(60000);
+        return;
+    }
+
+    if (m_phoneWs) {
+        m_phoneWs->deleteLater();
+        m_phoneWs = nullptr;
+    }
+    m_phoneWs = new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this);
+    connect(m_phoneWs, &QWebSocket::connected, this, [this, deviceTok]() {
+        // First frame MUST be the auth message (AuthEventSchema): the user
+        // extension in the device role.
+        QJsonObject auth;
+        auth.insert(QStringLiteral("type"), QStringLiteral("auth"));
+        auth.insert(QStringLiteral("token"), deviceTok);
+        auth.insert(QStringLiteral("extension"), QStringLiteral("100"));
+        auth.insert(QStringLiteral("clientType"), QStringLiteral("device"));
+        auth.insert(QStringLiteral("name"), QStringLiteral("jarvisd event bridge"));
+        m_phoneWs->sendTextMessage(QString::fromUtf8(
+            QJsonDocument(auth).toJson(QJsonDocument::Compact)));
+        qInfo("jarvisd: phone event bridge connected (ext 100)");
+    });
+    connect(m_phoneWs, &QWebSocket::textMessageReceived,
+            this, &ControlServer::onPhoneWsMessage);
+    connect(m_phoneWs, &QWebSocket::disconnected, this, [this]() {
+        schedulePhoneWsReconnect(5000);
+    });
+    m_phoneWs->open(QUrl(QStringLiteral("ws://127.0.0.1:%1/ws").arg(port)));
+}
+
+void ControlServer::schedulePhoneWsReconnect(int delayMs)
+{
+    if (m_phoneWsReconnectPending)
+        return;
+    m_phoneWsReconnectPending = true;
+    QTimer::singleShot(delayMs, this, [this]() {
+        m_phoneWsReconnectPending = false;
+        connectPhoneWs();
+    });
+}
+
+void ControlServer::onPhoneWsMessage(const QString &raw)
+{
+    const QJsonDocument doc = QJsonDocument::fromJson(raw.toUtf8());
+    if (!doc.isObject())
+        return;
+    const QJsonObject o = doc.object();
+    const QString type = o.value(QStringLiteral("type")).toString();
+    // Forward only the call/message/screening lifecycle — presence chatter and
+    // our own hello/auth acks stay internal.
+    static const QSet<QString> kForward = {
+        QStringLiteral("incoming_call"),   QStringLiteral("call_state"),
+        QStringLiteral("call_message"),    QStringLiteral("call_accept"),
+        QStringLiteral("call_reject"),     QStringLiteral("call_end"),
+        QStringLiteral("call_timeout"),    QStringLiteral("call_failed"),
+        QStringLiteral("missed_call"),     QStringLiteral("dial_result"),
+        QStringLiteral("screening_started"), QStringLiteral("screening_update"),
+        QStringLiteral("screening_ended"),
+    };
+    if (!kForward.contains(type))
+        return;
+    broadcastPhoneEvent(o);
+    emit phoneEvent(o); // device channel mirror (paired phones)
+}
+
+void ControlServer::broadcastPhoneEvent(const QJsonObject &data)
+{
+    if (m_phoneEventClients.isEmpty())
+        return;
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), 1);
+    frame.insert(QStringLiteral("event"), QStringLiteral("phone.event"));
+    frame.insert(QStringLiteral("data"), data);
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+    for (QWebSocket *client : std::as_const(m_phoneEventClients))
+        client->sendTextMessage(payload);
+}
+
+Response ControlServer::handlePhoneEventSubscribe(QWebSocket *client, const Request &req)
+{
+    // Opt-in like widget.subscribe so clients that never asked (background
+    // scripts, one-shot tools) aren't flooded with call frames.
+    const bool on = req.params.value(QStringLiteral("on")).toBool(true);
+    if (on)
+        m_phoneEventClients.insert(client);
+    else
+        m_phoneEventClients.remove(client);
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("subscribed"), on);
+    result.insert(QStringLiteral("bridge_connected"),
+                  m_phoneWs && m_phoneWs->state() == QAbstractSocket::ConnectedState);
+    return Response::success(req.id, result);
 }
 
 Response ControlServer::handlePhoneHttp(const Request &req)
