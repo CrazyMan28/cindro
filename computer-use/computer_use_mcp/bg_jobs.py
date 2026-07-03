@@ -232,6 +232,13 @@ def stop(jid: str) -> dict:
     m = _read_meta(jid)
     if not m:
         return {"error": f"unknown job {jid}"}
+    # Persist "stopped" BEFORE signalling: the runner finalizes the moment
+    # wait() returns, and if it re-read the meta in the window between our
+    # kill and our write it would record the SIGTERM death as "failed" —
+    # clobbering the stop (a rare but real CI flake).
+    m["state"] = "stopped"
+    m["ended_at"] = _now()
+    _write_meta(jid, m)
     for key in ("pid", "runner_pid"):
         pid = m.get(key)
         if pid and _alive(pid):
@@ -242,9 +249,6 @@ def stop(jid: str) -> dict:
                     os.kill(int(pid), signal.SIGTERM)
                 except Exception:
                     pass
-    m["state"] = "stopped"
-    m["ended_at"] = _now()
-    _write_meta(jid, m)
     return {"id": jid, "state": "stopped"}
 
 
@@ -296,6 +300,12 @@ def _run_job(jid: str) -> None:
     m["exit_code"] = rc
     m["state"] = "done" if rc == 0 else "failed"
     m["ended_at"] = _now()
+    # Last-instant re-check: a concurrent stop() may have written "stopped"
+    # after our read above — a user stop must never be downgraded to "failed".
+    latest = _read_meta(jid)
+    if latest.get("state") == "stopped":
+        log.close()
+        return
     _write_meta(jid, m)
     log.close()
     if m.get("notify_on_done") and m.get("session_id"):
