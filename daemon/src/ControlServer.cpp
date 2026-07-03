@@ -224,8 +224,32 @@ bool ControlServer::start()
                                QStringLiteral("update available: %1 -> %2")
                                    .arg(st.current.left(12), st.latest.left(12)));
             });
+    // AUTO-INSTALL (auto_update_apply=on): the periodic check just applied an
+    // update in place — tell the user what happened. On Windows the installer
+    // restarts the apps itself; an AppImage swap lands on the next launch.
+    connect(&m_updater, &Updater::autoApplied, this, [this](const QJsonObject &r) {
+        const bool updated = r.value(QStringLiteral("updated")).toBool();
+        const QString to = r.value(QStringLiteral("to")).toString();
+        if (updated) {
+            const bool needsRestart =
+                r.value(QStringLiteral("restart_required")).toBool();
+            m_notify.notify(QStringLiteral("Jarvis updated"),
+                            needsRestart
+                                ? QStringLiteral("Updated to %1 — restart Jarvis to "
+                                                 "finish.").arg(to)
+                                : QStringLiteral("Updated to %1.").arg(to),
+                            NotifyService::Urgency::Normal,
+                            QStringLiteral("jarvis.update"));
+        }
+        m_audit.record(QStringLiteral("update.auto_apply"), updated,
+                       QStringLiteral("high"),
+                       updated ? QStringLiteral("auto-updated to ") + to
+                               : QStringLiteral("auto-update failed: ")
+                                     + r.value(QStringLiteral("reason")).toString());
+    });
     m_updater.configureAuto(m_settings.autoUpdate(),
-                            m_settings.autoUpdateIntervalHours());
+                            m_settings.autoUpdateIntervalHours(),
+                            m_settings.autoUpdateApply());
 
     m_mcp = std::make_unique<McpRegistry>(m_store);
     // Native phone subsystem: expose its MCP tools to the brain if configured.
@@ -698,6 +722,7 @@ Response ControlServer::handleSettingsGet(const Request &req)
     // AUTO-UPDATER: the toggle (default ON) + the check cadence, plus the running
     // build identity (stamped at compile time) so the UI can show the version.
     s.insert(QStringLiteral("auto_update"), m_settings.autoUpdate());
+    s.insert(QStringLiteral("auto_update_apply"), m_settings.autoUpdateApply());
     s.insert(QStringLiteral("auto_update_interval_hours"),
              m_settings.autoUpdateIntervalHours());
     s.insert(QStringLiteral("version"), Updater::runningVersion());
@@ -908,6 +933,12 @@ Response ControlServer::handleSettingsSet(const Request &req)
         prefsTouched = true;
         autoUpdateChanged = true;
     }
+    if (patch.contains(QStringLiteral("auto_update_apply"))) {
+        m_settings.setAutoUpdateApply(
+            patch.value(QStringLiteral("auto_update_apply")).toBool());
+        prefsTouched = true;
+        autoUpdateChanged = true;
+    }
     if (patch.contains(QStringLiteral("auto_update_interval_hours"))) {
         m_settings.setAutoUpdateIntervalHours(
             patch.value(QStringLiteral("auto_update_interval_hours")).toInt());
@@ -919,7 +950,8 @@ Response ControlServer::handleSettingsSet(const Request &req)
     // Re-arm the auto-update timer when its settings changed (toggle / interval).
     if (autoUpdateChanged)
         m_updater.configureAuto(m_settings.autoUpdate(),
-                                m_settings.autoUpdateIntervalHours());
+                                m_settings.autoUpdateIntervalHours(),
+                                m_settings.autoUpdateApply());
 
     // API keys are WRITE-ONLY: persist to secrets.json (0600), never echoed.
     if (patch.contains(QStringLiteral("api_keys"))) {

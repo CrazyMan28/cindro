@@ -82,6 +82,21 @@ log "Installing the web console into ${WEB_DIR}..."
 mkdir -p "${WEB_DIR}"
 cp -r "${REPO_ROOT}/web/." "${WEB_DIR}/"
 
+# --- 6d. Install the jarvis CLI (terminal agent + doctor/status) -------------
+# Own venv under the data dir (the engine venv stays untouched); `jarvis` goes
+# on PATH next to jarvisd. Skipped gracefully when python3-venv is missing.
+CLI_VENV="${HOME}/.local/share/jarvis/cli-venv"
+if [ -d "${REPO_ROOT}/cli" ]; then
+  log "Installing the jarvis CLI into ${CLI_VENV}..."
+  if env -u PYTHONPATH python3 -m venv "${CLI_VENV}" 2>/dev/null; then
+    env -u PYTHONPATH "${CLI_VENV}/bin/pip" install -q --upgrade "${REPO_ROOT}/cli" \
+      && ln -sf "${CLI_VENV}/bin/jarvis" "${HOME}/.local/bin/jarvis" \
+      || log "WARNING: jarvis CLI install failed (pip); skipping"
+  else
+    log "WARNING: python3 -m venv unavailable; skipping the jarvis CLI"
+  fi
+fi
+
 # --- 7. Next steps -----------------------------------------------------------
 cat <<EOF
 
@@ -90,6 +105,8 @@ $(log "Jarvis installed.")
 Next steps:
   1. Start the daemon (and enable it at login):
        systemctl --user enable --now jarvisd
+     (or from any terminal:  jarvis start · jarvis status · jarvis doctor —
+      and plain \`jarvis\` opens the full terminal agent)
 
   Chrome/Edge extension (optional — for the in-browser agent + side panel):
        open chrome://extensions  →  enable "Developer mode"  →  "Load unpacked"

@@ -100,6 +100,7 @@ void SettingsStore::load()
     m_assistantName = QStringLiteral("Jarvis");
     m_userName.clear();               // the human's name; empty until the wizard sets it
     m_autoUpdate = true;              // default ON (only an explicit false/0 disables)
+    m_autoUpdateApply = false;        // auto-INSTALL stays opt-in
     m_autoUpdateIntervalHours = 6;
     m_theme = QJsonObject();
     {
@@ -301,6 +302,16 @@ void SettingsStore::load()
                     }
                     continue;
                 }
+                if (line.startsWith(QStringLiteral("auto_update_apply"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        const QString v = line.mid(eq + 1).trimmed().toLower();
+                        // Default OFF; only an explicit true/1 enables auto-install.
+                        m_autoUpdateApply =
+                            (v == QStringLiteral("true") || v == QStringLiteral("1"));
+                    }
+                    continue;
+                }
                 if (line.startsWith(QStringLiteral("auto_update"))) {
                     const int eq = line.indexOf(QLatin1Char('='));
                     if (eq >= 0) {
@@ -458,6 +469,7 @@ bool SettingsStore::saveConfig()
     if (!m_userName.isEmpty())
         ts << "user_name = \"" << m_userName << "\"\n";
     ts << "auto_update = " << (m_autoUpdate ? "true" : "false") << "\n";
+    ts << "auto_update_apply = " << (m_autoUpdateApply ? "true" : "false") << "\n";
     ts << "auto_update_interval_hours = " << m_autoUpdateIntervalHours << "\n";
     if (!m_theme.isEmpty()) {
         const QByteArray tj = QJsonDocument(m_theme).toJson(QJsonDocument::Compact);

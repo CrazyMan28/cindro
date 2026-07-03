@@ -62,6 +62,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -450,17 +455,29 @@ private fun InputRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             // Tap = gallery picker; LONG-PRESS = paste an image from the
-            // clipboard (jarvis#76 bonus — e.g. a screenshot you just copied).
+            // clipboard (jarvis#76 bonus). A plain Box, NOT IconButton: the
+            // button's internal clickable consumed the tap before our gesture
+            // detector could resolve it, so the picker never opened.
             val attach by rememberUpdatedState(onAttach)
             val pasteImg by rememberUpdatedState(onPasteImage)
-            IconButton(
-                onClick = {},
-                modifier = Modifier.pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = { attach() },
-                        onLongPress = { pasteImg() },
-                    )
-                },
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = { attach() },
+                            onLongPress = { pasteImg() },
+                        )
+                    }
+                    // Raw pointerInput is invisible to TalkBack/keyboard focus —
+                    // IconButton used to provide the button role + click actions,
+                    // so re-establish them explicitly.
+                    .semantics(mergeDescendants = true) {
+                        role = Role.Button
+                        onClick(label = "Attach photo") { attach(); true }
+                        onLongClick(label = "Paste image from clipboard") { pasteImg(); true }
+                    },
+                contentAlignment = Alignment.Center,
             ) {
                 Icon(Icons.Filled.Image, contentDescription = "Attach photo (long-press: paste from clipboard)", tint = JarvisPalette.Accent)
             }

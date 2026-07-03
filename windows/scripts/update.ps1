@@ -48,5 +48,10 @@ Invoke-WebRequest -Uri $latest.url -OutFile $tmp -Headers @{ "User-Agent" = "Jar
 # Inno Setup silent install (replaces the install in place). The installer's [Run]
 # relaunches jarvisd + the UI, so we exit after handing off.
 Write-Host ">> installing $latestTag silently …"
-Start-Process -FilePath $tmp -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait
-@{ updated = $true; to = $latestTag } | ConvertTo-Json -Compress
+# /CLOSEAPPLICATIONS lets Inno stop the running jarvisd/sidebar instead of
+# failing on locked files; /RESTARTAPPLICATIONS relaunches them after.
+# DETACHED (no -Wait): the installer kills jarvisd — our caller — mid-install,
+# so waiting here would mean the JSON result (and the daemon's audit entry)
+# never gets emitted. Hand off and report immediately.
+Start-Process -FilePath $tmp -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CLOSEAPPLICATIONS","/RESTARTAPPLICATIONS"
+@{ updated = $true; to = $latestTag; installer_launched = $true } | ConvertTo-Json -Compress

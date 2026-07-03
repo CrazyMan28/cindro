@@ -273,6 +273,28 @@ Design pillars:
   page slot (the old `model: 17` vs 18 items left Settings blank). Keep the
   switch cases in lock-step with the item order.
 
+## New subsystems (2026-07-03 follow-up wave)
+
+- **`cli/` — the jarvis terminal** (own venv, like acp-bridge): `jarvis` = textual
+  TUI (Chat/Sessions/Memory/Skills/Agents/Queue/Settings over ONE streaming
+  Contract A client); subcommands status/doctor/start/stop/web/ask/sessions/
+  search/version. Tests use a threaded MockDaemon (`tests/harness.py
+  DaemonThread`) because sync entry points call `asyncio.run` themselves — a
+  plain `asyncio.run`-started mock dies with the first loop. GOTCHA: rich's
+  number highlighter injects ANSI mid-string ("9.9.9" → "9.9" + "." + "9"), so
+  test assertions on captured output must strip ANSI first.
+- **Release-based self-update** (`core/src/Updater.cpp`): three strategies —
+  AppImage ($APPIMAGE set → download release asset, verify ELF magic, atomic
+  std::rename over self), Windows packaged (no repo scripts → silent Inno
+  installer with /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS), git checkouts (the
+  old script flow). `auto_update_apply` (default OFF) makes the periodic check
+  install automatically. The ps1's $env:JARVIS_VERSION default was NEVER set →
+  Updater now passes -CurrentVersion explicitly.
+- **Compose GOTCHA** (ChatScreen attach button): IconButton's internal
+  clickable CONSUMES taps before a Modifier.pointerInput detectTapGestures can
+  resolve onTap — for tap+long-press dual gestures use a plain Box with
+  pointerInput, never IconButton(onClick={}).
+
 ## New subsystems (2026-07-03, jarvis#76) — gotchas
 
 - **Cross-session search rides an FTS mirror (item 1).** `events_fts` in
