@@ -72,3 +72,4 @@ windows/engine/.venv-win/
 squashfs-root/
 jarvis-engine.spec
 /dist/
+cli/.venv/
