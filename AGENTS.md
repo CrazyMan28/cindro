@@ -273,6 +273,112 @@ Design pillars:
   page slot (the old `model: 17` vs 18 items left Settings blank). Keep the
   switch cases in lock-step with the item order.
 
+## New subsystems (2026-07-03, jarvis#76) — gotchas
+
+- **Cross-session search rides an FTS mirror (item 1).** `events_fts` in
+  SessionStore mirrors message/thinking text + tool outputs (8KB body cap,
+  delete-then-insert sync exactly like `memories_fts`, one-time backfill for old
+  DBs). `session.search` (control+device, read tier) / the `session_search`
+  tool return ranked hits with a ±N context window. If you add a new event
+  writer, it MUST go through `appendEvent` or search won't see it.
+- **Skill curation never deletes (item 2).** `_stats.json` sidecars (use_count/
+  last_used_at/pinned) live IN the skill dir but are never mirrored to the CLI
+  dirs; the hourly daemon sweep ARCHIVES stale self-authored unpinned skills to
+  `<root>/_archived/` (builtins + pinned exempt; mtime fallback protects fresh
+  skills). `skills.pin` / `skills.list_archived` / `skills.unarchive` +
+  `pin_skill`/`unarchive_skill` tools. `list()` skips `/_archived/` — keep that
+  filter if you touch the scanner. Threshold = `skill_archive_days` (0 = off).
+- **Tool-loop guardrails run in onBrainEvent (item 4).** `ToolLoopGuard`
+  (pure, InjectionGuard-style) hashes (tool,args,result) per session: 3 exact
+  repeats → a queued `[TOOL LOOP WARNING]` turn (never clobbers a queued user
+  turn, once per turn), 5 → error card + audit + queued re-plan directive +
+  deferred `brain->cancel()`. Windows are per-turn; result-varying churn on an
+  identical call trips at 2x. State cleared on turn end/cancel/delete.
+- **Credential pools are comma-separated keys (item 5).** A provider's
+  secrets.json value may hold several keys (comma/newline). `apiKey()` returns
+  the FIRST; `apiKeyPool()` the list; ApiBrain rotates the pool cursor on HTTP
+  429 (read via the reply's HttpStatusCodeAttribute — the Qt error enum never
+  says 429) and only errors when all keys are exhausted in one turn.
+- **PreCompact actually fires now (item 6).** When `api_context_max_tokens` > 0
+  and the estimated prompt exceeds it, ApiBrain fires the PreCompact hook (its
+  `injectedContext` becomes the digest) then `compressHistory()` collapses old
+  turns into ONE labelled digest message. The kept tail must never START on a
+  `{role:"tool"}` row (orphaned tool results are a hard API error) — that
+  slide-forward logic is load-bearing.
+- **The work queue is durable and claims-based (item 7).** `KanbanStore`
+  (`work_queue` in jarvis.db): the 5s daemon dispatcher heartbeats live
+  workers, reclaims stale ones (3 min silence; also at daemon start), and fills
+  ≤2 worker slots by claiming pending items (guarded UPDATE — no double-claim)
+  into TOP-LEVEL sessions titled "Queue: …". The item resolves done/error with
+  the session summary at turn end. `queue.*` Contract A + `queue_add/list/
+  cancel` tools live in tools_jarvis_ops (NO pinned-count test there).
+- **Self-improve + auto-continue are daemon-wired but opt-in (items 8+9).**
+  Both default OFF (`self_improve`, `auto_continue`). The post-turn review is a
+  cheap async mistral-small call (mirrors generateSessionTitle; silent no-op
+  without a key) that may write ONE memory — it must NEVER sendToSession. Goal
+  auto-continue re-wakes a session with a non-empty `goals` column
+  ([AUTO-CONTINUE n/cap]); the cap (capped=3, on=25) resets on every REAL
+  session.send and on goal change; subagents/queue workers/error states are
+  excluded. The model clears its goal via `set_goal("")`.
+- **MoA is advisory, committee decides (item 10).** `agent_moa` fans one prompt
+  to N brain/model combos and returns their answers as context for the CALLER
+  to weigh; `agent_committee` adds a judge. Both are pure tools over
+  agents.dispatch/result.
+- **Command scanner is the LAST line before shell exec (item 12).**
+  `cmd_scan.py` (pure weighted cues) runs inside policy.py's call_tool wrapper
+  for `bg_start`/`monitor`/`watch`/`widget_live` — the detached runners give no
+  second window. Flagged → the ask-bus Allow/Deny flow; decisions audited to
+  the policy log; `JARVIS_CMD_SCAN=0` disables. Add new free-form-command tools
+  to `policy._CMD_TOOLS`. It's calibrated for ~zero false positives — don't add
+  broad cues.
+- **OSV gate fires at mcp.add time only (item 12).** The daemon never spawns
+  npx/uvx servers itself (codex does, next launch), so `handleMcpAdd` is the
+  ONLY window: `OsvAdvisory` queries api.osv.dev for MAL-* advisories (3s,
+  FAIL-OPEN offline with an audit breadcrumb) and returns the plugins.install
+  `needs_approval` shape unless re-sent with `approve:true`.
+- **LSP diagnostics are a model tool, not a hook (item 13).** The engine has no
+  file-write hook (brains edit via their own CLIs), so the brain calls
+  `lsp_diagnostics(path)` after editing. `lsp_manager.py` speaks raw
+  Content-Length JSON-RPC to one live server per language (idle-reaped 120s,
+  pull + push diagnostics). If you add an LSP tool, update
+  `tests/test_tools_lsp_register.py`'s pinned EXPECTED_TOOLS.
+- **ACP bridge is a stdio process the EDITOR spawns (item 14).** `acp-bridge/`
+  (Python) translates newline-delimited ACP JSON-RPC ⇄ Contract A. It
+  subscribes (session.subscribe) IMMEDIATELY after session.create — keep that
+  scoping order. No systemd unit on purpose.
+- **Profiles = two env vars, read in ONE resolver each (item 15).**
+  `JARVIS_CONFIG_DIR` (Config::configDir) + `JARVIS_DATA_DIR` (DataPaths
+  dataDir); unset = byte-identical paths. New stores MUST route through
+  `dataDir()` / `Config::configDir()` — never raw `~/.local/share/jarvis` or
+  `~/.config/jarvis` literals. The sidebar resolves the control PORT from the
+  profile's config.toml too (helpers in Bridge.cpp; it links no jarvis-core).
+- **web/ dashboard is a no-build static SPA (item 16).** It speaks the
+  extension's exact client dialect (both scoping layers!) straight to :8795;
+  `web/serve.py` only serves files. ControlServer stays loopback-only — remote
+  use = port-forward, never a bind flag.
+- **The Windows engine freeze needs explicit data/metadata flags.** PyInstaller
+  from a CACHED venv (stale hooks-contrib) drops jsonschema_specifications'
+  schemas and the mcp dist-info → the frozen engine CRASHES AT IMPORT (that was
+  the whole "widgets never render on Windows" saga). `windows/scripts/build.ps1`
+  and `packaging/build-appimage.sh` pass `--collect-data
+  jsonschema_specifications --collect-data jsonschema --copy-metadata mcp` —
+  keep them if you touch the freeze.
+- **Shared-engine session stamping asks the daemon (Windows todo link).** When
+  `JARVIS_AGENT_SESSION` is absent (global engine), tools_todo/widgets_bus
+  resolve the single state=running session via
+  `daemon_client.current_session_id()` (2s cache; ambiguous → empty;
+  `JARVIS_SESSION_RESOLVE=0` for hermetic tests) so todos/widgets link to THEIR
+  chat instead of bleeding across sessions.
+- **Phone events PUSH now (item 3).** The daemon holds one client socket on the
+  phone server's /ws authed as ext 100 (device role = multi-socket safe) and
+  fans call/screening frames as `phone.event` to OPTED-IN control clients
+  (`phone.event.subscribe`, widget.subscribe pattern) + all authed devices.
+  The old fast polls are demoted to slow fallbacks — don't re-add 2s timers.
+- **Clipboard paste is vision-gated with a NOTICE (bonus).** All three
+  composers attach clipboard images; a non-vision brain/model shows a friendly
+  inline message (`supportsVision` predicates in Bridge.cpp / sidepanel.js) —
+  never a silent drop. Keep the desktop/extension predicates in sync.
+
 ## Branches & flow
 
 Three long-lived branches; **`main` is protected** (PR-only, no direct pushes, no

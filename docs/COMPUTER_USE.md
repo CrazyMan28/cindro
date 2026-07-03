@@ -187,3 +187,33 @@ returns are above that point, so the event only fires on a real, live session.
 ---
 
 *Honest note: the per-tool-call capability (move/click/type) is the same MCP whether you use Jarvis or plain codex/claude. Jarvis's value is the **environment + control surface** around those calls — isolation, visibility, phone reach, orchestration, and being callable by other agents.*
+
+
+## LSP diagnostics (jarvis#76 item 13)
+
+`lsp_diagnostics(path, language="auto", root_dir="")` is a MODEL-CALLED tool
+(the engine has no file-write hook — brains edit via their own CLI tools, so
+the preamble/skills should tell the model to check its edits). It keeps one
+live language server per language (raw Content-Length JSON-RPC over stdio, no
+extra deps; idle-reaped after ~120s; workspace root auto-walked from the file),
+speaks BOTH pull (`textDocument/diagnostic`) and push (`publishDiagnostics`),
+and returns `{diagnostics:[{severity,line,col,message,source,code}], count,
+language, server, root}` with 1-based positions, errors first. A missing
+server degrades to `{diagnostics:[], error:"language server 'X' not
+installed"}`. `lsp_server_status()` lists live servers + PATH availability.
+
+## Pre-exec command scanner (jarvis#76 item 12)
+
+`computer_use_mcp/cmd_scan.py` is a pure weighted-cue scanner (modeled on
+InjectionGuard) invoked from the policy gate's `call_tool` wrapper for the
+free-form command tools (`bg_start`, `monitor`, `watch`, `widget_live`) —
+their commands run `subprocess(shell=True)` in DETACHED runners, so call time
+is the only enforcement window. It flags only unambiguous destruction/
+exfiltration (rm -rf on roots, mkfs / dd of=/dev, fork bombs, curl|sh,
+base64 -d|sh, chmod -R 777 /, reverse shells, credential-file exfil,
+punycode/lookalike URLs, broad-kill of foot/sway/kwin/jarvisd) and routes a
+hit through the SAME Allow/Deny ask-bus flow as an `ask` trust policy; a
+non-allow raises and the runner never spawns. Decisions are audited to the
+policy log (`kind:"cmd_scan"`). `JARVIS_CMD_SCAN=0` disables. Routine dev
+commands (`rm -rf /tmp/build`, `curl … | jq`, `git clean -fdx`) pass clean —
+if you add a new free-form-command tool, add it to `policy._CMD_TOOLS`.
