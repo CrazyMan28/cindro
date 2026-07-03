@@ -1,5 +1,7 @@
 #include "jarvis/FcmSender.h"
 
+#include "jarvis/Config.h"
+
 #include <QByteArray>
 #include <QDateTime>
 #include <QDir>
@@ -46,7 +48,7 @@ QString FcmSender::resolveServiceAccountPath()
     const QStringList candidates = {
         home + QStringLiteral("/.phone-installer/service-account.json"),
         home + QStringLiteral("/.phone-installer/baratone-service-account.json"),
-        home + QStringLiteral("/.config/jarvis/fcm-service-account.json"),
+        Config::configDir() + QStringLiteral("/fcm-service-account.json"),
     };
     for (const QString &c : candidates) {
         if (QFile::exists(c))

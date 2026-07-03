@@ -61,6 +61,9 @@ add_library(jarvis-core STATIC
     src/SshAllowList.cpp
     src/AuditLog.cpp
     src/InjectionGuard.cpp
+    src/ToolLoopGuard.cpp
+    src/KanbanStore.cpp
+    src/OsvAdvisory.cpp
     src/NotifyService.cpp
     # Live-widget viewer-lease registry (battery gating: a live widget only runs
     # while a desktop/phone viewer or a home-screen pin is watching it).
@@ -213,6 +216,27 @@ add_test(NAME api_brain_tools_test COMMAND api_brain_tools_test)
 add_executable(memory_store_test tests/memory_store_test.cpp)
 target_link_libraries(memory_store_test PRIVATE jarvis-core Qt6::Core Qt6::Sql)
 add_test(NAME memory_store_test COMMAND memory_store_test)
+
+# SessionStore: events_fts cross-session search (+context window, backfill,
+# delete cleanup) and the goals/continuation columns (temp DB).
+add_executable(session_store_test tests/session_store_test.cpp)
+target_link_libraries(session_store_test PRIVATE jarvis-core Qt6::Core Qt6::Sql)
+add_test(NAME session_store_test COMMAND session_store_test)
+
+# ToolLoopGuard: repeated identical tool-call detection thresholds (pure logic).
+add_executable(tool_loop_guard_test tests/tool_loop_guard_test.cpp)
+target_link_libraries(tool_loop_guard_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME tool_loop_guard_test COMMAND tool_loop_guard_test)
+
+# KanbanStore: durable work queue — enqueue/claim/heartbeat/reclaim (temp DB).
+add_executable(kanban_store_test tests/kanban_store_test.cpp)
+target_link_libraries(kanban_store_test PRIVATE jarvis-core Qt6::Core Qt6::Sql)
+add_test(NAME kanban_store_test COMMAND kanban_store_test)
+
+# OsvAdvisory: npx/uvx package extraction + offline fail-open (no live OSV).
+add_executable(osv_advisory_test tests/osv_advisory_test.cpp)
+target_link_libraries(osv_advisory_test PRIVATE jarvis-core Qt6::Core Qt6::Network)
+add_test(NAME osv_advisory_test COMMAND osv_advisory_test)
 
 # SkillStore: frontmatter parse + create (self-authoring) + invoke (template
 # render) roundtrip (temp skills root).

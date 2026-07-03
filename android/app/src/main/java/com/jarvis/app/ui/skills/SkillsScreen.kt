@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -93,7 +94,33 @@ fun SkillsScreen(viewModel: SkillsViewModel) {
                         skill = skill,
                         onInvoke = { invokeFor = skill },
                         onRemove = { viewModel.remove(skill.name) },
+                        onPin = { pinned -> viewModel.setPinned(skill.name, pinned) },
                     )
+                }
+            }
+
+            // Archived skills (jarvis#76 item 2): parked by the stale sweep,
+            // never deleted — restore brings one straight back.
+            if (state.archived.isNotEmpty()) {
+                Text("Archived (${state.archived.size})", style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextSecondary)
+                state.archived.forEach { skill ->
+                    GlowCard(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text("/${skill.name}", style = MaterialTheme.typography.titleSmall.copy(fontFamily = FontFamily.Monospace), color = JarvisPalette.TextSecondary)
+                                skill.description?.let {
+                                    Text(it, color = JarvisPalette.TextSecondary, style = MaterialTheme.typography.bodySmall, maxLines = 1)
+                                }
+                            }
+                            TextButton(onClick = { viewModel.unarchive(skill.name) }) {
+                                Text("Restore", color = JarvisPalette.Accent)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -137,7 +164,12 @@ private fun TodayCard(items: List<TodayItem>) {
 }
 
 @Composable
-private fun SkillRow(skill: Skill, onInvoke: () -> Unit, onRemove: () -> Unit) {
+private fun SkillRow(
+    skill: Skill,
+    onInvoke: () -> Unit,
+    onRemove: () -> Unit,
+    onPin: (Boolean) -> Unit = {},
+) {
     GlowCard(modifier = Modifier.fillMaxWidth()) {
         Column {
             Row(
@@ -146,8 +178,14 @@ private fun SkillRow(skill: Skill, onInvoke: () -> Unit, onRemove: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("/${skill.name}", style = MaterialTheme.typography.titleMedium.copy(fontFamily = FontFamily.Monospace), color = JarvisPalette.TextPrimary)
-                IconButton(onClick = onInvoke) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = "Invoke", tint = JarvisPalette.Accent)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (skill.useCount > 0) {
+                        Text("\u26a1${skill.useCount}", color = JarvisPalette.Success, style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    IconButton(onClick = onInvoke) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = "Invoke", tint = JarvisPalette.Accent)
+                    }
                 }
             }
             skill.description?.let {
@@ -157,7 +195,13 @@ private fun SkillRow(skill: Skill, onInvoke: () -> Unit, onRemove: () -> Unit) {
                 Text(skill.tags.joinToString(" ") { "#$it" }, color = JarvisPalette.AccentDim, style = MaterialTheme.typography.bodySmall)
             }
             Spacer(Modifier.height(4.dp))
-            TextButton(onClick = onRemove) { Text("Remove", color = JarvisPalette.Error) }
+            Row {
+                // Pinned skills are exempt from the stale-archive sweep (jarvis#76 item 2).
+                TextButton(onClick = { onPin(!skill.pinned) }) {
+                    Text(if (skill.pinned) "\ud83d\udccc Unpin" else "Pin", color = JarvisPalette.Accent)
+                }
+                TextButton(onClick = onRemove) { Text("Remove", color = JarvisPalette.Error) }
+            }
         }
     }
 }

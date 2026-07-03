@@ -42,6 +42,12 @@ data class SettingsUiState(
     // every chat can drive a computer/Chrome on demand with no manual co-work.
     val letJarvisUseComputer: Boolean = true,
     val permissionLevel: String = "medium", // ask-before-risky: high|medium|low
+    // Soft mode + wake-notify (parity with desktop; previously missing here).
+    val agentMode: String = "coworker",     // plan|build|coworker
+    val wakeNotify: String = "ping",        // silent|ping|always
+    // Autonomy (jarvis#76 items 8+9): post-turn review + goal auto-continue.
+    val selfImprove: String = "off",        // off|on
+    val autoContinue: String = "off",       // off|capped|on
     // Trust policies (jarvis#71): enforced per-tool/per-app guardrails.
     val trustRules: List<TrustRule> = emptyList(),
     val trustDefault: String = "allow",
@@ -134,6 +140,18 @@ class SettingsViewModel(
                     val permLevel = s.get("permission_level")
                         ?.takeIf { !it.isJsonNull }?.asString
                         ?.let { if (it == "high" || it == "low") it else "medium" } ?: "medium"
+                    val agentMode = s.get("agent_mode")
+                        ?.takeIf { !it.isJsonNull }?.asString
+                        ?.let { if (it == "plan" || it == "build") it else "coworker" } ?: "coworker"
+                    val wakeNotify = s.get("wake_notify")
+                        ?.takeIf { !it.isJsonNull }?.asString
+                        ?.let { if (it == "silent" || it == "always") it else "ping" } ?: "ping"
+                    val selfImprove = s.get("self_improve")
+                        ?.takeIf { !it.isJsonNull }?.asString
+                        ?.let { if (it == "on") it else "off" } ?: "off"
+                    val autoContinue = s.get("auto_continue")
+                        ?.takeIf { !it.isJsonNull }?.asString
+                        ?.let { if (it == "capped" || it == "on") it else "off" } ?: "off"
                     _uiState.update {
                         it.copy(
                             defaultBrain = brain,
@@ -143,6 +161,10 @@ class SettingsViewModel(
                             canDrive = drive,
                             letJarvisUseComputer = letCompute,
                             permissionLevel = permLevel,
+                            agentMode = agentMode,
+                            wakeNotify = wakeNotify,
+                            selfImprove = selfImprove,
+                            autoContinue = autoContinue,
                             loadingDaemon = false,
                             modelsBrain = brain,
                         )
@@ -239,6 +261,38 @@ class SettingsViewModel(
         val normalized = if (level == "high" || level == "low") level else "medium"
         patch(JsonObject().apply { addProperty("permission_level", normalized) }) {
             _uiState.update { it.copy(permissionLevel = normalized) }
+        }
+    }
+
+    /** Agent mode: "plan" | "build" | "coworker". Biometric-gated patch. */
+    fun setAgentMode(mode: String) {
+        val normalized = if (mode == "plan" || mode == "build") mode else "coworker"
+        patch(JsonObject().apply { addProperty("agent_mode", normalized) }) {
+            _uiState.update { it.copy(agentMode = normalized) }
+        }
+    }
+
+    /** Wake notify: "silent" | "ping" | "always". Biometric-gated patch. */
+    fun setWakeNotify(mode: String) {
+        val normalized = if (mode == "silent" || mode == "always") mode else "ping"
+        patch(JsonObject().apply { addProperty("wake_notify", normalized) }) {
+            _uiState.update { it.copy(wakeNotify = normalized) }
+        }
+    }
+
+    /** Post-turn self-improvement review: "off" | "on" (jarvis#76 item 8). */
+    fun setSelfImprove(mode: String) {
+        val normalized = if (mode == "on") "on" else "off"
+        patch(JsonObject().apply { addProperty("self_improve", normalized) }) {
+            _uiState.update { it.copy(selfImprove = normalized) }
+        }
+    }
+
+    /** Goal auto-continuation: "off" | "capped" | "on" (jarvis#76 item 9). */
+    fun setAutoContinue(mode: String) {
+        val normalized = if (mode == "capped" || mode == "on") mode else "off"
+        patch(JsonObject().apply { addProperty("auto_continue", normalized) }) {
+            _uiState.update { it.copy(autoContinue = normalized) }
         }
     }
 

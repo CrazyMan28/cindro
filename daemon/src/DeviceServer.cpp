@@ -108,6 +108,9 @@ bool DeviceServer::start()
         // new session (any surface) -> 'session.opened' event + FCM to phones.
         connect(m_control, &ControlServer::sessionOpened,
                 this, &DeviceServer::onSessionOpened);
+        // phone-server events (incoming_call/call_message/...) -> phone.event.
+        connect(m_control, &ControlServer::phoneEvent,
+                this, &DeviceServer::onPhoneEvent);
         // new unlock challenge -> 'auth.challenge' event to authed phones (no FCM).
         connect(m_control, &ControlServer::authChallengePush,
                 this, &DeviceServer::onAuthChallengePush);
@@ -415,12 +418,16 @@ QString DeviceServer::tierFor(const QString &method)
 {
     if (method == QStringLiteral("session.list") ||
         method == QStringLiteral("session.history") ||
+        method == QStringLiteral("session.search") ||
+        method == QStringLiteral("queue.list") ||
+        method == QStringLiteral("queue.get") ||
         method == QStringLiteral("task.list") ||
         method == QStringLiteral("memory.list") ||
         method == QStringLiteral("memory.search") ||
         method == QStringLiteral("skills.list") ||
         method == QStringLiteral("skills.get") ||
         method == QStringLiteral("skills.today") ||
+        method == QStringLiteral("skills.list_archived") ||
         method == QStringLiteral("agents.list") ||
         method == QStringLiteral("agents.get") ||
         method == QStringLiteral("agents.running") ||
@@ -445,6 +452,7 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("session.send") ||
         method == QStringLiteral("session.cancel") ||
         method == QStringLiteral("session.delete") ||
+        method == QStringLiteral("session.set_goals") ||
         method == QStringLiteral("task.queue") ||
         method == QStringLiteral("push.register") ||
         method == QStringLiteral("memory.add") ||
@@ -452,6 +460,15 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("skills.create") ||
         method == QStringLiteral("skills.invoke") ||
         method == QStringLiteral("skills.remove") ||
+        // Skill lifecycle curation (jarvis#76 item 2): pin/unarchive are plain
+        // config actions (archive list is read tier below).
+        method == QStringLiteral("skills.pin") ||
+        method == QStringLiteral("skills.unarchive") ||
+        // Work queue actions (jarvis#76 item 7).
+        method == QStringLiteral("queue.add") ||
+        method == QStringLiteral("queue.cancel") ||
+        method == QStringLiteral("queue.remove") ||
+        method == QStringLiteral("queue.set_priority") ||
         // Wave 8 ops actions that aren't security-sensitive (toggling/removing a
         // schedule, managing the ssh allow-list). schedule.create + ssh.exec are
         // biometric (below).
@@ -520,7 +537,8 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("session.list"),    QStringLiteral("session.create"),
         QStringLiteral("session.send"),    QStringLiteral("session.cancel"),
         QStringLiteral("session.delete"),
-        QStringLiteral("session.history"), QStringLiteral("task.queue"),
+        QStringLiteral("session.history"), QStringLiteral("session.search"),
+        QStringLiteral("task.queue"),
         QStringLiteral("task.list"),       QStringLiteral("push.register"),
         QStringLiteral("approval.respond"),
         QStringLiteral("mirror.start"),    QStringLiteral("mirror.stop"),
@@ -601,6 +619,21 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         resp = devSessionDelete(req);
     } else if (m == QStringLiteral("session.history")) {
         resp = devSessionHistory(req);
+    } else if (m == QStringLiteral("session.search")) {
+        resp = devSessionSearch(req);
+    } else if (m == QStringLiteral("session.set_goals")) {
+        // Same semantics as the control channel (jarvis#76 item 9).
+        const QString sid = req.params.value(QStringLiteral("session_id")).toString();
+        const QString goals = req.params.value(QStringLiteral("goals")).toString();
+        if (sid.isEmpty() || !m_control->store().setGoals(sid, goals)) {
+            resp = Response::failure(req.id, QStringLiteral("no_session"),
+                                     QStringLiteral("unknown session: ") + sid);
+        } else {
+            m_control->store().setContinuationCount(sid, 0);
+            QJsonObject r;
+            r.insert(QStringLiteral("ok"), true);
+            resp = Response::success(req.id, r);
+        }
     } else if (m == QStringLiteral("task.queue")) {
         resp = devTaskQueue(c, req);
     } else if (m == QStringLiteral("task.list")) {
@@ -629,6 +662,10 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         // Contract A v3 mirror: memory + skills share the SAME store as the
         // desktop, so the phone curates one coherent memory/skill world.
         resp = m_control->dispatchMemoryOrSkill(req);
+    } else if (ControlServer::isQueueMethod(m)) {
+        // Durable work queue (jarvis#76 item 7) — same handlers as the control
+        // channel; tierFor gates reads vs actions.
+        resp = m_control->dispatchQueueMethod(req);
     } else if (ControlServer::isOpsMethod(m)) {
         // Wave 8 co-worker ops mirror: schedule.* / ssh.* / audit.list share the
         // same SQLite tables + allow-list as the desktop. `remote=true` so the
@@ -702,8 +739,8 @@ QStringList DeviceServer::storeImages(const QString &sessionId, const QJsonArray
     if (images.isEmpty())
         return paths;
 
-    const QString dir = QDir::homePath() +
-                        QStringLiteral("/.local/share/jarvis/inbox/") + sessionId;
+    const QString dir = jarvis::dataDir() +
+                        QStringLiteral("/inbox/") + sessionId;
     QDir().mkpath(dir);
 
     int idx = 0;
@@ -800,6 +837,25 @@ Response DeviceServer::devSessionHistory(const Request &req)
     QJsonObject result;
     result.insert(QStringLiteral("session"), sess->toJson());
     result.insert(QStringLiteral("events"), events);
+    return Response::success(req.id, result);
+}
+
+Response DeviceServer::devSessionSearch(const Request &req)
+{
+    // Same shape as the control-channel session.search (jarvis#76 item 1) —
+    // by construction: both serialize via ControlServer::searchHitsToJson.
+    const QString q = req.params.value(QStringLiteral("q")).toString();
+    if (q.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("q is required"));
+    const int limit = req.params.value(QStringLiteral("limit")).toInt(20);
+    const int ctxWin = req.params.value(QStringLiteral("context_window")).toInt(2);
+    const QString sessionFilter =
+        req.params.value(QStringLiteral("session_id")).toString();
+    QJsonObject result;
+    result.insert(QStringLiteral("hits"),
+                  ControlServer::searchHitsToJson(
+                      m_control->store().searchEvents(q, limit, ctxWin, sessionFilter)));
     return Response::success(req.id, result);
 }
 
@@ -1238,6 +1294,21 @@ void DeviceServer::onFilePushed(const QJsonObject &descriptor)
             msg.data.insert(QStringLiteral("session_id"), sessionId);
         for (const PushTokenRow &t : m_control->store().listPushTokens())
             m_control->fcm()->send(t.fcmToken, msg);
+    }
+}
+
+void DeviceServer::onPhoneEvent(const QJsonObject &data)
+{
+    // Call events are session-independent — deliver to every authed device.
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), kProtocolVersion);
+    frame.insert(QStringLiteral("event"), QStringLiteral("phone.event"));
+    frame.insert(QStringLiteral("data"), data);
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+    for (auto it = m_conns.begin(); it != m_conns.end(); ++it) {
+        if (it.value().authed)
+            it.key()->sendTextMessage(payload);
     }
 }
 

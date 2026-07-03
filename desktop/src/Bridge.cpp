@@ -27,6 +27,7 @@
 #include <QGuiApplication>
 #include <QScreen>
 #include <QBuffer>
+#include <QImage>
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QClipboard>
@@ -213,6 +214,51 @@ void Bridge::probeGpu()
                  QStringLiteral("--format=csv,noheader,nounits")});
 }
 
+namespace {
+
+// The daemon's config root, resolved EXACTLY like jarvis::Config::configDir()
+// (the sidebar deliberately does not link jarvis-core): JARVIS_CONFIG_DIR
+// override for profile isolation (jarvis#76 item 15), else ~/.config/jarvis.
+QString jarvisConfigDir()
+{
+    const QString override = qEnvironmentVariable("JARVIS_CONFIG_DIR");
+    return override.isEmpty()
+               ? QDir::homePath() + QStringLiteral("/.config/jarvis")
+               : override;
+}
+
+// The profile's control port from config.toml [ports] control=N (default 8795).
+// A hardcoded 8795 silently connected a second-profile sidebar to the WRONG
+// daemon. Mirrors jarvis::Config::parseToml's [ports] handling.
+int configuredControlPort()
+{
+    QFile f(jarvisConfigDir() + QStringLiteral("/config.toml"));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return 8795;
+    QString section;
+    for (const QString &raw :
+         QString::fromUtf8(f.readAll()).split(QLatin1Char('\n'))) {
+        const QString line = raw.trimmed();
+        if (line.startsWith(QLatin1Char('[')) && line.endsWith(QLatin1Char(']'))) {
+            section = line.mid(1, line.size() - 2).trimmed();
+            continue;
+        }
+        if (section != QStringLiteral("ports") ||
+            !line.startsWith(QStringLiteral("control")))
+            continue;
+        const int eq = line.indexOf(QLatin1Char('='));
+        if (eq < 0)
+            continue;
+        bool ok = false;
+        const int p = line.mid(eq + 1).trimmed().toInt(&ok);
+        if (ok && p > 0 && p < 65536)
+            return p;
+    }
+    return 8795;
+}
+
+} // namespace
+
 QString Bridge::readControlToken()
 {
     // MUST match the daemon's write path byte-for-byte. jarvisd writes the token via
@@ -224,7 +270,7 @@ QString Bridge::readControlToken()
     //   * Windows: QStandardPaths::ConfigLocation == %APPDATA%\... which is a DIFFERENT
     //     directory than $HOME/.config → "control_token not found", the whole HUD stays
     //     offline, and setup re-runs every launch. Reading $HOME/.config fixes it.
-    const QString path = QDir::homePath() + QStringLiteral("/.config/jarvis/control_token");
+    const QString path = jarvisConfigDir() + QStringLiteral("/control_token");
 
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
@@ -271,7 +317,10 @@ QString Bridge::controlUrl()
     QUrl url;
     url.setScheme(QStringLiteral("ws"));
     url.setHost(QStringLiteral("127.0.0.1"));
-    url.setPort(8795);
+    // Respect the profile's configured control port (config.toml [ports]) —
+    // a second isolated daemon (JARVIS_CONFIG_DIR profile, jarvis#76 item 15)
+    // binds elsewhere; a hardcoded 8795 silently connected to the WRONG daemon.
+    url.setPort(configuredControlPort());
     url.setPath(QStringLiteral("/control/ws"));
 
     QUrlQuery q;
@@ -310,6 +359,10 @@ void Bridge::onConnected()
     setStatus(QStringLiteral("connected"));
     // Liveness check per Contract A.
     request(QStringLiteral("ping"), {});
+    // Real-time phone events (jarvis#76 item 3): opt in so incoming_call /
+    // call_message frames push to the overlay instead of it polling.
+    request(QStringLiteral("phone.event.subscribe"),
+            QVariantMap{{QStringLiteral("on"), true}});
     // Declare our (currently empty) session view so the daemon scopes event delivery
     // to us from the start — a foreign session's events are never sent here.
     syncSubscriptions();
@@ -418,19 +471,89 @@ void Bridge::startAgentChat(const QString &agent)
 
 void Bridge::sendMessage(const QString &text)
 {
+    sendMessageWithImages(text, {});
+}
+
+void Bridge::sendMessageWithImages(const QString &text, const QVariantList &images)
+{
     if (m_sessionId.isEmpty()) {
         // NO BUTTONS: the composer fires createSession() (async) right before this.
         // The session id hasn't arrived yet, so don't error — QUEUE the message and
         // let the session.create response flush it the moment the session is ready.
         // (Auto-creates the session + its computer-use desktop on the first turn.)
         m_pendingText = text;
+        m_pendingImages = images;
         setStatus(QStringLiteral("starting session…"));
         return;
     }
     QVariantMap params;
     params.insert(QStringLiteral("session_id"), m_sessionId);
     params.insert(QStringLiteral("text"), text);
+    if (!images.isEmpty()) {
+        // Strip the QML-only preview thumbnails — the daemon wants {mime,b64}.
+        QVariantList wire;
+        for (const QVariant &v : images) {
+            const QVariantMap m = v.toMap();
+            QVariantMap img;
+            img.insert(QStringLiteral("mime"), m.value(QStringLiteral("mime")));
+            img.insert(QStringLiteral("b64"), m.value(QStringLiteral("b64")));
+            wire.append(img);
+        }
+        params.insert(QStringLiteral("images"), wire);
+    }
     request(QStringLiteral("session.send"), params);
+}
+
+bool Bridge::clipboardHasImage() const
+{
+    const QClipboard *cb = QGuiApplication::clipboard();
+    return cb && !cb->image().isNull();
+}
+
+QVariantMap Bridge::pasteImage() const
+{
+    QVariantMap out;
+    out.insert(QStringLiteral("ok"), false);
+    const QClipboard *cb = QGuiApplication::clipboard();
+    if (!cb)
+        return out;
+    QImage img = cb->image();
+    if (img.isNull())
+        return out;
+    // Same budget as the Android attach path: longest edge 1600, JPEG q82 —
+    // plenty for the model, small enough to ship over the control WS.
+    constexpr int kMaxEdge = 1600;
+    if (img.width() > kMaxEdge || img.height() > kMaxEdge)
+        img = img.scaled(kMaxEdge, kMaxEdge, Qt::KeepAspectRatio,
+                         Qt::SmoothTransformation);
+    QByteArray bytes;
+    QBuffer buf(&bytes);
+    buf.open(QIODevice::WriteOnly);
+    if (!img.save(&buf, "JPEG", 82))
+        return out;
+    const QString b64 = QString::fromLatin1(bytes.toBase64());
+    out.insert(QStringLiteral("ok"), true);
+    out.insert(QStringLiteral("mime"), QStringLiteral("image/jpeg"));
+    out.insert(QStringLiteral("b64"), b64);
+    out.insert(QStringLiteral("preview"),
+               QStringLiteral("data:image/jpeg;base64,") + b64);
+    return out;
+}
+
+bool Bridge::supportsVision(const QString &brain, const QString &model) const
+{
+    // Client-side mirror of what each brain does with attachments: codex passes
+    // --image (all its models are multimodal), claude reads the file with its
+    // Read tool (all current claude models see images), the api brain builds a
+    // vision content array — but only for model families that accept one.
+    if (brain == QStringLiteral("codex") || brain == QStringLiteral("claude"))
+        return true;
+    const QString m = model.toLower();
+    return m.startsWith(QStringLiteral("gpt-")) || m.startsWith(QStringLiteral("o3")) ||
+           m.startsWith(QStringLiteral("o4")) || m.contains(QStringLiteral("claude")) ||
+           m.startsWith(QStringLiteral("gemini")) || m.startsWith(QStringLiteral("grok")) ||
+           m.startsWith(QStringLiteral("pixtral")) ||
+           m.startsWith(QStringLiteral("mistral-small"));
 }
 
 void Bridge::cancelSession()
@@ -507,6 +630,7 @@ void Bridge::newSession()
     // (fired by the composer on first send) will spin up a brand-new one. Also drop
     // any queued first-turn text so it can't land in a future unrelated session.
     m_pendingText.clear();
+    m_pendingImages.clear();
     if (!m_sessionId.isEmpty()) {
         m_sessionId.clear();
         emit sessionIdChanged();
@@ -547,7 +671,7 @@ QString Bridge::extensionPath() const
         QCoreApplication::applicationDirPath() + QStringLiteral("/extension"));
 #else
     // Staged by packaging/install.sh
-    return QDir::homePath() + QStringLiteral("/.local/share/jarvis/extension");
+    return jarvis::dataDir() + QStringLiteral("/extension");
 #endif
 }
 
@@ -916,6 +1040,30 @@ void Bridge::memoryLink(const QString &fromId, const QString &toId, const QStrin
 void Bridge::skillsList()
 {
     request(QStringLiteral("skills.list"), {});
+}
+
+void Bridge::skillPin(const QString &name, bool pinned)
+{
+    if (name.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), name);
+    params.insert(QStringLiteral("pinned"), pinned);
+    request(QStringLiteral("skills.pin"), params);
+}
+
+void Bridge::skillsListArchived()
+{
+    request(QStringLiteral("skills.list_archived"), {});
+}
+
+void Bridge::skillUnarchive(const QString &name)
+{
+    if (name.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), name);
+    request(QStringLiteral("skills.unarchive"), params);
 }
 
 void Bridge::skillGet(const QString &name)
@@ -3307,6 +3455,14 @@ void Bridge::onTextMessageReceived(const QString &message)
         return;
     }
 
+    // Real-time phone event (jarvis#76 item 3): incoming_call / call_state /
+    // call_message / screening_* forwarded from the phone server. QML overlays
+    // subscribe via onPhoneEvent instead of interval-polling list_active_calls.
+    if (obj.value(QStringLiteral("event")).toString() == QStringLiteral("phone.event")) {
+        emit phoneEvent(obj.value(QStringLiteral("data")).toObject().toVariantMap());
+        return;
+    }
+
     // Unsolicited "a session was opened" event: the daemon fanned out a session.create
     // from SOME surface (this desktop, the phone, Chrome co-work, MCP, scheduler).
     //
@@ -3570,6 +3726,7 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         // later land in an unrelated session.
         if (method == QStringLiteral("session.create")) {
             m_pendingText.clear();
+            m_pendingImages.clear();
             m_creatingSession = false;
         }
         emit errorOccurred(QStringLiteral("%1 failed: [%2] %3")
@@ -3614,13 +3771,12 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             // Flush a message the user typed BEFORE any session existed (the
             // no-buttons auto-create flow queued it in sendMessage()). This makes
             // "type and hit send on a fresh chat" just work.
-            if (!m_pendingText.isEmpty()) {
+            if (!m_pendingText.isEmpty() || !m_pendingImages.isEmpty()) {
                 const QString pending = m_pendingText;
+                const QVariantList pendingImgs = m_pendingImages;
                 m_pendingText.clear();
-                QVariantMap sendParams;
-                sendParams.insert(QStringLiteral("session_id"), m_sessionId);
-                sendParams.insert(QStringLiteral("text"), pending);
-                request(QStringLiteral("session.send"), sendParams);
+                m_pendingImages.clear();
+                sendMessageWithImages(pending, pendingImgs);
             }
 
             // The engine url for this session's per-session computer-use engine,
@@ -3833,6 +3989,14 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                || method == QStringLiteral("skills.remove")) {
         emit skillsChanged();
         skillsList(); // re-index after a self-authoring write / removal
+    } else if (method == QStringLiteral("skills.list_archived")) {
+        emit skillsArchivedListed(result.value(QStringLiteral("skills")).toList());
+    } else if (method == QStringLiteral("skills.pin")) {
+        skillsList(); // refresh the pinned badges
+    } else if (method == QStringLiteral("skills.unarchive")) {
+        emit skillsChanged();
+        skillsList();         // restored skill joins the live list...
+        skillsListArchived(); // ...and leaves the archive section
     } else if (method == QStringLiteral("skills.invoke")) {
         emit skillInvoked(ctx, result.value(QStringLiteral("message")).toString());
     } else if (method == QStringLiteral("skills.today")) {

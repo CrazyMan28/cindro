@@ -156,6 +156,16 @@ QString ApiBrain::resolveProvider(const Options &opts)
         m.startsWith(QStringLiteral("codestral")) ||
         m.startsWith(QStringLiteral("pixtral")))
         return QStringLiteral("mistral");
+    // New provider families (jarvis#76 item 11) — all expose an OpenAI-
+    // compatible /chat/completions, so only the base URL + key differ. These
+    // MUST come before the ollama colon heuristic (gemini ids are colon-free
+    // but keyless setups would otherwise misroute grok/deepseek ids too).
+    if (m.startsWith(QStringLiteral("gemini")))
+        return QStringLiteral("gemini");
+    if (m.startsWith(QStringLiteral("grok")))
+        return QStringLiteral("xai");
+    if (m.startsWith(QStringLiteral("deepseek")))
+        return QStringLiteral("deepseek");
     // Ollama tags look like "qwen2.5:3b", "llama3.2:latest" — a colon with a
     // non-numeric right side and no provider key is the ollama heuristic.
     if (m.contains(QLatin1Char(':')) && opts.apiKey.isEmpty())
@@ -172,7 +182,21 @@ QString ApiBrain::defaultBaseUrl(const QString &provider)
     // Mistral is OpenAI-compatible (/v1/chat/completions, SSE deltas).
     if (provider == QStringLiteral("mistral"))
         return QStringLiteral("https://api.mistral.ai/v1");
+    // OpenAI-compatible endpoints for the jarvis#76 item 11 providers.
+    if (provider == QStringLiteral("gemini"))
+        return QStringLiteral("https://generativelanguage.googleapis.com/v1beta/openai");
+    if (provider == QStringLiteral("xai"))
+        return QStringLiteral("https://api.x.ai/v1");
+    if (provider == QStringLiteral("deepseek"))
+        return QStringLiteral("https://api.deepseek.com/v1");
     return QStringLiteral("https://api.openai.com/v1");
+}
+
+QString ApiBrain::activeApiKey() const
+{
+    if (m_opts.apiKeyPool.isEmpty())
+        return m_opts.apiKey;
+    return m_opts.apiKeyPool.at(m_keyIndex % m_opts.apiKeyPool.size());
 }
 
 // --- pure tool-loop helpers (unit-tested) -----------------------------------
@@ -334,6 +358,9 @@ void ApiBrain::send(const QString &text, const QStringList &images)
     m_toolAccum.clear();
     m_finishReason.clear();
     m_toolIterations = 0;
+    // A fresh turn gets the full credential pool again (the cursor itself is
+    // sticky — a key that just 429'd stays skipped until the pool wraps).
+    m_keyRotations = 0;
 
     // Synthetic thread id on the first turn so the UI/history has a thread.
     if (m_history.isEmpty())
@@ -348,10 +375,127 @@ void ApiBrain::send(const QString &text, const QStringList &images)
     userMsg.insert(QStringLiteral("content"), userContent(text, images));
     m_history.append(userMsg);
 
+    // Context compression (jarvis#76 item 6): keep the prompt under budget
+    // before it ever reaches the wire.
+    compressIfNeeded();
+
     if (m_provider == QStringLiteral("anthropic"))
         startAnthropic(text);
     else
         startOpenAi(text);
+}
+
+// --- context compression (jarvis#76 item 6) ---------------------------------
+
+int ApiBrain::estimateHistoryTokens(const QJsonArray &history)
+{
+    qint64 bytes = 0;
+    for (const QJsonValue &v : history)
+        bytes += QJsonDocument(v.toObject()).toJson(QJsonDocument::Compact).size();
+    return int(bytes / 4);
+}
+
+int ApiBrain::compressHistory(QJsonArray &history, int keepTail, const QString &digest)
+{
+    if (keepTail < 1)
+        keepTail = 1;
+    if (history.size() <= keepTail + 1)
+        return 0; // nothing meaningful to collapse
+
+    int cut = history.size() - keepTail;
+    // Never start the kept tail on a {role:"tool"} row — an orphaned tool
+    // result without its preceding assistant tool_calls message is a hard API
+    // error on every OpenAI-compatible backend.
+    while (cut < history.size() &&
+           history.at(cut).toObject().value(QStringLiteral("role")).toString()
+               == QStringLiteral("tool"))
+        ++cut;
+    // The digest itself is a user turn: if the kept tail ALSO starts with a
+    // user message, anthropic's strict role alternation rejects the request
+    // (400) — slide past it so the tail opens on the assistant reply.
+    if (cut < history.size() &&
+        history.at(cut).toObject().value(QStringLiteral("role")).toString()
+            == QStringLiteral("user"))
+        ++cut;
+    while (cut < history.size() &&
+           history.at(cut).toObject().value(QStringLiteral("role")).toString()
+               == QStringLiteral("tool"))
+        ++cut;
+    if (cut <= 1 || cut > history.size())
+        return 0;
+
+    QString summary = digest.trimmed();
+    if (summary.isEmpty()) {
+        // Built-in heuristic digest: one clipped line per dropped entry. A
+        // PreCompact hook can replace this with a real LLM summary.
+        QStringList lines;
+        for (int i = 0; i < cut; ++i) {
+            const QJsonObject m = history.at(i).toObject();
+            const QString role = m.value(QStringLiteral("role")).toString();
+            QString text;
+            const QJsonValue content = m.value(QStringLiteral("content"));
+            if (content.isString())
+                text = content.toString();
+            else if (m.contains(QStringLiteral("tool_calls")))
+                text = QStringLiteral("[requested tool calls]");
+            else if (content.isArray())
+                text = QStringLiteral("[attached image(s)]");
+            text = text.simplified();
+            if (text.size() > 200)
+                text = text.left(200) + QStringLiteral("…");
+            if (!text.isEmpty())
+                lines << role + QStringLiteral(": ") + text;
+        }
+        summary = lines.join(QLatin1Char('\n'));
+        if (summary.size() > 4000)
+            summary = summary.left(4000) + QStringLiteral("…");
+    }
+
+    QJsonArray kept;
+    QJsonObject digestMsg;
+    digestMsg.insert(QStringLiteral("role"), QStringLiteral("user"));
+    digestMsg.insert(QStringLiteral("content"),
+                     QStringLiteral("[CONTEXT DIGEST — %1 earlier message(s) were "
+                                    "compressed to stay within the context budget. "
+                                    "Summary of what happened:]\n%2")
+                         .arg(cut).arg(summary));
+    kept.append(digestMsg);
+    for (int i = cut; i < history.size(); ++i)
+        kept.append(history.at(i));
+    const int dropped = cut;
+    history = kept;
+    return dropped;
+}
+
+void ApiBrain::compressIfNeeded()
+{
+    if (m_opts.contextMaxTokens <= 0)
+        return;
+    // Cheap guard before the O(history) re-serialization: a short history
+    // can't exceed any sane budget, and compressHistory would no-op anyway.
+    if (m_history.size() <= 9)
+        return;
+    const int estimated = estimateHistoryTokens(m_history);
+    if (estimated <= m_opts.contextMaxTokens)
+        return;
+
+    // PreCompact hook (previously registered but never fired): a configured
+    // hook script may inject a proper summary via its injectedContext output.
+    QString hookDigest;
+    if (m_opts.hooks) {
+        QJsonObject hin;
+        hin.insert(QStringLiteral("session_id"), m_opts.sessionId);
+        hin.insert(QStringLiteral("history_length"), m_history.size());
+        hin.insert(QStringLiteral("estimated_tokens"), estimated);
+        hin.insert(QStringLiteral("budget_tokens"), m_opts.contextMaxTokens);
+        const HookOutcome ho = m_opts.hooks->run(QStringLiteral("PreCompact"), hin);
+        hookDigest = ho.injectedContext;
+    }
+
+    const int dropped = compressHistory(m_history, 8, hookDigest);
+    if (dropped > 0)
+        qInfo("ApiBrain: compressed %d old message(s) (~%d tokens > %d budget)",
+              dropped, estimated, m_opts.contextMaxTokens);
 }
 
 void ApiBrain::startOpenAi(const QString &text)
@@ -361,8 +505,9 @@ void ApiBrain::startOpenAi(const QString &text)
                                                    : m_opts.baseUrl;
     QNetworkRequest rq(QUrl(base + QStringLiteral("/chat/completions")));
     rq.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    if (!m_opts.apiKey.isEmpty())
-        rq.setRawHeader("Authorization", QByteArray("Bearer ") + m_opts.apiKey.toUtf8());
+    const QString key = activeApiKey();
+    if (!key.isEmpty())
+        rq.setRawHeader("Authorization", QByteArray("Bearer ") + key.toUtf8());
 
     QJsonArray messages;
     if (!m_opts.systemPrompt.isEmpty()) {
@@ -408,7 +553,7 @@ void ApiBrain::startAnthropic(const QString &text)
                                                    : m_opts.baseUrl;
     QNetworkRequest rq(QUrl(base + QStringLiteral("/messages")));
     rq.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    rq.setRawHeader("x-api-key", m_opts.apiKey.toUtf8());
+    rq.setRawHeader("x-api-key", activeApiKey().toUtf8());
     rq.setRawHeader("anthropic-version", "2023-06-01");
 
     QJsonArray messages;
@@ -548,6 +693,31 @@ void ApiBrain::onFinished()
     bool hadError = false;
     if (m_reply) {
         if (m_reply->error() != QNetworkReply::NoError && !m_anySent && !m_emittedFinal) {
+            // Credential-pool rotation (jarvis#76 item 5): on HTTP 429 with
+            // untried pool keys left, advance the cursor and re-issue the SAME
+            // request instead of failing the turn. The raw Qt error enum never
+            // says "429" — read the real HTTP status off the reply.
+            const int httpStatus =
+                m_reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+            if (httpStatus == 429 && !m_cancelled &&
+                m_opts.apiKeyPool.size() > 1 &&
+                m_keyRotations < m_opts.apiKeyPool.size() - 1) {
+                ++m_keyIndex;
+                ++m_keyRotations;
+                qWarning("ApiBrain: 429 rate-limited — rotating to credential %d/%d",
+                         (m_keyIndex % m_opts.apiKeyPool.size()) + 1,
+                         int(m_opts.apiKeyPool.size()));
+                m_reply->deleteLater();
+                m_reply = nullptr;
+                m_buf.clear();
+                m_toolAccum.clear();
+                m_finishReason.clear();
+                if (m_provider == QStringLiteral("anthropic"))
+                    startAnthropic(QString());
+                else
+                    startOpenAi(QString());
+                return;
+            }
             const QByteArray body = m_reply->readAll();
             QString msg = m_reply->errorString();
             // Surface an API error body if present (e.g. invalid key / model).
@@ -557,6 +727,9 @@ void ApiBrain::onFinished()
                 if (!e.isEmpty())
                     msg = e.value(QStringLiteral("message")).toString(msg);
             }
+            if (httpStatus == 429)
+                msg += QStringLiteral(" (rate-limited; all %1 configured key(s) exhausted)")
+                           .arg(qMax(1, int(m_opts.apiKeyPool.size())));
             emitEvent(NormalizedBrainEvent::error(
                 QStringLiteral("api request failed: ") + msg));
             hadError = true;

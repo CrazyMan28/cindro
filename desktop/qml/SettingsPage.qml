@@ -18,7 +18,10 @@ Item {
         { id: "openai",    label: "OpenAI API", hint: "Direct OpenAI API (api brain)" },
         { id: "anthropic", label: "Anthropic API", hint: "Direct Anthropic API (api brain)" },
         { id: "mistral",   label: "Mistral API", hint: "Direct Mistral API (api brain) — mistral-large/small-latest" },
-        { id: "ollama",    label: "Ollama",     hint: "Local Ollama endpoint / token (optional)" }
+        { id: "ollama",    label: "Ollama",     hint: "Local Ollama endpoint / token (optional)" },
+        { id: "gemini",    label: "Google Gemini", hint: "Gemini API key (api brain, gemini-* models). Several keys? comma-separate them — Jarvis rotates on rate limits" },
+        { id: "xai",       label: "xAI Grok",   hint: "xAI API key (api brain, grok-* models)" },
+        { id: "deepseek",  label: "DeepSeek",   hint: "DeepSeek API key (api brain, deepseek-* models)" }
     ]
 
     property var keysSet: ({})                 // provider -> bool (from settings.get)
@@ -50,6 +53,10 @@ Item {
     property string permissionLevel: "medium"   // ask-before-risky: high|medium|low
     property string agentMode: "coworker"        // plan|build|coworker (soft mode)
     property string wakeNotify: "ping"           // silent|ping|always (bg-job/wake)
+    property string selfImprove: "off"           // off|on (post-turn memory review)
+    property string autoContinue: "off"          // off|capped|on (goal auto-continue)
+    property int skillArchiveDays: 30            // stale-skill archive sweep (0=off)
+    property int apiContextMaxTokens: 0          // api-brain compression budget (0=off)
     property bool hasDesktopPin: false           // a desktop unlock PIN is set
     property string pendingPin: ""               // new PIN to save (write-only)
     property bool dirty: false
@@ -183,6 +190,13 @@ Item {
                              ? s.agent_mode : "coworker"
             page.wakeNotify = (s.wake_notify === "silent" || s.wake_notify === "always")
                               ? s.wake_notify : "ping"
+            page.selfImprove = (s.self_improve === "on") ? "on" : "off"
+            page.autoContinue = (s.auto_continue === "capped" || s.auto_continue === "on")
+                                ? s.auto_continue : "off"
+            page.skillArchiveDays = (s.skill_archive_days !== undefined)
+                                    ? Number(s.skill_archive_days) : 30
+            page.apiContextMaxTokens = (s.api_context_max_tokens !== undefined)
+                                       ? Number(s.api_context_max_tokens) : 0
             page.hasDesktopPin = (s.has_desktop_pin === true)
             page.pendingPin = ""
             page.autoUpdate = (s.auto_update === undefined) ? true : (s.auto_update === true)
@@ -406,6 +420,10 @@ Item {
             "permission_level": page.permissionLevel,
             "agent_mode": page.agentMode,
             "wake_notify": page.wakeNotify,
+            "self_improve": page.selfImprove,
+            "auto_continue": page.autoContinue,
+            "skill_archive_days": page.skillArchiveDays,
+            "api_context_max_tokens": page.apiContextMaxTokens,
             "auto_update": page.autoUpdate,
             "theme": { "glow": page.glow, "compact": page.compact }
         }
@@ -1249,6 +1267,263 @@ Item {
                                     onClicked: {
                                         if (page.wakeNotify !== wseg.modelData.key) {
                                             page.wakeNotify = wseg.modelData.key
+                                            page.dirty = true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ===== Autonomy (jarvis#76 items 8+9+2+6) =====================
+            Text {
+                text: "// AUTONOMY"
+                color: Theme.accent
+                font.family: Theme.fontDisplay
+                font.pixelSize: 11
+                font.letterSpacing: Theme.trackMid
+                font.weight: Font.DemiBold
+                Layout.topMargin: 2
+                Layout.leftMargin: 2
+            }
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+
+                    Text {
+                        text: "Self-improvement — after each turn a cheap background review may save ONE reusable fact to memory"
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 13
+                        Layout.fillWidth: true
+                        wrapMode: Text.WordWrap
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Repeater {
+                            model: [
+                                { key: "off", name: "Off", sub: "Only explicit remember()" },
+                                { key: "on",  name: "On",  sub: "Auto-learn from finished turns" }
+                            ]
+                            delegate: Rectangle {
+                                id: siseg
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 52
+                                radius: Theme.radiusSm
+                                readonly property bool sel: page.selfImprove === siseg.modelData.key
+                                color: siseg.sel ? Theme.accentDim
+                                           : (sisegMa.containsMouse ? Theme.surfaceStrong : Theme.surface)
+                                border.width: 1
+                                border.color: siseg.sel ? Theme.accent
+                                              : (sisegMa.containsMouse ? Theme.accentDim : Theme.hairlineSoft)
+                                Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                                Behavior on border.color { ColorAnimation { duration: Theme.durFast } }
+                                ColumnLayout {
+                                    anchors.centerIn: parent
+                                    width: siseg.width - 16
+                                    spacing: 2
+                                    Text {
+                                        text: siseg.modelData.name.toUpperCase()
+                                        color: siseg.sel ? Theme.accentBright : Theme.text
+                                        font.family: Theme.fontDisplay
+                                        font.pixelSize: 11
+                                        font.weight: Font.DemiBold
+                                        font.letterSpacing: Theme.trackMid
+                                        Layout.alignment: Qt.AlignHCenter
+                                    }
+                                    Text {
+                                        text: siseg.modelData.sub
+                                        color: Theme.textMuted
+                                        font.family: Theme.fontSans
+                                        font.pixelSize: 9
+                                        Layout.alignment: Qt.AlignHCenter
+                                        horizontalAlignment: Text.AlignHCenter
+                                        Layout.fillWidth: true
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                                MouseArea {
+                                    id: sisegMa
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (page.selfImprove !== siseg.modelData.key) {
+                                            page.selfImprove = siseg.modelData.key
+                                            page.dirty = true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "Auto-continue — while a session has an active goal (set_goal), Jarvis re-wakes itself after each turn until the goal is done"
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 13
+                        Layout.fillWidth: true
+                        Layout.topMargin: 4
+                        wrapMode: Text.WordWrap
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Repeater {
+                            model: [
+                                { key: "off",    name: "Off",    sub: "Never self-continue" },
+                                { key: "capped", name: "Capped", sub: "Up to 3 per user turn" },
+                                { key: "on",     name: "On",     sub: "Until the goal clears (max 25)" }
+                            ]
+                            delegate: Rectangle {
+                                id: acseg
+                                required property var modelData
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 52
+                                radius: Theme.radiusSm
+                                readonly property bool sel: page.autoContinue === acseg.modelData.key
+                                color: acseg.sel ? Theme.accentDim
+                                           : (acsegMa.containsMouse ? Theme.surfaceStrong : Theme.surface)
+                                border.width: 1
+                                border.color: acseg.sel ? Theme.accent
+                                              : (acsegMa.containsMouse ? Theme.accentDim : Theme.hairlineSoft)
+                                Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                                Behavior on border.color { ColorAnimation { duration: Theme.durFast } }
+                                ColumnLayout {
+                                    anchors.centerIn: parent
+                                    width: acseg.width - 16
+                                    spacing: 2
+                                    Text {
+                                        text: acseg.modelData.name.toUpperCase()
+                                        color: acseg.sel ? Theme.accentBright : Theme.text
+                                        font.family: Theme.fontDisplay
+                                        font.pixelSize: 11
+                                        font.weight: Font.DemiBold
+                                        font.letterSpacing: Theme.trackMid
+                                        Layout.alignment: Qt.AlignHCenter
+                                    }
+                                    Text {
+                                        text: acseg.modelData.sub
+                                        color: Theme.textMuted
+                                        font.family: Theme.fontSans
+                                        font.pixelSize: 9
+                                        Layout.alignment: Qt.AlignHCenter
+                                        horizontalAlignment: Text.AlignHCenter
+                                        Layout.fillWidth: true
+                                        wrapMode: Text.WordWrap
+                                    }
+                                }
+                                MouseArea {
+                                    id: acsegMa
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (page.autoContinue !== acseg.modelData.key) {
+                                            page.autoContinue = acseg.modelData.key
+                                            page.dirty = true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "Skill housekeeping — auto-archive agent-created skills unused this long (never deletes; restore any time). Context compression trims very long api-brain chats."
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 13
+                        Layout.fillWidth: true
+                        Layout.topMargin: 4
+                        wrapMode: Text.WordWrap
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 10
+                        Text {
+                            text: "Archive after"
+                            color: Theme.textMuted
+                            font.family: Theme.fontSans
+                            font.pixelSize: 12
+                        }
+                        Repeater {
+                            model: [
+                                { days: 0,  name: "Never" },
+                                { days: 14, name: "14d" },
+                                { days: 30, name: "30d" },
+                                { days: 90, name: "90d" }
+                            ]
+                            delegate: Rectangle {
+                                id: sadseg
+                                required property var modelData
+                                width: 64; height: 30
+                                radius: Theme.radiusSm
+                                readonly property bool sel: page.skillArchiveDays === sadseg.modelData.days
+                                color: sadseg.sel ? Theme.accentDim : Theme.surface
+                                border.width: 1
+                                border.color: sadseg.sel ? Theme.accent : Theme.hairlineSoft
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: sadseg.modelData.name
+                                    color: sadseg.sel ? Theme.accentBright : Theme.text
+                                    font.family: Theme.fontSans
+                                    font.pixelSize: 11
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (page.skillArchiveDays !== sadseg.modelData.days) {
+                                            page.skillArchiveDays = sadseg.modelData.days
+                                            page.dirty = true
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
+                        Text {
+                            text: "Compress over"
+                            color: Theme.textMuted
+                            font.family: Theme.fontSans
+                            font.pixelSize: 12
+                        }
+                        Repeater {
+                            model: [
+                                { tok: 0,      name: "Off" },
+                                { tok: 50000,  name: "50k" },
+                                { tok: 100000, name: "100k" }
+                            ]
+                            delegate: Rectangle {
+                                id: cmpseg
+                                required property var modelData
+                                width: 56; height: 30
+                                radius: Theme.radiusSm
+                                readonly property bool sel: page.apiContextMaxTokens === cmpseg.modelData.tok
+                                color: cmpseg.sel ? Theme.accentDim : Theme.surface
+                                border.width: 1
+                                border.color: cmpseg.sel ? Theme.accent : Theme.hairlineSoft
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: cmpseg.modelData.name
+                                    color: cmpseg.sel ? Theme.accentBright : Theme.text
+                                    font.family: Theme.fontSans
+                                    font.pixelSize: 11
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        if (page.apiContextMaxTokens !== cmpseg.modelData.tok) {
+                                            page.apiContextMaxTokens = cmpseg.modelData.tok
                                             page.dirty = true
                                         }
                                     }

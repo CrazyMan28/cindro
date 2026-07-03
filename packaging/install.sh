@@ -74,6 +74,14 @@ log "Installing the Chrome extension into ${EXT_DIR}..."
 mkdir -p "${EXT_DIR}"
 cp -r "${REPO_ROOT}/extension/." "${EXT_DIR}/"
 
+# --- 6c. Install the web console (static dashboard) -------------------------
+# A no-build browser dashboard. Stage it, then run it with:
+#   python3 ~/.local/share/jarvis/web/serve.py   (http://127.0.0.1:8799)
+WEB_DIR="${HOME}/.local/share/jarvis/web"
+log "Installing the web console into ${WEB_DIR}..."
+mkdir -p "${WEB_DIR}"
+cp -r "${REPO_ROOT}/web/." "${WEB_DIR}/"
+
 # --- 7. Next steps -----------------------------------------------------------
 cat <<EOF
 

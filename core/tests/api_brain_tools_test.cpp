@@ -303,6 +303,101 @@ int main(int argc, char **argv)
               "anthropic dialect: Final follows the flushed Message");
     }
 
+    // --- (e) provider adapter registry (jarvis#76 item 11) -------------------
+    {
+        auto providerFor = [](const char *model, const char *key = "") {
+            ApiBrain::Options o;
+            o.model = QString::fromUtf8(model);
+            o.apiKey = QString::fromUtf8(key);
+            return ApiBrain::resolveProvider(o);
+        };
+        check(providerFor("gemini-2.5-flash") == QStringLiteral("gemini"),
+              "gemini-* resolves to gemini");
+        check(providerFor("grok-4") == QStringLiteral("xai"), "grok-* resolves to xai");
+        check(providerFor("deepseek-chat") == QStringLiteral("deepseek"),
+              "deepseek-* resolves to deepseek");
+        check(providerFor("qwen2.5:3b") == QStringLiteral("ollama"),
+              "colon tag still resolves to ollama");
+        check(providerFor("mistral-small-latest") == QStringLiteral("mistral"),
+              "mistral heuristic unchanged");
+        check(providerFor("claude-opus-4-8") == QStringLiteral("anthropic"),
+              "anthropic heuristic unchanged");
+        check(ApiBrain::defaultBaseUrl(QStringLiteral("gemini"))
+                  .contains(QStringLiteral("generativelanguage.googleapis.com")),
+              "gemini base url is the OpenAI-compat endpoint");
+        check(ApiBrain::defaultBaseUrl(QStringLiteral("xai"))
+                  == QStringLiteral("https://api.x.ai/v1"),
+              "xai base url");
+        check(ApiBrain::defaultBaseUrl(QStringLiteral("deepseek"))
+                  == QStringLiteral("https://api.deepseek.com/v1"),
+              "deepseek base url");
+    }
+
+    // --- (f) context compression (jarvis#76 item 6) --------------------------
+    {
+        auto msg = [](const char *role, const QString &content) {
+            QJsonObject m;
+            m.insert(QStringLiteral("role"), QString::fromUtf8(role));
+            m.insert(QStringLiteral("content"), content);
+            return m;
+        };
+        QJsonArray hist;
+        for (int i = 0; i < 20; ++i) {
+            hist.append(msg("user", QStringLiteral("question %1 about topic-alpha").arg(i)));
+            hist.append(msg("assistant", QStringLiteral("answer %1").arg(i)));
+        }
+        check(ApiBrain::estimateHistoryTokens(hist) > 0, "token estimate positive");
+
+        QJsonArray h1 = hist;
+        const int dropped = ApiBrain::compressHistory(h1, 8);
+        // keepTail=8 would land the tail on a user turn; the digest is itself
+        // a user turn, so compression slides one further (33 dropped, 7 kept)
+        // to keep anthropic's strict user/assistant alternation intact.
+        check(dropped == 33, "compressHistory drops all but the kept tail");
+        check(h1.size() == 8, "digest + 7 kept entries remain");
+        check(h1.at(1).toObject().value(QStringLiteral("role")).toString()
+                  == QStringLiteral("assistant"),
+              "kept tail opens on an assistant turn (role alternation)");
+        const QString digest =
+            h1.first().toObject().value(QStringLiteral("content")).toString();
+        check(digest.contains(QStringLiteral("CONTEXT DIGEST")), "digest labelled");
+        check(digest.contains(QStringLiteral("topic-alpha")),
+              "heuristic digest carries dropped content");
+        check(h1.last() == hist.last(), "most recent entry preserved verbatim");
+
+        // External (hook-provided) digest wins over the heuristic.
+        QJsonArray h2 = hist;
+        ApiBrain::compressHistory(h2, 4, QStringLiteral("HOOK SUMMARY HERE"));
+        check(h2.first().toObject().value(QStringLiteral("content")).toString()
+                  .contains(QStringLiteral("HOOK SUMMARY HERE")),
+              "hook digest used verbatim");
+
+        // The kept tail never starts on a {role:"tool"} row.
+        QJsonArray h3;
+        for (int i = 0; i < 10; ++i)
+            h3.append(msg("user", QStringLiteral("u%1").arg(i)));
+        QJsonObject toolCallsMsg;
+        toolCallsMsg.insert(QStringLiteral("role"), QStringLiteral("assistant"));
+        toolCallsMsg.insert(QStringLiteral("tool_calls"), QJsonArray{});
+        h3.append(toolCallsMsg);
+        QJsonObject toolMsg;
+        toolMsg.insert(QStringLiteral("role"), QStringLiteral("tool"));
+        toolMsg.insert(QStringLiteral("tool_call_id"), QStringLiteral("c1"));
+        toolMsg.insert(QStringLiteral("content"), QStringLiteral("result"));
+        h3.append(toolMsg);
+        h3.append(msg("assistant", QStringLiteral("done")));
+        // keepTail=2 would start the tail on the tool row; it must slide past it.
+        ApiBrain::compressHistory(h3, 2);
+        check(h3.at(1).toObject().value(QStringLiteral("role")).toString()
+                  != QStringLiteral("tool"),
+              "kept tail never starts with an orphaned tool result");
+
+        // Tiny histories are left alone.
+        QJsonArray h4;
+        h4.append(msg("user", QStringLiteral("hi")));
+        check(ApiBrain::compressHistory(h4, 8) == 0, "small history untouched");
+    }
+
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

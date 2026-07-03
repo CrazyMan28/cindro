@@ -158,3 +158,19 @@ enums lack QFlags operators), and call
 `QT_QPA_PLATFORM=wayland`. Right-anchoring + keyboard focus are confirmed on
 KWin 6 and native Sway (wlroots).
 ```
+
+
+## ACP bridge + web dashboard (external client contracts)
+
+- **`acp-bridge/` (jarvis-acp)** — a Python stdio process the EDITOR spawns
+  (Zed `agent_servers`, JetBrains): newline-delimited ACP JSON-RPC 2.0 ⇄ the
+  Contract A control WS. `session/new` → `session.create` + immediate
+  `session.subscribe` (scoping guard); `session/prompt` → `session.send` with
+  the normalized event stream mapped to ACP `session/update` chunks;
+  `kind=approval` → `session/request_permission` → `approval.respond`.
+- **`web/`** — a static, no-build SPA speaking the extension's exact Contract A
+  client dialect straight to `ws://127.0.0.1:8795` (pairing-code redemption on
+  `/control/pair`, both session-scoping layers, streamed chat + approvals).
+  `web/serve.py` (stdlib) only serves the files; the daemon stays
+  loopback-only — remote use means an SSH/tailscale port-forward, never a
+  daemon bind flag.

@@ -18,7 +18,10 @@ import threading
 
 from websockets.sync.client import connect
 
-_TOKEN_PATH = os.path.expanduser("~/.config/jarvis/control_token")
+# JARVIS_CONFIG_DIR points a second isolated profile at its own config root
+# (jarvis#76 item 15); unset resolves to today's ~/.config/jarvis.
+_CONFIG_DIR = os.environ.get("JARVIS_CONFIG_DIR") or os.path.expanduser("~/.config/jarvis")
+_TOKEN_PATH = os.path.join(_CONFIG_DIR, "control_token")
 _lock = threading.Lock()
 _counter = 0
 
@@ -60,3 +63,32 @@ def call(method: str, params: dict | None = None, timeout: float = 15.0) -> dict
         raise
     except Exception as exc:  # noqa: BLE001 — connection/timeout/etc.
         raise RuntimeError(f"jarvisd control call {method} failed: {exc}") from exc
+
+
+# --- current-session resolution (jarvis: Windows todo/widget session link) ---
+# Per-session engines carry JARVIS_AGENT_SESSION in their env. The SHARED
+# global engine (Windows v1 real-screen, Linux global :8794) does NOT — so
+# todos/widgets used to be stamped with an EMPTY session id and bled into
+# whatever chat was open. When the env var is missing, ask the daemon which
+# single session is mid-turn right now (state == "running"): a tool call only
+# executes while a turn is in flight, so the unique running session IS the
+# caller. Ambiguous answers (none or several running) resolve to `default`.
+# Deliberately UNCACHED: a time-based cache could attribute session B's todo
+# to session A during rapid back-to-back turns, and a loopback WS round-trip
+# per todo/widget write is cheap.
+
+
+def current_session_id(default: str = "") -> str:
+    sid = os.environ.get("JARVIS_AGENT_SESSION", "")
+    if sid:
+        return sid
+    if os.environ.get("JARVIS_SESSION_RESOLVE", "1") == "0":
+        return default  # tests: stay hermetic even with a live daemon on the box
+    try:
+        rows = call("session.list", {}, timeout=5).get("sessions", [])
+        running = [r for r in rows if r.get("state") == "running"]
+        if len(running) == 1:
+            return str(running[0].get("id", "") or "") or default
+    except Exception:  # daemon down/unreachable -> keep the old behavior
+        pass
+    return default

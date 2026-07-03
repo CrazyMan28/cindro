@@ -4,7 +4,103 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-07-02._
+_Last updated: 2026-07-03._
+
+---
+
+## 🆕 The #76 wave: all 16 Hermes-comparison backlog items + image paste + the real Windows widget fix (2026-07-03)
+
+Issue **#76** (the Hermes-comparison backlog) shipped **in full** on `dev` — all 16
+items, the image-paste bonus, and the root-cause fix for the long-standing
+"widgets never render on Windows":
+
+**Quick wins (items 1–5):**
+- **Cross-session full-text search** — `events_fts` FTS5 mirror over every stored
+  turn + tool output (backfills old DBs once), `session.search` on control+device,
+  `session_search` MCP tool with a ±context window. New `session_store_test`.
+- **Skill lifecycle curation** — per-skill `_stats.json` (use_count / last_used_at /
+  pinned, never mirrored to CLI dirs); hourly sweep ARCHIVES (never deletes) stale
+  self-authored unpinned skills (`skill_archive_days`, default 30, 0=off);
+  pin/restore on desktop + Android + `pin_skill`/`unarchive_skill` tools.
+- **Real-time phone events** — the daemon subscribes to the phone server's WS as
+  ext 100 and PUSHES `phone.event` frames to opted-in surfaces; the desktop call
+  overlay + extension now react instantly (old 2s/3s polls demoted to slow
+  fallbacks).
+- **Tool-loop guardrails** — `ToolLoopGuard` hashes (tool,args,result) per turn:
+  3 identical repeats soft-warn the brain, 5 hard-stop the turn with an error card
+  + audit + a queued re-plan directive. Churn loops (same call, changing error)
+  trip at 2x. New `tool_loop_guard_test`.
+- **Credential pools** — several API keys per provider (comma/newline separated in
+  one secrets entry); ApiBrain rotates on HTTP 429 and only fails when the pool is
+  exhausted.
+
+**Compounding (items 6–9):**
+- **Context compression** — the previously-orphaned PreCompact hook FIRES when the
+  estimated api-brain prompt exceeds `api_context_max_tokens`; old turns collapse
+  into one labelled digest (hook can supply it; tool-result pairing preserved).
+- **Durable kanban work queue** — `KanbanStore` (`work_queue` in jarvis.db) with
+  priority claim / worker heartbeats / stale reclaim (survives restarts + crashes);
+  5s daemon dispatcher runs ≤2 items as top-level "Queue: …" sessions and stores
+  each result; `queue.*` Contract A + `queue_add/list/cancel` tools. New
+  `kanban_store_test`.
+- **Post-turn self-improvement** — opt-in (`self_improve=on`): a cheap async
+  mistral-small review after each top-level turn may save ONE reusable fact to
+  memory (tags auto+review). Silent no-op without a key.
+- **Persistent goals / auto-continue** — sessions carry `goals` +
+  `continuation_count`; `set_goal` tool + `session.set_goals`; with
+  `auto_continue=capped|on` the daemon re-wakes the session ([AUTO-CONTINUE n/cap],
+  capped=3 per real user turn, on=25 ceiling) until the model clears the goal.
+- **Autonomy settings UI** on desktop (AUTONOMY card) + Android (Mode & autonomy,
+  which also fills the old agent-mode/wake-notify parity gap).
+
+**Bigger bets (items 10–16):**
+- **Mixture-of-Agents** — `agent_moa` fans one question to N different
+  brains/models in parallel and returns their independent answers as ADVISORY
+  context (the caller decides; committee still judges). `test_moa.py`.
+- **Provider registry** — gemini-*/grok-*/deepseek-* model ids auto-route to
+  Google/xAI/DeepSeek (OpenAI-compatible dialect, tool loop + vision included);
+  key fields on desktop + Android.
+- **Pre-exec command scanner** — `cmd_scan.py` (weighted cues, ~zero false
+  positives) gates bg_start/monitor/watch/widget_live commands inside the policy
+  wrapper: unambiguous destruction/exfil → Allow/Deny ask; audited;
+  `JARVIS_CMD_SCAN=0` off-switch. 56 tests.
+- **OSV malware gate** — adding an npx/uvx MCP server queries OSV for MAL-*
+  advisories BEFORE storing (fail-open offline, audited); a hit returns the
+  plugins-style needs_approval so the user must consciously override. New
+  `osv_advisory_test`.
+- **LSP diagnostics** — `lsp_diagnostics(path)` engine tool: raw JSON-RPC to one
+  live language server per language (pull + push diagnostics, idle-reaped),
+  graceful "not installed" degrade. 55 tests.
+- **ACP editor bridge** — new `acp-bridge/`: Zed/JetBrains drive Jarvis as a
+  native Agent Client Protocol agent (streamed turns, tool cards, in-editor
+  permission prompts) over Contract A. 10 tests + Zed snippet in its README.
+- **Multi-profile isolation** — `JARVIS_CONFIG_DIR` + `JARVIS_DATA_DIR` give a
+  second daemon+sidebar instance its own tokens/db/skills/ports (defaults
+  byte-identical; every store now routes through the two resolvers).
+- **Web dashboard** — new `web/`: a no-build static SPA (sessions/chat with
+  streamed events + approvals, memory, skills, agents) speaking the extension's
+  exact Contract A dialect; `python3 web/serve.py` and open it.
+
+**Bonus — clipboard image paste, everywhere:** Ctrl+V an image into the desktop
+composer (chips + ✕, image-only sends OK), paste into the extension composer,
+long-press the Android attach icon. Non-vision brain/model → a FRIENDLY inline
+notice naming vision-capable options, never a silent drop.
+
+**Windows root causes (user-reported):**
+- **"Widgets never render" was the FROZEN ENGINE CRASHING AT STARTUP** — stale
+  PyInstaller hooks dropped jsonschema_specifications' schemas + the mcp
+  dist-info, so the engine died before binding :8794 (no tools at all). Proven
+  live on the win runner VM (grafting the two pieces → render_widget 200 + a
+  widgets.jsonl record); build.ps1 + build-appimage.sh now pass the
+  collect-data/copy-metadata flags explicitly.
+- **Todos now link to their session** — the shared global engine (no
+  JARVIS_AGENT_SESSION) resolves the single running session from the daemon and
+  stamps it, so todo cards stop bleeding into every chat.
+
+Verified: ctest **30/30** (4 new suites), engine pytest **576 passed + 1 skip**
+(moa/cmd_scan/lsp suites added), acp-bridge **10/10**, Android `assembleDebug`,
+extension + web `node --check`, live win-VM engine probe. See AGENTS.md
+"New subsystems (2026-07-03)" for the gotchas.
 
 ---
 

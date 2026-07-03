@@ -22,6 +22,7 @@
 // (capped at 12 iterations). Anthropic stays chat-only (different tool format).
 
 #include "jarvis/Brain.h"
+#include "jarvis/HookStore.h"
 #include "jarvis/Protocol.h"
 
 #include <QByteArray>
@@ -43,10 +44,16 @@ class ApiBrain : public Brain {
     Q_OBJECT
 public:
     struct Options {
-        // "openai" | "anthropic" | "mistral" | "ollama" | "" (auto from model/base).
+        // "openai" | "anthropic" | "mistral" | "ollama" | "gemini" | "xai" |
+        // "deepseek" | "" (auto from model/base). gemini/xai/deepseek speak the
+        // OpenAI-compatible dialect (jarvis#76 item 11).
         QString provider;
         QString model;
         QString apiKey;      // bearer / x-api-key (empty for ollama)
+        // Credential pool (jarvis#76 item 5): when non-empty, requests use
+        // pool[m_keyIndex] and an HTTP 429 rotates to the next key before the
+        // turn fails. apiKey is the single-key fallback.
+        QStringList apiKeyPool;
         QString baseUrl;     // override; else a sensible per-provider default
         QString systemPrompt; // base system prompt (memory is appended by daemon)
         int maxTokens = 2048;
@@ -56,6 +63,15 @@ public:
         // loop. Empty => pure chat (today's behavior).
         QString mcpEndpoint; // e.g. http://127.0.0.1:8794/mcp (or a nested engine)
         QString mcpBearer;   // Bearer for the MCP endpoint (may be empty)
+        // Context compression (jarvis#76 item 6): when > 0 and the estimated
+        // prompt exceeds this many tokens, older history is collapsed into a
+        // digest before the request (the PreCompact hook fires first and may
+        // supply the digest text). 0 = never compress.
+        int contextMaxTokens = 0;
+        // Optional hook store (daemon-owned) for the PreCompact fire point, and
+        // the owning session id for hook payloads.
+        HookStore *hooks = nullptr;
+        QString sessionId;
     };
 
     explicit ApiBrain(Options opts, QObject *parent = nullptr);
@@ -99,6 +115,18 @@ public:
     // The first non-empty `choices[].finish_reason` of a streamed chunk ("" if none).
     static QString finishReasonFromChunk(const QJsonObject &chunk);
 
+    // --- context compression helpers (pure; unit-tested) -------------------
+    // Rough prompt-size estimate: total content bytes / 4 (chars-per-token
+    // heuristic — deliberately cheap, this only gates compression).
+    static int estimateHistoryTokens(const QJsonArray &history);
+    // Collapse everything but the last `keepTail` entries into ONE digest
+    // message spliced at the front. `digest` overrides the built-in heuristic
+    // digest (e.g. a PreCompact hook's summary). The kept tail never starts on
+    // a {role:"tool"} row (that would orphan tool results from their call).
+    // Returns the number of entries removed (0 = nothing to do).
+    static int compressHistory(QJsonArray &history, int keepTail,
+                               const QString &digest = QString());
+
     // Test seam (no network): feed one SSE `data:` payload through the streaming
     // parser exactly as drainSse() would. Lets the unit test drive the delta
     // buffering / event contract without a live endpoint.
@@ -135,9 +163,16 @@ private:
     // that turn.
     void runToolCallsAndContinue();
 
+    // Fire PreCompact + compress m_history when past the configured budget.
+    void compressIfNeeded();
+    // The key requests authenticate with (pool-aware). Empty for ollama.
+    QString activeApiKey() const;
+
     Options m_opts;
     QString m_provider;          // resolved
     bool m_toolsEnabled = false; // mcpEndpoint set && provider != anthropic
+    int m_keyIndex = 0;          // credential-pool cursor (sticky across turns)
+    int m_keyRotations = 0;      // 429 rotations this turn (reset per send())
     QNetworkAccessManager *m_nam = nullptr;
     QNetworkReply *m_reply = nullptr;
     QByteArray m_buf;            // SSE line-assembly buffer

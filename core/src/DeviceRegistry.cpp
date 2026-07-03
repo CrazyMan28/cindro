@@ -1,4 +1,5 @@
 #include "jarvis/DeviceRegistry.h"
+#include "jarvis/Config.h"
 
 #include <sodium.h>
 
@@ -26,12 +27,12 @@ QJsonObject DeviceRow::toJson() const
 
 QString DeviceRegistry::devicesFilePath()
 {
-    return QDir::homePath() + QStringLiteral("/.config/jarvis/devices.json");
+    return Config::configDir() + QStringLiteral("/devices.json");
 }
 
 QString DeviceRegistry::identityFilePath()
 {
-    return QDir::homePath() + QStringLiteral("/.config/jarvis/identity.key");
+    return Config::configDir() + QStringLiteral("/identity.key");
 }
 
 QString DeviceRegistry::fingerprintFor(const QByteArray &pubkey)

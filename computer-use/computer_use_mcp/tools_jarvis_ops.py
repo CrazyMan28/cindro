@@ -108,6 +108,24 @@ def register(mcp: FastMCP) -> None:
             return _err(exc)
 
     @mcp.tool()
+    def session_search(query: str, limit: int = 20, context_window: int = 2,
+                       session_id: str = "") -> str:
+        """Full-text search across ALL past session transcripts and tool
+        outputs (not just saved memories). Use when the user asks about
+        something done or discussed in an earlier conversation ("what did we
+        do last Tuesday", "find that pg_dump command"). Returns ranked hits
+        with +/- context_window surrounding events each so you can read the
+        exchange around the match. Pass session_id to search one session."""
+        try:
+            params: dict = {"q": query, "limit": limit,
+                            "context_window": context_window}
+            if session_id:
+                params["session_id"] = session_id
+            return json.dumps(daemon_client.call("session.search", params))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
     def forget(id: str) -> str:
         """Delete a memory by id (from recall / list_memories)."""
         try:
@@ -173,6 +191,86 @@ def register(mcp: FastMCP) -> None:
         """Read one skill's full Markdown body + metadata by name (to edit/inspect it)."""
         try:
             return json.dumps(daemon_client.call("skills.get", {"name": name}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def pin_skill(name: str, pinned: bool = True) -> str:
+        """Pin (or unpin) a skill. Pinned skills are exempt from the automatic
+        stale-skill archive sweep — pin anything the user wants kept forever."""
+        try:
+            return json.dumps(daemon_client.call("skills.pin",
+                                                 {"name": name, "pinned": pinned}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def list_archived_skills() -> str:
+        """List skills that were auto-archived after long inactivity (they are
+        never deleted). Restore one with unarchive_skill."""
+        try:
+            return json.dumps(daemon_client.call("skills.list_archived"))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def unarchive_skill(name: str) -> str:
+        """Restore an archived skill back into the live library (and the CLI
+        mirrors) so it can be invoked again."""
+        try:
+            return json.dumps(daemon_client.call("skills.unarchive", {"name": name}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def set_goal(goals: str, session_id: str = "") -> str:
+        """Set (or clear with "") THIS session's persistent goal. While a goal
+        is set and the user enabled auto-continue, Jarvis re-wakes the session
+        after each turn until you report the goal complete and clear it. Use
+        for long multi-step objectives ("migrate all 12 services"); clear it
+        the moment the objective is done."""
+        try:
+            sid = session_id or os.environ.get("JARVIS_AGENT_SESSION", "")
+            if not sid:
+                return _err(RuntimeError("no session id (pass session_id)"))
+            return json.dumps(daemon_client.call(
+                "session.set_goals", {"session_id": sid, "goals": goals}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    # ---- WORK QUEUE (durable kanban backlog) ---------------------------------
+    @mcp.tool()
+    def queue_add(prompt: str, title: str = "", priority: int = 0,
+                  brain: str = "", model: str = "", tags: str = "") -> str:
+        """Enqueue a DURABLE work item on Jarvis's kanban backlog. Unlike
+        agent_start (fire-and-wait), queued items survive restarts: the daemon
+        runs them one after another in their own sessions and stores each
+        result. Use for big multi-part jobs ("do these 10 things overnight") —
+        enqueue each part, then check queue_list later. Higher priority runs
+        first."""
+        try:
+            params = {"prompt": prompt, "title": title, "priority": priority,
+                      "brain": brain, "model": model, "tags": tags}
+            return json.dumps(daemon_client.call("queue.add", params))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def queue_list(status: str = "") -> str:
+        """List work-queue items (status filter: pending|running|done|error|
+        cancelled; empty = all). Each item carries its result summary once
+        finished."""
+        try:
+            return json.dumps(daemon_client.call("queue.list", {"status": status}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def queue_cancel(id: str) -> str:
+        """Cancel a pending or running work-queue item (a running worker
+        session is stopped)."""
+        try:
+            return json.dumps(daemon_client.call("queue.cancel", {"id": id}))
         except Exception as exc:  # noqa: BLE001
             return _err(exc)
 
@@ -439,6 +537,80 @@ def register(mcp: FastMCP) -> None:
                     out["verdict"] = {"status": "error",
                                       "summary": "no member produced a result to judge"}
             return json.dumps(out)
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
+    def agent_moa(prompt: str, advisors: list[dict] | None = None,
+                  timeout_sec: int = 1800) -> str:
+        """MIXTURE-OF-AGENTS (jarvis#76 item 10): fan ONE hard question out to
+        several DIFFERENT brains/models in parallel and get their independent
+        answers back as ADVISORY context — you stay the decision maker (unlike
+        agent_committee, no judge decides for you).
+
+        `advisors` is a list of {brain?, model?, role?} dicts — e.g.
+        [{"brain":"codex"}, {"brain":"claude","model":"opus"},
+         {"brain":"api","model":"mistral-large-latest"}]. Empty/omitted uses
+        that trio of defaults (only advisors whose brain is available run).
+        2-4 advisors is the sweet spot.
+
+        Returns {prompt, advisors:[{brain, model, role, status, answer}]}.
+        Read every answer, weigh where they agree/disagree, then produce YOUR
+        final answer. Use for high-stakes reasoning (architecture choices,
+        tricky debugging theories, irreversible decisions)."""
+        import time
+        try:
+            plans = [a for a in (advisors or []) if isinstance(a, dict)][:4]
+            if not plans:
+                plans = [{"brain": "codex"}, {"brain": "claude"},
+                         {"brain": "api", "model": "mistral-large-latest"}]
+            parent = os.environ.get("JARVIS_AGENT_SESSION")
+            members: list[dict] = []
+            for i, plan in enumerate(plans):
+                role = str(plan.get("role", "")).strip() or (
+                    "an independent expert advisor: answer the question "
+                    "directly and thoroughly on your own")
+                sp = ("You are advisor %d of %d in a mixture-of-agents panel — "
+                      "%s. Do NOT hedge toward what others might say; give YOUR "
+                      "best independent answer. End with a concise SUMMARY "
+                      "containing your answer." % (i + 1, len(plans), role))
+                params = {"agent": "moa-advisor-%d" % (i + 1), "task": prompt,
+                          "system_prompt": sp}
+                if plan.get("brain"):
+                    params["brain"] = str(plan["brain"])
+                if plan.get("model"):
+                    params["model"] = str(plan["model"])
+                if parent:
+                    params["parent_session_id"] = parent
+                m = {"brain": str(plan.get("brain", "")),
+                     "model": str(plan.get("model", "")),
+                     "role": role, "status": "running", "answer": "",
+                     "session_id": ""}
+                try:
+                    r = daemon_client.call("agents.dispatch", params, timeout=30)
+                    m["session_id"] = r.get("session_id", "")
+                except Exception as dexc:  # noqa: BLE001
+                    m["status"] = "error"
+                    m["answer"] = str(dexc)
+                members.append(m)
+
+            end = time.time() + max(30, min(int(timeout_sec or 1800), 14400))
+            for m in members:
+                sid = m["session_id"]
+                if not sid:
+                    if m["status"] != "error":
+                        m["status"] = "error"
+                    continue
+                while time.time() < end:
+                    res = daemon_client.call("agents.result", {"session_id": sid})
+                    if not res.get("running", False):
+                        m["status"] = res.get("status", "done")
+                        m["answer"] = res.get("summary", "")
+                        break
+                    time.sleep(1.5)
+                else:
+                    m["status"] = "timeout"
+            return json.dumps({"prompt": prompt, "advisors": members})
         except Exception as exc:  # noqa: BLE001
             return _err(exc)
 

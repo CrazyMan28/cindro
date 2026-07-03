@@ -1,4 +1,6 @@
 #include "jarvis/MemoryStore.h"
+#include "jarvis/FtsQuery.h"
+#include "jarvis/DataPaths.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -44,27 +46,6 @@ QStringList tagsFromStorage(const QString &s)
     for (const QString &t : s.split(QLatin1Char(' '), Qt::SkipEmptyParts))
         out << t;
     return out;
-}
-
-// Build a safe FTS5 MATCH query from arbitrary user text: split into word
-// tokens, drop FTS special chars, OR them together as prefix terms. Empty when
-// the text has no usable tokens (caller then falls back to a recency/LIKE path).
-QString toFtsQuery(const QString &raw)
-{
-    QStringList terms;
-    QString cur;
-    for (const QChar &ch : raw) {
-        if (ch.isLetterOrNumber()) {
-            cur.append(ch.toLower());
-        } else {
-            if (cur.size() >= 2)
-                terms << cur + QStringLiteral("*");
-            cur.clear();
-        }
-    }
-    if (cur.size() >= 2)
-        terms << cur + QStringLiteral("*");
-    return terms.join(QStringLiteral(" OR "));
 }
 
 } // namespace
@@ -119,7 +100,7 @@ MemoryStore::~MemoryStore()
 
 QString MemoryStore::defaultDbPath()
 {
-    return QDir::homePath() + QStringLiteral("/.local/share/jarvis/jarvis.db");
+    return dataDir() + QStringLiteral("/jarvis.db");
 }
 
 bool MemoryStore::open(const QString &dbPath, const QString &connectionName)

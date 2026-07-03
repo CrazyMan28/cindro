@@ -81,10 +81,32 @@ Item {
         onTriggered: overlay._elapsedSec++
     }
 
-    // ---- polling loop -------------------------------------------------------
+    // ---- event-driven refresh (jarvis#76 item 3) -----------------------------
+    // The daemon pushes phone.event frames (incoming_call / call_state /
+    // call_message / call_end ...) the moment the phone server emits them — the
+    // old 2s list_active_calls poll is now only a SLOW safety net for a dropped
+    // event bridge (e.g. phone server restarted mid-call).
+    Connections {
+        target: bridge
+        function onPhoneEvent(ev) {
+            var t = ev.type || ""
+            if (t === "call_message") {
+                // New transcript line for the live call — refresh it in place.
+                if (overlay._cv.callId.length > 0)
+                    overlay._refreshTranscript(overlay._cv.callId)
+                return
+            }
+            // Any call lifecycle change: re-sync the overlay state immediately.
+            overlay._doPoll()
+        }
+        function onConnectedChanged() {
+            if (bridge.connected) overlay._doPoll()  // initial state sync
+        }
+    }
+
     Timer {
         id: _pollTimer
-        interval: 2000; repeat: true
+        interval: 30000; repeat: true   // fallback only — events do the real work
         running: bridge.connected
         onTriggered: overlay._doPoll()
     }

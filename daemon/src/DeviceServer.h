@@ -73,6 +73,10 @@ private slots:
     // authed phones (a fresh id can't be subscribed yet) + an FCM push so a
     // backgrounded phone can surface the new chat.
     void onSessionOpened(const QString &sessionId, const QString &title);
+    // Real-time phone events (jarvis#76 item 3): mirror phone-server frames to
+    // every authed device socket (Android already listens to the phone server
+    // directly; this covers paired devices that only speak the Jarvis WS).
+    void onPhoneEvent(const QJsonObject &data);
     // A new unlock challenge -> emit an 'auth.challenge' event to ALL authed phones
     // so the app surfaces the Approve screen WITHOUT Firebase/FCM.
     void onAuthChallengePush(const QString &challengeId, const QString &origin, qint64 expiresAt);
@@ -116,6 +120,7 @@ private:
     Response devSessionCancel(const Request &req);
     Response devSessionDelete(const Request &req);
     Response devSessionHistory(const Request &req);
+    Response devSessionSearch(const Request &req);
     Response devTaskQueue(Conn &c, const Request &req);
     Response devTaskList(Conn &c, const Request &req);
     Response devPushRegister(Conn &c, const Request &req);

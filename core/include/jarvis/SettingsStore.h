@@ -160,6 +160,43 @@ public:
                            : QStringLiteral("ping");
     }
 
+    // Skill lifecycle curation (jarvis#76 item 2): agent-created, unpinned
+    // skills untouched for this many days are ARCHIVED (never deleted) by the
+    // hourly sweep. 0 disables the sweep. Round-trips as `skill_archive_days`.
+    int skillArchiveDays() const { return m_skillArchiveDays; }
+    void setSkillArchiveDays(int d) { m_skillArchiveDays = d < 0 ? 0 : d; }
+
+    // Background post-turn self-improvement review (jarvis#76 item 8): after a
+    // top-level turn finishes, a cheap auxiliary model call reviews the turn
+    // and persists anything worth remembering. SOFT + async; "off" (default)
+    // skips it entirely. Round-trips as `self_improve = "off"|"on"`.
+    QString selfImprove() const { return m_selfImprove; }
+    void setSelfImprove(const QString &v)
+    {
+        m_selfImprove = (v == QStringLiteral("on")) ? v : QStringLiteral("off");
+    }
+
+    // Persistent-goal auto-continuation (jarvis#76 item 9):
+    //   "off"    -> never auto-continue (default)
+    //   "capped" -> re-wake a session with an active goal up to 3 times per
+    //               real user turn
+    //   "on"     -> re-wake while a goal is set (bounded by a high safety cap)
+    // Round-trips as `auto_continue`.
+    QString autoContinue() const { return m_autoContinue; }
+    void setAutoContinue(const QString &v)
+    {
+        m_autoContinue = (v == QStringLiteral("capped") || v == QStringLiteral("on"))
+                             ? v
+                             : QStringLiteral("off");
+    }
+
+    // ApiBrain context compression threshold (jarvis#76 item 6): when the
+    // estimated prompt tokens exceed this, older history is collapsed into a
+    // digest (PreCompact hook fires first). 0 = disabled. Round-trips as
+    // `api_context_max_tokens`.
+    int apiContextMaxTokens() const { return m_apiContextMaxTokens; }
+    void setApiContextMaxTokens(int t) { m_apiContextMaxTokens = t < 0 ? 0 : t; }
+
     // Desktop unlock PIN (fallback when the phone can't approve). Stored as a
     // SALTED SHA-256 ("<saltHex>:<hashHex>") in config.toml — never the PIN
     // itself. Empty = no PIN set. setDesktopPin("") clears it.
@@ -187,6 +224,10 @@ public:
     bool hasApiKey(const QString &provider) const;
     void setApiKey(const QString &provider, const QString &value); // empty => clear
     QString apiKey(const QString &provider) const;                 // daemon-internal only
+    // Multi-credential pool (jarvis#76 item 5): a provider's secrets.json
+    // value may hold several keys separated by commas/newlines; apiKey()
+    // returns the first. ApiBrain rotates through the pool on HTTP 429.
+    QStringList apiKeyPool(const QString &provider) const;
 
     // The {codex,claude,openai,anthropic,ollama} -> bool map for settings.get.
     QJsonObject apiKeysSet() const;
@@ -206,6 +247,10 @@ private:
     QString m_permissionLevel = QStringLiteral("medium"); // ask-before-risky policy
     QString m_agentMode = QStringLiteral("coworker");      // plan|build|coworker (soft)
     QString m_wakeNotify = QStringLiteral("ping");         // silent|ping|always
+    int m_skillArchiveDays = 30;                            // 0 = sweep disabled
+    QString m_selfImprove = QStringLiteral("off");          // off|on
+    QString m_autoContinue = QStringLiteral("off");         // off|capped|on
+    int m_apiContextMaxTokens = 0;                          // 0 = compression off
     QString m_desktopPin;               // "<saltHex>:<hashHex>" or empty (no PIN)
     QString m_ttsVoice;                 // preferred TTS voice slug (empty = default)
     QString m_sttProvider = QStringLiteral("voxtral"); // STT provider id

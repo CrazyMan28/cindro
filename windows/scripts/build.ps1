@@ -231,6 +231,8 @@ if ($LASTEXITCODE -ne 0) { throw "pip install windows requirements failed" }
 & (Join-Path $venv "Scripts\pyinstaller.exe") --noconfirm --name jarvis-engine `
   --distpath (Join-Path $payload "engine") --workpath (Join-Path $build "pyi") `
   --collect-submodules computer_use_mcp --collect-all mss --collect-all PIL `
+  --collect-data jsonschema_specifications --collect-data jsonschema `
+  --copy-metadata mcp `
   --hidden-import win32api --hidden-import win32gui --hidden-import win32con `
   --hidden-import win32process --hidden-import pywintypes `
   --paths (Join-Path $win "engine") (Join-Path $win "engine\server_windows.py")

@@ -282,6 +282,32 @@ fun ChatScreen(
                     slashSkills = state.slashSkills,
                     onSlashPick = { draft = it },
                     onAttach = { pickImage.launch("image/*") },
+                    onPasteImage = {
+                        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                            as android.content.ClipboardManager
+                        val clip = cm.primaryClip
+                        val uri = if (clip != null && clip.itemCount > 0) clip.getItemAt(0).uri else null
+                        if (uri == null) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "No image on the clipboard — copy a photo or screenshot first.",
+                                android.widget.Toast.LENGTH_SHORT,
+                            ).show()
+                        } else {
+                            scope.launch {
+                                val img = withContext(Dispatchers.IO) { ImageEncoding.encode(context, uri) }
+                                if (img != null) {
+                                    viewModel.attach(img)
+                                } else {
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "Couldn't read that clipboard image — try copying it again.",
+                                        android.widget.Toast.LENGTH_SHORT,
+                                    ).show()
+                                }
+                            }
+                        }
+                    },
                     onSend = {
                         viewModel.send(draft)
                         draft = ""
@@ -371,6 +397,7 @@ private fun InputRow(
     slashSkills: List<com.jarvis.app.protocol.Skill>,
     onSlashPick: (String) -> Unit,
     onAttach: () -> Unit,
+    onPasteImage: () -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
     onMicDown: () -> Unit,
@@ -422,8 +449,20 @@ private fun InputRow(
             modifier = Modifier.fillMaxWidth().padding(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            HapticIconButton(onClick = onAttach) {
-                Icon(Icons.Filled.Image, contentDescription = "Attach photo", tint = JarvisPalette.Accent)
+            // Tap = gallery picker; LONG-PRESS = paste an image from the
+            // clipboard (jarvis#76 bonus — e.g. a screenshot you just copied).
+            val attach by rememberUpdatedState(onAttach)
+            val pasteImg by rememberUpdatedState(onPasteImage)
+            IconButton(
+                onClick = {},
+                modifier = Modifier.pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { attach() },
+                        onLongPress = { pasteImg() },
+                    )
+                },
+            ) {
+                Icon(Icons.Filled.Image, contentDescription = "Attach photo (long-press: paste from clipboard)", tint = JarvisPalette.Accent)
             }
             // Push-to-talk: hold to record, release to transcribe + drop into the draft.
             val micUp by rememberUpdatedState(onMicUp)

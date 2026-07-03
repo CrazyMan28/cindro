@@ -1253,6 +1253,48 @@ Item {
             }
         }
 
+        // ---- pending image attachments (jarvis#76 bonus) --------------------
+        // Ctrl+V thumbnails waiting to ride the next send; ✕ removes one.
+        Flow {
+            Layout.fillWidth: true
+            Layout.leftMargin: 2
+            spacing: 8
+            visible: panel.pendingImages.length > 0
+            Repeater {
+                model: panel.pendingImages
+                delegate: Rectangle {
+                    width: 52; height: 52
+                    radius: 8
+                    color: Theme.surfaceInput
+                    border.color: Theme.accentDim
+                    border.width: 1
+                    Image {
+                        anchors.fill: parent
+                        anchors.margins: 2
+                        source: modelData.preview
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                    }
+                    Rectangle {
+                        anchors.top: parent.top; anchors.right: parent.right
+                        anchors.margins: -5
+                        width: 18; height: 18; radius: 9
+                        color: Theme.danger
+                        Text {
+                            anchors.centerIn: parent
+                            text: "\u00d7"; color: "white"
+                            font.pixelSize: 12; font.bold: true
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: panel.removePendingImage(index)
+                        }
+                    }
+                }
+            }
+        }
+
         // ===== Composer ======================================================
         Rectangle {
             id: composer
@@ -1324,6 +1366,16 @@ Item {
                         // only accept the keys we use, so normal editing is intact
                         // when the palette is closed.
                         Keys.onPressed: function(event) {
+                            // Ctrl+V with an IMAGE on the clipboard attaches it
+                            // (jarvis#76 bonus). Text pastes are untouched — we
+                            // only intercept when a raster image is present.
+                            if ((event.modifiers & Qt.ControlModifier)
+                                    && event.key === Qt.Key_V
+                                    && bridge.clipboardHasImage()) {
+                                panel.pasteImageFromClipboard()
+                                event.accepted = true
+                                return
+                            }
                             if (!slashPalette.open)
                                 return
                             if (event.key === Qt.Key_Down) { slashPalette.moveDown(); event.accepted = true }
@@ -1937,9 +1989,42 @@ Item {
     }
 
     // ---- Actions -----------------------------------------------------------
+    // Clipboard image attachments awaiting send (jarvis#76 bonus):
+    // [{mime, b64, preview}] — preview is a data: URL for the chip thumbnail.
+    property var pendingImages: []
+
+    // Ctrl+V (or the composer's paperclip) with an image on the clipboard.
+    // Vision-gated with a FRIENDLY inline notice — never a silent drop.
+    function pasteImageFromClipboard() {
+        if (!bridge.supportsVision(panel.selectedBrain, panel.selectedModel)) {
+            chatModel.append({
+                "kind": "error", "role": "system",
+                "text": "This model (" + panel.selectedModel + " on " + panel.selectedBrain
+                        + ") can't see images. Switch the brain to codex or claude — or pick a"
+                        + " vision model like gpt-5.5, gemini-2.5-flash or pixtral — then paste again.",
+                "callId": "", "toolName": "", "approvalId": "", "risk": "", "ok": false,
+                "streaming": false
+            })
+            chatView.positionViewAtEnd()
+            return
+        }
+        var img = bridge.pasteImage()
+        if (!img.ok)
+            return
+        var arr = panel.pendingImages.slice()
+        arr.push(img)
+        panel.pendingImages = arr
+    }
+
+    function removePendingImage(idx) {
+        var arr = panel.pendingImages.slice()
+        arr.splice(idx, 1)
+        panel.pendingImages = arr
+    }
+
     function submit() {
         var t = inputArea.text.trim()
-        if (t.length === 0 || !bridge.connected)
+        if ((t.length === 0 && panel.pendingImages.length === 0) || !bridge.connected)
             return
 
         // Slash command? Consume it (run / navigate / invoke skill) and stop.
@@ -1957,15 +2042,25 @@ Item {
             bridge.createSession("coder", panel.selectedBrain, panel.selectedModel)
         }
 
+        var echo = t
+        if (panel.pendingImages.length > 0)
+            echo = (t.length > 0 ? t + "\n" : "")
+                   + "\ud83d\udcce " + panel.pendingImages.length
+                   + (panel.pendingImages.length === 1 ? " image attached" : " images attached")
         chatModel.append({
-            "kind": "message", "role": "user", "text": t,
+            "kind": "message", "role": "user", "text": echo,
             "callId": "", "toolName": "", "approvalId": "", "risk": "", "ok": true,
             "streaming": false
         })
         // Mark the turn in flight so the composer shows Stop until the model's
         // "final"/"error" event clears it.
         panel.busy = true
-        bridge.sendMessage(t)
+        if (panel.pendingImages.length > 0) {
+            bridge.sendMessageWithImages(t, panel.pendingImages)
+            panel.pendingImages = []
+        } else {
+            bridge.sendMessage(t)
+        }
         inputArea.text = ""
         chatView.positionViewAtEnd()
     }

@@ -23,11 +23,13 @@
 #include "jarvis/PluginSandbox.h"
 #include "jarvis/AgentStore.h"
 #include "jarvis/Protocol.h"
+#include "jarvis/KanbanStore.h"
 #include "jarvis/Scheduler.h"
 #include "jarvis/SessionStore.h"
 #include "jarvis/SettingsStore.h"
 #include "jarvis/SkillStore.h"
 #include "jarvis/HookStore.h"
+#include "jarvis/ToolLoopGuard.h"
 #include "jarvis/SshAllowList.h"
 #include "jarvis/TrustPolicyStore.h"
 #include "jarvis/Updater.h"
@@ -134,6 +136,15 @@ public:
     Response dispatchOpsMethod(const Request &req, bool remote = false);
     static bool isOpsMethod(const QString &method);
 
+    // Durable kanban work queue (jarvis#76 item 7), mirrored over the device
+    // channel (queue.add/list/get/cancel/remove/set_priority).
+    Response dispatchQueueMethod(const Request &req);
+    static bool isQueueMethod(const QString &method);
+
+    // session.search wire shape (jarvis#76 item 1) — shared with the device
+    // channel so both serialize identically.
+    static QJsonArray searchHitsToJson(const QVector<SessionSearchHit> &hits);
+
     // device->phone FILE PUSH (Contract C). Stores the bytes under the jarvis
     // inbox and returns a {file_id,name,size,mime,session_id} descriptor the
     // DeviceServer emits to phones as a 'file.offer' event. b64 OR an on-disk
@@ -204,6 +215,8 @@ public:
 signals:
     // Fired after every brain event is persisted (Contract C device fan-out).
     void sessionEvent(const QString &sessionId, const jarvis::NormalizedBrainEvent &ev);
+    // A phone-server event (incoming_call/call_message/...) for device mirror.
+    void phoneEvent(const QJsonObject &data);
 
     // target="real" take-over state changed: the desktop overlay subscribes to
     // this to show / hide the "JARVIS IS DRIVING" layer-shell banner + cursor.
@@ -260,6 +273,8 @@ private:
     Response handleSessionDelete(const Request &req);
     Response handleSessionList(const Request &req);
     Response handleSessionHistory(const Request &req);
+    Response handleSessionSearch(const Request &req);
+    Response handleSessionSetGoals(const Request &req);
     // Claude-Code-style hooks (hooks.* Contract A): list/add/remove/test.
     Response handleHooksList(const Request &req);
     Response handleHooksAdd(const Request &req);
@@ -284,6 +299,16 @@ private:
     // keeping the bearer in the daemon. Covers the per-agent config the original
     // app drives over HTTP (not MCP). Returns {status, data|text}.
     Response handlePhoneHttp(const Request &req);
+    // Real-time phone events (jarvis#76 item 3): persistent client socket to
+    // the phone server's WS (authed as user ext 100) + opt-in control fan-out.
+    void connectPhoneWs();
+    void schedulePhoneWsReconnect(int delayMs);
+    void onPhoneWsMessage(const QString &raw);
+    void broadcastPhoneEvent(const QJsonObject &data);
+    Response handlePhoneEventSubscribe(QWebSocket *client, const Request &req);
+    QWebSocket *m_phoneWs = nullptr;
+    bool m_phoneWsReconnectPending = false;
+    QSet<QWebSocket *> m_phoneEventClients;
     // Session manager (Contract A): a client declares which session ids it is
     // currently viewing; the daemon then fans session.event frames ONLY for those
     // ids to it. Needs the socket, so it is dispatched with `client` (unlike the
@@ -383,6 +408,10 @@ private:
     Response handleSkillsInvoke(const Request &req);
     Response handleSkillsRemove(const Request &req);
     Response handleSkillsToday(const Request &req);
+    // Lifecycle curation (jarvis#76 item 2).
+    Response handleSkillsPin(const Request &req);
+    Response handleSkillsListArchived(const Request &req);
+    Response handleSkillsUnarchive(const Request &req);
 
     // Custom agents (subagents): definitions CRUD + dispatch a task to a child
     // session that runs as the agent (parent_session_id links it). agents.running
@@ -522,6 +551,12 @@ private:
     QSet<QString> m_titleGenStarted;   // fire once per session
     void generateSessionTitle(const QString &sessionId, const QString &seed);
 
+    // Post-turn self-improvement review (jarvis#76 item 8): a cheap async model
+    // call after each top-level turn that may persist ONE reusable fact to
+    // long-term memory. Opt-in via the self_improve setting; never blocks.
+    QNetworkAccessManager *m_reviewNam = nullptr;
+    void firePostTurnReview(const QString &sessionId);
+
     // Wave 5 intelligence backend: Jarvis-level long-term memory (SQLite+FTS5)
     // and self-authored skills. Memory is prefetched/injected before every brain
     // turn and synced after; skills are invokable + self-authoring.
@@ -556,6 +591,15 @@ private:
     Scheduler m_scheduler;
     SshAllowList m_sshAllow;
     AuditLog m_audit;
+    // Durable kanban work queue (jarvis#76 item 7): store + dispatcher loop.
+    // Worker sessions are tracked so turn-end resolves their item, tick
+    // heartbeats prove liveness, and a daemon restart reclaims orphans.
+    static constexpr int kMaxQueueWorkers = 2;
+    static constexpr qint64 kQueueStaleMs = 3 * 60 * 1000;
+    KanbanStore m_kanban;
+    QTimer *m_queueTimer = nullptr;
+    QHash<QString, QString> m_queueItemBySession; // sessionId -> work item id
+    void tickWorkQueue();
     NotifyService m_notify;
     // Sessions currently BLOCKED awaiting an injection-gate approval, mapped to
     // the held user turn (text + image paths) so an 'allow' can resume it.
@@ -567,6 +611,22 @@ private:
     // Turns the user sent while the brain was still busy; flushed on turnFinished
     // so a fast follow-up is never rejected as "brain is busy".
     QHash<QString, HeldTurn> m_pendingTurns;
+    // Tool-loop guardrails (jarvis#76 item 4): the last ToolCall per session
+    // (paired with its ToolResult), the per-session repeat window, and a
+    // once-per-turn latch so the soft warn doesn't spam. Cleared on turn end /
+    // cancel / delete.
+    struct PendingToolCall {
+        QString name;
+        QString argsJson;
+    };
+    QHash<QString, PendingToolCall> m_lastToolCall;
+    QHash<QString, QList<ToolLoopGuard::Entry>> m_toolLoop;
+    QSet<QString> m_toolLoopWarned;
+    // Sessions with a hard-stop cancel QUEUED (one event-loop tick away). If
+    // the turn ends first (user cancel raced in and the guardrail turn already
+    // flushed), the deferred cancel must become a no-op — otherwise it would
+    // kill the FRESH guardrail-response turn instead of the loop.
+    QSet<QString> m_toolLoopStopping;
     // Sessions that have already received the one-time co-work guidance preamble.
     QSet<QString> m_coworkGuided;
     // Per-session custom-agent system prompt (set when a session runs AS an agent)
@@ -600,6 +660,11 @@ private:
     // port/bearer reservation is kept so the next turn re-provisions it identically.
     QTimer *m_deskIdleTimer = nullptr;
     void sweepIdleDesktops();
+    // Skill lifecycle curation (jarvis#76 item 2): hourly stale-skill archive.
+    QTimer *m_skillSweepTimer = nullptr;
+    void sweepStaleSkills();
+    // Tool-loop guardrail (jarvis#76 item 4).
+    void observeToolLoop(const QString &sessionId, const NormalizedBrainEvent &ev);
 
     // Authenticated client sockets.
     QSet<QWebSocket *> m_clients;

@@ -1,4 +1,5 @@
 #include "jarvis/AgentStore.h"
+#include "jarvis/DataPaths.h"
 
 #include <QDir>
 #include <QDirIterator>
@@ -68,7 +69,7 @@ QJsonObject AgentRow::toListJson() const
 
 QString AgentStore::defaultRoot()
 {
-    return QDir::homePath() + QStringLiteral("/.local/share/jarvis/agents");
+    return dataDir() + QStringLiteral("/agents");
 }
 
 QString AgentStore::claudeAgentsRoot()

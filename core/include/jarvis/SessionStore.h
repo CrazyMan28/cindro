@@ -27,6 +27,12 @@ struct SessionRow {
     // its parent so the desktop SubAgentTree can group it. Empty for top-level.
     QString parentSessionId;
     QString agent;     // custom-agent name this session runs as (empty = none)
+    // Persistent goal (jarvis#76 item 9): when non-empty and auto_continue is
+    // on, the daemon re-wakes the session after each turn until the goal is
+    // met or the continuation cap is hit. continuationCount is reset on every
+    // real user turn so the cap bounds unattended runs, not conversations.
+    QString goals;
+    int continuationCount = 0;
     qint64 created = 0; // unix ms
     qint64 updated = 0; // unix ms
 
@@ -38,6 +44,19 @@ struct StoredEvent {
     int seq = 0;
     NormalizedBrainEvent ev;
     qint64 ts = 0; // unix ms
+};
+
+// One cross-session full-text search hit (jarvis#76 item 1): the matched event
+// plus a small window of surrounding events so callers can read the exchange
+// around the match without a second round-trip.
+struct SessionSearchHit {
+    QString sessionId;
+    QString sessionTitle;
+    int seq = 0;
+    qint64 ts = 0;             // unix ms of the matched event
+    NormalizedBrainEvent ev;   // the matched event
+    double score = 0.0;        // higher = more relevant (bm25-derived)
+    QVector<StoredEvent> context; // ±contextWindow events, seq ascending, incl. the hit
 };
 
 // A registered MCP server (Contract A v2 mcp.* methods). The built-in
@@ -127,6 +146,9 @@ public:
     bool updateState(const QString &id, const QString &state);
     bool updateTitle(const QString &id, const QString &title);
     bool updateThreadId(const QString &id, const QString &threadId);
+    // Persistent goal + auto-continuation bookkeeping (jarvis#76 item 9).
+    bool setGoals(const QString &id, const QString &goals);
+    bool setContinuationCount(const QString &id, int count);
     // Delete a session row and all of its events. Returns false on error;
     // returns true even if the row didn't exist (idempotent delete).
     bool deleteSession(const QString &id);
@@ -137,6 +159,12 @@ public:
     int appendEvent(const QString &sessionId, const NormalizedBrainEvent &ev);
     // Events for a session ordered by seq ascending. limit<=0 => all.
     QVector<StoredEvent> listEvents(const QString &sessionId, int limit = 0);
+    // Cross-session full-text search over message/thinking text and tool
+    // outputs (FTS5-ranked, LIKE fallback). Optional sessionId narrows to one
+    // session; contextWindow (clamped 0..5) events either side ride along.
+    QVector<SessionSearchHit> searchEvents(const QString &query, int limit = 20,
+                                           int contextWindow = 2,
+                                           const QString &sessionId = QString());
 
     // --- MCP servers ------------------------------------------------------
     QVector<McpServerRow> listMcpServers();
@@ -166,6 +194,8 @@ public:
 private:
     bool exec(const QString &sql, QString *err = nullptr);
     bool migrate();
+    // One-time index of pre-existing events into events_fts (no-op once filled).
+    void backfillEventsFts();
 
     QSqlDatabase m_db;
     QString m_connectionName;

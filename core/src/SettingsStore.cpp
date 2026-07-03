@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QRandomGenerator>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QStringList>
 #include <QTextStream>
@@ -53,7 +54,9 @@ QStringList SettingsStore::providerKeys()
 {
     return {QStringLiteral("codex"), QStringLiteral("claude"),
             QStringLiteral("openai"), QStringLiteral("anthropic"),
-            QStringLiteral("mistral"), QStringLiteral("ollama")};
+            QStringLiteral("mistral"), QStringLiteral("ollama"),
+            QStringLiteral("gemini"), QStringLiteral("xai"),
+            QStringLiteral("deepseek")};
 }
 
 QString SettingsStore::claudeConfigDirFor(const QString &account)
@@ -85,6 +88,10 @@ void SettingsStore::load()
     m_permissionLevel = QStringLiteral("medium");
     m_agentMode = QStringLiteral("coworker");
     m_wakeNotify = QStringLiteral("ping");
+    m_skillArchiveDays = 30;
+    m_selfImprove = QStringLiteral("off");
+    m_autoContinue = QStringLiteral("off");
+    m_apiContextMaxTokens = 0;
     m_desktopPin.clear();
     m_ttsVoice.clear();
     m_sttProvider = QStringLiteral("voxtral");
@@ -155,6 +162,50 @@ void SettingsStore::load()
                              (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
                             v = v.mid(1, v.size() - 2);
                         setWakeNotify(v.toLower()); // normalizes unknown -> ping
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("skill_archive_days"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        bool okNum = false;
+                        const int d = line.mid(eq + 1).trimmed().toInt(&okNum);
+                        if (okNum)
+                            setSkillArchiveDays(d); // clamps to >=0
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("self_improve"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        QString v = line.mid(eq + 1).trimmed();
+                        if (v.size() >= 2 &&
+                            ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
+                             (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
+                            v = v.mid(1, v.size() - 2);
+                        setSelfImprove(v.toLower()); // normalizes unknown -> off
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("auto_continue"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        QString v = line.mid(eq + 1).trimmed();
+                        if (v.size() >= 2 &&
+                            ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
+                             (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
+                            v = v.mid(1, v.size() - 2);
+                        setAutoContinue(v.toLower()); // normalizes unknown -> off
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("api_context_max_tokens"))) {
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq >= 0) {
+                        bool okNum = false;
+                        const int t = line.mid(eq + 1).trimmed().toInt(&okNum);
+                        if (okNum)
+                            setApiContextMaxTokens(t); // clamps to >=0
                     }
                     continue;
                 }
@@ -293,7 +344,9 @@ void SettingsStore::load()
 
 bool SettingsStore::hasApiKey(const QString &provider) const
 {
-    return !m_apiKeys.value(provider).toString().isEmpty();
+    // Pool semantics (jarvis#76 item 5): "has a key" must agree with what
+    // apiKey() would return — a separators-only value is NOT a usable key.
+    return !apiKeyPool(provider).isEmpty();
 }
 
 void SettingsStore::setApiKey(const QString &provider, const QString &value)
@@ -306,7 +359,24 @@ void SettingsStore::setApiKey(const QString &provider, const QString &value)
 
 QString SettingsStore::apiKey(const QString &provider) const
 {
-    return m_apiKeys.value(provider).toString();
+    // Multi-credential pools (jarvis#76 item 5) keep the flat string contract:
+    // several keys live in ONE secrets.json value separated by commas or
+    // newlines. Single-key callers get the first entry.
+    const QStringList pool = apiKeyPool(provider);
+    return pool.isEmpty() ? QString() : pool.first();
+}
+
+QStringList SettingsStore::apiKeyPool(const QString &provider) const
+{
+    const QString raw = m_apiKeys.value(provider).toString();
+    QStringList out;
+    static const QRegularExpression sep(QStringLiteral("[,\\n]"));
+    for (const QString &part : raw.split(sep, Qt::SkipEmptyParts)) {
+        const QString t = part.trimmed();
+        if (!t.isEmpty())
+            out << t;
+    }
+    return out;
 }
 
 QJsonObject SettingsStore::apiKeysSet() const
@@ -344,6 +414,10 @@ bool SettingsStore::saveConfig()
                     t.startsWith(QStringLiteral("permission_level")) ||
                     t.startsWith(QStringLiteral("agent_mode")) ||
                     t.startsWith(QStringLiteral("wake_notify")) ||
+                    t.startsWith(QStringLiteral("skill_archive_days")) ||
+                    t.startsWith(QStringLiteral("self_improve")) ||
+                    t.startsWith(QStringLiteral("auto_continue")) ||
+                    t.startsWith(QStringLiteral("api_context_max_tokens")) ||
                     t.startsWith(QStringLiteral("desktop_pin")) ||
                     t.startsWith(QStringLiteral("tts_voice")) ||
                     t.startsWith(QStringLiteral("stt_provider")) ||
@@ -369,6 +443,10 @@ bool SettingsStore::saveConfig()
     ts << "permission_level = \"" << m_permissionLevel << "\"\n";
     ts << "agent_mode = \"" << m_agentMode << "\"\n";
     ts << "wake_notify = \"" << m_wakeNotify << "\"\n";
+    ts << "skill_archive_days = " << m_skillArchiveDays << "\n";
+    ts << "self_improve = \"" << m_selfImprove << "\"\n";
+    ts << "auto_continue = \"" << m_autoContinue << "\"\n";
+    ts << "api_context_max_tokens = " << m_apiContextMaxTokens << "\n";
     if (!m_desktopPin.isEmpty())
         ts << "desktop_pin = \"" << m_desktopPin << "\"\n";
     if (!m_ttsVoice.isEmpty())

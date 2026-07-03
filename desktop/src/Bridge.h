@@ -139,6 +139,20 @@ public:
 
     // session.send for the current session.
     Q_INVOKABLE void sendMessage(const QString &text);
+    // Clipboard image paste (jarvis#76 bonus feature) -----------------------
+    // True when the clipboard currently holds a raster image (gates Ctrl+V).
+    Q_INVOKABLE bool clipboardHasImage() const;
+    // Grab the clipboard image as a chat attachment: {ok, mime, b64, preview}
+    // where preview is a data: URL for the composer chip. {ok:false} if empty.
+    Q_INVOKABLE QVariantMap pasteImage() const;
+    // sendMessage + attachments [{mime,b64}] — the daemon stores them and each
+    // brain consumes them its own way (codex --image / claude Read / api
+    // vision content array).
+    Q_INVOKABLE void sendMessageWithImages(const QString &text,
+                                           const QVariantList &images);
+    // Client-side vision predicate so the composer can gate the paste with a
+    // FRIENDLY notice instead of a silent drop. Mirrors the daemon's brains.
+    Q_INVOKABLE bool supportsVision(const QString &brain, const QString &model) const;
 
     // Answer a model ask_user question (writes the answer file the engine polls).
     Q_INVOKABLE void answerQuestion(const QString &id, const QString &answer);
@@ -307,6 +321,11 @@ public:
     // skills.today -> todayDigest(digest). A short "what I'm working on today"
     // summary built from project-tracker + recent sessions/memories.
     Q_INVOKABLE void skillsToday();
+    // Skill lifecycle curation (jarvis#76 item 2): pin/unpin (exempt from the
+    // stale sweep), list the archive, and restore a skill from it.
+    Q_INVOKABLE void skillPin(const QString &name, bool pinned);
+    Q_INVOKABLE void skillsListArchived();
+    Q_INVOKABLE void skillUnarchive(const QString &name);
 
     // ---- Agents (custom subagents) -----------------------------------------
     // agents.list -> agentsListed(QVariantList) — each {name,description,
@@ -683,6 +702,7 @@ signals:
     // ---- Skills results (Contract A v3) ------------------------------------
     // Rows: {name,group,description,tags,self_authored}.
     void skillsListed(const QVariantList &skills);
+    void skillsArchivedListed(const QVariantList &skills);
     // skills.get result.
     void skillLoaded(const QString &name, const QVariantMap &frontmatter,
                      const QString &body, const QString &path);
@@ -757,6 +777,9 @@ signals:
     // phoneHttp().  result shape: {status:int, data:<obj|array>, text?} or
     // {error: {...}} on failure.
     void phoneHttpResult(const QString &callId, const QVariantMap &result);
+    // A pushed phone-server event (incoming_call/call_state/call_message/
+    // screening_*) — jarvis#76 item 3. Overlays react instead of polling.
+    void phoneEvent(const QVariantMap &event);
 
     // ---- Notifications ------------------------------------------------------
     void notificationsChanged();
@@ -929,6 +952,7 @@ private:
     // A chat message typed before any session existed; the auto-created session's
     // session.create response flushes it (no-buttons first-turn send).
     QString m_pendingText;
+    QVariantList m_pendingImages; // attachments queued with m_pendingText
 
     // Maps request id -> the method that originated it, so responses can be routed.
     QHash<int, QString> m_pending;
