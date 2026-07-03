@@ -124,3 +124,11 @@ def _kill(proc: subprocess.Popen) -> None:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except Exception:
             pass
+
+
+@pytest.fixture(autouse=True)
+def _no_daemon_session_resolve(monkeypatch):
+    """Engine tests never ask a live daemon who's mid-turn (the shared-engine
+    session resolver would otherwise stamp a REAL session id from the dev box's
+    running jarvisd into todo/widget fixtures)."""
+    monkeypatch.setenv("JARVIS_SESSION_RESOLVE", "0")

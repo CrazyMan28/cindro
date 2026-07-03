@@ -71,10 +71,24 @@ def append_widget(spec, title: str = "", widget_id: str = "",
         # supervisor runs in a shared process, so it passes session_id explicitly
         # rather than relying on the per-session JARVIS_AGENT_SESSION env.
         "session_id": (session_id if session_id is not None
-                       else os.environ.get("JARVIS_AGENT_SESSION", "")),
+                       else _resolve_session_id()),
     }
     _append_record(record)
     return record
+
+
+def _resolve_session_id() -> str:
+    """Session for a render with no explicit id: the per-session env when this
+    is a nested engine, else the daemon's single mid-turn session (shared
+    global engine — Windows v1 / real-screen — where the env is absent)."""
+    sid = os.environ.get("JARVIS_AGENT_SESSION", "")
+    if sid:
+        return sid
+    try:
+        from computer_use_mcp import daemon_client
+        return daemon_client.current_session_id()
+    except Exception:
+        return ""
 
 
 def append_op(op: str, widget_id: str = "") -> dict:

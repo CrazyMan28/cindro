@@ -44,8 +44,14 @@ def todos_dir() -> Path:
 
 
 def _session_or_env(session_id: str | None) -> str:
-    sid = (session_id if session_id is not None
-           else os.environ.get("JARVIS_AGENT_SESSION", ""))
+    if session_id is not None:
+        sid = session_id
+    else:
+        # Shared global engine (no per-session env): resolve the mid-turn
+        # session from the daemon so todos link to THEIR chat instead of
+        # bleeding into every session (the Windows #81a follow-up).
+        from computer_use_mcp import daemon_client
+        sid = daemon_client.current_session_id()
     sid = str(sid or "").strip() or "default"
     # Keep the filename filesystem-safe (session ids are usually slugs already).
     return re.sub(r"[^A-Za-z0-9._-]", "_", sid)
