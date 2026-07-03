@@ -66,7 +66,7 @@ import com.jarvis.app.voice.WakeService
 import kotlinx.coroutines.launch
 
 private val BRAINS = listOf("codex", "claude", "api")
-private val API_PROVIDERS = listOf("openai", "anthropic", "ollama", "mistral")
+private val API_PROVIDERS = listOf("openai", "anthropic", "ollama", "mistral", "gemini", "xai", "deepseek")
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -338,6 +338,94 @@ fun SettingsScreen(
                         "Jarvis calls ask_user (you approve here or on the laptop) before any action above your line. It's a policy, not the sandbox.",
                         style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary,
                     )
+                }
+            }
+
+            // --- Mode + Autonomy (agent_mode/wake_notify parity + jarvis#76 8/9) ---
+            GlowCard(modifier = Modifier.fillMaxWidth()) {
+                Column {
+                    Text("Mode & autonomy", style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextPrimary)
+                    Spacer(Modifier.height(10.dp))
+
+                    @Composable
+                    fun optionRows(
+                        title: String,
+                        options: List<Triple<String, String, String>>,
+                        selectedId: String,
+                        gateLabel: String,
+                        onPick: (String) -> Unit,
+                    ) {
+                        Text(title, style = MaterialTheme.typography.titleSmall, color = JarvisPalette.TextPrimary)
+                        Spacer(Modifier.height(6.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            options.forEach { (id, name, sub) ->
+                                val selected = selectedId == id
+                                Surface(
+                                    onClick = {
+                                        scope.launch {
+                                            if (Biometric.authenticate(activity, gateLabel, name)) onPick(id)
+                                        }
+                                    },
+                                    shape = MaterialTheme.shapes.medium,
+                                    color = if (selected) JarvisPalette.AccentDim else JarvisPalette.SurfaceVariant,
+                                    border = if (selected) BorderStroke(1.dp, JarvisPalette.Accent) else null,
+                                    modifier = Modifier.fillMaxWidth(),
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(name, style = MaterialTheme.typography.titleSmall,
+                                                color = if (selected) JarvisPalette.TextPrimary else JarvisPalette.TextSecondary)
+                                            Text(sub, style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary)
+                                        }
+                                        if (selected) Icon(Icons.Filled.Check, contentDescription = "Selected", tint = JarvisPalette.Accent)
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                    }
+
+                    optionRows(
+                        "Agent mode",
+                        listOf(
+                            Triple("plan", "Plan", "Research + plan only, no changes"),
+                            Triple("coworker", "Co-worker", "Balanced default"),
+                            Triple("build", "Build", "Execute autonomously"),
+                        ),
+                        state.agentMode, "Set agent mode",
+                    ) { viewModel.setAgentMode(it) }
+
+                    optionRows(
+                        "Background wake notifications",
+                        listOf(
+                            Triple("silent", "Silent", "Wake Jarvis only"),
+                            Triple("ping", "Ping", "Notify phone for long jobs"),
+                            Triple("always", "Always", "Notify on every wake"),
+                        ),
+                        state.wakeNotify, "Set wake notify",
+                    ) { viewModel.setWakeNotify(it) }
+
+                    optionRows(
+                        "Self-improvement (post-turn review)",
+                        listOf(
+                            Triple("off", "Off", "Only explicit remember()"),
+                            Triple("on", "On", "Auto-save one reusable fact per turn"),
+                        ),
+                        state.selfImprove, "Set self-improvement",
+                    ) { viewModel.setSelfImprove(it) }
+
+                    optionRows(
+                        "Auto-continue toward active goals",
+                        listOf(
+                            Triple("off", "Off", "Never self-continue"),
+                            Triple("capped", "Capped", "Up to 3 per user turn"),
+                            Triple("on", "On", "Until the goal clears (max 25)"),
+                        ),
+                        state.autoContinue, "Set auto-continue",
+                    ) { viewModel.setAutoContinue(it) }
                 }
             }
 

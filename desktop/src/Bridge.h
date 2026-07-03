@@ -321,6 +321,11 @@ public:
     // skills.today -> todayDigest(digest). A short "what I'm working on today"
     // summary built from project-tracker + recent sessions/memories.
     Q_INVOKABLE void skillsToday();
+    // Skill lifecycle curation (jarvis#76 item 2): pin/unpin (exempt from the
+    // stale sweep), list the archive, and restore a skill from it.
+    Q_INVOKABLE void skillPin(const QString &name, bool pinned);
+    Q_INVOKABLE void skillsListArchived();
+    Q_INVOKABLE void skillUnarchive(const QString &name);
 
     // ---- Agents (custom subagents) -----------------------------------------
     // agents.list -> agentsListed(QVariantList) — each {name,description,
@@ -697,6 +702,7 @@ signals:
     // ---- Skills results (Contract A v3) ------------------------------------
     // Rows: {name,group,description,tags,self_authored}.
     void skillsListed(const QVariantList &skills);
+    void skillsArchivedListed(const QVariantList &skills);
     // skills.get result.
     void skillLoaded(const QString &name, const QVariantMap &frontmatter,
                      const QString &body, const QString &path);

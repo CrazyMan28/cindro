@@ -17,8 +17,9 @@ Item {
     signal runSkill(string name, string message)
 
     ListModel { id: skillModel }
+    ListModel { id: archivedModel }
 
-    function refresh() { bridge.skillsList() }
+    function refresh() { bridge.skillsList(); bridge.skillsListArchived() }
     Component.onCompleted: if (bridge.connected) refresh()
 
     Connections {
@@ -34,7 +35,20 @@ Item {
                     "group": s.group !== undefined ? s.group : "",
                     "description": s.description !== undefined ? s.description : "",
                     "tagsCsv": Array.isArray(tags) ? tags.join(", ") : ("" + tags),
-                    "selfAuthored": s.self_authored === true
+                    "selfAuthored": s.self_authored === true,
+                    "pinned": s.pinned === true,
+                    "useCount": s.use_count !== undefined ? Number(s.use_count) : 0
+                })
+            }
+        }
+        function onSkillsArchivedListed(skills) {
+            archivedModel.clear()
+            for (var i = 0; i < skills.length; i++) {
+                var s = skills[i]
+                archivedModel.append({
+                    "name": s.name !== undefined ? s.name : "",
+                    "group": s.group !== undefined ? s.group : "",
+                    "description": s.description !== undefined ? s.description : ""
                 })
             }
         }
@@ -101,6 +115,54 @@ Item {
             }
         }
 
+        // ---- archived skills (jarvis#76 item 2) -----------------------------
+        // The stale sweep ARCHIVES unused agent-created skills instead of
+        // deleting them; restore any of them here.
+        Widgets.SectionCard {
+            Layout.fillWidth: true
+            visible: archivedModel.count > 0
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Text {
+                    text: "ARCHIVED (" + archivedModel.count + ") — unused skills parked by the sweep; restore brings one back instantly"
+                    color: Theme.textMuted
+                    font.family: Theme.fontDisplay
+                    font.pixelSize: 10
+                    font.letterSpacing: Theme.trackMid
+                }
+                Repeater {
+                    model: archivedModel
+                    delegate: RowLayout {
+                        id: arow
+                        required property string name
+                        required property string group
+                        required property string description
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Text {
+                            text: arow.name
+                            color: Theme.textMuted
+                            font.family: Theme.fontMono
+                            font.pixelSize: 12
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: arow.description
+                            color: Theme.textFaint
+                            font.family: Theme.fontSans
+                            font.pixelSize: 11
+                            elide: Text.ElideRight
+                        }
+                        Widgets.PillButton {
+                            label: "Restore"
+                            onClicked: bridge.skillUnarchive(arow.name)
+                        }
+                    }
+                }
+            }
+        }
+
         // ---- skill grid/list ----------------------------------------------
         ListView {
             id: list
@@ -127,6 +189,8 @@ Item {
                 required property string description
                 required property string tagsCsv
                 required property bool selfAuthored
+                required property bool pinned
+                required property int useCount
 
                 width: ListView.view.width
                 implicitHeight: content.implicitHeight + 26
@@ -229,8 +293,48 @@ Item {
                             }
                         }
 
+                        // usage chip (jarvis#76 item 2): how alive this skill is.
+                        Rectangle {
+                            visible: row.useCount > 0
+                            radius: 5
+                            implicitWidth: useTxt.implicitWidth + 12
+                            implicitHeight: 17
+                            color: Qt.rgba(0.24, 0.90, 0.63, 0.10)
+                            Text {
+                                id: useTxt
+                                anchors.centerIn: parent
+                                text: "\u26a1 " + row.useCount
+                                color: Theme.success
+                                font.family: Theme.fontSans
+                                font.pixelSize: 9
+                            }
+                        }
+                        // pinned = exempt from the stale-archive sweep.
+                        Rectangle {
+                            visible: row.pinned
+                            radius: 5
+                            implicitWidth: pinTxt.implicitWidth + 12
+                            implicitHeight: 17
+                            color: Theme.accentFaint
+                            border.width: 1
+                            border.color: Theme.accentDim
+                            Text {
+                                id: pinTxt
+                                anchors.centerIn: parent
+                                text: "\ud83d\udccc pinned"
+                                color: Theme.accent
+                                font.family: Theme.fontSans
+                                font.pixelSize: 9
+                            }
+                        }
+
                         Item { Layout.fillWidth: true }
 
+                        Widgets.PillButton {
+                            label: row.pinned ? "Unpin" : "Pin"
+                            opacity: rowMa.containsMouse || row.pinned ? 1.0 : 0.5
+                            onClicked: bridge.skillPin(row.name, !row.pinned)
+                        }
                         Widgets.PillButton {
                             label: "View"
                             onClicked: bridge.skillGet(row.name)

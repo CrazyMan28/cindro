@@ -1042,6 +1042,30 @@ void Bridge::skillsList()
     request(QStringLiteral("skills.list"), {});
 }
 
+void Bridge::skillPin(const QString &name, bool pinned)
+{
+    if (name.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), name);
+    params.insert(QStringLiteral("pinned"), pinned);
+    request(QStringLiteral("skills.pin"), params);
+}
+
+void Bridge::skillsListArchived()
+{
+    request(QStringLiteral("skills.list_archived"), {});
+}
+
+void Bridge::skillUnarchive(const QString &name)
+{
+    if (name.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("name"), name);
+    request(QStringLiteral("skills.unarchive"), params);
+}
+
 void Bridge::skillGet(const QString &name)
 {
     if (name.isEmpty())
@@ -3965,6 +3989,14 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                || method == QStringLiteral("skills.remove")) {
         emit skillsChanged();
         skillsList(); // re-index after a self-authoring write / removal
+    } else if (method == QStringLiteral("skills.list_archived")) {
+        emit skillsArchivedListed(result.value(QStringLiteral("skills")).toList());
+    } else if (method == QStringLiteral("skills.pin")) {
+        skillsList(); // refresh the pinned badges
+    } else if (method == QStringLiteral("skills.unarchive")) {
+        emit skillsChanged();
+        skillsList();         // restored skill joins the live list...
+        skillsListArchived(); // ...and leaves the archive section
     } else if (method == QStringLiteral("skills.invoke")) {
         emit skillInvoked(ctx, result.value(QStringLiteral("message")).toString());
     } else if (method == QStringLiteral("skills.today")) {

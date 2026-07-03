@@ -226,6 +226,9 @@ data class Skill(
     val description: String?,
     val tags: List<String>,
     val body: String?,
+    // Lifecycle curation (jarvis#76 item 2) — defaults keep old daemons happy.
+    val pinned: Boolean = false,
+    val useCount: Int = 0,
 ) {
     val invokeName: String get() = name
     val display: String get() = name
@@ -239,6 +242,8 @@ data class Skill(
                 it.takeIf { t -> t.isJsonPrimitive }?.asString
             } ?: emptyList(),
             body = o.get("body")?.takeIf { !it.isJsonNull }?.asString,
+            pinned = o.get("pinned")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
+            useCount = o.get("use_count")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
         )
 
         /**

@@ -17,6 +17,7 @@ import kotlinx.coroutines.withContext
 
 data class SkillsUiState(
     val skills: List<Skill> = emptyList(),
+    val archived: List<Skill> = emptyList(),
     val today: List<TodayItem> = emptyList(),
     val loading: Boolean = false,
     val toast: String? = null,
@@ -41,6 +42,27 @@ class SkillsViewModel(private val repo: JarvisRepository) : ViewModel() {
         viewModelScope.launch {
             runCatching { withContext(Dispatchers.IO) { repo.today() } }
                 .onSuccess { items -> _uiState.update { it.copy(today = items) } }
+        }
+        viewModelScope.launch {
+            // Old daemons lack skills.list_archived — failures just hide the section.
+            runCatching { withContext(Dispatchers.IO) { repo.listArchivedSkills() } }
+                .onSuccess { list -> _uiState.update { it.copy(archived = list) } }
+        }
+    }
+
+    fun unarchive(name: String) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.unarchiveSkill(name) } }
+                .onSuccess { _uiState.update { it.copy(toast = "Restored $name") }; refresh() }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
+    fun setPinned(name: String, pinned: Boolean) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.pinSkill(name, pinned) } }
+                .onSuccess { refresh() }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
 

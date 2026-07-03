@@ -439,6 +439,20 @@ class JarvisRepository(
         client.request("skills.remove", Params.of("name" to name)).orThrow()
     }
 
+    // Lifecycle curation (jarvis#76 item 2).
+    suspend fun listArchivedSkills(): List<Skill> {
+        val r = client.request("skills.list_archived").orThrow()
+        return r.getAsJsonArray("skills")?.toObjects()?.map(Skill::from) ?: emptyList()
+    }
+
+    suspend fun unarchiveSkill(name: String) {
+        client.request("skills.unarchive", Params.of("name" to name)).orThrow()
+    }
+
+    suspend fun pinSkill(name: String, pinned: Boolean) {
+        client.request("skills.pin", Params.of("name" to name, "pinned" to pinned)).orThrow()
+    }
+
     // --- agents (custom subagents) -----------------------------------------
 
     suspend fun listAgents(): List<Agent> {
