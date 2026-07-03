@@ -7,6 +7,7 @@
 #include "jarvis/CodexBrain.h"
 #include "jarvis/Connectors.h"
 #include "jarvis/InjectionGuard.h"
+#include "jarvis/OsvAdvisory.h"
 #include "jarvis/PluginSigner.h"
 #include "jarvis/Updater.h"
 
@@ -3304,6 +3305,48 @@ Response ControlServer::handleMcpAdd(const Request &req)
     if (endpoint.isEmpty())
         return Response::failure(req.id, QStringLiteral("bad_request"),
                                  QStringLiteral("endpoint is required"));
+
+    // Supply-chain gate (jarvis#76 item 12): an npx/uvx stdio server is a
+    // package INSTALL the codex CLI will execute on the next brain launch —
+    // this add is the only enforcement window. Query OSV for MAL-* advisories;
+    // a hit returns needs_approval (plugins.install contract) unless the caller
+    // explicitly re-sent with approve:true. Offline/timeout FAILS OPEN.
+    if (transport == QStringLiteral("stdio")) {
+        if (const auto pkg = OsvAdvisory::parseStdioEndpoint(endpoint)) {
+            const OsvAdvisory::Result osv = OsvAdvisory::check(*pkg);
+            if (osv.ok && osv.hasMalware) {
+                if (!p.value(QStringLiteral("approve")).toBool()) {
+                    m_audit.record(QStringLiteral("mcp.add"), false,
+                                   QStringLiteral("high"),
+                                   QStringLiteral("OSV malware advisory on %1: %2")
+                                       .arg(pkg->name,
+                                            osv.advisoryIds.join(QStringLiteral(","))));
+                    QJsonObject r;
+                    r.insert(QStringLiteral("ok"), false);
+                    r.insert(QStringLiteral("needs_approval"), true);
+                    r.insert(QStringLiteral("approval_tier"), QStringLiteral("biometric"));
+                    r.insert(QStringLiteral("reason"),
+                             QStringLiteral("OSV malware advisory: ")
+                                 + osv.advisoryIds.join(QStringLiteral(", "))
+                                 + (osv.summary.isEmpty()
+                                        ? QString()
+                                        : QStringLiteral(" — ") + osv.summary));
+                    r.insert(QStringLiteral("advisory_ids"),
+                             QJsonArray::fromStringList(osv.advisoryIds));
+                    r.insert(QStringLiteral("package"), pkg->name);
+                    return Response::success(req.id, r);
+                }
+                m_audit.record(QStringLiteral("mcp.add"), true, QStringLiteral("high"),
+                               QStringLiteral("user approved DESPITE OSV advisory: ")
+                                   + pkg->name);
+            } else if (!osv.ok) {
+                m_audit.record(QStringLiteral("mcp.add"), true, QStringLiteral("low"),
+                               QStringLiteral("osv-check skipped (offline): ")
+                                   + pkg->name);
+            }
+        }
+    }
+
     const QString id = m_mcp->add(name, transport, endpoint, token, enabled, risk);
     if (id.isEmpty())
         return Response::failure(req.id, QStringLiteral("store_error"), m_store.lastError());

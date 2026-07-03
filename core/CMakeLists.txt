@@ -63,6 +63,7 @@ add_library(jarvis-core STATIC
     src/InjectionGuard.cpp
     src/ToolLoopGuard.cpp
     src/KanbanStore.cpp
+    src/OsvAdvisory.cpp
     src/NotifyService.cpp
     # Live-widget viewer-lease registry (battery gating: a live widget only runs
     # while a desktop/phone viewer or a home-screen pin is watching it).
@@ -231,6 +232,11 @@ add_test(NAME tool_loop_guard_test COMMAND tool_loop_guard_test)
 add_executable(kanban_store_test tests/kanban_store_test.cpp)
 target_link_libraries(kanban_store_test PRIVATE jarvis-core Qt6::Core Qt6::Sql)
 add_test(NAME kanban_store_test COMMAND kanban_store_test)
+
+# OsvAdvisory: npx/uvx package extraction + offline fail-open (no live OSV).
+add_executable(osv_advisory_test tests/osv_advisory_test.cpp)
+target_link_libraries(osv_advisory_test PRIVATE jarvis-core Qt6::Core Qt6::Network)
+add_test(NAME osv_advisory_test COMMAND osv_advisory_test)
 
 # SkillStore: frontmatter parse + create (self-authoring) + invoke (template
 # render) roundtrip (temp skills root).
