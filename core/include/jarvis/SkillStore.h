@@ -116,12 +116,16 @@ public:
     // (the raw args string). Returns the rendered message to inject. Sets
     // *err and returns empty on unknown skill.
     QString invoke(const QString &name, const QString &args,
-                   const QJsonObject &vars, QString *err = nullptr);
+                   const QJsonObject &vars, QString *err = nullptr,
+                   QString *dirOut = nullptr); // resolved skill dir (for stats)
 
     // --- lifecycle curation (jarvis#76 item 2) ------------------------------
     // Bump use_count / last_used_at for a skill in the Jarvis root. CLI-only
     // skills (no writable Jarvis dir) are skipped silently (returns false).
     bool trackUsage(const QString &name);
+    // Same, with the skill dir already resolved (skips the directory rescan —
+    // invoke() hands its dir out so the invoke+track pair costs ONE lookup).
+    bool trackUsageAt(const QString &skillDirPath);
     // Read/write the _stats.json sidecar for a skill directory.
     static SkillStats readStats(const QString &skillDirPath);
     bool setPinned(const QString &name, bool pinned);

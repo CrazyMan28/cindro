@@ -30,11 +30,18 @@ std::optional<OsvAdvisory::Package> OsvAdvisory::parseStdioEndpoint(const QStrin
     QString raw;
     for (int i = 1; i < parts.size(); ++i) {
         const QString &t = parts.at(i);
-        if (t == QStringLiteral("--from") || t == QStringLiteral("--package") ||
-            t == QStringLiteral("-p")) {
+        // Value-flags naming the PACKAGE: npx -p/--package <pkg>, uvx --from <pkg>.
+        if ((isUvx && t == QStringLiteral("--from")) ||
+            (isNpx && (t == QStringLiteral("--package") || t == QStringLiteral("-p")))) {
             if (i + 1 < parts.size())
                 raw = parts.at(i + 1);
             break;
+        }
+        // uvx -p/--python takes a PYTHON VERSION value — skip flag AND value
+        // (treating "3.12" as the package would query OSV for the wrong name).
+        if (isUvx && (t == QStringLiteral("-p") || t == QStringLiteral("--python"))) {
+            ++i;
+            continue;
         }
         if (t.startsWith(QLatin1Char('-')))
             continue; // -y, -q, --yes ... (flags without a package value)

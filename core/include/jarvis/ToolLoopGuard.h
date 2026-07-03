@@ -31,8 +31,7 @@ public:
     struct Entry {
         QByteArray hash;     // hash(tool|args|result)
         QByteArray callHash; // hash(tool|args) — result-independent
-        int count = 0;
-        int callCount = 0;
+        int count = 0;       // exact-triple repeats (churn = sum over callHash)
         QString toolName;
     };
 

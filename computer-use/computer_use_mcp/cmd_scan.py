@@ -50,7 +50,11 @@ _LOW = 1
 
 # Only ever look at this many characters — a command longer than this is already
 # pathological; the cap keeps the regex pass bounded on a huge argument.
-_MAX_LEN = 100_000
+# Hard scan cap: the cue table includes patterns with nested [^...]* runs whose
+# worst-case backtracking is superlinear — a few KB is plenty to expose any
+# real one-liner's intent, and it bounds scan() to milliseconds on adversarial
+# megabyte inputs (confirmed multi-second hangs at the old 100k cap).
+_MAX_LEN = 8_192
 
 # Top-level system directories whose recursive deletion is catastrophic.
 _SYS_DIRS = "etc|usr|bin|sbin|lib|lib64|boot|var|root|sys|proc|dev|opt|home|srv|run"
@@ -141,7 +145,8 @@ _CUE_SPECS: list[tuple[int, str, str]] = [
 ]
 
 _CUES: list[tuple[int, "re.Pattern[str]", str]] = [
-    (w, re.compile(p, re.IGNORECASE), lbl) for (w, p, lbl) in _CUE_SPECS
+    # MULTILINE: ^-anchored cues must catch "echo hi\nshutdown -h now" too.
+    (w, re.compile(p, re.IGNORECASE | re.MULTILINE), lbl) for (w, p, lbl) in _CUE_SPECS
 ]
 
 # rm segment + target helpers -------------------------------------------------
@@ -187,7 +192,9 @@ def _rm_danger(cmd: str) -> str | None:
         for t in toks:
             if t.startswith("-"):
                 continue
-            unq = t.replace('"', "").replace("'", "")
+            # Strip quotes AND common shell punctuation glued to the token so
+            # subshell/group forms like "(rm -rf /)" still expose the root.
+            unq = t.replace('"', "").replace("'", "").strip("()`;&{}")
             if _is_dangerous_root(unq):
                 return f"rm -rf of a dangerous root ({unq})"
     return None

@@ -73,7 +73,9 @@ def call(method: str, params: dict | None = None, timeout: float = 15.0) -> dict
 # single session is mid-turn right now (state == "running"): a tool call only
 # executes while a turn is in flight, so the unique running session IS the
 # caller. Ambiguous answers (none or several running) resolve to `default`.
-_SID_CACHE = {"ts": 0.0, "sid": ""}
+# Deliberately UNCACHED: a time-based cache could attribute session B's todo
+# to session A during rapid back-to-back turns, and a loopback WS round-trip
+# per todo/widget write is cheap.
 
 
 def current_session_id(default: str = "") -> str:
@@ -82,19 +84,11 @@ def current_session_id(default: str = "") -> str:
         return sid
     if os.environ.get("JARVIS_SESSION_RESOLVE", "1") == "0":
         return default  # tests: stay hermetic even with a live daemon on the box
-    import time as _time
-
-    now = _time.monotonic()
-    if now - _SID_CACHE["ts"] < 2.0:  # burst cache: one query per tool volley
-        return _SID_CACHE["sid"] or default
-    resolved = ""
     try:
         rows = call("session.list", {}, timeout=5).get("sessions", [])
         running = [r for r in rows if r.get("state") == "running"]
         if len(running) == 1:
-            resolved = str(running[0].get("id", "") or "")
+            return str(running[0].get("id", "") or "") or default
     except Exception:  # daemon down/unreachable -> keep the old behavior
-        resolved = ""
-    _SID_CACHE["ts"] = now
-    _SID_CACHE["sid"] = resolved
-    return resolved or default
+        pass
+    return default

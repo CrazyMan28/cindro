@@ -486,8 +486,8 @@ async function replayHistory(id) {
 
 function clearTranscript() { clear($("transcript")); lastToolEl = null; }
 
-function newSession() {
-  if (turnInFlight) doStop();
+async function newSession() {
+  if (turnInFlight) await doStop(); // let its "stopped" line land BEFORE the clear
   sessionId = null;
   seenApprovals.clear();
   $("chatTitle").textContent = "New conversation";

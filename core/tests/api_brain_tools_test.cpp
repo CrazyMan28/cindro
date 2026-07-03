@@ -350,8 +350,14 @@ int main(int argc, char **argv)
 
         QJsonArray h1 = hist;
         const int dropped = ApiBrain::compressHistory(h1, 8);
-        check(dropped == 32, "compressHistory drops all but the kept tail");
-        check(h1.size() == 9, "digest + 8 kept entries remain");
+        // keepTail=8 would land the tail on a user turn; the digest is itself
+        // a user turn, so compression slides one further (33 dropped, 7 kept)
+        // to keep anthropic's strict user/assistant alternation intact.
+        check(dropped == 33, "compressHistory drops all but the kept tail");
+        check(h1.size() == 8, "digest + 7 kept entries remain");
+        check(h1.at(1).toObject().value(QStringLiteral("role")).toString()
+                  == QStringLiteral("assistant"),
+              "kept tail opens on an assistant turn (role alternation)");
         const QString digest =
             h1.first().toObject().value(QStringLiteral("content")).toString();
         check(digest.contains(QStringLiteral("CONTEXT DIGEST")), "digest labelled");

@@ -43,15 +43,23 @@ def todos_dir() -> Path:
     return Path(override) if override else _DEFAULT_TODOS_DIR
 
 
-def _session_or_env(session_id: str | None) -> str:
+def _wire_session_id(session_id: str | None) -> str:
+    """The RAW session id for bus records ('' = unresolved). Shared global
+    engine (no per-session env): resolve the mid-turn session from the daemon
+    so todos link to THEIR chat instead of bleeding into every session (the
+    Windows #81a follow-up). Never raises — an unreachable daemon or a broken
+    import degrades to the old ''/env behavior."""
     if session_id is not None:
-        sid = session_id
-    else:
-        # Shared global engine (no per-session env): resolve the mid-turn
-        # session from the daemon so todos link to THEIR chat instead of
-        # bleeding into every session (the Windows #81a follow-up).
+        return str(session_id)
+    try:
         from computer_use_mcp import daemon_client
-        sid = daemon_client.current_session_id()
+        return daemon_client.current_session_id()
+    except Exception:
+        return os.environ.get("JARVIS_AGENT_SESSION", "")
+
+
+def _session_or_env(session_id: str | None) -> str:
+    sid = _wire_session_id(session_id)
     sid = str(sid or "").strip() or "default"
     # Keep the filename filesystem-safe (session ids are usually slugs already).
     return re.sub(r"[^A-Za-z0-9._-]", "_", sid)
@@ -264,10 +272,12 @@ def render_todo_widget(items: list[dict], session_id: str | None = None) -> dict
     """Append the checklist card to the widget bus under the stable per-session
     id (so a re-write replaces it in place). Surfaces in chat + canvas."""
     spec = todo_widget_spec(items)
+    # The CARD must be scoped exactly like the persisted file — through the
+    # same daemon-backed resolver — or the visible checklist still bleeds
+    # into every chat on the shared global engine.
     return widgets_bus.append_widget(
         spec, title="Plan", widget_id=_card_id(session_id), target="chat",
-        session_id=(session_id if session_id is not None
-                    else os.environ.get("JARVIS_AGENT_SESSION", "")))
+        session_id=_wire_session_id(session_id))
 
 
 def register(mcp: FastMCP) -> None:

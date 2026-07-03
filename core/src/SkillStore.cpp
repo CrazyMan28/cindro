@@ -571,15 +571,19 @@ bool SkillStore::trackUsage(const QString &name)
     auto row = get(name);
     if (!row)
         return false;
-    const QString dir = QFileInfo(row->path).absoluteDir().absolutePath();
+    return trackUsageAt(QFileInfo(row->path).absoluteDir().absolutePath());
+}
+
+bool SkillStore::trackUsageAt(const QString &skillDirPath)
+{
     // Only track skills inside the writable Jarvis root — a CLI-dir skill's
     // home is owned by codex/claude and we don't drop sidecars there.
-    if (!dir.startsWith(root()))
+    if (skillDirPath.isEmpty() || !skillDirPath.startsWith(root()))
         return false;
-    SkillStats s = readStats(dir);
+    SkillStats s = readStats(skillDirPath);
     ++s.useCount;
     s.lastUsedAt = QDateTime::currentMSecsSinceEpoch();
-    writeStats(dir, s);
+    writeStats(skillDirPath, s);
     return true;
 }
 
@@ -757,7 +761,7 @@ int SkillStore::sweepStale(qint64 thresholdMs, QStringList *archivedNames)
 }
 
 QString SkillStore::invoke(const QString &name, const QString &args,
-                           const QJsonObject &vars, QString *err)
+                           const QJsonObject &vars, QString *err, QString *dirOut)
 {
     SkillFrontmatter fm;
     QString body, path;
@@ -767,6 +771,8 @@ QString SkillStore::invoke(const QString &name, const QString &args,
         return QString();
     }
     const QString skillDir = QFileInfo(path).absoluteDir().absolutePath();
+    if (dirOut)
+        *dirOut = skillDir;
 
     QJsonObject allVars = vars;
     allVars.insert(QStringLiteral("SKILL_DIR"), skillDir);

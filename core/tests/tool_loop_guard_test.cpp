@@ -84,6 +84,16 @@ int main(int argc, char **argv)
         check(r.softWarn, "identical-beyond-cap results count as repeats");
     }
 
+    // Fields joined with pipes must NOT collide: ("ls|x","y") vs ("ls","x|y").
+    {
+        QList<ToolLoopGuard::Entry> w;
+        for (int i = 0; i < 2; ++i)
+            ToolLoopGuard::observe(w, "t", "ls|x", "y");
+        const auto r = ToolLoopGuard::observe(w, "t", "ls", "x|y");
+        check(w.size() == 2, "pipe-shifted fields hash to distinct entries");
+        check(!r.softWarn, "no cross-contamination between the two shapes");
+    }
+
     // reset() clears the window.
     {
         QList<ToolLoopGuard::Entry> w;

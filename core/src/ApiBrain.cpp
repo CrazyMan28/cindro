@@ -410,7 +410,18 @@ int ApiBrain::compressHistory(QJsonArray &history, int keepTail, const QString &
            history.at(cut).toObject().value(QStringLiteral("role")).toString()
                == QStringLiteral("tool"))
         ++cut;
-    if (cut <= 1)
+    // The digest itself is a user turn: if the kept tail ALSO starts with a
+    // user message, anthropic's strict role alternation rejects the request
+    // (400) — slide past it so the tail opens on the assistant reply.
+    if (cut < history.size() &&
+        history.at(cut).toObject().value(QStringLiteral("role")).toString()
+            == QStringLiteral("user"))
+        ++cut;
+    while (cut < history.size() &&
+           history.at(cut).toObject().value(QStringLiteral("role")).toString()
+               == QStringLiteral("tool"))
+        ++cut;
+    if (cut <= 1 || cut > history.size())
         return 0;
 
     QString summary = digest.trimmed();
@@ -459,6 +470,10 @@ int ApiBrain::compressHistory(QJsonArray &history, int keepTail, const QString &
 void ApiBrain::compressIfNeeded()
 {
     if (m_opts.contextMaxTokens <= 0)
+        return;
+    // Cheap guard before the O(history) re-serialization: a short history
+    // can't exceed any sane budget, and compressHistory would no-op anyway.
+    if (m_history.size() <= 9)
         return;
     const int estimated = estimateHistoryTokens(m_history);
     if (estimated <= m_opts.contextMaxTokens)

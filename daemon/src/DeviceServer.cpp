@@ -739,7 +739,7 @@ QStringList DeviceServer::storeImages(const QString &sessionId, const QJsonArray
     if (images.isEmpty())
         return paths;
 
-    const QString dir = QDir::homePath() +
+    const QString dir = jarvis::dataDir() +
                         QStringLiteral("/inbox/") + sessionId;
     QDir().mkpath(dir);
 
@@ -842,7 +842,8 @@ Response DeviceServer::devSessionHistory(const Request &req)
 
 Response DeviceServer::devSessionSearch(const Request &req)
 {
-    // Same shape as the control-channel session.search (jarvis#76 item 1).
+    // Same shape as the control-channel session.search (jarvis#76 item 1) —
+    // by construction: both serialize via ControlServer::searchHitsToJson.
     const QString q = req.params.value(QStringLiteral("q")).toString();
     if (q.trimmed().isEmpty())
         return Response::failure(req.id, QStringLiteral("bad_request"),
@@ -851,30 +852,10 @@ Response DeviceServer::devSessionSearch(const Request &req)
     const int ctxWin = req.params.value(QStringLiteral("context_window")).toInt(2);
     const QString sessionFilter =
         req.params.value(QStringLiteral("session_id")).toString();
-
-    QJsonArray hits;
-    for (const SessionSearchHit &h :
-         m_control->store().searchEvents(q, limit, ctxWin, sessionFilter)) {
-        QJsonObject o;
-        o.insert(QStringLiteral("session_id"), h.sessionId);
-        o.insert(QStringLiteral("session_title"), h.sessionTitle);
-        o.insert(QStringLiteral("seq"), h.seq);
-        o.insert(QStringLiteral("ts"), h.ts);
-        o.insert(QStringLiteral("score"), h.score);
-        o.insert(QStringLiteral("ev"), h.ev.toJson());
-        QJsonArray ctx;
-        for (const StoredEvent &se : h.context) {
-            QJsonObject ce;
-            ce.insert(QStringLiteral("seq"), se.seq);
-            ce.insert(QStringLiteral("ts"), se.ts);
-            ce.insert(QStringLiteral("ev"), se.ev.toJson());
-            ctx.append(ce);
-        }
-        o.insert(QStringLiteral("context"), ctx);
-        hits.append(o);
-    }
     QJsonObject result;
-    result.insert(QStringLiteral("hits"), hits);
+    result.insert(QStringLiteral("hits"),
+                  ControlServer::searchHitsToJson(
+                      m_control->store().searchEvents(q, limit, ctxWin, sessionFilter)));
     return Response::success(req.id, result);
 }
 

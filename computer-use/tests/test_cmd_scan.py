@@ -121,3 +121,22 @@ def test_result_shape_and_as_dict():
     d = r.as_dict()
     assert set(d) == {"risky", "reason", "cues", "severity"}
     assert d["risky"] is True
+
+
+def test_multiline_shutdown_is_flagged():
+    # ^-anchored cues must fire on line starts, not only string start.
+    r = cmd_scan.scan("echo hi\nshutdown -h now")
+    assert r.risky
+
+
+def test_subshell_rm_root_is_flagged():
+    assert cmd_scan.scan("(rm -rf /)").risky
+    assert cmd_scan.scan("(cd /tmp && rm -rf /)").risky
+
+
+def test_adversarial_input_scans_fast():
+    import time
+    blob = ("cat ~/.ssh/id_rsa " + "a" * 50000) * 4
+    t0 = time.monotonic()
+    cmd_scan.scan(blob)
+    assert time.monotonic() - t0 < 1.0  # ReDoS guard: bounded by the scan cap

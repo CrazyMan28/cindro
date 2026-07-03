@@ -432,8 +432,7 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
     // Its own config dir (so it gets its own bearer + port, NOT the global
     // ~/.computer-use), bound to the nested compositor via the JARVIS_AGENT_*
     // env the engine's session.py detects.
-    d.configDir = QDir::homePath() +
-                  QStringLiteral("/agent/cu-") + sessionId;
+    d.configDir = dataDir() + QStringLiteral("/agent/cu-") + sessionId;
     QDir().mkpath(d.configDir);
     {
         // Seed a config.yaml with our bearer + port; the engine reads

@@ -146,7 +146,10 @@ bool ControlServer::start()
     if (!m_kanban.open()) {
         qWarning("jarvisd: work queue unavailable: %s", qPrintable(m_kanban.lastError()));
     } else {
-        if (const int n = m_kanban.reclaimStale(kQueueStaleMs); n > 0)
+        // Brains never survive a restart: every 'running' row at boot is an
+        // orphan by definition — reclaim NOW (staleMs=0), not after the tick
+        // loop's 3-minute silence threshold.
+        if (const int n = m_kanban.reclaimStale(0); n > 0)
             qInfo("jarvisd: reclaimed %d orphaned work item(s) back to pending", n);
         m_queueTimer = new QTimer(this);
         m_queueTimer->setInterval(5000);
@@ -1080,6 +1083,41 @@ Response ControlServer::handlePolicyTest(const Request &req)
     return Response::success(req.id, result);
 }
 
+namespace {
+// The phone subsystem's Jarvis-managed env (~/.config/jarvis/phone.env). Read
+// fresh at each use — the setup wizard can (re)write it after daemon start.
+// ONE parser for the three consumers (phone.mcp / phone.http / the event
+// bridge) so the file format never drifts between them.
+struct PhoneEnv {
+    QString adminToken;
+    QString deviceToken;
+    QString agentToken;
+    QString port = QStringLiteral("8801");
+};
+
+PhoneEnv readPhoneEnv()
+{
+    PhoneEnv env;
+    QFile f(Config::configDir() + QStringLiteral("/phone.env"));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return env;
+    const QList<QByteArray> lines = f.readAll().split('\n');
+    f.close();
+    for (const QByteArray &raw : lines) {
+        const QString line = QString::fromUtf8(raw).trimmed();
+        if (line.startsWith(QStringLiteral("ADMIN_TOKEN=")))
+            env.adminToken = line.mid(QStringLiteral("ADMIN_TOKEN=").size()).trimmed();
+        else if (line.startsWith(QStringLiteral("DEVICE_TOKEN=")))
+            env.deviceToken = line.mid(QStringLiteral("DEVICE_TOKEN=").size()).trimmed();
+        else if (line.startsWith(QStringLiteral("AGENT_TOKEN=")))
+            env.agentToken = line.mid(QStringLiteral("AGENT_TOKEN=").size()).trimmed();
+        else if (line.startsWith(QStringLiteral("SERVER_PORT=")))
+            env.port = line.mid(QStringLiteral("SERVER_PORT=").size()).trimmed();
+    }
+    return env;
+}
+} // namespace
+
 Response ControlServer::handlePhoneMcp(const Request &req)
 {
     const QString name = req.params.value(QStringLiteral("name")).toString();
@@ -1088,22 +1126,10 @@ Response ControlServer::handlePhoneMcp(const Request &req)
                                  QStringLiteral("name (a phone MCP tool) is required"));
     const QJsonObject args = req.params.value(QStringLiteral("arguments")).toObject();
 
-    // Read the phone subsystem's bearer + port (Jarvis-managed env). The token
-    // never leaves the daemon — clients call phone.mcp and we forward.
-    QString token;
-    QString port = QStringLiteral("8801");
-    QFile f(Config::configDir() + QStringLiteral("/phone.env"));
-    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        const QList<QByteArray> lines = f.readAll().split('\n');
-        f.close();
-        for (const QByteArray &raw : lines) {
-            const QString line = QString::fromUtf8(raw).trimmed();
-            if (line.startsWith(QStringLiteral("AGENT_TOKEN=")))
-                token = line.mid(QStringLiteral("AGENT_TOKEN=").size()).trimmed();
-            else if (line.startsWith(QStringLiteral("SERVER_PORT=")))
-                port = line.mid(QStringLiteral("SERVER_PORT=").size()).trimmed();
-        }
-    }
+    // The bearer never leaves the daemon — clients call phone.mcp and we forward.
+    const PhoneEnv penv = readPhoneEnv();
+    const QString token = penv.agentToken;
+    const QString port = penv.port;
     if (token.isEmpty())
         return Response::failure(req.id, QStringLiteral("phone_not_configured"),
                                  QStringLiteral("phone subsystem is not set up (no phone.env)"));
@@ -1177,22 +1203,11 @@ Response ControlServer::handlePhoneMcp(const Request &req)
 
 void ControlServer::connectPhoneWs()
 {
-    // Read the device token + port fresh each (re)connect — phone.env can be
-    // (re)written after daemon start by the setup wizard.
-    QString deviceTok;
-    QString port = QStringLiteral("8801");
-    QFile f(Config::configDir() + QStringLiteral("/phone.env"));
-    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        const QList<QByteArray> lines = f.readAll().split('\n');
-        f.close();
-        for (const QByteArray &raw : lines) {
-            const QString line = QString::fromUtf8(raw).trimmed();
-            if (line.startsWith(QStringLiteral("DEVICE_TOKEN=")))
-                deviceTok = line.mid(QStringLiteral("DEVICE_TOKEN=").size()).trimmed();
-            else if (line.startsWith(QStringLiteral("SERVER_PORT=")))
-                port = line.mid(QStringLiteral("SERVER_PORT=").size()).trimmed();
-        }
-    }
+    // Read fresh each (re)connect — phone.env can be (re)written after daemon
+    // start by the setup wizard.
+    const PhoneEnv penv = readPhoneEnv();
+    const QString deviceTok = penv.deviceToken;
+    const QString port = penv.port;
     if (deviceTok.isEmpty()) {
         // Phone subsystem not set up (or env not written yet) — retry later so
         // finishing the setup wizard doesn't require a daemon restart.
@@ -1223,6 +1238,13 @@ void ControlServer::connectPhoneWs()
     connect(m_phoneWs, &QWebSocket::disconnected, this, [this]() {
         schedulePhoneWsReconnect(5000);
     });
+    // disconnected() only fires when LEAVING ConnectedState — a refused/failed
+    // CONNECT emits errorOccurred instead. Without this, a daemon that boots
+    // before the phone server never retries and the event bridge stays dead.
+    connect(m_phoneWs, &QWebSocket::errorOccurred, this,
+            [this](QAbstractSocket::SocketError) {
+                schedulePhoneWsReconnect(5000);
+            });
     m_phoneWs->open(QUrl(QStringLiteral("ws://127.0.0.1:%1/ws").arg(port)));
 }
 
@@ -1301,30 +1323,14 @@ Response ControlServer::handlePhoneHttp(const Request &req)
                                  QStringLiteral("path (e.g. /api/...) is required"));
     const QJsonObject body = req.params.value(QStringLiteral("body")).toObject();
 
-    QString token;
-    QString port = QStringLiteral("8801");
-    QFile f(Config::configDir() + QStringLiteral("/phone.env"));
-    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        const QList<QByteArray> lines = f.readAll().split('\n');
-        f.close();
-        QString adminTok, deviceTok, agentTok;
-        for (const QByteArray &raw : lines) {
-            const QString line = QString::fromUtf8(raw).trimmed();
-            if (line.startsWith(QStringLiteral("ADMIN_TOKEN=")))
-                adminTok = line.mid(QStringLiteral("ADMIN_TOKEN=").size()).trimmed();
-            else if (line.startsWith(QStringLiteral("DEVICE_TOKEN=")))
-                deviceTok = line.mid(QStringLiteral("DEVICE_TOKEN=").size()).trimmed();
-            else if (line.startsWith(QStringLiteral("AGENT_TOKEN=")))
-                agentTok = line.mid(QStringLiteral("AGENT_TOKEN=").size()).trimmed();
-            else if (line.startsWith(QStringLiteral("SERVER_PORT=")))
-                port = line.mid(QStringLiteral("SERVER_PORT=").size()).trimmed();
-        }
-        // Prefer admin > device > agent so the FULL REST surface is reachable —
-        // the config setters (PUT /voice, /model; POST /screening, /sms-agent)
-        // require device auth, and enroll requires admin; reads accept any.
-        token = !adminTok.isEmpty() ? adminTok
-                                    : (!deviceTok.isEmpty() ? deviceTok : agentTok);
-    }
+    // Prefer admin > device > agent so the FULL REST surface is reachable —
+    // the config setters (PUT /voice, /model; POST /screening, /sms-agent)
+    // require device auth, and enroll requires admin; reads accept any.
+    const PhoneEnv penv = readPhoneEnv();
+    const QString port = penv.port;
+    const QString token = !penv.adminToken.isEmpty()
+        ? penv.adminToken
+        : (!penv.deviceToken.isEmpty() ? penv.deviceToken : penv.agentToken);
     if (token.isEmpty())
         return Response::failure(req.id, QStringLiteral("phone_not_configured"),
                                  QStringLiteral("phone subsystem is not set up (no phone.env)"));
@@ -1488,7 +1494,7 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         // vm-*), even a plain chat with no injected computer-use. driveMcp (the
         // danger sandbox that stops codex auto-cancelling MCP calls) is only forced
         // when a computer-use server was actually injected.
-        opts.codexHome = QDir::homePath()
+        opts.codexHome = dataDir()
             + QStringLiteral("/agent/") + row.id
             + QStringLiteral("/codex-home");
         if (!opts.configOverrides.isEmpty())
@@ -2255,6 +2261,7 @@ void ControlServer::onTurnFinished(const QString &sessionId)
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
     m_toolLoopWarned.remove(sessionId);
+    m_toolLoopStopping.remove(sessionId); // the turn ended — disarm the deferred cancel
 
     // Post-turn self-improvement review (jarvis#76 item 8): a cheap async
     // auxiliary model call decides whether anything from the finished turn is
@@ -2358,6 +2365,13 @@ void ControlServer::firePostTurnReview(const QString &sessionId)
             continue;
         const QString role = se.ev.fields.value(QStringLiteral("role")).toString();
         QString t = se.ev.fields.value(QStringLiteral("text")).toString().simplified();
+        // Daemon-injected turns ride the user role on the wire — never let the
+        // reviewer mistake them for something the human actually said.
+        if (t.startsWith(QStringLiteral("[TOOL LOOP")) ||
+            t.startsWith(QStringLiteral("[AUTO-CONTINUE")) ||
+            t.startsWith(QStringLiteral("[SUBAGENT DONE")) ||
+            t.startsWith(QStringLiteral("[WORK QUEUE")))
+            continue;
         if (t.size() > 400)
             t = t.left(400) + QStringLiteral("…");
         transcript += role + QStringLiteral(": ") + t + QLatin1Char('\n');
@@ -2603,8 +2617,10 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         // Active-goal reminder (jarvis#76 item 9): a session with a persistent
         // goal always sees it, so multi-turn work stays on target. Auto-continue
         // wakes carry the goal themselves; this covers manual turns too.
+        // NOTE: the real wake text is "[AUTO-CONTINUE n/cap] ..." — match the
+        // OPEN prefix, not a closed "[AUTO-CONTINUE]" literal that never hits.
         if (auto gr = m_store.get(sessionId); gr && !gr->goals.trimmed().isEmpty()
-            && !text.startsWith(QStringLiteral("[AUTO-CONTINUE]"))) {
+            && !text.startsWith(QStringLiteral("[AUTO-CONTINUE"))) {
             effectiveText = QStringLiteral("[ACTIVE GOAL] ") + gr->goals.trimmed() +
                             QStringLiteral("\n---\n") + effectiveText;
         }
@@ -2838,6 +2854,7 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
     m_toolLoopWarned.remove(sessionId);
+    m_toolLoopStopping.remove(sessionId);
     return true;
 }
 
@@ -2865,6 +2882,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
     m_toolLoopWarned.remove(sessionId);
+    m_toolLoopStopping.remove(sessionId);
     m_pendingTurns.remove(sessionId);
     // 4) Drop the row + its event stream from the store.
     if (!m_store.deleteSession(sessionId)) {
@@ -2966,7 +2984,7 @@ static QStringList decodeSendImages(const QJsonArray &arr, const QString &sessio
     QStringList paths;
     if (arr.isEmpty())
         return paths;
-    const QString dir = QDir::homePath()
+    const QString dir = dataDir()
         + QStringLiteral("/attachments/") + sessionId;
     QDir().mkpath(dir);
     int n = 0;
@@ -3141,21 +3159,13 @@ Response ControlServer::handleSessionHistory(const Request &req)
 
 // Cross-session full-text search (jarvis#76 item 1): ranked hits over every
 // stored turn + tool output, each with a small context window. Also proxied to
-// the model as the session_search MCP tool and to the phone (read tier).
-Response ControlServer::handleSessionSearch(const Request &req)
+// the model as the session_search MCP tool and to the phone (read tier) — the
+// device channel serializes through THIS helper so the two wire shapes can
+// never drift.
+QJsonArray ControlServer::searchHitsToJson(const QVector<SessionSearchHit> &hits)
 {
-    const QString q = req.params.value(QStringLiteral("q")).toString();
-    if (q.trimmed().isEmpty())
-        return Response::failure(req.id, QStringLiteral("bad_request"),
-                                 QStringLiteral("q is required"));
-    const int limit = req.params.value(QStringLiteral("limit")).toInt(20);
-    const int ctxWin = req.params.value(QStringLiteral("context_window")).toInt(2);
-    const QString sessionFilter =
-        req.params.value(QStringLiteral("session_id")).toString();
-
-    QJsonArray hits;
-    for (const SessionSearchHit &h :
-         m_store.searchEvents(q, limit, ctxWin, sessionFilter)) {
+    QJsonArray arr;
+    for (const SessionSearchHit &h : hits) {
         QJsonObject o;
         o.insert(QStringLiteral("session_id"), h.sessionId);
         o.insert(QStringLiteral("session_title"), h.sessionTitle);
@@ -3172,10 +3182,24 @@ Response ControlServer::handleSessionSearch(const Request &req)
             ctx.append(c);
         }
         o.insert(QStringLiteral("context"), ctx);
-        hits.append(o);
+        arr.append(o);
     }
+    return arr;
+}
+
+Response ControlServer::handleSessionSearch(const Request &req)
+{
+    const QString q = req.params.value(QStringLiteral("q")).toString();
+    if (q.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("q is required"));
+    const int limit = req.params.value(QStringLiteral("limit")).toInt(20);
+    const int ctxWin = req.params.value(QStringLiteral("context_window")).toInt(2);
+    const QString sessionFilter =
+        req.params.value(QStringLiteral("session_id")).toString();
     QJsonObject result;
-    result.insert(QStringLiteral("hits"), hits);
+    result.insert(QStringLiteral("hits"),
+                  searchHitsToJson(m_store.searchEvents(q, limit, ctxWin, sessionFilter)));
     return Response::success(req.id, result);
 }
 
@@ -4799,13 +4823,14 @@ Response ControlServer::handleSkillsInvoke(const Request &req)
                                 ? req.params.value(QStringLiteral("args")).toString()
                                 : QString();
     QString err;
-    const QString message = m_skills.invoke(name, argsStr, argsObj, &err);
+    QString skillDir;
+    const QString message = m_skills.invoke(name, argsStr, argsObj, &err, &skillDir);
     if (message.isEmpty())
         return Response::failure(req.id, QStringLiteral("no_skill"), err);
     // Lifecycle curation (jarvis#76 item 2): every invoke path — skill_load
     // tool, extension /slash, phone, desktop — converges here, so this single
-    // bump covers them all.
-    m_skills.trackUsage(name);
+    // bump covers them all (using invoke()'s already-resolved dir: no rescan).
+    m_skills.trackUsageAt(skillDir);
     QJsonObject result;
     result.insert(QStringLiteral("message"), message);
     return Response::success(req.id, result);
@@ -5854,11 +5879,9 @@ void ControlServer::tickWorkQueue()
     if (const int n = m_kanban.reclaimStale(kQueueStaleMs); n > 0)
         qInfo("jarvisd: reclaimed %d stale work item(s)", n);
 
-    // 3) Fill free worker slots.
+    // 3) Fill free worker slots. claimNext() itself returns nullopt on an
+    // empty backlog (guarded UPDATE), so no separate peek query is needed.
     while (m_queueItemBySession.size() < kMaxQueueWorkers) {
-        // Peek cheaply: claim only if something is pending.
-        if (m_kanban.list(QStringLiteral("pending"), 1).isEmpty())
-            return;
         auto item = m_kanban.claimNext();
         if (!item)
             return;
@@ -6255,7 +6278,13 @@ void ControlServer::observeToolLoop(const QString &sessionId, const NormalizedBr
                      NormalizedBrainEvent::error(QStringLiteral(
                          "Tool loop guard: %1 repeated %2 times — turn stopped")
                          .arg(verdict.toolName).arg(verdict.repeatCount)));
+        m_toolLoopStopping.insert(sessionId);
         QTimer::singleShot(0, this, [this, sessionId] {
+            // Only cancel if the looping turn is STILL the live one — a user
+            // cancel racing in ahead of this tick already ended it (and may
+            // have flushed the guardrail turn, which must not be killed).
+            if (!m_toolLoopStopping.remove(sessionId))
+                return;
             if (Brain *b = m_brains.value(sessionId, nullptr))
                 b->cancel(); // fires turnFinished -> flushes the queued guardrail turn
         });

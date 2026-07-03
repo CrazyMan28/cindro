@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QRandomGenerator>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QStringList>
 #include <QTextStream>
@@ -343,7 +344,9 @@ void SettingsStore::load()
 
 bool SettingsStore::hasApiKey(const QString &provider) const
 {
-    return !m_apiKeys.value(provider).toString().isEmpty();
+    // Pool semantics (jarvis#76 item 5): "has a key" must agree with what
+    // apiKey() would return — a separators-only value is NOT a usable key.
+    return !apiKeyPool(provider).isEmpty();
 }
 
 void SettingsStore::setApiKey(const QString &provider, const QString &value)

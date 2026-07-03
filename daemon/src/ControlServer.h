@@ -141,6 +141,10 @@ public:
     Response dispatchQueueMethod(const Request &req);
     static bool isQueueMethod(const QString &method);
 
+    // session.search wire shape (jarvis#76 item 1) — shared with the device
+    // channel so both serialize identically.
+    static QJsonArray searchHitsToJson(const QVector<SessionSearchHit> &hits);
+
     // device->phone FILE PUSH (Contract C). Stores the bytes under the jarvis
     // inbox and returns a {file_id,name,size,mime,session_id} descriptor the
     // DeviceServer emits to phones as a 'file.offer' event. b64 OR an on-disk
@@ -618,6 +622,11 @@ private:
     QHash<QString, PendingToolCall> m_lastToolCall;
     QHash<QString, QList<ToolLoopGuard::Entry>> m_toolLoop;
     QSet<QString> m_toolLoopWarned;
+    // Sessions with a hard-stop cancel QUEUED (one event-loop tick away). If
+    // the turn ends first (user cancel raced in and the guardrail turn already
+    // flushed), the deferred cancel must become a no-op — otherwise it would
+    // kill the FRESH guardrail-response turn instead of the loop.
+    QSet<QString> m_toolLoopStopping;
     // Sessions that have already received the one-time co-work guidance preamble.
     QSet<QString> m_coworkGuided;
     // Per-session custom-agent system prompt (set when a session runs AS an agent)

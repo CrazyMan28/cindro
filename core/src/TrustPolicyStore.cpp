@@ -20,6 +20,20 @@ TrustPolicyStore::TrustPolicyStore(const QString &root)
     // stores when XDG_CONFIG_HOME is set (jarvis#76 item 15).
     const QString dir = root.isEmpty() ? Config::configDir() : root;
     m_path = dir + QStringLiteral("/trust_policies.json");
+    // MIGRATION: this store previously resolved via QStandardPaths, which
+    // honors XDG_CONFIG_HOME — a user with that set had their rules at the
+    // OLD location. Silently abandoning them would reset the policy engine
+    // to allow-everything, so adopt the legacy file once if the new path is
+    // still empty.
+    if (root.isEmpty() && !QFileInfo::exists(m_path)) {
+        const QString legacy =
+            QStandardPaths::writableLocation(QStandardPaths::ConfigLocation)
+            + QStringLiteral("/jarvis/trust_policies.json");
+        if (legacy != m_path && QFileInfo::exists(legacy)) {
+            QDir().mkpath(dir);
+            QFile::copy(legacy, m_path);
+        }
+    }
     load();
 }
 

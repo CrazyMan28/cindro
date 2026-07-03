@@ -11,8 +11,14 @@ constexpr int kHashInputCap = 800;
 
 QByteArray hashOf(const QString &a, const QString &b, const QString &c)
 {
-    const QString joined = a + QLatin1Char('|') + b.left(kHashInputCap) +
-                           QLatin1Char('|') + c.left(kHashInputCap);
+    // Length-prefix each field: a bare '|' join lets ("ls|x","y") and
+    // ("ls","x|y") collide into one repeat bucket (tool args/outputs contain
+    // pipes all the time), inflating counts toward a false hard-stop.
+    const QString bb = b.left(kHashInputCap);
+    const QString cc = c.left(kHashInputCap);
+    const QString joined = QString::number(a.size()) + QLatin1Char(':') + a +
+                           QString::number(bb.size()) + QLatin1Char(':') + bb +
+                           QString::number(cc.size()) + QLatin1Char(':') + cc;
     return QCryptographicHash::hash(joined.toUtf8(), QCryptographicHash::Sha1);
 }
 } // namespace

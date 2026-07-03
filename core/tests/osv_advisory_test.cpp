@@ -54,6 +54,18 @@ int main(int argc, char **argv)
         check(p && p->name == QStringLiteral("real-pkg"), "uvx --from value wins");
     }
     {
+        auto p = OsvAdvisory::parseStdioEndpoint(
+            QStringLiteral("uvx -p 3.12 mcp-tool"));
+        check(p && p->name == QStringLiteral("mcp-tool"),
+              "uvx -p takes a PYTHON version — package is the next token");
+    }
+    {
+        auto p = OsvAdvisory::parseStdioEndpoint(
+            QStringLiteral("npx -p @scope/cli-pkg run-thing"));
+        check(p && p->name == QStringLiteral("@scope/cli-pkg"),
+              "npx -p names the package");
+    }
+    {
         check(!OsvAdvisory::parseStdioEndpoint(QStringLiteral("/usr/bin/mcp-server --x"))
                    .has_value(),
               "plain binary is not a package launch");

@@ -1,5 +1,6 @@
 #include "jarvis/SessionStore.h"
 #include "jarvis/DataPaths.h"
+#include "jarvis/FtsQuery.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -40,26 +41,6 @@ QString eventFtsBody(const NormalizedBrainEvent &ev)
     if (body.size() > kFtsBodyMaxChars)
         body.truncate(kFtsBodyMaxChars);
     return body;
-}
-
-// Build a safe FTS5 MATCH query from arbitrary user text (same contract as
-// MemoryStore's helper): word tokens ≥2 chars, OR-joined as prefix terms.
-QString toFtsQuery(const QString &raw)
-{
-    QStringList terms;
-    QString cur;
-    for (const QChar &ch : raw) {
-        if (ch.isLetterOrNumber()) {
-            cur.append(ch.toLower());
-        } else {
-            if (cur.size() >= 2)
-                terms << cur + QStringLiteral("*");
-            cur.clear();
-        }
-    }
-    if (cur.size() >= 2)
-        terms << cur + QStringLiteral("*");
-    return terms.join(QStringLiteral(" OR "));
 }
 
 } // namespace
@@ -507,15 +488,11 @@ int SessionStore::appendEvent(const QString &sessionId, const NormalizedBrainEve
         return -1;
     }
 
-    // Keep the FTS mirror in sync (delete-then-insert, like memories_fts).
+    // Keep the FTS mirror in sync. Unlike memories_fts (upserts by id), seq
+    // was freshly allocated above so no prior FTS row can exist — a plain
+    // INSERT is enough, and this is the hot per-brain-event path.
     const QString body = eventFtsBody(ev);
     if (!body.isEmpty()) {
-        QSqlQuery del(m_db);
-        del.prepare(QStringLiteral(
-            "DELETE FROM events_fts WHERE session_id=? AND seq=?"));
-        del.addBindValue(sessionId);
-        del.addBindValue(seq);
-        del.exec();
         QSqlQuery ins(m_db);
         ins.prepare(QStringLiteral(
             "INSERT INTO events_fts (session_id,seq,body) VALUES (?,?,?)"));
@@ -588,10 +565,15 @@ QVector<SessionSearchHit> SessionStore::searchEvents(const QString &query, int l
         q.addBindValue(limit);
         if (q.exec()) {
             while (q.next()) {
+                // SQLite bm25() is a COST: more negative = better match. Expose
+                // "higher = more relevant" by negating (abs() would have ranked
+                // the WEAKEST hits highest). Non-negative ranks (degenerate)
+                // squash toward zero, below any real match.
                 const double rank = q.value(4).toDouble();
+                const double score = rank < 0 ? -rank : 1.0 / (1.0 + rank);
                 raw.push_back({q.value(0).toString(), q.value(1).toInt(),
                                q.value(2).toLongLong(), q.value(3).toString(),
-                               1.0 / (1.0 + (rank < 0 ? -rank : rank))});
+                               score});
             }
         } else {
             m_lastError = q.lastError().text();

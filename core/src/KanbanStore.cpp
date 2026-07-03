@@ -136,7 +136,7 @@ bool KanbanStore::exec(const QString &sql)
 
 bool KanbanStore::migrate()
 {
-    return exec(QStringLiteral(
+    if (!exec(QStringLiteral(
         "CREATE TABLE IF NOT EXISTS work_queue ("
         " id TEXT PRIMARY KEY,"
         " title TEXT NOT NULL,"
@@ -154,7 +154,13 @@ bool KanbanStore::migrate()
         " updated INTEGER,"
         " started INTEGER NOT NULL DEFAULT 0,"
         " ended INTEGER NOT NULL DEFAULT 0,"
-        " tags TEXT DEFAULT '')"));
+        " tags TEXT DEFAULT '')")))
+        return false;
+    // The dispatcher polls by status every 5s for the daemon's lifetime —
+    // keep that scan indexed as done/cancelled rows accumulate.
+    return exec(QStringLiteral(
+        "CREATE INDEX IF NOT EXISTS idx_work_queue_status"
+        " ON work_queue(status, priority DESC, created ASC)"));
 }
 
 QString KanbanStore::enqueue(const QString &title, const QString &prompt, int priority,
@@ -275,25 +281,27 @@ bool KanbanStore::updateStatus(const QString &id, const QString &status,
     const bool terminal = status == QStringLiteral("done") ||
                           status == QStringLiteral("error") ||
                           status == QStringLiteral("cancelled");
+    // Named binds: the optional SET clauses and their values can never fall
+    // out of positional sync (a silent wrong-column write with '?' binds).
     QSqlQuery q(m_db);
-    QString sql = QStringLiteral("UPDATE work_queue SET status=?, updated=?");
+    QString sql = QStringLiteral("UPDATE work_queue SET status=:status, updated=:updated");
     if (!sessionId.isEmpty())
-        sql += QStringLiteral(", session_id=?");
+        sql += QStringLiteral(", session_id=:sid");
     if (!result.isEmpty())
-        sql += QStringLiteral(", result=?");
+        sql += QStringLiteral(", result=:result");
     if (terminal)
-        sql += QStringLiteral(", ended=?");
-    sql += QStringLiteral(" WHERE id=?");
+        sql += QStringLiteral(", ended=:ended");
+    sql += QStringLiteral(" WHERE id=:id");
     q.prepare(sql);
-    q.addBindValue(status);
-    q.addBindValue(now);
+    q.bindValue(QStringLiteral(":status"), status);
+    q.bindValue(QStringLiteral(":updated"), now);
     if (!sessionId.isEmpty())
-        q.addBindValue(sessionId);
+        q.bindValue(QStringLiteral(":sid"), sessionId);
     if (!result.isEmpty())
-        q.addBindValue(result);
+        q.bindValue(QStringLiteral(":result"), result);
     if (terminal)
-        q.addBindValue(now);
-    q.addBindValue(id);
+        q.bindValue(QStringLiteral(":ended"), now);
+    q.bindValue(QStringLiteral(":id"), id);
     if (!q.exec()) {
         m_lastError = q.lastError().text();
         return false;
