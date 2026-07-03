@@ -1221,10 +1221,74 @@ async function handleSlash(text) {
   return false;
 }
 
+// ------------------------------------------------- clipboard image paste (jarvis#76 bonus)
+// Ctrl+V an image into the composer: it becomes a pending attachment chip and
+// rides the next session.send as images:[{mime,b64}]. Vision-gated with a
+// friendly inline notice — never a silent drop.
+let pendingImages = [];
+
+function supportsVision(brain, model) {
+  // Mirror of the desktop predicate: codex (--image) and claude (Read tool)
+  // always see images; the api brain only for vision model families.
+  if (brain === "codex" || brain === "claude") return true;
+  const m = String(model || "").toLowerCase();
+  return m.startsWith("gpt-") || m.startsWith("o3") || m.startsWith("o4") ||
+         m.includes("claude") || m.startsWith("gemini") || m.startsWith("grok") ||
+         m.startsWith("pixtral") || m.startsWith("mistral-small");
+}
+
+function renderImageChips() {
+  let bar = $("imageChips");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "imageChips";
+    bar.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;padding:4px 10px 0;";
+    const composer = els.input.closest(".composer") || els.input.parentElement;
+    composer.parentElement.insertBefore(bar, composer);
+  }
+  bar.textContent = "";
+  pendingImages.forEach((img, i) => {
+    const chip = document.createElement("div");
+    chip.style.cssText = "position:relative;width:44px;height:44px;border:1px solid #2b6cb0;border-radius:6px;overflow:hidden;";
+    const im = document.createElement("img");
+    im.src = "data:" + img.mime + ";base64," + img.b64;
+    im.style.cssText = "width:100%;height:100%;object-fit:cover;";
+    const x = document.createElement("button");
+    x.textContent = "\u00d7";
+    x.title = "Remove image";
+    x.style.cssText = "position:absolute;top:-1px;right:-1px;width:16px;height:16px;line-height:12px;padding:0;border:none;border-radius:0 0 0 6px;background:#c53030;color:#fff;cursor:pointer;font-size:11px;";
+    x.addEventListener("click", () => { pendingImages.splice(i, 1); renderImageChips(); });
+    chip.appendChild(im); chip.appendChild(x);
+    bar.appendChild(chip);
+  });
+  bar.style.display = pendingImages.length ? "flex" : "none";
+}
+
+els.input.addEventListener("paste", (e) => {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  for (const item of items) {
+    if (!item.type || !item.type.startsWith("image/")) continue;
+    e.preventDefault();
+    if (!supportsVision(els.brain.value, els.model ? els.model.value : "")) {
+      addSys("This brain/model can't see images — switch to codex or claude (or a vision model like gpt-5.5 / gemini) and paste again.");
+      return;
+    }
+    const file = item.getAsFile();
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = () => {
+      const b64 = String(r.result).split(",")[1] || "";
+      if (b64) { pendingImages.push({ mime: item.type, b64 }); renderImageChips(); }
+    };
+    r.readAsDataURL(file);
+    return;
+  }
+});
+
 async function doSend() {
   if (turnInFlight) return;
   const text = els.input.value.trim();
-  if (!text) return;
+  if (!text && pendingImages.length === 0) return;
   if (!connected) { addError("Not connected to the Jarvis daemon — check the control token in Options."); return; }
 
   // Slash command? Consume it (dispatch a subagent / list agents / invoke skill).
@@ -1236,7 +1300,13 @@ async function doSend() {
 
   els.input.value = "";
   autosize();
-  addUser(text);
+  addUser(pendingImages.length
+    ? (text ? text + "\n" : "") + "\ud83d\udcce " + pendingImages.length +
+      (pendingImages.length === 1 ? " image attached" : " images attached")
+    : text);
+  const sendImages = pendingImages.slice();
+  pendingImages = [];
+  renderImageChips();
 
   // Refresh tab context right before sending so Jarvis sees the live browser.
   await refreshTabs();
@@ -1249,7 +1319,9 @@ async function doSend() {
     // browser tools (not real-screen clicking) and skips the screen question.
     const payload = sessionPrimed ? firstMsg : `${BROWSER_PRIMER}\n\n${firstMsg}`;
     sessionPrimed = true;
-    await rpc("session.send", { session_id: sid, text: payload });
+    const sendParams = { session_id: sid, text: payload };
+    if (sendImages.length) sendParams.images = sendImages;
+    await rpc("session.send", sendParams);
     // The turn now runs; final/error events end it.
   } catch (e) {
     addError(String(e && e.message || e));

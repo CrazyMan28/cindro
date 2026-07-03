@@ -27,6 +27,7 @@
 #include <QGuiApplication>
 #include <QScreen>
 #include <QBuffer>
+#include <QImage>
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QClipboard>
@@ -470,19 +471,89 @@ void Bridge::startAgentChat(const QString &agent)
 
 void Bridge::sendMessage(const QString &text)
 {
+    sendMessageWithImages(text, {});
+}
+
+void Bridge::sendMessageWithImages(const QString &text, const QVariantList &images)
+{
     if (m_sessionId.isEmpty()) {
         // NO BUTTONS: the composer fires createSession() (async) right before this.
         // The session id hasn't arrived yet, so don't error — QUEUE the message and
         // let the session.create response flush it the moment the session is ready.
         // (Auto-creates the session + its computer-use desktop on the first turn.)
         m_pendingText = text;
+        m_pendingImages = images;
         setStatus(QStringLiteral("starting session…"));
         return;
     }
     QVariantMap params;
     params.insert(QStringLiteral("session_id"), m_sessionId);
     params.insert(QStringLiteral("text"), text);
+    if (!images.isEmpty()) {
+        // Strip the QML-only preview thumbnails — the daemon wants {mime,b64}.
+        QVariantList wire;
+        for (const QVariant &v : images) {
+            const QVariantMap m = v.toMap();
+            QVariantMap img;
+            img.insert(QStringLiteral("mime"), m.value(QStringLiteral("mime")));
+            img.insert(QStringLiteral("b64"), m.value(QStringLiteral("b64")));
+            wire.append(img);
+        }
+        params.insert(QStringLiteral("images"), wire);
+    }
     request(QStringLiteral("session.send"), params);
+}
+
+bool Bridge::clipboardHasImage() const
+{
+    const QClipboard *cb = QGuiApplication::clipboard();
+    return cb && !cb->image().isNull();
+}
+
+QVariantMap Bridge::pasteImage() const
+{
+    QVariantMap out;
+    out.insert(QStringLiteral("ok"), false);
+    const QClipboard *cb = QGuiApplication::clipboard();
+    if (!cb)
+        return out;
+    QImage img = cb->image();
+    if (img.isNull())
+        return out;
+    // Same budget as the Android attach path: longest edge 1600, JPEG q82 —
+    // plenty for the model, small enough to ship over the control WS.
+    constexpr int kMaxEdge = 1600;
+    if (img.width() > kMaxEdge || img.height() > kMaxEdge)
+        img = img.scaled(kMaxEdge, kMaxEdge, Qt::KeepAspectRatio,
+                         Qt::SmoothTransformation);
+    QByteArray bytes;
+    QBuffer buf(&bytes);
+    buf.open(QIODevice::WriteOnly);
+    if (!img.save(&buf, "JPEG", 82))
+        return out;
+    const QString b64 = QString::fromLatin1(bytes.toBase64());
+    out.insert(QStringLiteral("ok"), true);
+    out.insert(QStringLiteral("mime"), QStringLiteral("image/jpeg"));
+    out.insert(QStringLiteral("b64"), b64);
+    out.insert(QStringLiteral("preview"),
+               QStringLiteral("data:image/jpeg;base64,") + b64);
+    return out;
+}
+
+bool Bridge::supportsVision(const QString &brain, const QString &model) const
+{
+    // Client-side mirror of what each brain does with attachments: codex passes
+    // --image (all its models are multimodal), claude reads the file with its
+    // Read tool (all current claude models see images), the api brain builds a
+    // vision content array — but only for model families that accept one.
+    if (brain == QStringLiteral("codex") || brain == QStringLiteral("claude"))
+        return true;
+    const QString m = model.toLower();
+    return m.startsWith(QStringLiteral("gpt-")) || m.startsWith(QStringLiteral("o3")) ||
+           m.startsWith(QStringLiteral("o4")) || m.contains(QStringLiteral("claude")) ||
+           m.startsWith(QStringLiteral("gemini")) || m.startsWith(QStringLiteral("grok")) ||
+           m.startsWith(QStringLiteral("pixtral")) ||
+           m.startsWith(QStringLiteral("mistral-small"));
 }
 
 void Bridge::cancelSession()
@@ -559,6 +630,7 @@ void Bridge::newSession()
     // (fired by the composer on first send) will spin up a brand-new one. Also drop
     // any queued first-turn text so it can't land in a future unrelated session.
     m_pendingText.clear();
+    m_pendingImages.clear();
     if (!m_sessionId.isEmpty()) {
         m_sessionId.clear();
         emit sessionIdChanged();
@@ -3630,6 +3702,7 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         // later land in an unrelated session.
         if (method == QStringLiteral("session.create")) {
             m_pendingText.clear();
+            m_pendingImages.clear();
             m_creatingSession = false;
         }
         emit errorOccurred(QStringLiteral("%1 failed: [%2] %3")
@@ -3674,13 +3747,12 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             // Flush a message the user typed BEFORE any session existed (the
             // no-buttons auto-create flow queued it in sendMessage()). This makes
             // "type and hit send on a fresh chat" just work.
-            if (!m_pendingText.isEmpty()) {
+            if (!m_pendingText.isEmpty() || !m_pendingImages.isEmpty()) {
                 const QString pending = m_pendingText;
+                const QVariantList pendingImgs = m_pendingImages;
                 m_pendingText.clear();
-                QVariantMap sendParams;
-                sendParams.insert(QStringLiteral("session_id"), m_sessionId);
-                sendParams.insert(QStringLiteral("text"), pending);
-                request(QStringLiteral("session.send"), sendParams);
+                m_pendingImages.clear();
+                sendMessageWithImages(pending, pendingImgs);
             }
 
             // The engine url for this session's per-session computer-use engine,
