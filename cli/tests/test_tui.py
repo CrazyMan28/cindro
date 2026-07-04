@@ -579,6 +579,169 @@ async def test_phone_pane_pair_renders_ascii_qr(monkeypatch):
     assert phone_pane._ascii_qr("anything") == "##\n##"
 
 
+async def test_phone_pane_dialer_calls_call_extension(daemon):
+    """A numeric dial target calls phone.mcp's call_extension with
+    {from_extension: "100", extension: target} — same shape
+    PhoneDialerTab.qml's dialExtension() sends."""
+    from textual.widgets import Static
+
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#phone")
+        await pane.dial("101")
+        await pilot.pause(0.1)
+        assert ("call_extension", {"from_extension": "100", "extension": "101"}) \
+            in daemon.phone_calls
+        status = pane.query_one("#dial-status", Static)
+        assert "Connected to 101" in str(status.content)
+
+
+async def test_phone_pane_dialer_calls_call_user(daemon):
+    """A non-numeric dial target calls phone.mcp's call_user with
+    {reason: target} — same split PhoneDialerTab.qml's call button uses
+    (`/^\\d{1,6}$/.test(target)`)."""
+    from textual.widgets import Static
+
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#phone")
+        await pane.dial("Approval needed")
+        await pilot.pause(0.1)
+        assert ("call_user", {"reason": "Approval needed"}) in daemon.phone_calls
+        status = pane.query_one("#dial-status", Static)
+        assert "In-app call placed" in str(status.content)
+
+
+async def test_phone_pane_active_calls_list_renders(daemon):
+    """list_active_calls (polled via phone.mcp) populates the Dialer tab's
+    active-calls DataTable."""
+    from textual.widgets import DataTable
+
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#phone")
+        daemon.active_calls = [
+            {"id": "call1", "state": "active", "from_extension": "100",
+             "to_extension": "101", "reason": "test call"},
+        ]
+        await pane._poll_calls_and_banner()
+        await pilot.pause(0.1)
+        assert len(pane.active_calls) == 1
+        table = pane.query_one("#phone-calls-table", DataTable)
+        assert table.row_count == 1
+
+
+async def test_phone_pane_screening_view_renders_caller_and_transcript(daemon):
+    """get_screening_status (polled via phone.mcp) renders caller info + a
+    live transcript on the Screening tab — mirrors PhoneScreeningTab.qml."""
+    from textual.widgets import Static
+
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#phone")
+        daemon.screening_status = {
+            "active": True, "caller_number": "+15551234567",
+            "caller_name": "Alex", "agent_extension": "900",
+            "transcript": [
+                {"speaker": "caller", "text": "Is this a sales call?"},
+                {"speaker": "agent", "text": "No, checking on your order."},
+            ],
+        }
+        await pane._poll_screening()
+        await pilot.pause(0.1)
+        status = pane.query_one("#screening-status", Static)
+        assert "Alex" in str(status.content)
+        assert "+15551234567" in str(status.content)
+        assert "ext 900" in str(status.content)
+        transcript = pane.query_one("#screening-transcript", Static)
+        assert "Is this a sales call?" in str(transcript.content)
+        assert "checking on your order" in str(transcript.content)
+
+
+async def test_phone_pane_incoming_call_accept_wires_phone_http(daemon):
+    """A ringing call surfaces the top-of-pane alert banner with ACCEPT/
+    REJECT; ACCEPT calls phone.http's POST /api/calls/:id/accept with
+    {extension: "100"} — same route + body PhoneCallOverlay.qml's
+    _accept() sends."""
+    from textual.widgets import Button
+
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#phone")
+        daemon.active_calls = [
+            {"id": "call9", "state": "ringing", "from_extension": "555",
+             "to_extension": "100", "reason": "incoming"},
+        ]
+        await pane._poll_calls_and_banner()
+        await pilot.pause(0.1)
+
+        alert = pane.query_one("#phone-call-alert")
+        assert alert.display is True
+        assert pane.query_one("#phone-call-accept", Button).display is True
+        assert pane.query_one("#phone-call-reject", Button).display is True
+
+        await pane._accept_call()
+        await pilot.pause(0.1)
+
+        assert ("POST /api/calls/call9/accept", {"extension": "100"}) \
+            in daemon.phone_calls
+        assert daemon.active_calls[0]["state"] == "active"
+
+
+async def test_phone_pane_incoming_call_reject_wires_phone_http(daemon):
+    """REJECT calls phone.http's POST /api/calls/:id/reject with
+    {extension: "100", reason: "rejected_by_user"} and clears the banner —
+    same route + body PhoneCallOverlay.qml's _reject() sends."""
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#phone")
+        daemon.active_calls = [
+            {"id": "call5", "state": "ringing", "from_extension": "555",
+             "to_extension": "100", "reason": "incoming"},
+        ]
+        await pane._poll_calls_and_banner()
+        await pilot.pause(0.1)
+
+        await pane._reject_call()
+        await pilot.pause(0.1)
+
+        assert ("POST /api/calls/call5/reject",
+                {"extension": "100", "reason": "rejected_by_user"}) \
+            in daemon.phone_calls
+        assert pane.incoming == {}
+        assert pane.query_one("#phone-call-alert").display is False
+        assert all(c["id"] != "call5" for c in daemon.active_calls)
+
+
+async def test_phone_pane_phone_verbs_unknown_method_degrades_quietly(daemon):
+    """A daemon build without phone.mcp/phone.http (unknown_method, e.g.
+    version skew) must not crash the pane — dial() shows a quiet inline
+    error and background polling degrades to an empty state."""
+    from textual.widgets import Static
+
+    from jarvis_cli.tui.app import JarvisTui
+    daemon.phone_verbs_supported = False
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#phone")
+        await pane.dial("101")
+        await pilot.pause(0.1)
+        status = pane.query_one("#dial-status", Static)
+        assert "Error" in str(status.content)
+
+        await pane._poll_calls_and_banner()
+        await pane._poll_screening()
+        await pilot.pause(0.1)
+        assert pane.active_calls == []
+        assert pane.query_one("#phone-call-alert").display is False
+
+
 async def test_computer_pane_starts_a_coworker_session(monkeypatch):
     from jarvis_cli.tui.app import JarvisTui
     app = JarvisTui()

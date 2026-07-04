@@ -12,6 +12,7 @@ import asyncio
 import base64
 import io
 import json
+import re
 import threading
 import wave
 from typing import Any, Awaitable, Callable, Optional
@@ -108,6 +109,19 @@ class MockDaemon:
         self._auth_challenges: dict[str, str] = {}
         self._auth_seq = 0
         self.last_challenge_id = ""
+        # ---- phone.mcp / phone.http (Contract-A phone proxy verbs) -------------
+        # phone_verbs_supported=False makes _dispatch return None for BOTH
+        # verbs (a real "unknown_method" wire error) — simulates an older
+        # daemon build that predates these verbs. phone_configured=False
+        # simulates a daemon that HAS the verbs but no phone.env yet (the
+        # real handlePhoneMcp/handlePhoneHttp's "phone_not_configured").
+        self.phone_verbs_supported = True
+        self.phone_configured = True
+        self.active_calls: list[dict] = []
+        self.screening_status: dict = {"active": False}
+        self.call_transcripts: dict[str, dict] = {}
+        self.phone_calls: list[tuple[str, dict]] = []  # (tool_or_http_path, args)
+        self._call_seq = 0
 
     async def _handler(self, ws):
         self.ws = ws
@@ -219,6 +233,14 @@ class MockDaemon:
                     "default": self.settings.get("tts_voice", "")}
         if method == "phone.event.subscribe":
             return {"subscribed": True, "bridge_connected": False}
+        if method == "phone.mcp":
+            if not self.phone_verbs_supported:
+                return None  # real "unknown_method" wire error
+            return self._handle_phone_mcp(params)
+        if method == "phone.http":
+            if not self.phone_verbs_supported:
+                return None  # real "unknown_method" wire error
+            return self._handle_phone_http(params)
         if method == "auth.request":
             if not self.paired:
                 return {"challenge_id": "", "state": "approved", "paired": False}
@@ -249,6 +271,64 @@ class MockDaemon:
         """Test convenience: flip a minted challenge's state (as if the
         paired phone/extension had just approved/denied/expired it)."""
         self._auth_challenges[challenge_id] = state
+
+    # ---- phone.mcp / phone.http (mirrors daemon/src/ControlServer.cpp's
+    # handlePhoneMcp/handlePhoneHttp response shapes) --------------------------
+    def _handle_phone_mcp(self, params: dict) -> dict:
+        name = params.get("name", "")
+        args = params.get("arguments") or {}
+        self.phone_calls.append((name, args))
+        if not self.phone_configured:
+            return {"tool": name, "error": {"code": "phone_not_configured",
+                                            "message": "phone subsystem is not set up (no phone.env)"}}
+        if name == "list_active_calls":
+            return {"tool": name, "data": list(self.active_calls)}
+        if name == "call_extension":
+            self._call_seq += 1
+            cid = f"call{self._call_seq}"
+            self.active_calls.append({
+                "id": cid, "state": "active",
+                "from_extension": args.get("from_extension", ""),
+                "to_extension": args.get("extension", ""), "reason": "",
+            })
+            return {"tool": name, "data": {"call_id": cid, "id": cid}}
+        if name == "call_user":
+            self._call_seq += 1
+            cid = f"call{self._call_seq}"
+            self.active_calls.append({
+                "id": cid, "state": "ringing", "from_extension": "100",
+                "to_extension": "user", "reason": args.get("reason", ""),
+            })
+            return {"tool": name, "data": {"call_id": cid, "id": cid}}
+        if name == "end_call":
+            cid = args.get("call_id", "")
+            self.active_calls = [c for c in self.active_calls if c.get("id") != cid]
+            return {"tool": name, "data": {"ok": True}}
+        if name == "get_call_transcript":
+            cid = args.get("call_id", "")
+            return {"tool": name, "data": self.call_transcripts.get(cid, {"messages": []})}
+        if name == "get_screening_status":
+            return {"tool": name, "data": dict(self.screening_status)}
+        return {"tool": name, "error": {"code": "unknown_tool", "message": f"no such phone tool {name}"}}
+
+    def _handle_phone_http(self, params: dict) -> dict:
+        method = str(params.get("method", "GET")).upper()
+        path = params.get("path", "")
+        body = params.get("body") or {}
+        self.phone_calls.append((f"{method} {path}", body))
+        if not self.phone_configured:
+            return {"status": 503, "data": {"error": "phone subsystem is not set up"}}
+        m = re.match(r"^/api/calls/([^/]+)/(accept|reject)$", path)
+        if m and method == "POST":
+            cid, action = m.group(1), m.group(2)
+            if action == "accept":
+                for c in self.active_calls:
+                    if c.get("id") == cid:
+                        c["state"] = "active"
+                return {"status": 200, "data": {"ok": True}}
+            self.active_calls = [c for c in self.active_calls if c.get("id") != cid]
+            return {"status": 200, "data": {"ok": True}}
+        return {"status": 404, "data": {}}
 
     def _spawn(self, coro):
         t = asyncio.ensure_future(coro)
