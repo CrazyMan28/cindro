@@ -53,7 +53,10 @@ class MemoryGraphPane(Vertical):
         except (ControlError, ConnectionError, TimeoutError) as exc:
             self.notify(str(exc), severity="error")
             return
-        nodes = {n["id"]: n for n in res.get("nodes", [])}
+        raw_nodes = res.get("nodes", [])
+        nodes = {n["id"]: n for n in raw_nodes if "id" in n}
+        if len(nodes) != len(raw_nodes):
+            self.notify("some memory graph nodes were malformed and skipped", severity="warning")
         edges = res.get("edges", [])
         self.tree = Tree("memory graph")
         added: set[str] = set()
@@ -66,12 +69,13 @@ class MemoryGraphPane(Vertical):
         self.query_one("#graph-view", Static).update(self.tree)
 
     def _add_node(self, parent, node, nodes, by_from, added) -> None:
-        if node["id"] in added:
+        node_id = node.get("id")
+        if node_id is None or node_id in added:
             return
-        added.add(node["id"])
-        label = node.get("name") or node.get("text", "")[:40] or node["id"]
+        added.add(node_id)
+        label = node.get("name") or node.get("text", "")[:40] or node_id
         branch = parent.add(label)
-        for edge in by_from.get(node["id"], []):
+        for edge in by_from.get(node_id, []):
             child = nodes.get(edge.get("to"))
             if child:
                 self._add_node(branch, child, nodes, by_from, added)

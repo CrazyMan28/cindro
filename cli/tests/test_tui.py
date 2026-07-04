@@ -290,6 +290,26 @@ async def test_memory_graph_pane_builds_a_tree(monkeypatch):
             "Issac" in str(child.label) for child in pane.tree.children)
 
 
+async def test_memory_graph_pane_skips_malformed_nodes(monkeypatch):
+    """Regression test: a memory.graph response containing a node without an
+    "id" key must not crash load_graph (it used to raise an uncaught
+    KeyError, which — since load_graph runs via call_later — took down the
+    whole Textual app). A malformed node should just be skipped while valid
+    nodes still render."""
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#memorygraph")
+
+        async def fake_call(method, params=None, timeout=60.0):
+            return {"nodes": [{"name": "no id here"}, {"id": "n2", "name": "valid"}],
+                    "edges": []}
+        monkeypatch.setattr(app.client, "call", fake_call)
+        await pane.load_graph()  # must not raise
+        assert "valid" in str(pane.tree.label) or any(
+            "valid" in str(child.label) for child in pane.tree.children)
+
+
 async def test_home_pane_shows_recent_sessions(monkeypatch):
     from jarvis_cli.tui.app import JarvisTui
     app = JarvisTui()
@@ -379,6 +399,64 @@ async def test_palette_filters_as_you_type(monkeypatch):
                                  customs=[])
         matches = palette.filter("st")
         assert [m[0] for m in matches] == ["stop"]
+
+
+async def test_tui_command_is_not_a_tab_jump(monkeypatch):
+    """/tui is an ACTION command (ask Jarvis to edit the TUI layout), not a
+    tab jump — there's no tab-tui TabPane, so it must never land in
+    TAB_JUMP_COMMANDS (that used to crash with an uncaught NoMatches)."""
+    from jarvis_cli.tui.chat import TAB_JUMP_COMMANDS
+    assert "tui" not in TAB_JUMP_COMMANDS
+
+
+async def test_tui_command_sends_a_prompt_to_jarvis(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        chat = app.query_one("#chat")
+        sent = []
+        async def fake_send(text):
+            sent.append(text)
+        monkeypatch.setattr(chat, "_send", fake_send)
+        await chat.run_slash_command("tui", "add a stopwatch page")
+        assert len(sent) == 1
+        assert "add a stopwatch page" in sent[0]
+        assert "tui" in sent[0].lower() or "layout" in sent[0].lower()
+
+
+async def test_tui_command_with_no_args_still_sends_a_prompt(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        chat = app.query_one("#chat")
+        sent = []
+        async def fake_send(text):
+            sent.append(text)
+        monkeypatch.setattr(chat, "_send", fake_send)
+        await chat.run_slash_command("tui", "")
+        assert len(sent) == 1
+        assert sent[0]  # non-empty prompt even with no args
+
+
+async def test_every_real_tab_has_exactly_one_jump_command():
+    """cli/README.md documents 'one jump-command per tab' for all 20 tabs.
+    Derive the real tab-* ids straight from app.py's compose() and assert
+    TAB_JUMP_COMMANDS covers exactly that set (minus 'tui', which is an
+    action command, not a real tab)."""
+    import re
+    from pathlib import Path
+    from jarvis_cli.tui.chat import TAB_JUMP_COMMANDS
+
+    app_py = Path(__file__).parent.parent / "jarvis_cli" / "tui" / "app.py"
+    src = app_py.read_text()
+    tab_ids = set(re.findall(r'TabPane\("[^"]+",\s*id="(tab-[a-zA-Z0-9_-]+)"', src))
+    # Custom, dynamically-mounted pages (e.g. "tab-custom-*") aren't part of
+    # the fixed 20-tab set this feature covers.
+    tab_ids = {t for t in tab_ids if not t.startswith("tab-custom")}
+
+    expected_names = {t[len("tab-"):] for t in tab_ids}
+    assert TAB_JUMP_COMMANDS == expected_names
+    assert len(tab_ids) == 20
 
 
 async def test_selecting_a_custom_command_invokes_it(monkeypatch):
