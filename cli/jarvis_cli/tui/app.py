@@ -15,11 +15,13 @@ from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.containers import Horizontal
 from textual.widgets import Footer, Static, TabbedContent, TabPane
 
 from jarvis_cli import __version__, config
 from jarvis_cli.control import ControlClient
 from jarvis_cli.tui.activity_pane import ActivityPane, ReplayPane
+from jarvis_cli.tui.arc_reactor import ArcReactorWidget
 from jarvis_cli.tui.browser_pane import BrowserPane
 from jarvis_cli.tui.canvas_pane import CanvasPane, WidgetsPane
 from jarvis_cli.tui.chat import ChatPane
@@ -37,6 +39,13 @@ class JarvisTui(App):
     CSS = """
     Screen {
         background: #06090d;
+    }
+    #topbar-row {
+        height: auto;
+        background: #0a1017;
+    }
+    #topbar-spinner {
+        margin: 0 1 0 1;
     }
     #topbar {
         height: 1;
@@ -103,10 +112,21 @@ class JarvisTui(App):
         padding: 0 1;
         background: #0a1017;
     }
+    .pane-spinner {
+        margin: 0 0 0 1;
+    }
     """
+
+    # Ctrl+Q is the unambiguous, single-press quit. Ctrl+C is left to
+    # action_quit_confirm (below) instead of Textual's own default
+    # ctrl+c -> action_help_quit, so a single stray Ctrl+C — the muscle-memory
+    # key people mash by accident — never has any destructive effect; it only
+    # arms a short "press again to quit" window (see QUIT_CONFIRM_WINDOW_S).
+    QUIT_CONFIRM_WINDOW_S = 2.0
 
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit"),
+        Binding("ctrl+c", "quit_confirm", "Quit", show=False),
         Binding("ctrl+n", "new_chat", "New chat"),
         Binding("f5", "refresh_tab", "Refresh"),
     ]
@@ -119,10 +139,22 @@ class JarvisTui(App):
         # tab-custom-{id} pane — lets tui.layout.changed reconciliation tell
         # add vs. edit vs. remove apart without re-diffing widget internals.
         self._custom_pages: dict[str, dict] = {}
+        # double-Ctrl+C-to-quit: True while the "press again" window is open.
+        self._quit_armed = False
+        self._quit_confirm_timer = None
 
     # -- layout ----------------------------------------------------------------
     def compose(self) -> ComposeResult:
-        yield Static(id="topbar")
+        with Horizontal(id="topbar-row"):
+            # Boot spinner: visible from first paint while the first
+            # settings.get round-trip (below, in load_daemon_line) is in
+            # flight — removed once it resolves, success or failure, so the
+            # header collapses back to its normal single line. Same
+            # ArcReactorWidget(thinking=True) idiom TablePane uses for its
+            # per-tab spinner, just always-on rather than hidden-by-default
+            # (the topbar is live from t=0, unlike a not-yet-active tab).
+            yield ArcReactorWidget(size=5, thinking=True, id="topbar-spinner")
+            yield Static(id="topbar")
         with TabbedContent(initial="tab-home"):
             with TabPane("Home", id="tab-home"):
                 yield HomePane(id="home")
@@ -193,6 +225,10 @@ class JarvisTui(App):
                                  f" · :{config.control_port()}")
         except Exception as exc:
             self._daemon_line = f"daemon unreachable ({exc})"
+        try:
+            await self.query_one("#topbar-spinner", ArcReactorWidget).remove()
+        except Exception:
+            pass
         self._set_topbar()
 
     async def load_custom_pages(self) -> None:
@@ -272,6 +308,26 @@ class JarvisTui(App):
         await chat._send(f"/{name}")
 
     # -- bindings ----------------------------------------------------------------
+    def action_quit_confirm(self) -> None:
+        """Ctrl+C: first press arms a short confirm window and notifies
+        instead of quitting outright (a single stray Ctrl+C — the
+        muscle-memory key people mash by accident — must never silently kill
+        the app); a second press before the window closes actually quits.
+        Ctrl+Q (action_quit) is unaffected — that one's unambiguous."""
+        if self._quit_armed:
+            self._disarm_quit()
+            self.exit()
+            return
+        self._quit_armed = True
+        self.notify("Press Ctrl+C again to quit", title="Quit?", timeout=self.QUIT_CONFIRM_WINDOW_S)
+        self._quit_confirm_timer = self.set_timer(self.QUIT_CONFIRM_WINDOW_S, self._disarm_quit)
+
+    def _disarm_quit(self) -> None:
+        self._quit_armed = False
+        if self._quit_confirm_timer is not None:
+            self._quit_confirm_timer.stop()
+            self._quit_confirm_timer = None
+
     def action_new_chat(self) -> None:
         self.query_one("#chat", ChatPane).new_session()
         self.query_one(TabbedContent).active = "tab-chat"

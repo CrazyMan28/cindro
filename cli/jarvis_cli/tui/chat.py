@@ -22,12 +22,13 @@ from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.widgets import Input, RichLog, Static
 
 from jarvis_cli.control import ControlError
 from jarvis_cli.tui.arc_reactor import ArcReactorWidget
-from jarvis_cli.tui.command_palette import CommandPalette
+from jarvis_cli.tui.command_palette import CommandPalette, PALETTE_TRANSITION_MS
 
 # typewriter reveal tuning (see _start_typewriter): a bounded total duration
 # regardless of message length, so huge replies never make the user wait.
@@ -271,6 +272,12 @@ class ChatPane(Vertical):
     async def _open_or_update_palette(self, query: str) -> None:
         try:
             existing = self.query_one(CommandPalette)
+            if existing.closing:
+                # Mid exit-fade (see _close_palette) — let it finish
+                # disappearing and mount a fresh one rather than reusing an
+                # instance that's animating toward invisible.
+                existing.remove()
+                raise NoMatches("palette is closing")
         except Exception:
             try:
                 res = await self.client.call("command.list", {})
@@ -282,8 +289,24 @@ class ChatPane(Vertical):
         existing.filter(query)
 
     def _close_palette(self) -> None:
+        """Dismiss the palette with a brief fade/slide-out instead of an
+        abrupt removal. Idempotent: safe to call with no palette mounted,
+        or repeatedly on one that's already fading out — either way it just
+        returns without raising (matches the surrounding try/except style)."""
         try:
-            self.query_one(CommandPalette).remove()
+            palette = self.query_one(CommandPalette)
+        except Exception:
+            return
+        if palette.closing:
+            return  # already fading out — a timer is already queued to remove it
+        palette.start_exit()
+        self.set_timer(PALETTE_TRANSITION_MS / 1000.0,
+                       lambda: self._remove_palette(palette))
+
+    def _remove_palette(self, palette: CommandPalette) -> None:
+        try:
+            if palette.parent is not None:  # still attached — not already removed
+                palette.remove()
         except Exception:
             pass
 

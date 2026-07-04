@@ -17,10 +17,21 @@ from textual.containers import Vertical
 from textual.widgets import DataTable, Input, Static
 
 from jarvis_cli.control import ControlError
+from jarvis_cli.tui.arc_reactor import ArcReactorWidget
 
 
 class TablePane(Vertical):
-    """Shared skeleton: hint line + DataTable + optional input, async refresh."""
+    """Shared skeleton: hint line + DataTable + optional input, async refresh.
+
+    Every subclass — even the ones that fully override ``compose()`` to add
+    their own Input row (MemoryPane, QueuePane, SshPane, SchedulesPane, …) —
+    gets a small hidden-by-default ArcReactorWidget spinner for free: it is
+    mounted in ``on_mount()`` (right after the ``.pane-hint`` Static, wherever
+    that landed) rather than yielded from ``compose()``, so it never depends
+    on a subclass calling super().compose(). refresh_data() shows it right
+    before the daemon round-trip and hides it again in a finally block, so it
+    can never get stuck visible after an exception.
+    """
 
     HINT = ""
     COLUMNS: tuple[str, ...] = ()
@@ -29,6 +40,8 @@ class TablePane(Vertical):
     # rapid tab-hopping shouldn't hammer the daemon — skip refreshes closer
     # together than this.
     REFRESH_THROTTLE_S = 3.0
+
+    SPINNER_ID = "pane-spinner"
 
     def __init__(self, **kw) -> None:
         super().__init__(**kw)
@@ -50,18 +63,38 @@ class TablePane(Vertical):
         table.add_columns(*self.COLUMNS)
         yield table
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
+        spinner = ArcReactorWidget(size=5, thinking=True, id=self.SPINNER_ID,
+                                   classes="pane-spinner")
+        spinner.display = False
+        try:
+            hint = self.query_one(".pane-hint")
+        except Exception:
+            hint = None
+        await self.mount(spinner, after=hint)
         self.refresh_data()
+
+    def _spinner(self) -> ArcReactorWidget | None:
+        try:
+            return self.query_one(f"#{self.SPINNER_ID}", ArcReactorWidget)
+        except Exception:
+            return None
 
     @work(exclusive=True)
     async def refresh_data(self) -> None:
         import time
         self._last_refresh = time.monotonic()
+        spinner = self._spinner()
+        if spinner is not None:
+            spinner.display = True
         try:
             self.rows = await self.fetch()
         except (ControlError, ConnectionError, TimeoutError) as exc:
             self.rows = []
             self.notify(str(exc), severity="error", timeout=4)
+        finally:
+            if spinner is not None:
+                spinner.display = False
         table = self.query_one(DataTable)
         table.clear()
         for row in self.rows:

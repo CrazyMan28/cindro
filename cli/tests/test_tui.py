@@ -624,6 +624,51 @@ async def test_palette_filters_as_you_type(monkeypatch):
         assert [m[0] for m in matches] == ["stop"]
 
 
+async def test_command_palette_declares_a_css_transition():
+    """Entrance/exit should animate (fade/slide) rather than pop instantly —
+    structural check that the widget's CSS actually declares a `transition`
+    rule for the styles _animate_in/start_exit flip (opacity/offset)."""
+    from jarvis_cli.tui.command_palette import CommandPalette
+    assert "transition" in CommandPalette.DEFAULT_CSS
+    assert "opacity" in CommandPalette.DEFAULT_CSS
+    assert "offset" in CommandPalette.DEFAULT_CSS
+
+
+async def test_close_palette_is_safe_with_nothing_mounted(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        chat = app.query_one("#chat")
+        # no palette mounted at all — must not raise (matches the existing
+        # try/except-and-swallow pattern the rest of the method uses).
+        chat._close_palette()
+        chat._close_palette()
+
+
+async def test_close_palette_is_idempotent_while_fading_out(monkeypatch):
+    """Calling _close_palette twice in a row on the SAME mounted palette
+    (e.g. a fast double /new /new keystroke, or a stray duplicate close)
+    must not raise, and must not schedule two competing removal timers."""
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.command_palette import CommandPalette
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        chat = app.query_one("#chat")
+        palette = CommandPalette(builtins=[("new", "start a fresh chat")], customs=[])
+        await chat.mount(palette)
+        await pilot.pause()
+
+        chat._close_palette()  # starts the fade-out
+        assert palette.closing is True
+        chat._close_palette()  # already closing — must be a safe no-op
+        assert palette.closing is True
+
+        # let the deferred removal timer fire
+        await pilot.pause(0.3)
+        assert palette.parent is None
+        assert not chat.query(CommandPalette)
+
+
 async def test_tui_command_is_not_a_tab_jump(monkeypatch):
     """/tui is an ACTION command (ask Jarvis to edit the TUI layout), not a
     tab jump — there's no tab-tui TabPane, so it must never land in
@@ -699,3 +744,110 @@ async def test_selecting_a_custom_command_invokes_it(monkeypatch):
         chat = app.query_one("#chat")
         await chat.run_slash_command("deploy", "")
         assert ("command.invoke", {"name": "deploy", "args": ""}) in calls
+
+
+async def test_sessions_pane_spinner_shows_during_fetch_and_hides_after(monkeypatch):
+    """TablePane's shared spinner (added in screens.py) must appear the
+    moment refresh_data() starts awaiting fetch() and disappear once it
+    resolves — exercised on a plain TablePane subclass that does NOT
+    override compose()."""
+    import asyncio
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.arc_reactor import ArcReactorWidget
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#sessions", SessionsPane)
+        spinner = pane.query_one(f"#{pane.SPINNER_ID}", ArcReactorWidget)
+        assert spinner.display is False  # nothing in flight yet
+
+        gate = asyncio.Event()
+
+        async def slow_call(method, params=None, timeout=60.0):
+            if method == "session.list":
+                await gate.wait()
+                return {"sessions": [{"id": "s1", "title": "t",
+                                      "brain": "codex", "state": "idle"}]}
+            return {}
+        monkeypatch.setattr(app.client, "call", slow_call)
+
+        pane.refresh_data()  # @work-decorated -> fires a worker, returns immediately
+        await pilot.pause(0.05)
+        assert spinner.display is True  # visible while fetch() is pending
+
+        gate.set()
+        await pilot.pause(0.2)
+        assert spinner.display is False  # hidden again once fetch() resolved
+        assert pane.rows and pane.rows[0]["id"] == "s1"
+
+
+async def test_ssh_pane_spinner_shows_and_hides_despite_overriding_compose(monkeypatch):
+    """SshPane fully overrides TablePane.compose() (to add its host-Input
+    row) WITHOUT yielding a spinner itself — the base class must still
+    inject one via on_mount(), proving the 'zero subclass changes' claim
+    holds even for compose()-overriding subclasses."""
+    import asyncio
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.arc_reactor import ArcReactorWidget
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#ssh")
+        spinner = pane.query_one(f"#{pane.SPINNER_ID}", ArcReactorWidget)
+        assert spinner.display is False
+
+        gate = asyncio.Event()
+
+        async def slow_call(method, params=None, timeout=60.0):
+            if method == "ssh.allow_list":
+                await gate.wait()
+                return {"hosts": ["deploy@k2-runner"]}
+            return {}
+        monkeypatch.setattr(app.client, "call", slow_call)
+
+        pane.refresh_data()
+        await pilot.pause(0.05)
+        assert spinner.display is True
+
+        gate.set()
+        await pilot.pause(0.2)
+        assert spinner.display is False
+        assert pane.rows and pane.rows[0]["host"] == "deploy@k2-runner"
+
+
+async def test_home_pane_spinner_shows_during_fetch_and_hides_after(monkeypatch):
+    """HomePane is NOT a TablePane subclass (it's a custom Vertical with its
+    own refresh_data) — it needs its own hidden-by-default spinner, shown
+    around its own daemon round-trips."""
+    import asyncio
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.arc_reactor import ArcReactorWidget
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        # let any on_mount-deferred refresh (against the real, un-patched
+        # client, with no daemon listening) settle before we take over.
+        await pilot.pause(0.1)
+        pane = app.query_one("#home")
+        spinner = pane.query_one("#home-spinner", ArcReactorWidget)
+        assert spinner.display is False
+
+        gate = asyncio.Event()
+
+        async def slow_call(method, params=None, timeout=60.0):
+            if method == "session.list":
+                await gate.wait()
+                return {"sessions": [{"id": "s1", "title": "chat about X",
+                                      "brain": "claude"}]}
+            return {"settings": {"version": "1.2.3", "default_brain": "claude"}}
+        monkeypatch.setattr(app.client, "call", slow_call)
+
+        task = asyncio.create_task(pane.refresh_data())
+        await pilot.pause(0.05)
+        assert spinner.display is True
+
+        gate.set()
+        await task
+        await pilot.pause(0.05)
+        assert spinner.display is False
+        assert "chat about X" in "\n".join(pane.lines)
