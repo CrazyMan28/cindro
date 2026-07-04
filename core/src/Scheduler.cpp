@@ -512,4 +512,22 @@ int Scheduler::tick(const QDateTime &now)
     return fired;
 }
 
+std::optional<QString> Scheduler::runNow(const QString &id, const QDateTime &now)
+{
+    const std::optional<ScheduleRow> row = get(id);
+    if (!row)
+        return std::nullopt;
+
+    // Explicit user action: fire regardless of enabled/next_run state.
+    QString sessionId;
+    if (m_fire)
+        sessionId = m_fire(*row);
+
+    // Stamp last_run but leave next_run exactly as stored — tick() owns
+    // next_run advancement, and a manual run must not shift the cadence.
+    persistRunTimes(id, now.toMSecsSinceEpoch(), row->nextRun);
+    emit jobFired(*row, sessionId);
+    return sessionId;
+}
+
 } // namespace jarvis

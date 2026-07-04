@@ -5960,6 +5960,7 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("schedule.list"))        return handleScheduleList(req);
     if (m == QStringLiteral("schedule.set_enabled")) return handleScheduleSetEnabled(req);
     if (m == QStringLiteral("schedule.remove"))      return handleScheduleRemove(req);
+    if (m == QStringLiteral("schedule.run_now"))     return handleScheduleRunNow(req);
     if (m == QStringLiteral("tui.layout.list"))    return handleTuiLayoutList(req);
     if (m == QStringLiteral("tui.layout.add"))     return handleTuiLayoutAdd(req);
     if (m == QStringLiteral("tui.layout.edit"))    return handleTuiLayoutEdit(req);
@@ -6076,6 +6077,26 @@ Response ControlServer::handleScheduleRemove(const Request &req)
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleScheduleRunNow(const Request &req)
+{
+    // Fires the job immediately (even if disabled — pressing Run IS the
+    // approval), without touching next_run. Both the GUI's Run button and the
+    // TUI's "g" key call this; it previously didn't exist and always failed
+    // with unknown_method.
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const std::optional<QString> sid = m_scheduler.runNow(id);
+    if (!sid)
+        return Response::failure(req.id, QStringLiteral("no_schedule"),
+                                 QStringLiteral("unknown schedule: ") + id);
+    m_audit.record(QStringLiteral("schedule.run_now"), !sid->isEmpty(),
+                   QStringLiteral("low"),
+                   QStringLiteral("manually fired schedule %1").arg(id));
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), !sid->isEmpty());
+    result.insert(QStringLiteral("session_id"), *sid);
+    return Response::success(req.id, result);
 }
 
 // --- TUI self-edit layout: tui.layout.* -------------------------------------

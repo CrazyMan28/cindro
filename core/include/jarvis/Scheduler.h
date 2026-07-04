@@ -122,6 +122,14 @@ public:
     // jobs fired. Exposed for tests.
     int tick(const QDateTime &now = QDateTime::currentDateTime());
 
+    // schedule.run_now: fire one job immediately regardless of enabled/next_run
+    // state (an explicit user action). Stamps last_run but leaves next_run
+    // untouched so a manual run never shifts the configured cadence. Returns
+    // std::nullopt for an unknown id, else the fire callback's session id
+    // (empty when the daemon failed to spawn the session).
+    std::optional<QString> runNow(const QString &id,
+                                  const QDateTime &now = QDateTime::currentDateTime());
+
 signals:
     // Emitted after a job fires (so the daemon can notify-send "schedule done").
     // `sessionId` is whatever the fire callback returned (may be empty).

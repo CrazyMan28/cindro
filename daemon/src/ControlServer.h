@@ -431,6 +431,7 @@ private:
     Response handleScheduleList(const Request &req);
     Response handleScheduleSetEnabled(const Request &req);
     Response handleScheduleRemove(const Request &req);
+    Response handleScheduleRunNow(const Request &req);
     // TUI self-edit layout — tui.layout.list/add/edit/remove/reorder.
     Response handleTuiLayoutList(const Request &req);
     Response handleTuiLayoutAdd(const Request &req);
