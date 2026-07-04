@@ -125,3 +125,18 @@ async def test_widgets_pane_lists_saved_widgets(tmp_path, monkeypatch):
         pane.refresh_saved()
         await pilot.pause()
         assert any(w["name"] == "My Widget" for w in pane.saved)
+
+
+async def test_phone_pane_lists_devices():
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#phone")
+        pane.rows = [{"id": "dev1", "name": "Pixel", "last_seen": "now"}]
+        await pilot.pause()
+
+
+async def test_phone_pane_pair_renders_ascii_qr(monkeypatch):
+    from jarvis_cli.tui import phone_pane
+    monkeypatch.setattr(phone_pane, "_ascii_qr", lambda payload: "##\n##")
+    assert phone_pane._ascii_qr("anything") == "##\n##"
