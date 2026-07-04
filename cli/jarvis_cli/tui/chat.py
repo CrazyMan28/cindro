@@ -171,7 +171,9 @@ class ChatPane(Vertical):
         log.write(Text("◉ JARVIS", style="bold cyan"))
         log.write(Text("Type a message to start a conversation. "
                        "Tab switches screens; Ctrl+Q quits.", style="bright_black"))
-        self.query_one("#status-reactor", ArcReactorWidget).display = False
+        status_reactor = self.query_one("#status-reactor", ArcReactorWidget)
+        status_reactor.display = False
+        status_reactor.pause()
         self._update_landing_reactor()
 
     # -- helpers ---------------------------------------------------------------
@@ -192,7 +194,12 @@ class ChatPane(Vertical):
             reactor = self.query_one("#landing-reactor", ArcReactorWidget)
         except Exception:
             return
-        reactor.display = not self.session_id
+        visible = not self.session_id
+        reactor.display = visible
+        if visible:
+            reactor.resume()
+        else:
+            reactor.pause()
 
     def _set_thinking(self, active: bool) -> None:
         """Show/hide the small reactor near #chat-status and gate its
@@ -203,6 +210,10 @@ class ChatPane(Vertical):
             return
         reactor.display = active
         reactor.thinking = active
+        if active:
+            reactor.resume()
+        else:
+            reactor.pause()
 
     # -- typewriter reveal -------------------------------------------------------
     def _start_typewriter(self, text: str) -> None:
@@ -224,7 +235,10 @@ class ChatPane(Vertical):
         n = 0
         while n < len(text):
             n = min(len(text), n + chunk)
-            preview.update(Markdown(text[:n]))
+            # Plain text during the reveal — no per-tick Markdown re-parse.
+            # The real Markdown parse happens exactly once below, when the
+            # completed text is finalized into the permanent transcript.
+            preview.update(Text(text[:n]))
             if n < len(text):
                 await asyncio.sleep(TYPEWRITER_TICK_MS / 1000.0)
         # completed naturally (not cancelled) — finalize into the permanent
@@ -425,7 +439,7 @@ class ChatPane(Vertical):
         except Exception:
             palette = None
         if palette is not None:
-            name = palette.selected_name() or (text[1:] if text.startswith("/") else text[1:])
+            name = palette.selected_name() or (text[1:] if text.startswith("/") else text)
             self._close_palette()
             event.input.value = ""
             if name:

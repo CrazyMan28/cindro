@@ -8,16 +8,47 @@ queue item, cycle a setting).
 
 from __future__ import annotations
 
-from typing import Any
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator
 
 from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.widget import Widget
 from textual.widgets import DataTable, Input, Static
 
 from jarvis_cli.control import ControlError
 from jarvis_cli.tui.arc_reactor import ArcReactorWidget
+
+
+@asynccontextmanager
+async def spinner_guard(pane: Widget, spinner_id: str) -> AsyncIterator[None]:
+    """Show + resume the named ArcReactorWidget spinner for the duration of
+    the wrapped block, hiding + pausing it again in a `finally` — so it can
+    never get stuck visible (or ticking) after an exception. Shared by every
+    pane that hand-rolls the show-spinner/await-fetch/hide-spinner dance
+    (TablePane.refresh_data, HomePane.refresh_data, MemoryGraphPane.load_graph)
+    so the pattern lives in exactly one place.
+
+    Does NOT catch or swallow exceptions raised inside the block — callers
+    keep their own try/except (for ControlError/ConnectionError/TimeoutError
+    + notify) around (or outside) this context manager exactly as before;
+    this only owns the spinner's visibility/tick lifecycle.
+    """
+    try:
+        spinner = pane.query_one(f"#{spinner_id}", ArcReactorWidget)
+    except Exception:
+        spinner = None
+    if spinner is not None:
+        spinner.display = True
+        spinner.resume()
+    try:
+        yield
+    finally:
+        if spinner is not None:
+            spinner.display = False
+            spinner.pause()
 
 
 class TablePane(Vertical):
@@ -72,29 +103,19 @@ class TablePane(Vertical):
         except Exception:
             hint = None
         await self.mount(spinner, after=hint)
+        spinner.pause()  # hidden by default — no need to tick until shown
         self.refresh_data()
-
-    def _spinner(self) -> ArcReactorWidget | None:
-        try:
-            return self.query_one(f"#{self.SPINNER_ID}", ArcReactorWidget)
-        except Exception:
-            return None
 
     @work(exclusive=True)
     async def refresh_data(self) -> None:
         import time
         self._last_refresh = time.monotonic()
-        spinner = self._spinner()
-        if spinner is not None:
-            spinner.display = True
-        try:
-            self.rows = await self.fetch()
-        except (ControlError, ConnectionError, TimeoutError) as exc:
-            self.rows = []
-            self.notify(str(exc), severity="error", timeout=4)
-        finally:
-            if spinner is not None:
-                spinner.display = False
+        async with spinner_guard(self, self.SPINNER_ID):
+            try:
+                self.rows = await self.fetch()
+            except (ControlError, ConnectionError, TimeoutError) as exc:
+                self.rows = []
+                self.notify(str(exc), severity="error", timeout=4)
         table = self.query_one(DataTable)
         table.clear()
         for row in self.rows:

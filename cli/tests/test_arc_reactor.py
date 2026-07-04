@@ -122,3 +122,46 @@ async def test_default_and_custom_size_constructors():
         assert widget._rows < widget._cols
         rendered = widget.render()
         assert rendered.plain.strip() != ""
+
+
+@pytest.mark.asyncio
+async def test_pause_stops_the_real_interval_timer_from_advancing():
+    """Perf fix: a hidden (`.display = False`) reactor must not keep
+    ticking/re-rendering forever in the background — .pause() stops the
+    ~100ms set_interval timer from firing at all."""
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        widget = app.query_one("#reactor", ArcReactorWidget)
+        widget.pause()
+        before = (widget._outer_angle, widget._middle_angle,
+                  widget._inner_angle, widget._pulse_elapsed_ms)
+        # let several real tick intervals elapse — none should land.
+        await pilot.pause(widget.TICK_MS / 1000.0 * 5)
+        after = (widget._outer_angle, widget._middle_angle,
+                 widget._inner_angle, widget._pulse_elapsed_ms)
+        assert after == before
+
+
+@pytest.mark.asyncio
+async def test_resume_after_pause_lets_the_timer_advance_again():
+    app = _Harness()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        widget = app.query_one("#reactor", ArcReactorWidget)
+        widget.pause()
+        await pilot.pause(widget.TICK_MS / 1000.0 * 3)
+        frozen = widget._outer_angle
+
+        widget.resume()
+        await pilot.pause(widget.TICK_MS / 1000.0 * 5)
+        assert widget._outer_angle != frozen
+
+
+@pytest.mark.asyncio
+async def test_pause_and_resume_are_safe_before_mount():
+    """pause()/resume() must not raise if called before on_mount has set up
+    the timer (e.g. a caller toggling .display on a not-yet-mounted widget)."""
+    widget = ArcReactorWidget()
+    widget.pause()
+    widget.resume()

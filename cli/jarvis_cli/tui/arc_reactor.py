@@ -105,6 +105,18 @@ class ArcReactorWidget(Static):
     def on_mount(self) -> None:
         self._timer = self.set_interval(self.TICK_MS / 1000.0, self._tick)
 
+    def pause(self) -> None:
+        """Pause the ~100ms tick timer — call this alongside `.display =
+        False` whenever the reactor is hidden (e.g. a tab loses focus), so a
+        widget nobody can see doesn't keep ticking/re-rendering forever."""
+        if self._timer is not None:
+            self._timer.pause()
+
+    def resume(self) -> None:
+        """Resume the tick timer — call this alongside `.display = True`."""
+        if self._timer is not None:
+            self._timer.resume()
+
     def _tick(self) -> None:
         self._advance(self.TICK_MS)
         self.refresh()

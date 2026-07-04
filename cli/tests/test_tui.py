@@ -930,3 +930,161 @@ async def test_provider_command_opens_picker_and_selecting_calls_settings_set(da
         assert patches, "settings.set was called"
         assert patches[-1][1].get("patch", {}).get("default_brain") == "claude"
         assert daemon.settings["default_brain"] == "claude"
+
+
+async def test_load_daemon_line_survives_topbar_removed_mid_flight(daemon):
+    """Regression: load_daemon_line's final _set_topbar() call used to be
+    completely unguarded — if the app tears down (or #topbar is otherwise
+    gone) while the settings.get round-trip is in flight, query_one("#topbar")
+    raises an uncaught NoMatches and crashes the worker (a confirmed
+    WorkerFailed root cause). It must now be swallowed like every other
+    defensive query_one guard in this file."""
+    from jarvis_cli.tui.app import JarvisTui
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.3)  # let the initial load_daemon_line settle
+        await app.query_one("#topbar").remove()
+        app.load_daemon_line()  # re-trigger the same flow with #topbar gone
+        await pilot.pause(0.3)  # must NOT raise WorkerFailed / NoMatches
+
+
+async def test_palette_fallback_does_not_strip_non_slash_text(monkeypatch):
+    """Regression: `text[1:] if text.startswith("/") else text[1:]` was a
+    no-op ternary that always stripped the first character, even on the
+    non-slash fallback branch. With a palette mounted and no item selected,
+    submitting text that does NOT start with '/' must process the FULL
+    text, not text missing its first character."""
+    from textual.widgets import Input
+
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.command_palette import CommandPalette
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        chat = app.query_one("#chat")
+        palette = CommandPalette(builtins=[("new", "start a fresh chat")], customs=[])
+        await chat.mount(palette)
+        await pilot.pause()
+        monkeypatch.setattr(palette, "selected_name", lambda: None)
+
+        seen = []
+
+        async def fake_run(name, args):
+            seen.append((name, args))
+        monkeypatch.setattr(chat, "run_slash_command", fake_run)
+
+        inp = chat.query_one("#chat-input", Input)
+        inp.value = "hello world"
+        await chat.on_input_submitted(Input.Submitted(inp, "hello world"))
+        await pilot.pause()
+
+        # The buggy version would have stripped the leading 'h' -> "ello world"
+        # -> ("ello", "world"). The full text must be processed instead.
+        assert seen == [("hello", "world")]
+
+
+async def test_open_chat_dismisses_quick_view_popup(daemon):
+    """Regression: open_chat() switched TabbedContent.active to Chat but
+    never dismissed a QuickViewScreen popup — opening a session from the
+    inline /sessions popup left the modal floating on top of Chat. Selecting
+    a session from the popup must both switch to Chat AND close the popup."""
+    from textual.widgets import TabbedContent
+
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.quick_view import QuickViewScreen
+    from jarvis_cli.tui.screens import SessionsPane
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.2)
+        app.push_screen(QuickViewScreen("Sessions",
+                                        lambda: SessionsPane(id="sessions-quick")))
+        await pilot.pause(0.2)
+        assert isinstance(app.screen, QuickViewScreen)
+
+        # Same call the pane's Enter-key handler makes (see SessionsPane.on_key).
+        await app.open_chat(daemon.created_sid, "hello world")
+        await pilot.pause(0.2)
+
+        assert not isinstance(app.screen, QuickViewScreen)
+        assert app.query_one(TabbedContent).active == "tab-chat"
+
+
+async def test_spinner_guard_shows_resumes_hides_and_pauses_on_success():
+    """The shared spinner_guard() helper (factored out of TablePane's
+    refresh_data / HomePane's refresh_data / MemoryGraphPane's load_graph)
+    must show + resume the spinner for the duration of its block and hide +
+    pause it again once the block completes."""
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.arc_reactor import ArcReactorWidget
+    from jarvis_cli.tui.screens import spinner_guard
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#sessions")
+        spinner = pane.query_one(f"#{pane.SPINNER_ID}", ArcReactorWidget)
+        assert spinner.display is False
+
+        async with spinner_guard(pane, pane.SPINNER_ID):
+            assert spinner.display is True
+
+        assert spinner.display is False
+
+
+async def test_spinner_guard_still_hides_spinner_when_body_raises():
+    """spinner_guard() must not swallow exceptions raised inside its block,
+    but must still hide the spinner in its finally — same "never stuck
+    visible after an exception" guarantee TablePane.refresh_data documents."""
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.arc_reactor import ArcReactorWidget
+    from jarvis_cli.tui.screens import spinner_guard
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#sessions")
+        spinner = pane.query_one(f"#{pane.SPINNER_ID}", ArcReactorWidget)
+
+        with pytest.raises(ValueError):
+            async with spinner_guard(pane, pane.SPINNER_ID):
+                assert spinner.display is True
+                raise ValueError("boom")
+
+        assert spinner.display is False
+
+
+async def test_typewriter_preview_shows_plain_text_not_markdown(daemon):
+    """Perf fix: during the typewriter reveal, #typing-preview must hold a
+    plain rich.text.Text (no per-tick Markdown re-parse) — the real Markdown
+    parse happens exactly once, when the reveal finalizes into the RichLog
+    transcript."""
+    from rich.text import Text as RichText
+
+    from jarvis_cli.tui.app import JarvisTui
+
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        _activate_chat_tab(app)
+        await pilot.pause(0.05)
+        chat = app.query_one("#chat")
+        await chat._ensure_session()
+        await pilot.pause(0.1)
+        assert daemon.ws is not None
+
+        long_text = "**bold** reply word " * 40  # stays revealing for a bit
+        await daemon.emit(daemon.ws, chat.session_id, {
+            "kind": "message", "role": "assistant", "text": long_text,
+        })
+        await pilot.pause(0.05)
+        assert chat._typewriter_task is not None and not chat._typewriter_task.done()
+
+        preview = chat.query_one("#typing-preview")
+        assert isinstance(preview.content, RichText)
+
+        await chat._typewriter_task
+        await pilot.pause(0.05)
+        # finalized content still ends up in the transcript, fully rendered.
+        transcript = chat.query_one("#transcript")
+        rendered = "\n".join(strip.text for strip in transcript.lines)
+        assert "bold" in rendered and "reply word" in rendered

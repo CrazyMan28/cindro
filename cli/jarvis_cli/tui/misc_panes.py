@@ -12,7 +12,7 @@ from textual.widgets import Input, Static, Tree as TextualTree
 
 from jarvis_cli.control import ControlError
 from jarvis_cli.tui.arc_reactor import ArcReactorWidget
-from jarvis_cli.tui.screens import TablePane
+from jarvis_cli.tui.screens import TablePane, spinner_guard
 
 
 class MemoryGraphPane(Vertical):
@@ -40,7 +40,9 @@ class MemoryGraphPane(Vertical):
         yield Static(id="graph-view")
 
     def on_mount(self) -> None:
-        self.query_one("#graph-spinner", ArcReactorWidget).display = False
+        spinner = self.query_one("#graph-spinner", ArcReactorWidget)
+        spinner.display = False
+        spinner.pause()
         self.call_later(self.load_graph)
 
     def refresh_if_stale(self) -> None:
@@ -53,19 +55,11 @@ class MemoryGraphPane(Vertical):
         except Exception:
             pass
         try:
-            spinner = self.query_one("#graph-spinner", ArcReactorWidget)
-        except Exception:
-            spinner = None
-        if spinner is not None:
-            spinner.display = True
-        try:
-            res = await self.client.call("memory.graph", {"root": root, "depth": 2})
+            async with spinner_guard(self, "graph-spinner"):
+                res = await self.client.call("memory.graph", {"root": root, "depth": 2})
         except (ControlError, ConnectionError, TimeoutError) as exc:
             self.notify(str(exc), severity="error")
             return
-        finally:
-            if spinner is not None:
-                spinner.display = False
         raw_nodes = res.get("nodes", [])
         nodes = {n["id"]: n for n in raw_nodes if "id" in n}
         if len(nodes) != len(raw_nodes):
@@ -116,7 +110,9 @@ class HomePane(Vertical):
         yield Static(id="home-view")
 
     def on_mount(self) -> None:
-        self.query_one("#home-spinner", ArcReactorWidget).display = False
+        spinner = self.query_one("#home-spinner", ArcReactorWidget)
+        spinner.display = False
+        spinner.pause()
         self.call_later(self.refresh_data)
 
     def refresh_if_stale(self) -> None:
@@ -124,20 +120,12 @@ class HomePane(Vertical):
 
     async def refresh_data(self) -> None:
         try:
-            spinner = self.query_one("#home-spinner", ArcReactorWidget)
-        except Exception:
-            spinner = None
-        if spinner is not None:
-            spinner.display = True
-        try:
-            sessions = (await self.client.call("session.list", {})).get("sessions", [])
-            settings = (await self.client.call("settings.get", {})).get("settings", {})
+            async with spinner_guard(self, "home-spinner"):
+                sessions = (await self.client.call("session.list", {})).get("sessions", [])
+                settings = (await self.client.call("settings.get", {})).get("settings", {})
         except (ControlError, ConnectionError, TimeoutError) as exc:
             self.notify(str(exc), severity="error")
             return
-        finally:
-            if spinner is not None:
-                spinner.display = False
         self.lines = [
             f"jarvisd v{settings.get('version', '?')} · default brain: "
             f"{settings.get('default_brain', '?')}",

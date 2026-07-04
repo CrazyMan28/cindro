@@ -28,6 +28,7 @@ from jarvis_cli.tui.chat import ChatPane
 from jarvis_cli.tui.computer_pane import ComputerPane
 from jarvis_cli.tui.misc_panes import HomePane, MemoryGraphPane, SchedulesPane
 from jarvis_cli.tui.phone_pane import PhonePane
+from jarvis_cli.tui.quick_view import QuickViewScreen
 from jarvis_cli.tui.screens import (AgentsPane, MemoryPane, QueuePane,
                                     SessionsPane, SettingsPane, SkillsPane)
 from jarvis_cli.tui.system_panes import McpPane, PluginsPane, SshPane
@@ -229,7 +230,13 @@ class JarvisTui(App):
             await self.query_one("#topbar-spinner", ArcReactorWidget).remove()
         except Exception:
             pass
-        self._set_topbar()
+        try:
+            self._set_topbar()
+        except Exception:
+            # The app may be mid-teardown (or #topbar otherwise gone) by the
+            # time this settings.get round-trip resolves — query_one raising
+            # NoMatches here must not crash the worker (WorkerFailed).
+            pass
 
     async def load_custom_pages(self) -> None:
         try:
@@ -292,7 +299,13 @@ class JarvisTui(App):
 
     # -- cross-tab actions --------------------------------------------------------
     async def open_chat(self, session_id: str, title: str) -> None:
-        """Sessions tab → Chat tab (existing session or a fresh one)."""
+        """Sessions tab → Chat tab (existing session or a fresh one).
+
+        Selecting a session from the inline `/sessions` QuickViewScreen popup
+        must both switch to Chat AND close the popup — otherwise the modal is
+        left floating on top of the Chat tab it just switched to."""
+        if isinstance(self.screen, QuickViewScreen):
+            self.pop_screen()
         chat = self.query_one("#chat", ChatPane)
         self.query_one(TabbedContent).active = "tab-chat"
         if session_id:
