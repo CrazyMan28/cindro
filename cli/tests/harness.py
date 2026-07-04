@@ -40,6 +40,7 @@ class MockDaemon:
             "available_brains": {"codex": True, "claude": True, "api": True},
             "self_improve": "off", "auto_continue": "off",
             "auto_update": True, "auto_update_apply": False,
+            "has_desktop_pin": False,
         }
         self.models_by_brain: dict = {
             "codex": ["gpt-5.5", "gpt-5.5-mini"],
@@ -60,6 +61,16 @@ class MockDaemon:
         self.on_send: Optional[Callable[["MockDaemon", Any, dict],
                                         Awaitable[None]]] = None
         self._bg: set[asyncio.Task] = set()
+        # ---- 2FA / fingerprint cross-device unlock (LockGate, jarvis auth.*) --
+        # Defaults to "no phone paired" (fail-open) — matches the realistic
+        # default for a fresh install; tests that want to exercise the actual
+        # waiting/PIN flow flip `paired = True` (and set `desktop_pin`) BEFORE
+        # mounting the app so its startup auth.request sees it.
+        self.paired = False
+        self.desktop_pin: Optional[str] = None
+        self._auth_challenges: dict[str, str] = {}
+        self._auth_seq = 0
+        self.last_challenge_id = ""
 
     async def _handler(self, ws):
         self.ws = ws
@@ -161,7 +172,36 @@ class MockDaemon:
             return {"ok": True}
         if method == "phone.event.subscribe":
             return {"subscribed": True, "bridge_connected": False}
+        if method == "auth.request":
+            if not self.paired:
+                return {"challenge_id": "", "state": "approved", "paired": False}
+            self._auth_seq += 1
+            cid = f"ch{self._auth_seq}"
+            self._auth_challenges[cid] = "pending"
+            self.last_challenge_id = cid
+            return {"challenge_id": cid, "state": "pending", "paired": True}
+        if method == "auth.status":
+            cid = params.get("challenge_id", "")
+            return {"challenge_id": cid,
+                    "state": self._auth_challenges.get(cid, "expired")}
+        if method == "auth.deny":
+            cid = params.get("challenge_id", "")
+            if cid in self._auth_challenges:
+                self._auth_challenges[cid] = "denied"
+            return {"ok": True}
+        if method == "auth.verify_pin":
+            cid = params.get("challenge_id", "")
+            pin = params.get("pin")
+            if self.desktop_pin is not None and pin == self.desktop_pin:
+                self._auth_challenges[cid] = "approved"
+                return {"challenge_id": cid, "state": "approved"}
+            return None  # ok:false -> the client treats this as a wrong PIN.
         return None
+
+    def set_auth_state(self, challenge_id: str, state: str) -> None:
+        """Test convenience: flip a minted challenge's state (as if the
+        paired phone/extension had just approved/denied/expired it)."""
+        self._auth_challenges[challenge_id] = state
 
     def _spawn(self, coro):
         t = asyncio.ensure_future(coro)

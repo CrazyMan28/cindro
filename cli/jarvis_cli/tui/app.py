@@ -26,6 +26,7 @@ from jarvis_cli.tui.browser_pane import BrowserPane
 from jarvis_cli.tui.canvas_pane import CanvasPane, WidgetsPane
 from jarvis_cli.tui.chat import ChatPane
 from jarvis_cli.tui.computer_pane import ComputerPane
+from jarvis_cli.tui.lock_gate import LockGateScreen
 from jarvis_cli.tui.misc_panes import HomePane, MemoryGraphPane, SchedulesPane
 from jarvis_cli.tui.phone_pane import PhonePane
 from jarvis_cli.tui.quick_view import QuickViewScreen
@@ -204,9 +205,30 @@ class JarvisTui(App):
         self._set_topbar()
         self.load_daemon_line()
         self.run_worker(self.load_custom_pages())
+        self.run_worker(self._check_lock_gate())
 
     async def on_unmount(self) -> None:
         await self.client.close()
+
+    # -- 2FA / fingerprint cross-device unlock (LockGate) -----------------------
+    async def _check_lock_gate(self) -> None:
+        """Mirrors the desktop GUI's LockGate.qml + Bridge.cpp auth.request
+        flow (jarvis 2FA). Mints a challenge ONCE at startup; FAILS OPEN (no
+        screen ever shown, app proceeds immediately) on ANY error — daemon
+        unreachable, an older daemon lacking auth.* ("unknown_method"), no
+        phone paired, or an already-approved state. Only when there's a REAL
+        pending challenge to wait on does LockGateScreen get pushed — so a
+        user with no paired device (or a daemon that isn't up yet) is never
+        locked out, and this never delays/blocks startup otherwise."""
+        try:
+            result = await self.client.call(
+                "auth.request", {"origin": "desktop"}, timeout=15)
+        except Exception:
+            return
+        if not result.get("paired") or result.get("state") == "approved":
+            return
+        await self.push_screen(
+            LockGateScreen(self.client, result.get("challenge_id", "")))
 
     # -- header ----------------------------------------------------------------
     def _set_topbar(self) -> None:
