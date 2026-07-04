@@ -37,8 +37,14 @@ class MockDaemon:
             "version": "9.9.9", "git_sha": "abc1234",
             "default_brain": "codex", "default_model": "",
             "brains": ["codex", "claude", "api"],
+            "available_brains": {"codex": True, "claude": True, "api": True},
             "self_improve": "off", "auto_continue": "off",
             "auto_update": True, "auto_update_apply": False,
+        }
+        self.models_by_brain: dict = {
+            "codex": ["gpt-5.5", "gpt-5.5-mini"],
+            "claude": ["claude-sonnet-5", "claude-haiku-4-5"],
+            "api": ["mistral-small-latest"],
         }
         self.sessions: list[dict] = [
             {"id": "s1", "title": "hello world", "brain": "codex", "state": "idle"},
@@ -82,6 +88,9 @@ class MockDaemon:
         if method == "settings.set":
             self.settings.update(params.get("patch") or {})
             return {"ok": True}
+        if method == "model.list":
+            brain = params.get("brain") or self.settings.get("default_brain", "codex")
+            return {"brain": brain, "models": list(self.models_by_brain.get(brain, []))}
         if method == "session.create":
             return {"session_id": self.created_sid}
         if method == "session.subscribe":

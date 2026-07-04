@@ -24,11 +24,16 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.message import Message
-from textual.widgets import Input, RichLog, Static
+from textual.widgets import Input, ListItem, ListView, RichLog, Static
 
 from jarvis_cli.control import ControlError
+from jarvis_cli.tui.activity_pane import ActivityPane
 from jarvis_cli.tui.arc_reactor import ArcReactorWidget
 from jarvis_cli.tui.command_palette import CommandPalette, PALETTE_TRANSITION_MS
+from jarvis_cli.tui.misc_panes import MemoryGraphPane, SchedulesPane
+from jarvis_cli.tui.quick_view import QuickViewScreen
+from jarvis_cli.tui.screens import AgentsPane, MemoryPane, QueuePane, SessionsPane, SkillsPane
+from jarvis_cli.tui.system_panes import McpPane, PluginsPane, SshPane
 
 # typewriter reveal tuning (see _start_typewriter): a bounded total duration
 # regardless of message length, so huge replies never make the user wait.
@@ -41,24 +46,48 @@ BUILTIN_COMMANDS = [
     ("new", "start a fresh chat"), ("stop", "cancel the current turn"),
     ("goal", "set the session goal"), ("y", "approve the pending action"),
     ("n", "deny the pending action"), ("chat", "open the Chat tab"),
-    ("sessions", "open the Sessions tab"), ("memory", "open the Memory tab"),
-    ("skills", "open the Skills tab"), ("agents", "open the Agents tab"),
-    ("queue", "open the Queue tab"), ("settings", "open the Settings tab"),
+    ("sessions", "peek at Sessions"), ("memory", "peek at Memory"),
+    ("skills", "peek at Skills"), ("agents", "peek at Agents"),
+    ("queue", "peek at Queue"), ("settings", "open the Settings tab"),
     ("canvas", "open the Canvas tab"),
     ("widgets", "open the Widgets tab"), ("phone", "open the Phone tab"),
     ("computer", "open the Computer tab"), ("browser", "open the Browser tab"),
-    ("activity", "open the Activity tab"), ("replay", "open the Replay tab"),
-    ("mcp", "open the MCP tab"), ("plugins", "open the Plugins tab"),
-    ("ssh", "open the SSH tab"), ("memorygraph", "open the Memory Graph tab"),
-    ("home", "open the Home tab"), ("schedules", "open the Schedules tab"),
+    ("activity", "peek at Activity"), ("replay", "open the Replay tab"),
+    ("mcp", "peek at MCP"), ("plugins", "peek at Plugins"),
+    ("ssh", "peek at SSH"), ("memorygraph", "peek at the Memory Graph"),
+    ("home", "open the Home tab"), ("schedules", "peek at Schedules"),
     ("tui", "ask Jarvis to add/edit/remove a TUI page"),
+    ("model", "pick the active model"),
+    ("provider", "pick codex, claude, or api"),
 ]
 
-# "tui" is an ACTION command (asks Jarvis to edit the TUI layout), not a tab
-# to jump to — there is no "tab-tui" TabPane in app.py, so it must be
-# excluded here alongside the other non-tab-jump builtins.
+# These 11 open as an inline QuickViewScreen popup (see quick_view.py) instead
+# of switching the main TabbedContent's active tab — a fresh pane instance is
+# built by the factory each time, with its OWN id (distinct from the id of
+# the pane already mounted in the main TabbedContent) so nothing collides.
+POPUP_PANE_FACTORIES = {
+    "memory": lambda: MemoryPane(id="memory-quick"),
+    "skills": lambda: SkillsPane(id="skills-quick"),
+    "agents": lambda: AgentsPane(id="agents-quick"),
+    "queue": lambda: QueuePane(id="queue-quick"),
+    "activity": lambda: ActivityPane(id="activity-quick"),
+    "memorygraph": lambda: MemoryGraphPane(id="memorygraph-quick"),
+    "mcp": lambda: McpPane(id="mcp-quick"),
+    "plugins": lambda: PluginsPane(id="plugins-quick"),
+    "ssh": lambda: SshPane(id="ssh-quick"),
+    "schedules": lambda: SchedulesPane(id="schedules-quick"),
+    "sessions": lambda: SessionsPane(id="sessions-quick"),
+}
+POPUP_COMMANDS = set(POPUP_PANE_FACTORIES)
+
+# The remaining tab-jump commands still switch TabbedContent.active. "tui" is
+# an ACTION command (asks Jarvis to edit the TUI layout), not a tab to jump
+# to — there is no "tab-tui" TabPane in app.py. "model"/"provider" are picker
+# commands (see run_slash_command), not tab jumps either.
 TAB_JUMP_COMMANDS = {name for name, _ in BUILTIN_COMMANDS
-                    if name not in ("new", "stop", "goal", "y", "n", "tui")}
+                    if name not in ("new", "stop", "goal", "y", "n", "tui",
+                                     "model", "provider")
+                    and name not in POPUP_COMMANDS}
 
 
 class BrainEvent(Message):
@@ -68,6 +97,38 @@ class BrainEvent(Message):
         self.session_id = session_id
         self.ev = ev
         super().__init__()
+
+
+class PickerWidget(Vertical):
+    """Ad-hoc inline picker: a plain ListView of (value, label) options hosted
+    inside a QuickViewScreen popup. Selecting an item calls the given
+    zero-return async callback with the option's VALUE (not its label), then
+    dismisses the popup — used by /provider and /model instead of a full
+    Pane class since neither needs its own tab/data-fetch lifecycle."""
+
+    def __init__(self, options: list[tuple[str, str]], on_pick, **kw) -> None:
+        super().__init__(**kw)
+        self._options = options
+        self._on_pick = on_pick
+
+    def compose(self) -> ComposeResult:
+        items = []
+        for value, label in self._options:
+            item = ListItem(Static(label))
+            item.picker_value = value  # stashed for on_list_view_selected
+            items.append(item)
+        # Items are passed to the constructor (not .append()-ed after) since
+        # ListView.append()/.extend() try to mount immediately — which
+        # raises MountError while this widget itself is still being composed
+        # (not yet attached to the DOM).
+        yield ListView(*items, id="picker-list")
+
+    async def on_list_view_selected(self, event: "ListView.Selected") -> None:
+        value = getattr(event.item, "picker_value", None)
+        if value is None:
+            return
+        await self._on_pick(value)
+        self.app.pop_screen()
 
 
 class ChatPane(Vertical):
@@ -324,6 +385,18 @@ class ChatPane(Vertical):
         elif name == "tui":
             await self._send(f"Please help me with the TUI page layout: {args}"
                              if args else "Please help me with the TUI page layout.")
+        elif name == "provider":
+            await self._open_provider_picker()
+        elif name == "model":
+            await self._open_model_picker()
+        elif name in POPUP_COMMANDS:
+            factory = POPUP_PANE_FACTORIES[name]
+            title = name.capitalize() if name != "mcp" else "MCP"
+            if name == "ssh":
+                title = "SSH"
+            elif name == "memorygraph":
+                title = "Memory Graph"
+            self.app.push_screen(QuickViewScreen(title, factory))
         elif name in TAB_JUMP_COMMANDS:
             from textual.widgets import TabbedContent
             self.app.query_one(TabbedContent).active = f"tab-{name}"
@@ -416,6 +489,73 @@ class ChatPane(Vertical):
                            style="magenta"))
         except (ControlError, ConnectionError, TimeoutError) as exc:
             self._log(Text(f"set_goals failed: {exc}", style="red"))
+
+    # -- /provider and /model pickers -------------------------------------------
+    async def _open_provider_picker(self) -> None:
+        """Show the available brains (codex/claude/api) and write the pick
+        back via settings.set {"patch": {"default_brain": ...}} — same
+        settings.set shape SettingsPane already uses."""
+        try:
+            res = await self.client.call("settings.get", {})
+        except (ControlError, ConnectionError, TimeoutError) as exc:
+            self.notify(str(exc), severity="error")
+            return
+        settings = res.get("settings", res)
+        available = settings.get("available_brains") or {}
+        brains = settings.get("brains") or ["codex", "claude", "api"]
+        current = settings.get("default_brain", "")
+        options = []
+        for b in brains:
+            usable = available.get(b, True)
+            label = b + (" (current)" if b == current else "") + \
+                    ("" if usable else " (unavailable)")
+            options.append((b, label))
+
+        async def on_pick(value: str) -> None:
+            try:
+                await self.client.call("settings.set",
+                                       {"patch": {"default_brain": value}})
+                self.notify(f"default_brain → {value}")
+            except (ControlError, ConnectionError, TimeoutError) as exc:
+                self.notify(str(exc), severity="error")
+
+        self.app.push_screen(QuickViewScreen(
+            "Provider", lambda: PickerWidget(options, on_pick)))
+
+    async def _open_model_picker(self) -> None:
+        """Show the model list for the CURRENT default_brain (model.list) and
+        write the pick back via settings.set {"patch": {"default_model": ...}}
+        — default_model is a real settings.set key (ControlServer.cpp
+        handleSettingsSet), so this is fully wired, not a stub."""
+        try:
+            res = await self.client.call("settings.get", {})
+        except (ControlError, ConnectionError, TimeoutError) as exc:
+            self.notify(str(exc), severity="error")
+            return
+        settings = res.get("settings", res)
+        brain = settings.get("default_brain", "")
+        current_model = settings.get("default_model", "")
+        try:
+            mres = await self.client.call("model.list", {"brain": brain} if brain else {})
+        except (ControlError, ConnectionError, TimeoutError) as exc:
+            self.notify(str(exc), severity="error")
+            return
+        models = mres.get("models") or []
+        options = [(m, m + (" (current)" if m == current_model else "")) for m in models]
+        if not options:
+            self.notify(f"no models available for brain '{brain}'", severity="warning")
+            return
+
+        async def on_pick(value: str) -> None:
+            try:
+                await self.client.call("settings.set",
+                                       {"patch": {"default_model": value}})
+                self.notify(f"default_model → {value}")
+            except (ControlError, ConnectionError, TimeoutError) as exc:
+                self.notify(str(exc), severity="error")
+
+        self.app.push_screen(QuickViewScreen(
+            "Model", lambda: PickerWidget(options, on_pick)))
 
     async def _respond_approval(self, allow: bool) -> None:
         if not self.pending_approval or not self.session_id:

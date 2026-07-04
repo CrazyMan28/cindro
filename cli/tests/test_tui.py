@@ -706,14 +706,16 @@ async def test_tui_command_with_no_args_still_sends_a_prompt(monkeypatch):
         assert sent[0]  # non-empty prompt even with no args
 
 
-async def test_every_real_tab_has_exactly_one_jump_command():
-    """cli/README.md documents 'one jump-command per tab' for all 20 tabs.
-    Derive the real tab-* ids straight from app.py's compose() and assert
-    TAB_JUMP_COMMANDS covers exactly that set (minus 'tui', which is an
-    action command, not a real tab)."""
+async def test_every_real_tab_has_exactly_one_jump_or_popup_command():
+    """cli/README.md documents one command per tab for all 20 tabs — either a
+    full tab-jump (TAB_JUMP_COMMANDS) or an inline popup (POPUP_COMMANDS).
+    Derive the real tab-* ids straight from app.py's compose() and assert the
+    UNION of both sets covers exactly that set (minus 'tui', which is an
+    action command, not a real tab; and minus 'model'/'provider', which are
+    picker commands, not tab jumps)."""
     import re
     from pathlib import Path
-    from jarvis_cli.tui.chat import TAB_JUMP_COMMANDS
+    from jarvis_cli.tui.chat import POPUP_COMMANDS, TAB_JUMP_COMMANDS
 
     app_py = Path(__file__).parent.parent / "jarvis_cli" / "tui" / "app.py"
     src = app_py.read_text()
@@ -723,7 +725,8 @@ async def test_every_real_tab_has_exactly_one_jump_command():
     tab_ids = {t for t in tab_ids if not t.startswith("tab-custom")}
 
     expected_names = {t[len("tab-"):] for t in tab_ids}
-    assert TAB_JUMP_COMMANDS == expected_names
+    assert not (TAB_JUMP_COMMANDS & POPUP_COMMANDS), "no command should be in both sets"
+    assert TAB_JUMP_COMMANDS | POPUP_COMMANDS == expected_names
     assert len(tab_ids) == 20
 
 
@@ -851,3 +854,79 @@ async def test_home_pane_spinner_shows_during_fetch_and_hides_after(monkeypatch)
         await pilot.pause(0.05)
         assert spinner.display is False
         assert "chat about X" in "\n".join(pane.lines)
+
+
+async def test_popup_command_pushes_quick_view_instead_of_tab_jump(daemon):
+    """/memory is one of the 11 POPUP_COMMANDS — it must push a
+    QuickViewScreen overlay rather than switching TabbedContent.active."""
+    from textual.widgets import TabbedContent
+
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.quick_view import QuickViewScreen
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.2)
+        tabbed = app.query_one(TabbedContent)
+        active_before = tabbed.active
+        chat = app.query_one("#chat")
+        await chat.run_slash_command("memory", "")
+        await pilot.pause(0.2)
+        assert isinstance(app.screen, QuickViewScreen)
+        assert tabbed.active == active_before, "the main tab must NOT change"
+        # Esc dismisses and returns control to the tab underneath.
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, QuickViewScreen)
+        assert tabbed.active == active_before
+
+
+async def test_canvas_command_still_switches_tabs(daemon):
+    """Regression guard: /canvas is one of the 8 commands explicitly kept as
+    a full tab-jump (not a popup) — it must still switch TabbedContent.active
+    exactly as before."""
+    from textual.widgets import TabbedContent
+
+    from jarvis_cli.tui.app import JarvisTui
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.2)
+        chat = app.query_one("#chat")
+        await chat.run_slash_command("canvas", "")
+        await pilot.pause(0.1)
+        tabbed = app.query_one(TabbedContent)
+        assert tabbed.active == "tab-canvas"
+
+
+async def test_provider_command_opens_picker_and_selecting_calls_settings_set(daemon):
+    """/provider opens an inline picker of available brains; selecting one
+    calls settings.set with {"patch": {"default_brain": ...}}."""
+    from textual.widgets import ListView
+
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.chat import PickerWidget
+    from jarvis_cli.tui.quick_view import QuickViewScreen
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.2)
+        chat = app.query_one("#chat")
+        await chat.run_slash_command("provider", "")
+        await pilot.pause(0.2)
+        assert isinstance(app.screen, QuickViewScreen)
+        picker = app.screen.query_one(PickerWidget)
+        lv = picker.query_one("#picker-list", ListView)
+        assert len(lv.children) == 3  # codex, claude, api
+
+        # Pick "claude" directly (avoids depending on default list ordering).
+        target_index = next(i for i, item in enumerate(lv.children)
+                            if getattr(item, "picker_value", None) == "claude")
+        lv.index = target_index
+        lv.action_select_cursor()
+        await pilot.pause(0.2)
+
+        patches = [(m, p) for (m, p) in daemon.calls if m == "settings.set"]
+        assert patches, "settings.set was called"
+        assert patches[-1][1].get("patch", {}).get("default_brain") == "claude"
+        assert daemon.settings["default_brain"] == "claude"

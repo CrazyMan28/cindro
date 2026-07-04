@@ -50,8 +50,12 @@ Global: `Ctrl+N` new chat · `F5` refresh tab · `Ctrl+Q` quit.
 ### Slash commands
 
 Type `/` in Chat to open a fuzzy-filtered command palette — built-ins
-(`/new /stop /goal /y /n` + one jump-command per tab above) plus any
-CUSTOM command you or Jarvis have defined. Ask Jarvis to make you one
+(`/new /stop /goal /y /n` + one command per tab above, plus `/model` and
+`/provider`) plus any CUSTOM command you or Jarvis have defined.
+`/canvas /widgets /phone /computer /browser /replay /home /settings` jump
+to their tab; `/memory /skills /agents /queue /activity /memorygraph /mcp
+/plugins /ssh /schedules /sessions` instead pop up an inline overlay
+(Esc to close) without leaving Chat. Ask Jarvis to make you one
 ("make me a /deploy command that runs my deploy script") — it calls
 `create_slash_command` and it shows up immediately, no restart needed.
 `prompt`-kind commands run today; `mcp_tool`/`shell`-kind commands are
