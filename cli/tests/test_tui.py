@@ -26,14 +26,78 @@ async def daemon(monkeypatch):
     await d.stop()
 
 
+EXPECTED_MAIN_TAB_IDS = {
+    "tab-home", "tab-chat", "tab-canvas", "tab-widgets", "tab-phone",
+    "tab-computer", "tab-browser", "tab-replay", "tab-settings",
+}
+
+async def _open_popup_pane(app, pilot, name: str, cls):
+    """Run the "/<name>" slash command (one of chat.py's POPUP_COMMANDS) and
+    return the fresh pane instance mounted inside the QuickViewScreen popup
+    it pushes — the popup-only screens no longer have a stable "#<name>" main
+    tab to query directly."""
+    chat = app.query_one("#chat")
+    await chat.run_slash_command(name, "")
+    await pilot.pause(0.2)
+    return app.screen.query_one(cls)
+
+
 @pytest.mark.asyncio
 async def test_app_boots_and_tabs_mount(daemon):
     app = JarvisTui()
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.3)
         assert app.query_one("#chat", ChatPane)
-        assert app.query_one("#sessions", SessionsPane)
         assert app.query_one("#settings", SettingsPane)
+
+
+@pytest.mark.asyncio
+async def test_main_tab_bar_has_exactly_the_9_real_tabs(daemon):
+    """After the 11 popup-only screens were pulled out (Fix 1), the
+    persistent main tab bar must contain exactly the 9 real tabs — no
+    Sessions/Memory/Skills/Agents/Queue/Activity/Graph/MCP/Plugins/SSH/
+    Schedules tab remains."""
+    from textual.widgets import TabbedContent, TabPane
+
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        tabbed = app.query_one(TabbedContent)
+        # Nested TabbedContents (e.g. PhonePane's own Devices/Dialer/
+        # Screening sub-tabs) also show up in a descendant TabPane query —
+        # restrict to top-level "tab-*" ids, the same convention app.py's own
+        # on_tabbed_content_tab_activated uses to tell them apart.
+        tab_ids = {p.id for p in tabbed.query(TabPane) if (p.id or "").startswith("tab-")}
+        assert tab_ids == EXPECTED_MAIN_TAB_IDS
+
+
+@pytest.mark.asyncio
+async def test_popup_only_ids_absent_from_tab_bar_but_reachable_via_slash(daemon):
+    """Every one of the 11 POPUP_COMMANDS must have NO tab-<name> TabPane in
+    the main bar, yet each remains reachable as a QuickViewScreen popup via
+    its own slash command (reuses the same popup-assertion pattern as
+    test_popup_command_pushes_quick_view_instead_of_tab_jump)."""
+    from textual.widgets import TabbedContent, TabPane
+
+    from jarvis_cli.tui.chat import POPUP_COMMANDS
+    from jarvis_cli.tui.quick_view import QuickViewScreen
+
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        tabbed = app.query_one(TabbedContent)
+        real_ids = {p.id for p in tabbed.query(TabPane) if (p.id or "").startswith("tab-")}
+
+        for name in POPUP_COMMANDS:
+            assert f"tab-{name}" not in real_ids
+
+            chat = app.query_one("#chat")
+            await chat.run_slash_command(name, "")
+            await pilot.pause(0.15)
+            assert isinstance(app.screen, QuickViewScreen), name
+            await pilot.press("escape")
+            await pilot.pause(0.1)
+            assert not isinstance(app.screen, QuickViewScreen), name
 
 
 @pytest.mark.asyncio
@@ -362,10 +426,11 @@ def test_diff_review_commands_are_marked_not_yet_available_in_the_palette():
 
 @pytest.mark.asyncio
 async def test_sessions_tab_lists_rows(daemon):
+    """Sessions is popup-only now (Fix 1) — reached via /sessions."""
     app = JarvisTui()
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.5)
-        sessions = app.query_one("#sessions", SessionsPane)
+        sessions = await _open_popup_pane(app, pilot, "sessions", SessionsPane)
         sessions.refresh_data()
         await pilot.pause(0.5)
         assert sessions.rows and sessions.rows[0]["id"] == "s1"
@@ -409,7 +474,7 @@ async def test_memory_pane_remember_parses_hash_tags(monkeypatch):
 
     async with app.run_test() as pilot:
         monkeypatch.setattr(app.client, "call", fake_call)
-        pane = app.query_one("#memory", MemoryPane)
+        pane = await _open_popup_pane(app, pilot, "memory", MemoryPane)
         field = pane.query_one("#memory-add", Input)
         field.value = "buy milk #errand #home"
         await pane.on_input_submitted(Input.Submitted(field, field.value))
@@ -445,7 +510,7 @@ async def test_skills_pane_remove_calls_skills_remove(monkeypatch):
 
     async with app.run_test() as pilot:
         monkeypatch.setattr(app.client, "call", fake_call)
-        pane = app.query_one("#skills", SkillsPane)
+        pane = await _open_popup_pane(app, pilot, "skills", SkillsPane)
         pane.refresh_data()
         await pilot.pause(0.3)
         assert pane.rows
@@ -479,7 +544,7 @@ async def test_agents_pane_dispatch_input_calls_agents_dispatch(monkeypatch):
 
     async with app.run_test() as pilot:
         monkeypatch.setattr(app.client, "call", fake_call)
-        pane = app.query_one("#agents", AgentsPane)
+        pane = await _open_popup_pane(app, pilot, "agents", AgentsPane)
         field = pane.query_one("#agent-dispatch", Input)
         field.value = "researcher :: sort my downloads folder"
         await pane.on_input_submitted(Input.Submitted(field, field.value))
@@ -516,7 +581,7 @@ async def test_agents_pane_remove_only_fires_in_defs_view(monkeypatch):
 
     async with app.run_test() as pilot:
         monkeypatch.setattr(app.client, "call", fake_call)
-        pane = app.query_one("#agents", AgentsPane)
+        pane = await _open_popup_pane(app, pilot, "agents", AgentsPane)
         pane.refresh_data()
         await pilot.pause(0.3)
         assert pane.rows and not pane.defs_view
@@ -969,10 +1034,10 @@ async def test_browser_pane_refreshes_session_id_when_it_changes(monkeypatch):
 
 
 async def test_activity_pane_lists_audit_entries(monkeypatch):
+    from jarvis_cli.tui.activity_pane import ActivityPane
     from jarvis_cli.tui.app import JarvisTui
     app = JarvisTui()
     async with app.run_test() as pilot:
-        pane = app.query_one("#activity")
         async def fake_call(method, params=None, timeout=60.0):
             # HomePane's own on_mount deferred refresh (session.list /
             # settings.get) can still be pending and fire during this same
@@ -983,6 +1048,7 @@ async def test_activity_pane_lists_audit_entries(monkeypatch):
             return {"entries": [{"ts": "12:00", "tool": "shell", "ok": True,
                                  "risk": "low", "summary": "ran ls"}]}
         monkeypatch.setattr(app.client, "call", fake_call)
+        pane = await _open_popup_pane(app, pilot, "activity", ActivityPane)
         # TablePane.refresh_data is @work-decorated (screens.py) — it returns a
         # Worker, not an awaitable, same as every other TablePane test in this
         # file (e.g. test_sessions_tab_lists_rows): fire it and pump the pilot.
@@ -1006,53 +1072,57 @@ async def test_replay_pane_loads_a_session_and_seeks():
 
 async def test_mcp_pane_lists_servers(monkeypatch):
     from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.system_panes import McpPane
     app = JarvisTui()
     async with app.run_test() as pilot:
-        pane = app.query_one("#mcp")
         async def fake_call(method, params=None, timeout=60.0):
             return {"servers": [{"id": "m1", "name": "context7", "transport": "http",
                                  "endpoint": "https://x", "enabled": True,
                                  "builtin": False, "tools_count": 3}]}
         monkeypatch.setattr(app.client, "call", fake_call)
+        pane = await _open_popup_pane(app, pilot, "mcp", McpPane)
         await pane.fetch()
 
 
 async def test_plugins_pane_lists_catalog(monkeypatch):
     from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.system_panes import PluginsPane
     app = JarvisTui()
     async with app.run_test() as pilot:
-        pane = app.query_one("#plugins")
         async def fake_call(method, params=None, timeout=60.0):
             return {"plugins": [{"id": "p1", "name": "weather", "author": "jarvis",
                                  "version": "1.0", "kind": "mcp", "installed": False,
                                  "enabled": False}]}
         monkeypatch.setattr(app.client, "call", fake_call)
+        pane = await _open_popup_pane(app, pilot, "plugins", PluginsPane)
         rows = await pane.fetch()
         assert rows[0]["name"] == "weather"
 
 
 async def test_ssh_pane_lists_allowed_hosts(monkeypatch):
     from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.system_panes import SshPane
     app = JarvisTui()
     async with app.run_test() as pilot:
-        pane = app.query_one("#ssh")
         async def fake_call(method, params=None, timeout=60.0):
             return {"hosts": ["deploy@k2-runner"]}
         monkeypatch.setattr(app.client, "call", fake_call)
+        pane = await _open_popup_pane(app, pilot, "ssh", SshPane)
         rows = await pane.fetch()
         assert rows[0]["host"] == "deploy@k2-runner"
 
 
 async def test_memory_graph_pane_builds_a_tree(monkeypatch):
     from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.misc_panes import MemoryGraphPane
     app = JarvisTui()
     async with app.run_test() as pilot:
-        pane = app.query_one("#memorygraph")
         async def fake_call(method, params=None, timeout=60.0):
             return {"nodes": [{"id": "n1", "name": "Issac", "kind": "entity"},
                               {"id": "n2", "name": "likes coffee", "kind": "memory"}],
                     "edges": [{"from": "n1", "to": "n2", "relation": "mentions"}]}
         monkeypatch.setattr(app.client, "call", fake_call)
+        pane = await _open_popup_pane(app, pilot, "memorygraph", MemoryGraphPane)
         await pane.load_graph()
         assert "Issac" in str(pane.tree.label) or any(
             "Issac" in str(child.label) for child in pane.tree.children)
@@ -1065,14 +1135,14 @@ async def test_memory_graph_pane_skips_malformed_nodes(monkeypatch):
     whole Textual app). A malformed node should just be skipped while valid
     nodes still render."""
     from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.misc_panes import MemoryGraphPane
     app = JarvisTui()
     async with app.run_test() as pilot:
-        pane = app.query_one("#memorygraph")
-
         async def fake_call(method, params=None, timeout=60.0):
             return {"nodes": [{"name": "no id here"}, {"id": "n2", "name": "valid"}],
                     "edges": []}
         monkeypatch.setattr(app.client, "call", fake_call)
+        pane = await _open_popup_pane(app, pilot, "memorygraph", MemoryGraphPane)
         await pane.load_graph()  # must not raise
         assert "valid" in str(pane.tree.label) or any(
             "valid" in str(child.label) for child in pane.tree.children)
@@ -1145,19 +1215,25 @@ async def test_home_pane_refresh_data_runs_calls_concurrently(monkeypatch):
 
 async def test_schedules_pane_creates_a_job(monkeypatch):
     from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.misc_panes import SchedulesPane
     app = JarvisTui()
     async with app.run_test() as pilot:
-        pane = app.query_one("#schedules")
         calls = []
         async def fake_call(method, params=None, timeout=60.0):
             calls.append((method, params))
             return {"schedules": []}
         monkeypatch.setattr(app.client, "call", fake_call)
+        pane = await _open_popup_pane(app, pilot, "schedules", SchedulesPane)
+        # Opening as a popup means a fresh SchedulesPane's own on_mount fetch
+        # (schedule.list) may already have landed in `calls` by this point —
+        # unlike the old main-tab instance, filter for the create call
+        # specifically rather than assuming it's calls[0].
         pane.query_one("#schedule-add").value = "water plants :: remind me to water the plants"
         from textual.widgets import Input
         await pane.on_input_submitted(Input.Submitted(pane.query_one("#schedule-add"),
                                                        "water plants :: remind me to water the plants"))
-        assert calls[0][0] == "schedule.create"
+        creates = [(m, p) for (m, p) in calls if m == "schedule.create"]
+        assert creates, "schedule.create was called"
 
 
 async def test_custom_pages_mount_from_tui_layout_list(monkeypatch, tmp_path):
@@ -1261,6 +1337,41 @@ async def test_typing_slash_opens_the_command_palette(monkeypatch):
         assert chat.query("CommandPalette")
 
 
+async def test_palette_mounts_directly_above_the_input_not_below(monkeypatch):
+    """The palette must be mounted with before=<the Input> (renders directly
+    ABOVE the input line), not appended after it — and the Input must keep
+    keyboard focus the whole time it's open so typing more of the command
+    keeps landing in the Input, filtering the palette."""
+    from textual.widgets import Input, TabbedContent
+
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.command_palette import CommandPalette
+
+    app = JarvisTui()
+    async def fake_call(method, params=None, timeout=60.0):
+        return {"commands": []}
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        chat = app.query_one("#chat")
+        app.query_one(TabbedContent).active = "tab-chat"
+        await pilot.pause()
+        inp = chat.query_one("#chat-input", Input)
+        inp.focus()
+        await pilot.press("/")
+        await pilot.pause()
+
+        palette = chat.query_one(CommandPalette)
+        children = list(chat.children)
+        assert children.index(palette) == children.index(inp) - 1, (
+            "palette must be the child directly BEFORE the Input")
+        assert app.focused is inp, "Input must keep focus while palette is open"
+
+        await pilot.press("n", "e", "w")
+        await pilot.pause()
+        assert inp.value == "/new"
+        assert app.focused is inp
+
+
 async def test_palette_filters_as_you_type(monkeypatch):
     from jarvis_cli.tui.app import JarvisTui
     from jarvis_cli.tui.command_palette import CommandPalette
@@ -1355,13 +1466,15 @@ async def test_tui_command_with_no_args_still_sends_a_prompt(monkeypatch):
         assert sent[0]  # non-empty prompt even with no args
 
 
-async def test_every_real_tab_has_exactly_one_jump_or_popup_command():
-    """cli/README.md documents one command per tab for all 20 tabs — either a
-    full tab-jump (TAB_JUMP_COMMANDS) or an inline popup (POPUP_COMMANDS).
-    Derive the real tab-* ids straight from app.py's compose() and assert the
-    UNION of both sets covers exactly that set (minus 'tui', which is an
-    action command, not a real tab; and minus 'model'/'provider', which are
-    picker commands, not tab jumps)."""
+async def test_tab_jump_and_popup_commands_partition_correctly():
+    """The 11 popup-only screens (memory/skills/agents/queue/activity/
+    memorygraph/mcp/plugins/ssh/schedules/sessions) were pulled out of the
+    main tab bar entirely — POPUP_COMMANDS is now a FIXED set of 11 names
+    that do NOT correspond to any real tab-* id anymore (a regression guard
+    against ever accidentally re-adding one of them as a real tab), while
+    TAB_JUMP_COMMANDS must equal EXACTLY the 9 real tab-* ids scraped from
+    app.py's compose() — no longer unioned with POPUP_COMMANDS to reach a
+    bigger historical 20-tab set."""
     import re
     from pathlib import Path
     from jarvis_cli.tui.chat import POPUP_COMMANDS, TAB_JUMP_COMMANDS
@@ -1370,13 +1483,17 @@ async def test_every_real_tab_has_exactly_one_jump_or_popup_command():
     src = app_py.read_text()
     tab_ids = set(re.findall(r'TabPane\("[^"]+",\s*id="(tab-[a-zA-Z0-9_-]+)"', src))
     # Custom, dynamically-mounted pages (e.g. "tab-custom-*") aren't part of
-    # the fixed 20-tab set this feature covers.
+    # the fixed 9-tab set this feature covers.
     tab_ids = {t for t in tab_ids if not t.startswith("tab-custom")}
-
     expected_names = {t[len("tab-"):] for t in tab_ids}
+
+    assert len(tab_ids) == 9
+    assert TAB_JUMP_COMMANDS == expected_names
+
+    assert len(POPUP_COMMANDS) == 11
     assert not (TAB_JUMP_COMMANDS & POPUP_COMMANDS), "no command should be in both sets"
-    assert TAB_JUMP_COMMANDS | POPUP_COMMANDS == expected_names
-    assert len(tab_ids) == 20
+    assert not (POPUP_COMMANDS & expected_names), \
+        "a popup command must never also be a real main-bar tab id"
 
 
 async def test_selecting_a_custom_command_invokes_it(monkeypatch):
@@ -1398,6 +1515,81 @@ async def test_selecting_a_custom_command_invokes_it(monkeypatch):
         assert ("command.invoke", {"name": "deploy", "args": ""}) in calls
 
 
+async def test_voice_command_is_discoverable_and_not_a_tab_jump():
+    """/voice must be a real BUILTIN_COMMANDS entry, and (since there is no
+    tab-voice TabPane — it pushes a full-screen VoiceModeScreen instead) must
+    never land in TAB_JUMP_COMMANDS."""
+    from jarvis_cli.tui.chat import BUILTIN_COMMANDS, TAB_JUMP_COMMANDS
+
+    by_name = dict(BUILTIN_COMMANDS)
+    assert "voice" in by_name
+    assert "voice" not in TAB_JUMP_COMMANDS
+
+
+async def test_voice_command_triggers_the_same_screen_push_as_f2(monkeypatch):
+    """/voice must reuse action_voice_mode() (the same call F2 makes), not a
+    duplicate push_screen(VoiceModeScreen(...))."""
+    from jarvis_cli.tui.app import JarvisTui
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        chat = app.query_one("#chat")
+        calls = []
+        monkeypatch.setattr(app, "action_voice_mode", lambda: calls.append("voice"))
+        await chat.run_slash_command("voice", "")
+        assert calls == ["voice"]
+
+
+async def test_f2_and_voice_command_push_the_same_voice_mode_screen(daemon):
+    """End-to-end: F2 and /voice both end up pushing a VoiceModeScreen."""
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.voice_mode import VoiceModeScreen
+
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.2)
+        await pilot.press("f2")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, VoiceModeScreen)
+        app.pop_screen()
+        await pilot.pause(0.1)
+
+        chat = app.query_one("#chat")
+        await chat.run_slash_command("voice", "")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, VoiceModeScreen)
+
+
+async def test_f3_cycles_agent_mode_through_all_three_values_and_back(daemon):
+    """F3 cycles agent_mode coworker -> plan -> build -> coworker, writing
+    each step back via settings.set (same call shape SettingsPane's KNOBS
+    cycling uses), and the topbar reflects the CURRENT mode after each
+    cycle."""
+    from jarvis_cli.tui.app import JarvisTui
+
+    app = JarvisTui()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause(0.3)  # let the startup settings.get settle
+        topbar = app.query_one("#topbar")
+        assert "coworker" in str(topbar.content)
+        assert daemon.settings.get("agent_mode", "coworker") == "coworker"
+
+        await pilot.press("f3")
+        await pilot.pause(0.2)
+        assert daemon.settings["agent_mode"] == "plan"
+        assert "plan" in str(topbar.content)
+
+        await pilot.press("f3")
+        await pilot.pause(0.2)
+        assert daemon.settings["agent_mode"] == "build"
+        assert "build" in str(topbar.content)
+
+        await pilot.press("f3")
+        await pilot.pause(0.2)
+        assert daemon.settings["agent_mode"] == "coworker"
+        assert "coworker" in str(topbar.content)
+
+
 async def test_sessions_pane_spinner_shows_during_fetch_and_hides_after(monkeypatch):
     """TablePane's shared spinner (added in screens.py) must appear the
     moment refresh_data() starts awaiting fetch() and disappear once it
@@ -1409,7 +1601,7 @@ async def test_sessions_pane_spinner_shows_during_fetch_and_hides_after(monkeypa
 
     app = JarvisTui()
     async with app.run_test() as pilot:
-        pane = app.query_one("#sessions", SessionsPane)
+        pane = await _open_popup_pane(app, pilot, "sessions", SessionsPane)
         spinner = pane.query_one(f"#{pane.SPINNER_ID}", ArcReactorWidget)
         assert spinner.display is False  # nothing in flight yet
 
@@ -1441,10 +1633,11 @@ async def test_ssh_pane_spinner_shows_and_hides_despite_overriding_compose(monke
     import asyncio
     from jarvis_cli.tui.app import JarvisTui
     from jarvis_cli.tui.arc_reactor import ArcReactorWidget
+    from jarvis_cli.tui.system_panes import SshPane
 
     app = JarvisTui()
     async with app.run_test() as pilot:
-        pane = app.query_one("#ssh")
+        pane = await _open_popup_pane(app, pilot, "ssh", SshPane)
         spinner = pane.query_one(f"#{pane.SPINNER_ID}", ArcReactorWidget)
         assert spinner.display is False
 
@@ -1671,7 +1864,7 @@ async def test_spinner_guard_shows_resumes_hides_and_pauses_on_success():
 
     app = JarvisTui()
     async with app.run_test() as pilot:
-        pane = app.query_one("#sessions")
+        pane = await _open_popup_pane(app, pilot, "sessions", SessionsPane)
         spinner = pane.query_one(f"#{pane.SPINNER_ID}", ArcReactorWidget)
         assert spinner.display is False
 
@@ -1691,7 +1884,7 @@ async def test_spinner_guard_still_hides_spinner_when_body_raises():
 
     app = JarvisTui()
     async with app.run_test() as pilot:
-        pane = app.query_one("#sessions")
+        pane = await _open_popup_pane(app, pilot, "sessions", SessionsPane)
         spinner = pane.query_one(f"#{pane.SPINNER_ID}", ArcReactorWidget)
 
         with pytest.raises(ValueError):

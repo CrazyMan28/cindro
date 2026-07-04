@@ -23,54 +23,70 @@ parity, including live Canvas/Widget rendering, first-run onboarding, the
 2FA/fingerprint lock gate, and hands-free voice mode (no more "use the
 desktop app"):
 
+The persistent main tab bar has exactly **9 tabs**:
+
 | Tab | What it mirrors | Keys |
 |---|---|---|
 | Home | status + recent sessions overview | `r` refresh |
-| Chat | live streamed turns: thinking, tool cards, diffs, approvals | `/` command palette · `F2` voice mode |
-| Sessions | the session list | `enter` open · `n` new · `x` delete · `r` refresh |
-| Memory | long-term memory | type to search · `enter` search · type below + `enter` remember (`#tags`) · `x` forget |
-| Skills | skill library + usage stats | `enter` run · `p` pin/unpin · `a` archive/restore · `x` remove · `v` live/archived view |
-| Agents | background subagents — running sessions or saved definitions | type `agent :: task` + `enter` dispatch · `v` running/defs view · `x` remove (defs view) |
-| Queue | the durable work queue | type `title :: prompt` to enqueue · `c` cancel |
-| Schedules | cron-style scheduled tasks | type `name :: prompt` to schedule · `g` run now · `x` remove |
-| Settings | autonomy + update knobs, plus Connectors/Policies/extension pairing | `enter` cycles a value (saves immediately) · `c` connectors · `p` policies · `e` pair browser extension |
+| Chat | live streamed turns: thinking, tool cards, diffs, approvals | `/` command palette · `F2` voice mode · `F3` cycle agent mode |
 | Canvas | live rendered widgets as they stream in | (read-only feed) |
 | Widgets | the saved widget library | `enter` render to Canvas |
 | Phone | device pairing (ASCII QR) + a real dialer, active calls, and screening | `p` pair · `x` revoke · Dialer/Screening sub-tabs (see below) |
 | Computer | co-work session start/stop, approvals, action log | `a` agent desktop · `w` your real screen · `s` stop · `y`/`n` approve/deny |
 | Browser | the per-session in-app browser | type a URL + enter · `b`/`f` back/forward · `r` snapshot |
-| Activity | the audit log tail | `r` refresh |
-| Graph | the memory relationship graph (as a tree) | type a root id + enter · `r` refresh |
 | Replay | step through a past session's event timeline | type a session id + enter · `j`/`k` step |
-| MCP | configured MCP servers | `enter` enable/disable |
-| Plugins | the signed plugin marketplace | `i` install · `enter` enable/disable · `x` remove |
-| SSH | the SSH allowlist | type `user@host` + enter · `x` revoke |
+| Settings | autonomy + update knobs, plus Connectors/Policies/extension pairing | `enter` cycles a value (saves immediately) · `c` connectors · `p` policies · `e` pair browser extension |
 
-That's all 20 GUI screens — nothing in the desktop sidebar is terminal-only
-off-limits anymore.
+The other **11 GUI screens** are popup-only — reachable ONLY via their `/`
+slash command, which pops open an inline `QuickViewScreen` overlay (Esc to
+close) on top of whatever tab you're on, rather than living in the main tab
+bar:
 
-Global: `Ctrl+N` new chat · `F5` refresh tab · `F2` voice mode · `Ctrl+Q` quit
-(single press, no confirmation) · `Ctrl+C` **twice** within 2 seconds also
-quits — one stray Ctrl+C just arms a "press again to quit" warning instead of
-killing your session, since it's the one key every terminal habit reaches for
-first.
+| Popup (`/command`) | What it mirrors | Keys |
+|---|---|---|
+| `/sessions` | the session list | `enter` open · `n` new · `x` delete · `r` refresh |
+| `/memory` | long-term memory | type to search · `enter` search · type below + `enter` remember (`#tags`) · `x` forget |
+| `/skills` | skill library + usage stats | `enter` run · `p` pin/unpin · `a` archive/restore · `x` remove · `v` live/archived view |
+| `/agents` | background subagents — running sessions or saved definitions | type `agent :: task` + `enter` dispatch · `v` running/defs view · `x` remove (defs view) |
+| `/queue` | the durable work queue | type `title :: prompt` to enqueue · `c` cancel |
+| `/activity` | the audit log tail | `r` refresh |
+| `/memorygraph` | the memory relationship graph (as a tree) | type a root id + enter · `r` refresh |
+| `/mcp` | configured MCP servers | `enter` enable/disable |
+| `/plugins` | the signed plugin marketplace | `i` install · `enter` enable/disable · `x` remove |
+| `/ssh` | the SSH allowlist | type `user@host` + enter · `x` revoke |
+| `/schedules` | cron-style scheduled tasks | type `name :: prompt` to schedule · `g` run now · `x` remove |
+
+That's still all 20 GUI screens — nothing in the desktop sidebar is
+terminal-only off-limits anymore; the 11 above just aren't tabs you can
+`Tab`/click between, only things you pop open and dismiss.
+
+Global: `Ctrl+N` new chat · `F5` refresh tab · `F2` voice mode · `F3` cycle
+agent mode (coworker → plan → build → …, shown live in the topbar) ·
+`Ctrl+Q` quit (single press, no confirmation) · `Ctrl+C` **twice** within 2
+seconds also quits — one stray Ctrl+C just arms a "press again to quit"
+warning instead of killing your session, since it's the one key every
+terminal habit reaches for first.
 
 ### Slash commands
 
-Type `/` in Chat to open a fuzzy-filtered command palette (it fades in/out
-rather than snapping) — built-ins (`/new /stop /goal /y /n` + one command per
-tab above, plus `/model` and `/provider`) plus any CUSTOM command you or
-Jarvis have defined. `/canvas /widgets /phone /computer /browser /replay
-/home /settings` jump to their tab; `/memory /skills /agents /queue /activity
-/memorygraph /mcp /plugins /ssh /schedules /sessions` instead pop up an
-inline overlay (Esc to close) without leaving Chat. Ask Jarvis to make you
-one ("make me a /deploy command that runs my deploy script") — it calls
-`create_slash_command` and it shows up immediately, no restart needed.
-`prompt`-kind commands run today; `mcp_tool`/`shell`-kind commands are
-recognized but notify rather than auto-execute (direct in-TUI dispatch is
-a fast-follow — see docs/superpowers/plans/2026-07-03-tui-gui-parity.md).
-`/model` and `/provider` pop up the same lightweight picker widget the Voice
-tab's brain/model/voice keys reuse (`b`/`m`/`v` — see Voice mode below).
+Type `/` in Chat to open a fuzzy-filtered command palette — it renders
+directly **above** the input line (not below it), fades in/out rather than
+snapping, and the input keeps keyboard focus the whole time so typing more
+of the command just keeps filtering the list. Built-ins (`/new /stop /goal
+/y /n /voice` + one command per main tab above, plus `/model` and
+`/provider`) plus any CUSTOM command you or Jarvis have defined.
+`/canvas /widgets /phone /computer /browser /replay /home /settings` jump to
+their tab; `/memory /skills /agents /queue /activity /memorygraph /mcp
+/plugins /ssh /schedules /sessions` instead pop up an inline overlay (Esc to
+close) without leaving Chat; `/voice` pushes the same full-screen push-to-talk
+voice mode as `F2`. Ask Jarvis to make you one ("make me a /deploy command
+that runs my deploy script") — it calls `create_slash_command` and it shows
+up immediately, no restart needed. `prompt`-kind commands run today;
+`mcp_tool`/`shell`-kind commands are recognized but notify rather than
+auto-execute (direct in-TUI dispatch is a fast-follow — see
+docs/superpowers/plans/2026-07-03-tui-gui-parity.md). `/model` and
+`/provider` pop up the same lightweight picker widget the Voice tab's
+brain/model/voice keys reuse (`b`/`m`/`v` — see Voice mode below).
 
 `/stage`, `/commit`, `/revert`, and `/openpr` are also recognized (for acting
 on a `diff` event the model streamed into the transcript — see "Reviewing
@@ -83,8 +99,8 @@ forward-built scaffolding, not a working feature today.
 Ask Jarvis to add/edit/remove a custom page ("add me a page that tails
 /var/log/jarvis.log") — it calls `tui_add_page` (no code, a declarative
 content spec: `log`/`table`/`markdown`/`widget`/`list`) and the change
-appears live in every connected terminal, no restart needed. The 20 tabs
-above are reserved and can't be touched this way.
+appears live in every connected terminal, no restart needed. The 9 real
+tabs above are reserved and can't be touched this way.
 
 ### The arc reactor and other polish
 
@@ -128,7 +144,7 @@ if one's configured. It **fails open** — no paired phone, an older daemon
 that doesn't know `auth.*` yet, or an already-approved challenge all skip
 the gate immediately, so you can never be locked out of your own terminal.
 
-### Voice mode (`F2`)
+### Voice mode (`F2` or `/voice`)
 
 A full push-to-talk voice conversation, right in the terminal: press
 `Space` to start recording, press it again to stop and send. Your speech is
