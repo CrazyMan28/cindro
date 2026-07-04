@@ -431,6 +431,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
 
     if (m == QStringLiteral("ping"))
         resp = handlePing(req);
+    else if (m == QStringLiteral("status.get"))
+        resp = handleStatusGet(req);
     else if (m == QStringLiteral("settings.get"))
         resp = handleSettingsGet(req);
     else if (m == QStringLiteral("settings.set"))
@@ -582,6 +584,43 @@ Response ControlServer::handlePing(const Request &req)
     result.insert(QStringLiteral("pong"), true);
     result.insert(QStringLiteral("ts"), QDateTime::currentMSecsSinceEpoch());
     return Response::success(req.id, result);
+}
+
+Response ControlServer::handleStatusGet(const Request &req)
+{
+    // Live HUD telemetry for both frontends' status strips (the GUI's
+    // HudStatusStrip previously hardcoded mcpCount=1; the TUI topbar had no
+    // MCP/agent stats at all). Cheap counters only — no per-server liveness
+    // probes here (that's mcp.test's job).
+    QJsonObject r;
+    r.insert(QStringLiteral("version"), Updater::runningVersion());
+    r.insert(QStringLiteral("git_sha"), Updater::runningSha());
+    r.insert(QStringLiteral("default_brain"), m_settings.defaultBrain());
+
+    int mcpTotal = 0, mcpEnabled = 0;
+    if (m_mcp) {
+        for (const McpServerRow &row : m_mcp->list()) {
+            ++mcpTotal;
+            if (row.enabled)
+                ++mcpEnabled;
+        }
+    }
+    QJsonObject mcp;
+    mcp.insert(QStringLiteral("total"), mcpTotal);
+    mcp.insert(QStringLiteral("enabled"), mcpEnabled);
+    r.insert(QStringLiteral("mcp"), mcp);
+
+    int agentsRunning = 0;
+    for (const SessionRow &s : m_store.list()) {
+        if (s.agent.isEmpty())
+            continue;
+        if (m_brains.contains(s.id) && (s.state == QStringLiteral("running") ||
+                                        s.state == QStringLiteral("starting")))
+            ++agentsRunning;
+    }
+    r.insert(QStringLiteral("agents_running"), agentsRunning);
+    r.insert(QStringLiteral("sessions_live"), int(m_brains.size()));
+    return Response::success(req.id, r);
 }
 
 // Static model lists per brain. Codex also merges anything in ~/.codex/config.toml.
@@ -5703,6 +5742,7 @@ bool ControlServer::isConfigMethod(const QString &method)
 {
     static const QSet<QString> methods = {
         QStringLiteral("settings.get"),      QStringLiteral("settings.set"),
+        QStringLiteral("status.get"),
         QStringLiteral("model.list"),        QStringLiteral("mcp.list"),
         QStringLiteral("mcp.add"),           QStringLiteral("mcp.remove"),
         QStringLiteral("mcp.set_enabled"),   QStringLiteral("mcp.test"),
@@ -5741,6 +5781,7 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
     const QString &m = req.method;
     if (m == QStringLiteral("settings.get"))    return handleSettingsGet(req);
     if (m == QStringLiteral("settings.set"))    return handleSettingsSet(req);
+    if (m == QStringLiteral("status.get"))      return handleStatusGet(req);
     if (m == QStringLiteral("phone.mcp"))       return handlePhoneMcp(req);
     if (m == QStringLiteral("phone.http"))      return handlePhoneHttp(req);
     if (m == QStringLiteral("hooks.list"))      return handleHooksList(req);
