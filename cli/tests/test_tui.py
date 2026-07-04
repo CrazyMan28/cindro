@@ -229,3 +229,42 @@ async def test_replay_pane_loads_a_session_and_seeks():
         assert pane.current_line() == "[user] hi"
         pane.seek(1)
         assert pane.current_line() == "[assistant] hello"
+
+
+async def test_mcp_pane_lists_servers(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#mcp")
+        async def fake_call(method, params=None, timeout=60.0):
+            return {"servers": [{"id": "m1", "name": "context7", "transport": "http",
+                                 "endpoint": "https://x", "enabled": True,
+                                 "builtin": False, "tools_count": 3}]}
+        monkeypatch.setattr(app.client, "call", fake_call)
+        await pane.fetch()
+
+
+async def test_plugins_pane_lists_catalog(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#plugins")
+        async def fake_call(method, params=None, timeout=60.0):
+            return {"plugins": [{"id": "p1", "name": "weather", "author": "jarvis",
+                                 "version": "1.0", "kind": "mcp", "installed": False,
+                                 "enabled": False}]}
+        monkeypatch.setattr(app.client, "call", fake_call)
+        rows = await pane.fetch()
+        assert rows[0]["name"] == "weather"
+
+
+async def test_ssh_pane_lists_allowed_hosts(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#ssh")
+        async def fake_call(method, params=None, timeout=60.0):
+            return {"hosts": ["deploy@k2-runner"]}
+        monkeypatch.setattr(app.client, "call", fake_call)
+        rows = await pane.fetch()
+        assert rows[0]["host"] == "deploy@k2-runner"

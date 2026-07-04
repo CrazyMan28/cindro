@@ -27,6 +27,7 @@ from jarvis_cli.tui.computer_pane import ComputerPane
 from jarvis_cli.tui.phone_pane import PhonePane
 from jarvis_cli.tui.screens import (AgentsPane, MemoryPane, QueuePane,
                                     SessionsPane, SettingsPane, SkillsPane)
+from jarvis_cli.tui.system_panes import McpPane, PluginsPane, SshPane
 
 
 class JarvisTui(App):
@@ -133,6 +134,12 @@ class JarvisTui(App):
                 yield ActivityPane(id="activity")
             with TabPane("Replay", id="tab-replay"):
                 yield ReplayPane(id="replay")
+            with TabPane("MCP", id="tab-mcp"):
+                yield McpPane(id="mcp")
+            with TabPane("Plugins", id="tab-plugins"):
+                yield PluginsPane(id="plugins")
+            with TabPane("SSH", id="tab-ssh"):
+                yield SshPane(id="ssh")
         yield Footer()
 
     async def on_mount(self) -> None:
