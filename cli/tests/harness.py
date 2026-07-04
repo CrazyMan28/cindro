@@ -29,6 +29,10 @@ class MockDaemon:
         self.created_sid = "sess_cli_1"
         self.calls: list[tuple[str, dict]] = []
         self.subscribed: list[str] = []
+        self.ws = None  # the most recent client connection — tests that need
+                        # to push a session.event out-of-band (e.g. an
+                        # approval arriving without a session.send) use this
+                        # directly with .emit() instead of the on_send hook.
         self.settings: dict = {
             "version": "9.9.9", "git_sha": "abc1234",
             "default_brain": "codex", "default_model": "",
@@ -52,6 +56,7 @@ class MockDaemon:
         self._bg: set[asyncio.Task] = set()
 
     async def _handler(self, ws):
+        self.ws = ws
         async for raw in ws:
             try:
                 msg = json.loads(raw)

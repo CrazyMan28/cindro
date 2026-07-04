@@ -6,6 +6,9 @@ rather than the pixels — a deliberate, documented translation."""
 
 from __future__ import annotations
 
+import asyncio
+from typing import Optional
+
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -22,6 +25,7 @@ class ComputerPane(Vertical):
         self.session_id: str = ""
         self.log_lines: list[str] = []
         self._last_approval_id: str = ""
+        self._pump_task: Optional[asyncio.Task] = None
 
     @property
     def client(self):
@@ -42,26 +46,66 @@ class ComputerPane(Vertical):
             res = await self.client.call("session.create", {
                 "profile": "coworker", "target": target,
             })
+            self._cancel_pump()  # a previous co-work session's pump must not
+                                 # keep delivering into the new session's log.
             self.session_id = res.get("session_id", "")
+            self._last_approval_id = ""
             self.query_one("#computer-status", Static).update(
                 Text(f"co-work session {self.session_id} ({target})", style="cyan"))
             self._append(f"started co-work on {target}")
             if self.session_id:
-                await self.app.client.subscribe(self.session_id)
+                await self.client.subscribe(self.session_id)
+                self._ensure_pump()
         except (ControlError, ConnectionError, TimeoutError) as exc:
             self.notify(str(exc), severity="error")
 
     async def stop_coworker(self) -> None:
         if not self.session_id:
             return
+        self._cancel_pump()
         try:
             await self.client.call("session.cancel", {"session_id": self.session_id})
             self._append("stopped")
         except ControlError as exc:
             self.notify(str(exc), severity="error")
         self.session_id = ""
+        self._last_approval_id = ""
         self.query_one("#computer-status", Static).update(
             Text("no active co-work session", style="bright_black"))
+
+    def _ensure_pump(self) -> None:
+        if self._pump_task is None or self._pump_task.done():
+            self._pump_task = asyncio.create_task(self._pump())
+
+    def _cancel_pump(self) -> None:
+        # A pump parked in q.get() on a stopped/replaced session's queue
+        # would never see the change — kill it; the next _ensure_pump
+        # (from a fresh start_coworker) begins clean.
+        if self._pump_task is not None and not self._pump_task.done():
+            self._pump_task.cancel()
+        self._pump_task = None
+
+    async def _pump(self) -> None:
+        """Forward the active co-work session's events (approvals, action
+        log lines, ...) from the client's per-session queue into
+        _on_session_event. Bounded waits so a stop is picked up promptly
+        even while parked on the queue."""
+        try:
+            while self.session_id:
+                sid = self.session_id
+                q = self.client.queue_for(sid)
+                if q is None:
+                    await asyncio.sleep(0.2)
+                    continue
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+                if sid != self.session_id:
+                    continue  # stale delivery from a session we've left
+                self._on_session_event(ev)
+        except asyncio.CancelledError:
+            pass
 
     def _on_session_event(self, ev: dict) -> None:
         kind = ev.get("kind", "")
