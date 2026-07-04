@@ -14,18 +14,27 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from typing import Optional
 
 from rich.markdown import Markdown
 from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.message import Message
 from textual.widgets import Input, RichLog, Static
 
 from jarvis_cli.control import ControlError
+from jarvis_cli.tui.arc_reactor import ArcReactorWidget
 from jarvis_cli.tui.command_palette import CommandPalette
+
+# typewriter reveal tuning (see _start_typewriter): a bounded total duration
+# regardless of message length, so huge replies never make the user wait.
+TYPEWRITER_TICK_MS = 18
+TYPEWRITER_MIN_MS = 300
+TYPEWRITER_MAX_MS = 1800
+TYPEWRITER_MS_PER_CHAR = 6
 
 BUILTIN_COMMANDS = [
     ("new", "start a fresh chat"), ("stop", "cancel the current turn"),
@@ -68,11 +77,30 @@ class ChatPane(Vertical):
         self.session_id: str = ""
         self.pending_approval: str = ""
         self._pump_task: Optional[asyncio.Task] = None
+        # the in-progress typewriter reveal (see _start_typewriter) and the
+        # full text it's revealing — kept alongside the task so a cancel
+        # (new message / /stop / /new / session switch) can flush whatever
+        # was in flight straight into the permanent transcript instead of
+        # leaving a half-typed line stranded in #typing-preview.
+        self._typewriter_task: Optional[asyncio.Task] = None
+        self._typewriter_text: str = ""
 
     # -- layout ----------------------------------------------------------------
     def compose(self) -> ComposeResult:
+        # landing reactor: the Chat pane's "empty state" — a big ambiently
+        # spinning reactor shown only until a conversation is under way.
+        yield ArcReactorWidget(size=13, spinning=True, thinking=False,
+                               id="landing-reactor")
         yield RichLog(id="transcript", wrap=True, markup=False, auto_scroll=True)
-        yield Static("", id="chat-status")
+        # where the in-progress typewriter reveal lives (see _start_typewriter);
+        # empty/hidden until a live assistant reply starts revealing.
+        yield Static("", id="typing-preview")
+        yield Horizontal(
+            ArcReactorWidget(size=5, spinning=True, thinking=False,
+                             id="status-reactor"),
+            Static("", id="chat-status"),
+            id="status-row",
+        )
         yield Input(placeholder="Message Jarvis…  (/new /stop /goal /y /n)",
                     id="chat-input")
 
@@ -81,6 +109,8 @@ class ChatPane(Vertical):
         log.write(Text("◉ JARVIS", style="bold cyan"))
         log.write(Text("Type a message to start a conversation. "
                        "Tab switches screens; Ctrl+Q quits.", style="bright_black"))
+        self.query_one("#status-reactor", ArcReactorWidget).display = False
+        self._update_landing_reactor()
 
     # -- helpers ---------------------------------------------------------------
     @property
@@ -93,12 +123,81 @@ class ChatPane(Vertical):
     def _status(self, text: str, style: str = "bright_black") -> None:
         self.query_one("#chat-status", Static).update(Text(text, style=style))
 
+    def _update_landing_reactor(self) -> None:
+        """The big ambient reactor is the Chat pane's empty state — visible
+        only until a conversation is under way (a session exists)."""
+        try:
+            reactor = self.query_one("#landing-reactor", ArcReactorWidget)
+        except Exception:
+            return
+        reactor.display = not self.session_id
+
+    def _set_thinking(self, active: bool) -> None:
+        """Show/hide the small reactor near #chat-status and gate its
+        `.thinking` animation — mirrors a turn being in flight."""
+        try:
+            reactor = self.query_one("#status-reactor", ArcReactorWidget)
+        except Exception:
+            return
+        reactor.display = active
+        reactor.thinking = active
+
+    # -- typewriter reveal -------------------------------------------------------
+    def _start_typewriter(self, text: str) -> None:
+        """Progressively reveal a LIVE assistant reply into #typing-preview,
+        then finalize it into the permanent RichLog transcript. Any reveal
+        already in flight is cancelled first (and its text flushed in full —
+        see _cancel_typewriter) so a fast second reply never leaves a
+        half-typed line stranded."""
+        self._cancel_typewriter()
+        self._typewriter_text = text
+        self._typewriter_task = asyncio.create_task(self._reveal_typewriter(text))
+
+    async def _reveal_typewriter(self, text: str) -> None:
+        preview = self.query_one("#typing-preview", Static)
+        total_ms = min(TYPEWRITER_MAX_MS,
+                       max(TYPEWRITER_MIN_MS, len(text) * TYPEWRITER_MS_PER_CHAR))
+        ticks = max(1, int(total_ms // TYPEWRITER_TICK_MS))
+        chunk = max(1, math.ceil(len(text) / ticks))
+        n = 0
+        while n < len(text):
+            n = min(len(text), n + chunk)
+            preview.update(Markdown(text[:n]))
+            if n < len(text):
+                await asyncio.sleep(TYPEWRITER_TICK_MS / 1000.0)
+        # completed naturally (not cancelled) — finalize into the permanent
+        # scrollback and clear the live preview + in-flight bookkeeping.
+        self._typewriter_text = ""
+        self._typewriter_task = None
+        preview.update("")
+        self._log(Markdown(text))
+
+    def _cancel_typewriter(self) -> None:
+        """Cancel any in-progress reveal. If one was in flight, its full text
+        is flushed straight into the transcript (rather than left half-typed
+        in #typing-preview) — covers a new live message arriving mid-reveal,
+        /stop, /new, and session switches."""
+        task = self._typewriter_task
+        self._typewriter_task = None
+        if task is not None and not task.done():
+            task.cancel()
+        pending = self._typewriter_text
+        self._typewriter_text = ""
+        if pending:
+            try:
+                self.query_one("#typing-preview", Static).update("")
+            except Exception:
+                pass
+            self._log(Markdown(pending))
+
     # -- session lifecycle -------------------------------------------------------
     async def open_session(self, session_id: str, title: str = "") -> None:
         """Attach the chat to an existing session (from the Sessions tab)."""
         self._cancel_pump()
         self.session_id = session_id
         self.pending_approval = ""
+        self._set_thinking(False)
+        self._update_landing_reactor()
         log = self.query_one("#transcript", RichLog)
         log.clear()
         log.write(Text(f"— session {title or session_id} —", style="bold cyan"))
@@ -134,6 +233,11 @@ class ChatPane(Vertical):
         if self._pump_task is not None and not self._pump_task.done():
             self._pump_task.cancel()
         self._pump_task = None
+        # Every caller of _cancel_pump (new_session/open_session, and this
+        # method itself is called on any session switch) is a point where an
+        # in-flight typewriter reveal must not keep writing into what is
+        # about to become the WRONG session's view.
+        self._cancel_typewriter()
 
     async def _pump(self) -> None:
         """Forward the ACTIVE session's events into the textual message queue.
@@ -248,27 +352,34 @@ class ChatPane(Vertical):
             await self.client.unsubscribe(self.session_id)
         self.session_id = ""
         self.pending_approval = ""
+        self._set_thinking(False)
         log = self.query_one("#transcript", RichLog)
         log.clear()
         log.write(Text("— new conversation —", style="bold cyan"))
         self._status("")
+        self._update_landing_reactor()
 
     async def _send(self, text: str) -> None:
         try:
             sid = await self._ensure_session()
+            self._update_landing_reactor()
             self._log(Text(f"❯ {text}", style="bold white"))
             self._status("thinking…", "cyan")
+            self._set_thinking(True)
             await self.client.call("session.send", {"session_id": sid, "text": text},
                                    timeout=30)
         except (ControlError, ConnectionError, TimeoutError) as exc:
             self._log(Text(f"send failed: {exc}", style="red"))
             self._status("")
+            self._set_thinking(False)
 
     async def _stop_turn(self) -> None:
         if not self.session_id:
             return
         try:
             await self.client.call("session.cancel", {"session_id": self.session_id})
+            self._cancel_typewriter()
+            self._set_thinking(False)
             self._status("turn cancelled", "yellow")
         except (ControlError, ConnectionError, TimeoutError) as exc:
             self._log(Text(f"cancel failed: {exc}", style="red"))
@@ -315,8 +426,11 @@ class ChatPane(Vertical):
             role = ev.get("role", "")
             text = ev.get("text", "")
             if role == "assistant":
-                self._log(Markdown(text))
-                if not replay:
+                if replay:
+                    self._log(Markdown(text))
+                else:
+                    self._start_typewriter(text)
+                    self._set_thinking(False)
                     self._status("")
             elif role == "user":
                 self._log(Text(f"❯ {text}", style="bold white"))
@@ -343,7 +457,9 @@ class ChatPane(Vertical):
             self._log(Text(f"✖ {ev.get('message', 'error')}", style="bold red"))
             if not replay:
                 self._status("")
+                self._set_thinking(False)
         elif kind == "final":
             self._log(Text("─" * 40, style="bright_black"))
             if not replay:
                 self._status("")
+                self._set_thinking(False)

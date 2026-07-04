@@ -64,6 +64,105 @@ async def test_chat_send_streams_reply(daemon):
         assert "hello from the mock" in rendered
 
 
+def _activate_chat_tab(app) -> None:
+    # RichLog defers writes until it knows its size (i.e. is laid out), which
+    # only happens once its TabPane is the active one — mirrors how the
+    # pre-existing send test relies on inp.focus() switching TabbedContent
+    # onto "tab-chat" before asserting on #transcript content.
+    from textual.widgets import TabbedContent
+    app.query_one(TabbedContent).active = "tab-chat"
+
+
+@pytest.mark.asyncio
+async def test_chat_replayed_assistant_message_skips_typewriter(daemon):
+    """replay=True is instant — no reveal task, straight into the RichLog."""
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        _activate_chat_tab(app)
+        await pilot.pause(0.05)
+        chat = app.query_one("#chat", ChatPane)
+        chat._render_ev({"kind": "message", "role": "assistant",
+                         "text": "replayed reply text"}, replay=True)
+        await pilot.pause(0.05)
+        assert chat._typewriter_task is None
+        assert chat._typewriter_text == ""
+        transcript = chat.query_one("#transcript")
+        rendered = "\n".join(strip.text for strip in transcript.lines)
+        assert "replayed reply text" in rendered
+
+
+@pytest.mark.asyncio
+async def test_chat_live_assistant_message_typewriters_then_finalizes(daemon):
+    """A LIVE (non-replay) assistant message starts a reveal task immediately;
+    once it runs to completion the full text lands in the transcript."""
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        _activate_chat_tab(app)
+        await pilot.pause(0.05)
+        chat = app.query_one("#chat", ChatPane)
+        await chat._ensure_session()
+        await pilot.pause(0.1)
+        assert daemon.ws is not None
+
+        await daemon.emit(daemon.ws, chat.session_id, {
+            "kind": "message", "role": "assistant", "text": "a live typed reply",
+        })
+        await pilot.pause(0.05)
+        task = chat._typewriter_task
+        assert task is not None and not task.done()
+
+        await task
+        await pilot.pause(0.05)
+        assert chat._typewriter_task is None
+        assert chat._typewriter_text == ""
+        transcript = chat.query_one("#transcript")
+        rendered = "\n".join(strip.text for strip in transcript.lines)
+        assert "a live typed reply" in rendered
+
+
+@pytest.mark.asyncio
+async def test_chat_second_live_message_cancels_prior_reveal_cleanly(daemon):
+    """A second live assistant message arriving mid-reveal cancels the first
+    reveal without raising, flushes ITS full text into the transcript (no
+    stranded partial line), then reveals the second one normally."""
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        _activate_chat_tab(app)
+        await pilot.pause(0.05)
+        chat = app.query_one("#chat", ChatPane)
+        await chat._ensure_session()
+        await pilot.pause(0.1)
+        assert daemon.ws is not None
+
+        first_text = "first reply word " * 40  # long enough to still be revealing
+        await daemon.emit(daemon.ws, chat.session_id, {
+            "kind": "message", "role": "assistant", "text": first_text,
+        })
+        await pilot.pause(0.05)
+        first_task = chat._typewriter_task
+        assert first_task is not None and not first_task.done()
+
+        await daemon.emit(daemon.ws, chat.session_id, {
+            "kind": "message", "role": "assistant", "text": "second reply",
+        })
+        await pilot.pause(0.05)
+        assert first_task.cancelled()  # cancelled cleanly, no other exception
+        second_task = chat._typewriter_task
+        assert second_task is not None and second_task is not first_task
+        await second_task
+        await pilot.pause(0.05)
+
+        transcript = chat.query_one("#transcript")
+        rendered = "\n".join(strip.text for strip in transcript.lines)
+        # a short, unwrapped fragment of the first message confirms it was
+        # flushed in full (not stranded half-typed) despite the cancellation.
+        assert "first reply word" in rendered
+        assert "second reply" in rendered
+
+
 @pytest.mark.asyncio
 async def test_sessions_tab_lists_rows(daemon):
     app = JarvisTui()

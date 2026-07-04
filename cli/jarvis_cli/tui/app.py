@@ -62,6 +62,19 @@ class JarvisTui(App):
         border: round #14212e;
         scrollbar-color: #14212e;
     }
+    #landing-reactor {
+        margin: 1 0 1 1;
+    }
+    #typing-preview {
+        color: #c9d6e3;
+        padding: 0 1;
+    }
+    #status-row {
+        height: auto;
+    }
+    #status-reactor {
+        margin: 0 1 0 1;
+    }
     #chat-status {
         height: 1;
         color: #7f8ea0;
