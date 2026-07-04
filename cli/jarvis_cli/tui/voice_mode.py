@@ -43,12 +43,13 @@ import asyncio
 import base64
 import io
 import random
+import time
 import wave
 from typing import Optional
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
@@ -78,6 +79,15 @@ _STATE_LABELS = {
     "speaking": "SPEAKING…",
 }
 
+# A sane push-to-talk ceiling. The toggle is manual (press Space to start,
+# press again to stop) with no auto-stop otherwise, so a stuck/forgotten
+# recording would let Recorder's frame buffer (and the WAV/base64 blob built
+# from it) grow without bound. VoiceModeScreen auto-stops-and-sends once a
+# recording hits this many seconds (the same flow a manual stop triggers),
+# and Recorder itself stops appending new chunks past this cap as a hard
+# backstop underneath that.
+MAX_RECORD_SECONDS = 100
+
 
 class VoiceTimeout(Exception):
     """Raised by ``_await_assistant_reply`` when no reply arrives in time."""
@@ -92,21 +102,42 @@ class VoiceTimeout(Exception):
 
 
 class Recorder:
-    """Real microphone capture via ``sounddevice.InputStream``."""
+    """Real microphone capture via ``sounddevice.InputStream``.
 
-    def __init__(self, samplerate: int = 16000, channels: int = 1) -> None:
+    Caps growth of the captured-frames buffer at ``max_seconds`` worth of
+    samples. VoiceModeScreen separately polls elapsed recording time and
+    auto-stops-and-sends at the same cap (see ``MAX_RECORD_SECONDS``); this
+    is the hard backstop underneath that, so the buffer can never grow
+    without bound even if the screen-level timer is ever late.
+    """
+
+    def __init__(self, samplerate: int = 16000, channels: int = 1,
+                max_seconds: float = MAX_RECORD_SECONDS) -> None:
         self.samplerate = samplerate
         self.channels = channels
+        self.max_seconds = max_seconds
         self._stream = None
         self._frames: list = []
+        self._n_samples = 0
+
+    @property
+    def _max_samples(self) -> int:
+        return int(self.max_seconds * self.samplerate)
+
+    def _append_chunk(self, chunk) -> None:
+        if self._n_samples >= self._max_samples:
+            return  # at cap — drop further chunks, don't grow unbounded
+        self._frames.append(chunk)
+        self._n_samples += len(chunk)
 
     def start(self) -> None:
         import sounddevice as sd  # noqa: PLC0415 — see module docstring
 
         self._frames = []
+        self._n_samples = 0
 
         def _callback(indata, frames, time_info, status) -> None:  # noqa: ARG001
-            self._frames.append(indata.copy())
+            self._append_chunk(indata.copy())
 
         self._stream = sd.InputStream(
             samplerate=self.samplerate, channels=self.channels,
@@ -127,6 +158,7 @@ class Recorder:
 
         data = np.concatenate(self._frames, axis=0)
         self._frames = []
+        self._n_samples = 0
         return data.tobytes()
 
 
@@ -267,6 +299,8 @@ class VoiceModeScreen(ModalScreen[None]):
         self.voice = ""
         self.session_id = ""
         self._phrase_timer = None
+        self._record_cap_timer = None
+        self._record_started_at: Optional[float] = None
 
     # -- layout ----------------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -283,16 +317,27 @@ class VoiceModeScreen(ModalScreen[None]):
 
     def on_mount(self) -> None:
         self._phrase_timer = self.set_interval(2.5, self._rotate_phrase)
+        self._record_cap_timer = self.set_interval(1.0, self._check_record_cap)
 
-    def on_unmount(self) -> None:
+    async def on_unmount(self) -> None:
         if self._phrase_timer is not None:
             self._phrase_timer.stop()
+        if self._record_cap_timer is not None:
+            self._record_cap_timer.stop()
         # Never leave a mic stream open behind us.
         if self.state == "listening":
             try:
                 self.recorder.stop()
             except Exception:
                 pass
+        # Never leave an abandoned session + queue subscription behind us
+        # either — mirrors ChatPane.new_session's explicit unsubscribe.
+        if self.session_id:
+            try:
+                await self.client.unsubscribe(self.session_id)
+            except Exception:
+                pass
+            self.session_id = ""
 
     def action_close_voice(self) -> None:
         self.dismiss()
@@ -316,9 +361,30 @@ class VoiceModeScreen(ModalScreen[None]):
         self.heard_text = ""
         self.reply_text = ""
         self.state = "listening"
+        self._record_started_at = self._clock()
         self._sync_widgets()
 
+    # -- MAX_RECORD_SECONDS auto-stop ------------------------------------------
+    # A wrapper around the wall clock (rather than calling time.monotonic()
+    # inline) so tests can monkeypatch it to simulate elapsed time without
+    # an actual multi-second sleep.
+    def _clock(self) -> float:
+        return time.monotonic()
+
+    def _check_record_cap(self) -> None:
+        if self.state != "listening" or self._record_started_at is None:
+            return
+        if self._clock() - self._record_started_at >= MAX_RECORD_SECONDS:
+            # Reset immediately so a busy loop / repeated ticks can't queue
+            # this more than once before _stop_and_send's own state flip
+            # (to "thinking") takes effect.
+            self._record_started_at = None
+            # Same flow a manual "press Space again" stop-and-send triggers —
+            # just fired by the elapsed-time cap instead of a keypress.
+            self.run_worker(self._stop_and_send())
+
     async def _stop_and_send(self) -> None:
+        self._record_started_at = None
         self.state = "thinking"
         self._sync_widgets()
         self._rotate_phrase()  # don't leave a stale "LISTENING…" label up to

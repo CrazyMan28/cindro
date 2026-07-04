@@ -16,7 +16,8 @@ from harness import MockDaemon  # noqa: E402
 
 from jarvis_cli.tui.app import JarvisTui  # noqa: E402
 from jarvis_cli.tui.quick_view import QuickViewScreen  # noqa: E402
-from jarvis_cli.tui.voice_mode import (VoiceModeScreen, VoiceTimeout,  # noqa: E402
+from jarvis_cli.tui.voice_mode import (MAX_RECORD_SECONDS, Recorder,  # noqa: E402
+                                       VoiceModeScreen, VoiceTimeout,
                                        pcm_to_wav, wav_to_pcm)
 
 
@@ -189,6 +190,96 @@ async def test_busy_state_ignores_extra_toggle(daemon):
         await screen.action_toggle_record()
         assert screen.state == "thinking"
         assert recorder.started is False
+
+
+@pytest.mark.asyncio
+async def test_unmount_unsubscribes_owned_session(daemon):
+    """VoiceModeScreen must not leak an abandoned session + queue
+    subscription on repeated F2 (Voice Mode) invocations — unmounting it
+    should unsubscribe from whatever session it created, mirroring
+    ChatPane.new_session's explicit unsubscribe-before-abandon."""
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        screen = VoiceModeScreen(app.client, recorder=FakeRecorder(), player=FakePlayer())
+        await app.push_screen(screen)
+        await pilot.pause(0.1)
+
+        sid = await screen._ensure_session()
+        assert sid and sid in app.client._subscribed
+
+        unsub_calls = []
+        orig_unsubscribe = app.client.unsubscribe
+
+        async def spy_unsubscribe(session_id: str) -> None:
+            unsub_calls.append(session_id)
+            await orig_unsubscribe(session_id)
+
+        app.client.unsubscribe = spy_unsubscribe
+
+        await pilot.press("escape")  # pops the screen -> on_unmount fires
+        await pilot.pause(0.2)
+
+        assert unsub_calls == [sid]
+        assert sid not in app.client._subscribed
+        assert app.client.queue_for(sid) is None
+
+
+@pytest.mark.asyncio
+async def test_record_cap_auto_stops_and_sends(daemon):
+    """A recording that hits MAX_RECORD_SECONDS must auto-stop-and-send —
+    the same flow a manual "press Space again" triggers, just fired by the
+    elapsed-time cap instead of a keypress."""
+    daemon.stt_text = "auto stopped after the cap"
+    daemon.on_send = _reply_on_send("got it")
+
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        recorder = FakeRecorder()
+        player = FakePlayer()
+        screen = VoiceModeScreen(app.client, recorder=recorder, player=player)
+        await app.push_screen(screen)
+        await pilot.pause(0.1)
+
+        fake_now = [1_000_000.0]
+        screen._clock = lambda: fake_now[0]
+
+        screen._start_recording()
+        assert screen.state == "listening"
+        assert recorder.started is True
+
+        # Simulate MAX_RECORD_SECONDS elapsing without ever pressing Space
+        # again, then let the cap-check timer tick (as it would every 1s).
+        fake_now[0] += MAX_RECORD_SECONDS + 1
+        screen._check_record_cap()
+        await pilot.pause(0.5)
+
+        assert recorder.stopped is True
+        stt_calls = [(m, p) for (m, p) in daemon.voice_calls if m == "voice.stt"]
+        assert stt_calls and "audio_b64" in stt_calls[0][1]
+        assert screen.heard_text == "auto stopped after the cap"
+        assert screen.reply_text == "got it"
+        assert screen.state == "idle"
+
+
+def test_record_cap_bounds_recorder_frame_buffer():
+    """Recorder itself must stop appending new chunks once the captured
+    audio hits max_seconds worth of samples — a hard backstop under the
+    screen-level elapsed-time auto-stop, so a stuck/never-stopped recording
+    can't grow the buffer without bound."""
+    import numpy as np
+
+    samplerate = 100
+    rec = Recorder(samplerate=samplerate, channels=1, max_seconds=1.0)
+    chunk = np.zeros((10, 1), dtype="int16")  # 0.1s per chunk @ 100Hz
+
+    for _ in range(50):  # push in 5.0s worth of audio against a 1.0s cap
+        rec._append_chunk(chunk.copy())
+
+    max_samples = int(rec.max_seconds * samplerate)
+    assert rec._n_samples <= max_samples
+    assert sum(len(c) for c in rec._frames) <= max_samples
 
 
 @pytest.mark.asyncio
