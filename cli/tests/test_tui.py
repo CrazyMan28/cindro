@@ -206,7 +206,12 @@ async def test_activity_pane_lists_audit_entries(monkeypatch):
     async with app.run_test() as pilot:
         pane = app.query_one("#activity")
         async def fake_call(method, params=None, timeout=60.0):
-            assert method == "audit.list"
+            # HomePane's own on_mount deferred refresh (session.list /
+            # settings.get) can still be pending and fire during this same
+            # pilot.pause() window now that Home is a tab too — tolerate it
+            # rather than assert this is the ONLY method ever called.
+            if method != "audit.list":
+                return {}
             return {"entries": [{"ts": "12:00", "tool": "shell", "ok": True,
                                  "risk": "low", "summary": "ran ls"}]}
         monkeypatch.setattr(app.client, "call", fake_call)
@@ -268,3 +273,49 @@ async def test_ssh_pane_lists_allowed_hosts(monkeypatch):
         monkeypatch.setattr(app.client, "call", fake_call)
         rows = await pane.fetch()
         assert rows[0]["host"] == "deploy@k2-runner"
+
+
+async def test_memory_graph_pane_builds_a_tree(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#memorygraph")
+        async def fake_call(method, params=None, timeout=60.0):
+            return {"nodes": [{"id": "n1", "name": "Issac", "kind": "entity"},
+                              {"id": "n2", "name": "likes coffee", "kind": "memory"}],
+                    "edges": [{"from": "n1", "to": "n2", "relation": "mentions"}]}
+        monkeypatch.setattr(app.client, "call", fake_call)
+        await pane.load_graph()
+        assert "Issac" in str(pane.tree.label) or any(
+            "Issac" in str(child.label) for child in pane.tree.children)
+
+
+async def test_home_pane_shows_recent_sessions(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#home")
+        async def fake_call(method, params=None, timeout=60.0):
+            if method == "session.list":
+                return {"sessions": [{"id": "s1", "title": "chat about X", "brain": "claude"}]}
+            return {"settings": {"version": "1.2.3", "default_brain": "claude"}}
+        monkeypatch.setattr(app.client, "call", fake_call)
+        await pane.refresh_data()
+        assert "chat about X" in "\n".join(pane.lines)
+
+
+async def test_schedules_pane_creates_a_job(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#schedules")
+        calls = []
+        async def fake_call(method, params=None, timeout=60.0):
+            calls.append((method, params))
+            return {"schedules": []}
+        monkeypatch.setattr(app.client, "call", fake_call)
+        pane.query_one("#schedule-add").value = "water plants :: remind me to water the plants"
+        from textual.widgets import Input
+        await pane.on_input_submitted(Input.Submitted(pane.query_one("#schedule-add"),
+                                                       "water plants :: remind me to water the plants"))
+        assert calls[0][0] == "schedule.create"

@@ -24,6 +24,7 @@ from jarvis_cli.tui.browser_pane import BrowserPane
 from jarvis_cli.tui.canvas_pane import CanvasPane, WidgetsPane
 from jarvis_cli.tui.chat import ChatPane
 from jarvis_cli.tui.computer_pane import ComputerPane
+from jarvis_cli.tui.misc_panes import HomePane, MemoryGraphPane, SchedulesPane
 from jarvis_cli.tui.phone_pane import PhonePane
 from jarvis_cli.tui.screens import (AgentsPane, MemoryPane, QueuePane,
                                     SessionsPane, SettingsPane, SkillsPane)
@@ -105,7 +106,9 @@ class JarvisTui(App):
     # -- layout ----------------------------------------------------------------
     def compose(self) -> ComposeResult:
         yield Static(id="topbar")
-        with TabbedContent(initial="tab-chat"):
+        with TabbedContent(initial="tab-home"):
+            with TabPane("Home", id="tab-home"):
+                yield HomePane(id="home")
             with TabPane("Chat", id="tab-chat"):
                 yield ChatPane(id="chat")
             with TabPane("Sessions", id="tab-sessions"):
@@ -118,6 +121,8 @@ class JarvisTui(App):
                 yield AgentsPane(id="agents")
             with TabPane("Queue", id="tab-queue"):
                 yield QueuePane(id="queue")
+            with TabPane("Schedules", id="tab-schedules"):
+                yield SchedulesPane(id="schedules")
             with TabPane("Settings", id="tab-settings"):
                 yield SettingsPane(id="settings")
             with TabPane("Canvas", id="tab-canvas"):
@@ -132,6 +137,8 @@ class JarvisTui(App):
                 yield BrowserPane(id="browser")
             with TabPane("Activity", id="tab-activity"):
                 yield ActivityPane(id="activity")
+            with TabPane("Graph", id="tab-memorygraph"):
+                yield MemoryGraphPane(id="memorygraph")
             with TabPane("Replay", id="tab-replay"):
                 yield ReplayPane(id="replay")
             with TabPane("MCP", id="tab-mcp"):
