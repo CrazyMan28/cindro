@@ -346,6 +346,20 @@ async def test_diff_action_includes_session_id_when_a_session_exists(monkeypatch
         assert stages and stages[0][1] == {"session_id": "sess_active", "path": "foo.py"}
 
 
+def test_diff_review_commands_are_marked_not_yet_available_in_the_palette():
+    """The daemon has ZERO diff.* handlers implemented today — BUILTIN_COMMANDS'
+    /stage /commit /revert /openpr entries must carry a visible "not yet
+    available" marker so the `/` command palette itself signals this, not
+    just a transient yellow transcript line after the user already tried it."""
+    from jarvis_cli.tui.chat import BUILTIN_COMMANDS
+
+    by_name = dict(BUILTIN_COMMANDS)
+    for name in ("stage", "commit", "revert", "openpr"):
+        assert "not yet available" in by_name[name], (name, by_name[name])
+    # Sanity check the marker isn't slapped on everything indiscriminately.
+    assert "not yet available" not in by_name["new"]
+
+
 @pytest.mark.asyncio
 async def test_sessions_tab_lists_rows(daemon):
     app = JarvisTui()

@@ -64,10 +64,10 @@ BUILTIN_COMMANDS = [
     ("tui", "ask Jarvis to add/edit/remove a TUI page"),
     ("model", "pick the active model"),
     ("provider", "pick codex, claude, or api"),
-    ("stage", "stage a file from the last diff"),
-    ("commit", "commit staged changes"),
-    ("revert", "revert a file from the last diff"),
-    ("openpr", "open a pull request for the current branch"),
+    ("stage", "🚧 stage a file from the last diff (not yet available)"),
+    ("commit", "🚧 commit staged changes (not yet available)"),
+    ("revert", "🚧 revert a file from the last diff (not yet available)"),
+    ("openpr", "🚧 open a pull request for the current branch (not yet available)"),
 ]
 
 # These 11 open as an inline QuickViewScreen popup (see quick_view.py) instead
