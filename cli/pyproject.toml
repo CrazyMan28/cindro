@@ -12,6 +12,7 @@ dependencies = [
     "rich>=13.0",
     "textual>=0.58",
     "qrcode>=7.4",
+    "httpx>=0.25",
 ]
 
 [project.scripts]

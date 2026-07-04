@@ -168,3 +168,33 @@ async def test_computer_pane_logs_approval_events():
         pane._on_session_event({"kind": "approval", "risk": "medium",
                                 "summary": "open Spotify"})
         assert any("open Spotify" in line for line in pane.log_lines)
+
+
+async def test_browser_pane_shows_status_after_navigate(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui import browser_pane
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#browser")
+
+        async def fake_resolve(client, session_id):
+            return ("8810", "test-bearer")
+        monkeypatch.setattr(browser_pane, "resolve_engine_endpoint", fake_resolve)
+
+        class FakeResponse:
+            def json(self):
+                return {"url": "https://example.com", "title": "Example",
+                        "can_back": False, "can_forward": False}
+        class FakeClient:
+            async def post(self, url, json=None, headers=None):
+                return FakeResponse()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+        monkeypatch.setattr(browser_pane.httpx, "AsyncClient", lambda **kw: FakeClient())
+
+        pane.session_id = "s1"
+        await pane.navigate("https://example.com")
+        assert pane.url == "https://example.com"
+        assert pane.title == "Example"
