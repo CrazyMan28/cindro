@@ -470,9 +470,15 @@ class SettingsPane(TablePane):
     """The autonomy/update knobs that make sense from a terminal.
 
     enter cycles the selected setting through its allowed values and writes it
-    back via settings.set immediately (the GUI keeps the fancier pickers)."""
+    back via settings.set immediately (the GUI keeps the fancier pickers).
 
-    HINT = "enter: cycle value · r: refresh — changes save immediately"
+    'c'/'p'/'e' open the Connectors/Policies/extension-pairing sub-views as
+    QuickViewScreen popups (settings_extras.py) — kept out of this class so it
+    stays a thin dispatch of key -> popup, matching desktop/qml/
+    SettingsPage.qml's CONNECTORS / trust-policy / one-paste-pairing sections."""
+
+    HINT = ("enter: cycle value · c: connectors · p: policies · "
+            "e: pair browser extension · r: refresh — changes save immediately")
     COLUMNS = ("setting", "value", "what it does")
 
     # (key, [values...], description) — cycled in order.
@@ -522,4 +528,22 @@ class SettingsPane(TablePane):
             except (ControlError, ConnectionError, TimeoutError) as exc:
                 self.notify(str(exc), severity="error")
             self.refresh_data()
+            event.stop()
+        elif event.key in ("c", "p", "e"):
+            # Local import: settings_extras.py imports TablePane FROM this
+            # module, so importing it back at module scope here would be a
+            # circular import — deferring to call time (same trick chat.py
+            # uses for TabbedContent) breaks the cycle.
+            from jarvis_cli.tui.quick_view import QuickViewScreen
+            from jarvis_cli.tui.settings_extras import (ConnectorsPane, ExtensionPairPane,
+                                                         PoliciesPane)
+            if event.key == "c":
+                self.app.push_screen(QuickViewScreen(
+                    "Connectors", lambda: ConnectorsPane(id="connectors-quick")))
+            elif event.key == "p":
+                self.app.push_screen(QuickViewScreen(
+                    "Policies", lambda: PoliciesPane(id="policies-quick")))
+            else:
+                self.app.push_screen(QuickViewScreen(
+                    "Pair browser extension", lambda: ExtensionPairPane(id="extension-quick")))
             event.stop()
