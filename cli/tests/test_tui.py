@@ -140,3 +140,31 @@ async def test_phone_pane_pair_renders_ascii_qr(monkeypatch):
     from jarvis_cli.tui import phone_pane
     monkeypatch.setattr(phone_pane, "_ascii_qr", lambda payload: "##\n##")
     assert phone_pane._ascii_qr("anything") == "##\n##"
+
+
+async def test_computer_pane_starts_a_coworker_session(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#computer")
+        calls = []
+        async def fake_call(method, params=None, timeout=60.0):
+            calls.append((method, params))
+            if method == "session.create":
+                return {"session_id": "s1"}
+            return {}
+        monkeypatch.setattr(app.client, "call", fake_call)
+        await pane.start_coworker(target="agent")
+        assert calls[0][0] == "session.create"
+        assert calls[0][1]["target"] == "agent"
+        assert pane.session_id == "s1"
+
+
+async def test_computer_pane_logs_approval_events():
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#computer")
+        pane._on_session_event({"kind": "approval", "risk": "medium",
+                                "summary": "open Spotify"})
+        assert any("open Spotify" in line for line in pane.log_lines)
