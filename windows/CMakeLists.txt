@@ -127,6 +127,13 @@ add_library(jarvis-core STATIC
     ${CORE_DIR}/src/OsvAdvisory.cpp
     ${CORE_DIR}/src/NotifyService.cpp
     ${CORE_DIR}/src/WidgetLeaseRegistry.cpp
+    # File-backed CRUD for the TUI's custom (non-builtin) page layout — Jarvis
+    # can add/edit/remove/reorder terminal pages via MCP without touching code
+    # (must match core/CMakeLists.txt).
+    ${CORE_DIR}/src/TuiLayoutStore.cpp
+    # Self-authored slash commands (Markdown+frontmatter, mirrors SkillStore;
+    # must match core/CMakeLists.txt).
+    ${CORE_DIR}/src/CommandStore.cpp
     # Headers (AUTOMOC) — same set as core/CMakeLists.txt.
     ${CORE_DIR}/include/jarvis/Protocol.h
     ${CORE_DIR}/include/jarvis/Config.h

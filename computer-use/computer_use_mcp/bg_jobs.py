@@ -18,6 +18,7 @@ The session to wake is taken from the ``JARVIS_AGENT_SESSION`` env (the same one
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import re
@@ -55,9 +56,20 @@ def _log_path(jid: str) -> Path:
     return _job_dir(jid) / "out.log"
 
 
+# Process-local monotonic counter so two IDs minted in the same millisecond
+# (e.g. two sleep_wake() calls back-to-back with no OS scheduling gap between
+# them) still come out distinct — the ms-timestamp alone collided under
+# load/CI, see test_multiple_timers_independent_completion /
+# test_bg_start_two_jobs_have_different_ids. Folded into the same 8-digit
+# suffix (not appended) so the <slug>-<8 digits> ID shape stays exactly as
+# test_bg_edge.py's format tests expect.
+_id_counter = itertools.count()
+
+
 def _new_id(name: str = "") -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", (name or "job").lower()).strip("-")[:24] or "job"
-    return f"{slug}-{int(_now() * 1000) % 100000000:08d}"
+    suffix = (int(_now() * 1000) + next(_id_counter)) % 100000000
+    return f"{slug}-{suffix:08d}"
 
 
 def _read_meta(jid: str) -> dict:

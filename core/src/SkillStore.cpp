@@ -1,5 +1,6 @@
 #include "jarvis/SkillStore.h"
 #include "jarvis/DataPaths.h"
+#include "jarvis/FrontmatterUtil.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -30,15 +31,6 @@ QStringList splitInlineList(const QString &raw)
             out << t;
     }
     return out;
-}
-
-QString unquote(const QString &raw)
-{
-    QString t = raw.trimmed();
-    if ((t.startsWith(QLatin1Char('"')) && t.endsWith(QLatin1Char('"'))) ||
-        (t.startsWith(QLatin1Char('\'')) && t.endsWith(QLatin1Char('\''))))
-        return t.mid(1, t.size() - 2);
-    return t;
 }
 
 bool truthy(const QString &raw)
@@ -109,70 +101,38 @@ QString SkillStore::root() const
 
 QString SkillStore::slug(const QString &name)
 {
-    QString out;
-    for (const QChar &ch : name) {
-        if (ch.isLetterOrNumber())
-            out.append(ch.toLower());
-        else if (ch == QLatin1Char('-') || ch == QLatin1Char('_'))
-            out.append(ch);
-        else if (ch.isSpace() || ch == QLatin1Char('/'))
-            out.append(QLatin1Char('-'));
-    }
-    while (out.contains(QStringLiteral("--")))
-        out.replace(QStringLiteral("--"), QStringLiteral("-"));
-    if (out.isEmpty())
-        out = QStringLiteral("skill");
-    return out;
+    // Shared sanitizer (jarvis::slugComponent, in FrontmatterUtil.h) with the
+    // SkillStore-specific fallback for a name that reduces to nothing.
+    const QString out = jarvis::slugComponent(name);
+    return out.isEmpty() ? QStringLiteral("skill") : out;
 }
 
 bool SkillStore::parse(const QString &text, SkillFrontmatter *fmOut, QString *bodyOut)
 {
     SkillFrontmatter fm;
-    QString body = text;
 
-    // YAML frontmatter is delimited by a leading "---" line and a closing
-    // "---" line. Everything after is the body.
-    const QStringList lines = text.split(QLatin1Char('\n'));
-    if (!lines.isEmpty() && lines.first().trimmed() == QStringLiteral("---")) {
-        int close = -1;
-        for (int i = 1; i < lines.size(); ++i) {
-            if (lines[i].trimmed() == QStringLiteral("---")) {
-                close = i;
-                break;
-            }
-        }
-        if (close > 0) {
-            for (int i = 1; i < close; ++i) {
-                const QString &line = lines[i];
-                const int colon = line.indexOf(QLatin1Char(':'));
-                if (colon < 0)
-                    continue;
-                const QString key = line.left(colon).trimmed();
-                const QString val = line.mid(colon + 1).trimmed();
-                if (key == QStringLiteral("name"))
-                    fm.name = unquote(val);
-                else if (key == QStringLiteral("description"))
-                    fm.description = unquote(val);
-                else if (key == QStringLiteral("group"))
-                    fm.group = unquote(val);
-                else if (key == QStringLiteral("tags"))
-                    fm.tags = splitInlineList(val);
-                else if (key == QStringLiteral("self_authored") ||
-                         key == QStringLiteral("authored_by"))
-                    fm.selfAuthored = truthy(val) ||
-                                      unquote(val).toLower() == QStringLiteral("jarvis");
-                else if (!key.isEmpty())
-                    fm.extra.insert(key, unquote(val));
-            }
-            // Body = lines after the closing delimiter.
-            QStringList bodyLines;
-            for (int i = close + 1; i < lines.size(); ++i)
-                bodyLines << lines[i];
-            body = bodyLines.join(QLatin1Char('\n'));
-            // Trim a single leading blank line.
-            if (body.startsWith(QLatin1Char('\n')))
-                body.remove(0, 1);
-        }
+    // The generic "---"-fenced flat-key parse lives in FrontmatterUtil (shared
+    // with CommandStore); SkillStore only adds its typed interpretation of the
+    // scalar values (tags -> inline list, self_authored -> bool, rest -> extra).
+    const auto [front, body] = splitFrontmatter(text);
+    const QMap<QString, QString> flat = parseFlatFrontmatter(front);
+    for (auto it = flat.begin(); it != flat.end(); ++it) {
+        const QString &key = it.key();
+        const QString &val = it.value();
+        if (key == QStringLiteral("name"))
+            fm.name = val;
+        else if (key == QStringLiteral("description"))
+            fm.description = val;
+        else if (key == QStringLiteral("group"))
+            fm.group = val;
+        else if (key == QStringLiteral("tags"))
+            fm.tags = splitInlineList(val);
+        else if (key == QStringLiteral("self_authored") ||
+                 key == QStringLiteral("authored_by"))
+            fm.selfAuthored = truthy(val) ||
+                              val.toLower() == QStringLiteral("jarvis");
+        else
+            fm.extra.insert(key, val);
     }
 
     if (fmOut)
@@ -184,18 +144,25 @@ bool SkillStore::parse(const QString &text, SkillFrontmatter *fmOut, QString *bo
 
 QString SkillStore::serialize(const SkillFrontmatter &fm, const QString &body)
 {
-    QString out = QStringLiteral("---\n");
-    out += QStringLiteral("name: %1\n").arg(fm.name);
-    out += QStringLiteral("description: %1\n").arg(fm.description);
+    // Flatten the typed frontmatter into scalar key/value pairs, then hand the
+    // fence-writing to the shared FrontmatterUtil helper (used by CommandStore
+    // too). tags serialize as an inline list; self_authored is emitted only
+    // when true — matching how parse() interprets them back.
+    QMap<QString, QString> flat;
+    flat.insert(QStringLiteral("name"), fm.name);
+    flat.insert(QStringLiteral("description"), fm.description);
     if (!fm.group.isEmpty())
-        out += QStringLiteral("group: %1\n").arg(fm.group);
+        flat.insert(QStringLiteral("group"), fm.group);
     if (!fm.tags.isEmpty())
-        out += QStringLiteral("tags: [%1]\n").arg(fm.tags.join(QStringLiteral(", ")));
+        flat.insert(QStringLiteral("tags"),
+                    QStringLiteral("[%1]").arg(fm.tags.join(QStringLiteral(", "))));
     if (fm.selfAuthored)
-        out += QStringLiteral("self_authored: true\n");
+        flat.insert(QStringLiteral("self_authored"), QStringLiteral("true"));
     for (auto it = fm.extra.begin(); it != fm.extra.end(); ++it)
-        out += QStringLiteral("%1: %2\n").arg(it.key(), it.value().toString());
-    out += QStringLiteral("---\n\n");
+        flat.insert(it.key(), it.value().toString());
+
+    QString out = writeFlatFrontmatter(flat);
+    out += QLatin1Char('\n');
     out += body;
     if (!body.endsWith(QLatin1Char('\n')))
         out += QLatin1Char('\n');

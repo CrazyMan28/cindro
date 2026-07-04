@@ -8,19 +8,62 @@ queue item, cycle a setting).
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator
 
 from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.containers import Vertical
+from textual.widget import Widget
 from textual.widgets import DataTable, Input, Static
 
 from jarvis_cli.control import ControlError
+from jarvis_cli.tui.arc_reactor import ArcReactorWidget
+
+
+@asynccontextmanager
+async def spinner_guard(pane: Widget, spinner_id: str) -> AsyncIterator[None]:
+    """Show + resume the named ArcReactorWidget spinner for the duration of
+    the wrapped block, hiding + pausing it again in a `finally` — so it can
+    never get stuck visible (or ticking) after an exception. Shared by every
+    pane that hand-rolls the show-spinner/await-fetch/hide-spinner dance
+    (TablePane.refresh_data, HomePane.refresh_data, MemoryGraphPane.load_graph)
+    so the pattern lives in exactly one place.
+
+    Does NOT catch or swallow exceptions raised inside the block — callers
+    keep their own try/except (for ControlError/ConnectionError/TimeoutError
+    + notify) around (or outside) this context manager exactly as before;
+    this only owns the spinner's visibility/tick lifecycle.
+    """
+    try:
+        spinner = pane.query_one(f"#{spinner_id}", ArcReactorWidget)
+    except Exception:
+        spinner = None
+    if spinner is not None:
+        spinner.display = True
+        spinner.resume()
+    try:
+        yield
+    finally:
+        if spinner is not None:
+            spinner.display = False
+            spinner.pause()
 
 
 class TablePane(Vertical):
-    """Shared skeleton: hint line + DataTable + optional input, async refresh."""
+    """Shared skeleton: hint line + DataTable + optional input, async refresh.
+
+    Every subclass — even the ones that fully override ``compose()`` to add
+    their own Input row (MemoryPane, QueuePane, SshPane, SchedulesPane, …) —
+    gets a small hidden-by-default ArcReactorWidget spinner for free: it is
+    mounted in ``on_mount()`` (right after the ``.pane-hint`` Static, wherever
+    that landed) rather than yielded from ``compose()``, so it never depends
+    on a subclass calling super().compose(). refresh_data() shows it right
+    before the daemon round-trip and hides it again in a finally block, so it
+    can never get stuck visible after an exception.
+    """
 
     HINT = ""
     COLUMNS: tuple[str, ...] = ()
@@ -29,6 +72,8 @@ class TablePane(Vertical):
     # rapid tab-hopping shouldn't hammer the daemon — skip refreshes closer
     # together than this.
     REFRESH_THROTTLE_S = 3.0
+
+    SPINNER_ID = "pane-spinner"
 
     def __init__(self, **kw) -> None:
         super().__init__(**kw)
@@ -50,18 +95,28 @@ class TablePane(Vertical):
         table.add_columns(*self.COLUMNS)
         yield table
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
+        spinner = ArcReactorWidget(size=5, thinking=True, id=self.SPINNER_ID,
+                                   classes="pane-spinner")
+        spinner.display = False
+        try:
+            hint = self.query_one(".pane-hint")
+        except Exception:
+            hint = None
+        await self.mount(spinner, after=hint)
+        spinner.pause()  # hidden by default — no need to tick until shown
         self.refresh_data()
 
     @work(exclusive=True)
     async def refresh_data(self) -> None:
         import time
         self._last_refresh = time.monotonic()
-        try:
-            self.rows = await self.fetch()
-        except (ControlError, ConnectionError, TimeoutError) as exc:
-            self.rows = []
-            self.notify(str(exc), severity="error", timeout=4)
+        async with spinner_guard(self, self.SPINNER_ID):
+            try:
+                self.rows = await self.fetch()
+            except (ControlError, ConnectionError, TimeoutError) as exc:
+                self.rows = []
+                self.notify(str(exc), severity="error", timeout=4)
         table = self.query_one(DataTable)
         table.clear()
         for row in self.rows:
@@ -119,12 +174,21 @@ class SessionsPane(TablePane):
 
 
 class MemoryPane(TablePane):
-    HINT = "type to search · enter: search · x: forget · r: refresh"
+    HINT = ("type to search · enter: search · type below + enter: remember (#tags) · "
+            "x: forget · r: refresh")
     COLUMNS = ("memory", "tags", "id")
+
+    # Matches the GUI's exact tagging convention (MemoryPage.qml commitAdd():
+    # `raw.match(/#[\w-]+/g)`) — "#work #project" tokens are pulled out of the
+    # typed text and sent as a separate tags array; the remainder (whitespace
+    # collapsed) becomes the memory text.
+    _TAG_RE = re.compile(r"#[\w-]+")
 
     def compose(self) -> ComposeResult:
         yield Static(Text(self.HINT, style="bright_black"), classes="pane-hint")
         yield Input(placeholder="search memory…", id="memory-q")
+        yield Input(placeholder="Remember this…  (tag with #work #project)",
+                    id="memory-add")
         table = DataTable(cursor_type="row")
         table.add_columns(*self.COLUMNS)
         yield table
@@ -150,6 +214,21 @@ class MemoryPane(TablePane):
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "memory-q":
             self.refresh_data()
+        elif event.input.id == "memory-add":
+            raw = event.value.strip()
+            event.input.value = ""
+            if not raw:
+                return
+            tags = [tok[1:] for tok in self._TAG_RE.findall(raw)]
+            text = " ".join(self._TAG_RE.sub("", raw).split())
+            if not text:
+                return
+            try:
+                await self.client.call("memory.add", {"text": text, "tags": tags})
+                self.notify("remembered")
+            except (ControlError, ConnectionError, TimeoutError) as exc:
+                self.notify(str(exc), severity="error")
+            self.refresh_data()
 
     async def on_key(self, event) -> None:
         if event.key == "r":
@@ -165,7 +244,7 @@ class MemoryPane(TablePane):
 
 
 class SkillsPane(TablePane):
-    HINT = ("enter: run in Chat · p: pin/unpin · a: archive · "
+    HINT = ("enter: run in Chat · p: pin/unpin · a: archive/restore · x: remove · "
             "v: live/archived view · r: refresh")
     COLUMNS = ("skill", "group", "uses", "📌", "description")
 
@@ -214,31 +293,126 @@ class SkillsPane(TablePane):
             else:
                 self.notify("archiving happens via the stale sweep; "
                             "pin (p) protects a skill instead", timeout=5)
+        elif event.key == "x" and row:
+            # skills.remove is a hard delete (unlike 'a', which only
+            # restores from the archive) — wired in BOTH views, matching
+            # SkillsPage.qml's own "Remove" button (which lives on the LIVE
+            # row delegate, not the archived one — see report).
+            name = row.get("name", "")
+            try:
+                await self.client.call("skills.remove", {"name": name})
+                self.notify(f"removed {name}")
+            except ControlError as exc:
+                self.notify(str(exc), severity="error")
+            self.refresh_data()
         elif event.key == "enter" and row and not self.archived_view:
             await self.app.run_skill(row.get("name", ""))
             event.stop()
 
 
 class AgentsPane(TablePane):
-    HINT = "background agent sessions (agents.running) · r: refresh"
+    """Runtime rows (agents.running) by default, toggling to the saved agent
+    DEFINITIONS (agents.list) with 'v' — same live/archived convention as
+    SkillsPane's 'v' key.
+
+    Why the toggle exists: agents.running returns SessionRow-shaped rows
+    (agent/state/title, keyed by the *running session*) while agents.list
+    returns the saved AGENT.md definitions (name/description/brain, no
+    runtime state) — two different row shapes for two different questions
+    ("what's running" vs "what agents exist"). agents.remove(name) and
+    agents.dispatch(agent, task) both act on the DEFINITION by name, so
+    'x' (remove) only fires in the defs view where a selected row
+    unambiguously names one; dispatch is a free-typed Input (needs no
+    selection) and works from either view.
+    """
+
+    HINT = ("type 'agent :: task' + enter: dispatch · x: remove (defs view) · "
+            "v: running/defs view · r: refresh")
     COLUMNS = ("agent", "state", "task")
+    DEFS_COLUMNS = ("agent", "brain", "description")
+
+    def __init__(self, **kw) -> None:
+        super().__init__(**kw)
+        self.defs_view = False
+
+    def compose(self) -> ComposeResult:
+        yield Static(Text(self.HINT, style="bright_black"), classes="pane-hint")
+        yield Input(placeholder="dispatch a task: <agent name> :: <task>",
+                    id="agent-dispatch")
+        table = DataTable(cursor_type="row")
+        table.add_columns(*self.COLUMNS)
+        yield table
+
+    def _set_columns(self) -> None:
+        table = self.query_one(DataTable)
+        table.clear(columns=True)
+        table.add_columns(*(self.DEFS_COLUMNS if self.defs_view else self.COLUMNS))
 
     async def fetch(self) -> list[dict]:
         # agents.running returns SessionRow-shaped rows (+ live/running flags)
         # for agent-driven sessions — NOT agents.list, which is the saved
         # agent DEFINITIONS (name/description/brain) with no runtime state.
-        res = await self.client.call("agents.running", {})
+        # Both response shapes use the same top-level "agents" key.
+        method = "agents.list" if self.defs_view else "agents.running"
+        res = await self.client.call(method, {})
         return list(res.get("agents", []))
 
     def to_cells(self, r: dict) -> tuple:
+        if self.defs_view:
+            return (r.get("name", ""), r.get("brain", "") or "-",
+                    (r.get("description") or "")[:70])
         state = r.get("state", "")
         style = "yellow" if r.get("running") else             {"done": "green", "error": "red"}.get(state, "bright_black")
         return (r.get("agent", ""), Text(state, style=style),
                 (r.get("title") or r.get("goals") or "")[:80])
 
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Mirrors QueuePane's "title :: prompt" convention exactly, except
+        # agents.dispatch has no single-field shorthand (queue.add can fall
+        # back to using the title as the prompt; a dispatch with no task
+        # doesn't mean anything) — both sides of "::" are required here.
+        if event.input.id != "agent-dispatch":
+            return
+        raw = event.value.strip()
+        event.input.value = ""
+        if not raw:
+            return
+        name, _, task = raw.partition("::")
+        name = name.strip()
+        task = task.strip()
+        if not name or not task:
+            self.notify("usage: <agent name> :: <task>", severity="error")
+            return
+        try:
+            await self.client.call("agents.dispatch", {"agent": name, "task": task})
+            self.notify(f"dispatched: {name}")
+        except (ControlError, ConnectionError, TimeoutError) as exc:
+            self.notify(str(exc), severity="error")
+        self.refresh_data()
+
     async def on_key(self, event) -> None:
         if event.key == "r":
             self.refresh_data()
+        elif event.key == "v":
+            self.defs_view = not self.defs_view
+            self.notify("saved agent definitions" if self.defs_view
+                        else "running agent sessions")
+            self._set_columns()
+            self.refresh_data()
+        elif event.key == "x":
+            if not self.defs_view:
+                self.notify("switch to the definitions view (v) to remove an agent",
+                            timeout=4)
+                return
+            row = self.selected()
+            if row:
+                name = row.get("name", "")
+                try:
+                    await self.client.call("agents.remove", {"name": name})
+                    self.notify(f"removed {name}")
+                except ControlError as exc:
+                    self.notify(str(exc), severity="error")
+                self.refresh_data()
 
 
 class QueuePane(TablePane):
@@ -296,9 +470,15 @@ class SettingsPane(TablePane):
     """The autonomy/update knobs that make sense from a terminal.
 
     enter cycles the selected setting through its allowed values and writes it
-    back via settings.set immediately (the GUI keeps the fancier pickers)."""
+    back via settings.set immediately (the GUI keeps the fancier pickers).
 
-    HINT = "enter: cycle value · r: refresh — changes save immediately"
+    'c'/'p'/'e' open the Connectors/Policies/extension-pairing sub-views as
+    QuickViewScreen popups (settings_extras.py) — kept out of this class so it
+    stays a thin dispatch of key -> popup, matching desktop/qml/
+    SettingsPage.qml's CONNECTORS / trust-policy / one-paste-pairing sections."""
+
+    HINT = ("enter: cycle value · c: connectors · p: policies · "
+            "e: pair browser extension · r: refresh — changes save immediately")
     COLUMNS = ("setting", "value", "what it does")
 
     # (key, [values...], description) — cycled in order.
@@ -348,4 +528,22 @@ class SettingsPane(TablePane):
             except (ControlError, ConnectionError, TimeoutError) as exc:
                 self.notify(str(exc), severity="error")
             self.refresh_data()
+            event.stop()
+        elif event.key in ("c", "p", "e"):
+            # Local import: settings_extras.py imports TablePane FROM this
+            # module, so importing it back at module scope here would be a
+            # circular import — deferring to call time (same trick chat.py
+            # uses for TabbedContent) breaks the cycle.
+            from jarvis_cli.tui.quick_view import QuickViewScreen
+            from jarvis_cli.tui.settings_extras import (ConnectorsPane, ExtensionPairPane,
+                                                         PoliciesPane)
+            if event.key == "c":
+                self.app.push_screen(QuickViewScreen(
+                    "Connectors", lambda: ConnectorsPane(id="connectors-quick")))
+            elif event.key == "p":
+                self.app.push_screen(QuickViewScreen(
+                    "Policies", lambda: PoliciesPane(id="policies-quick")))
+            else:
+                self.app.push_screen(QuickViewScreen(
+                    "Pair browser extension", lambda: ExtensionPairPane(id="extension-quick")))
             event.stop()

@@ -11,6 +11,10 @@ dependencies = [
     "websockets>=12.0",
     "rich>=13.0",
     "textual>=0.58",
+    "qrcode>=7.4",
+    "httpx>=0.25",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24",
 ]
 
 [project.scripts]

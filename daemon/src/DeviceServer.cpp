@@ -518,6 +518,18 @@ QString DeviceServer::tierFor(const QString &method)
         // command — both are biometric-tier on the phone.
         method == QStringLiteral("schedule.create") ||
         method == QStringLiteral("ssh.exec") ||
+        // Self-edited TUI layout + self-authored slash commands: mutations that
+        // create/delete persistent state the phone routes through the ops path
+        // (ControlServer::isOpsMethod) are biometric-tier, matching
+        // schedule.create/ssh.exec above. The non-mutating reads
+        // (tui.layout.list / command.list) and command.invoke (runs
+        // already-authored content) stay at the default action tier below.
+        method == QStringLiteral("tui.layout.add") ||
+        method == QStringLiteral("tui.layout.edit") ||
+        method == QStringLiteral("tui.layout.remove") ||
+        method == QStringLiteral("tui.layout.reorder") ||
+        method == QStringLiteral("command.create") ||
+        method == QStringLiteral("command.remove") ||
         // Custom agents: creating/removing a definition and dispatching one to
         // run unattended are biometric-tier on the phone.
         method == QStringLiteral("agents.create") ||

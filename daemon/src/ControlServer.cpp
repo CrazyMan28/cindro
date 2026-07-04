@@ -5790,6 +5790,8 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
 bool ControlServer::isOpsMethod(const QString &method)
 {
     return method.startsWith(QStringLiteral("schedule.")) ||
+           method.startsWith(QStringLiteral("tui.layout.")) ||
+           method.startsWith(QStringLiteral("command.")) ||
            method.startsWith(QStringLiteral("ssh.")) ||
            method == QStringLiteral("audit.list");
 }
@@ -5958,6 +5960,15 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("schedule.list"))        return handleScheduleList(req);
     if (m == QStringLiteral("schedule.set_enabled")) return handleScheduleSetEnabled(req);
     if (m == QStringLiteral("schedule.remove"))      return handleScheduleRemove(req);
+    if (m == QStringLiteral("tui.layout.list"))    return handleTuiLayoutList(req);
+    if (m == QStringLiteral("tui.layout.add"))     return handleTuiLayoutAdd(req);
+    if (m == QStringLiteral("tui.layout.edit"))    return handleTuiLayoutEdit(req);
+    if (m == QStringLiteral("tui.layout.remove"))  return handleTuiLayoutRemove(req);
+    if (m == QStringLiteral("tui.layout.reorder")) return handleTuiLayoutReorder(req);
+    if (m == QStringLiteral("command.list"))       return handleCommandList(req);
+    if (m == QStringLiteral("command.create"))     return handleCommandCreate(req);
+    if (m == QStringLiteral("command.remove"))     return handleCommandRemove(req);
+    if (m == QStringLiteral("command.invoke"))     return handleCommandInvoke(req);
     if (m == QStringLiteral("ssh.allow_list"))       return handleSshAllowList(req);
     if (m == QStringLiteral("ssh.allow_add"))        return handleSshAllowAdd(req);
     if (m == QStringLiteral("ssh.allow_remove"))     return handleSshAllowRemove(req);
@@ -6065,6 +6076,164 @@ Response ControlServer::handleScheduleRemove(const Request &req)
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
+}
+
+// --- TUI self-edit layout: tui.layout.* -------------------------------------
+
+static QJsonArray tuiPagesToJson(const QVector<jarvis::TuiPageSpec> &pages)
+{
+    QJsonArray arr;
+    for (const auto &p : pages) {
+        QJsonObject o;
+        o.insert(QStringLiteral("id"), p.id);
+        o.insert(QStringLiteral("title"), p.title);
+        o.insert(QStringLiteral("kind"), p.kind);
+        o.insert(QStringLiteral("config"), p.config);
+        o.insert(QStringLiteral("order"), p.order);
+        arr.append(o);
+    }
+    return arr;
+}
+
+Response ControlServer::handleTuiLayoutList(const Request &req)
+{
+    QJsonObject result;
+    result.insert(QStringLiteral("pages"), tuiPagesToJson(m_tuiLayoutStore.list()));
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleTuiLayoutAdd(const Request &req)
+{
+    jarvis::TuiPageSpec spec;
+    spec.id = req.params.value(QStringLiteral("id")).toString();
+    spec.title = req.params.value(QStringLiteral("title")).toString();
+    spec.kind = req.params.value(QStringLiteral("kind")).toString();
+    spec.config = req.params.value(QStringLiteral("config")).toObject();
+    QString err;
+    if (!m_tuiLayoutStore.addPage(spec, &err))
+        return Response::failure(req.id, QStringLiteral("invalid_page"), err);
+    broadcastTuiLayoutChanged();
+    return Response::success(req.id, {{QStringLiteral("ok"), true}});
+}
+
+Response ControlServer::handleTuiLayoutEdit(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const QJsonObject config = req.params.value(QStringLiteral("config")).toObject();
+    QString err;
+    if (!m_tuiLayoutStore.editPage(id, config, &err))
+        return Response::failure(req.id, QStringLiteral("not_found"), err);
+    broadcastTuiLayoutChanged();
+    return Response::success(req.id, {{QStringLiteral("ok"), true}});
+}
+
+Response ControlServer::handleTuiLayoutRemove(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    QString err;
+    if (!m_tuiLayoutStore.removePage(id, &err))
+        return Response::failure(req.id, QStringLiteral("not_found"), err);
+    broadcastTuiLayoutChanged();
+    return Response::success(req.id, {{QStringLiteral("ok"), true}});
+}
+
+Response ControlServer::handleTuiLayoutReorder(const Request &req)
+{
+    QStringList order;
+    for (const auto &v : req.params.value(QStringLiteral("order")).toArray())
+        order << v.toString();
+    QString err;
+    if (!m_tuiLayoutStore.reorder(order, &err))
+        return Response::failure(req.id, QStringLiteral("invalid_order"), err);
+    broadcastTuiLayoutChanged();
+    return Response::success(req.id, {{QStringLiteral("ok"), true}});
+}
+
+void ControlServer::broadcastTuiLayoutChanged()
+{
+    // Same shape as broadcastSessionOpened (ControlServer.cpp:4285) — a
+    // global, non-session-scoped event every connected client hears.
+    QJsonObject data;
+    data.insert(QStringLiteral("pages"), tuiPagesToJson(m_tuiLayoutStore.list()));
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), 1);
+    frame.insert(QStringLiteral("event"), QStringLiteral("tui.layout.changed"));
+    frame.insert(QStringLiteral("data"), data);
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+    for (QWebSocket *client : std::as_const(m_clients))
+        client->sendTextMessage(payload);
+}
+
+// --- self-authored slash commands: command.* --------------------------------
+
+static QJsonArray commandsToJson(const QVector<jarvis::CommandRow> &rows)
+{
+    QJsonArray arr;
+    for (const auto &r : rows) {
+        QJsonObject o;
+        o.insert(QStringLiteral("name"), r.name);
+        o.insert(QStringLiteral("description"), r.description);
+        o.insert(QStringLiteral("action_kind"), r.actionKind);
+        o.insert(QStringLiteral("action_target"), r.actionTarget);
+        o.insert(QStringLiteral("self_authored"), r.selfAuthored);
+        arr.append(o);
+    }
+    return arr;
+}
+
+Response ControlServer::handleCommandList(const Request &req)
+{
+    QJsonObject result;
+    result.insert(QStringLiteral("commands"), commandsToJson(m_commandStore.list()));
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleCommandCreate(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    const QString description = req.params.value(QStringLiteral("description")).toString();
+    const QString actionKind = req.params.value(QStringLiteral("action_kind")).toString();
+    const QString actionTarget = req.params.value(QStringLiteral("action_target")).toString();
+    const QString body = req.params.value(QStringLiteral("body")).toString();
+    // Authored through the create_slash_command MCP tool -> self_authored.
+    if (!m_commandStore.create(name, description, actionKind, actionTarget, body,
+                               /*selfAuthored=*/true))
+        return Response::failure(req.id, QStringLiteral("invalid_command"),
+                                 QStringLiteral("name collides with a built-in, already "
+                                                "exists, or has an invalid action_kind"));
+    return Response::success(req.id, {{QStringLiteral("ok"), true}});
+}
+
+Response ControlServer::handleCommandRemove(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    if (!m_commandStore.remove(name))
+        return Response::failure(req.id, QStringLiteral("not_found"),
+                                 QStringLiteral("no such command"));
+    return Response::success(req.id, {{QStringLiteral("ok"), true}});
+}
+
+Response ControlServer::handleCommandInvoke(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    const auto row = m_commandStore.get(name);
+    if (!row)
+        return Response::failure(req.id, QStringLiteral("not_found"), QStringLiteral("no such command"));
+    QJsonObject result;
+    if (row->actionKind == QStringLiteral("prompt")) {
+        QString prompt = row->body;
+        prompt.replace(QStringLiteral("{{ARGS}}"),
+                       req.params.value(QStringLiteral("args")).toString());
+        result.insert(QStringLiteral("prompt"), prompt);
+    } else if (row->actionKind == QStringLiteral("mcp_tool")) {
+        result.insert(QStringLiteral("mcp_tool"), row->actionTarget);
+        result.insert(QStringLiteral("args"), req.params.value(QStringLiteral("args")));
+    } else {
+        result.insert(QStringLiteral("shell"), row->actionTarget);
+        result.insert(QStringLiteral("args"), req.params.value(QStringLiteral("args")));
+    }
+    return Response::success(req.id, result);
 }
 
 Response ControlServer::handleSshAllowList(const Request &req)
