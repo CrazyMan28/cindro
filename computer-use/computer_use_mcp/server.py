@@ -16,7 +16,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from computer_use_mcp import (
     __version__, agent_bus, auth, live_widgets, policy, screen, session,
     tools_bg, tools_browser, tools_desktop, tools_jarvis_ops, tools_lsp,
-    tools_phone, tools_todo, tools_widgets,
+    tools_phone, tools_todo, tools_tui_ops, tools_widgets,
 )
 from computer_use_mcp.browser_bridge import bridge
 from computer_use_mcp.config import load_config
@@ -38,6 +38,7 @@ tools_todo.register(mcp)         # todo_write/read/clear — the agent's live pl
 tools_bg.register(mcp)           # bg_start/monitor/wake_me_in — background jobs + self-wake
 tools_lsp.register(mcp)          # lsp_diagnostics/lsp_server_status — real-time LSP diagnostics after editing
 tools_phone.register(mcp)        # call_user/twilio_call_and_wait/device_sms/… (proxied to the phone server via jarvisd)
+tools_tui_ops.register(mcp)      # tui_list_pages/add/edit/remove/reorder — self-edit the terminal client's page layout
 policy.install(mcp)              # trust-policy gate over EVERY tool call (jarvis#71)
 mcp_app = mcp.streamable_http_app()
 
