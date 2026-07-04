@@ -348,3 +348,53 @@ def test_custom_pages_hot_reload_on_broadcast():
     app._on_broadcast("tui.layout.changed", {"pages": [{"id": "x", "title": "X",
                                                         "kind": "log", "config": {}}]})
     assert added == ["x"]
+
+
+async def test_typing_slash_opens_the_command_palette(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async def fake_call(method, params=None, timeout=60.0):
+        if method == "command.list":
+            return {"commands": [{"name": "deploy", "description": "Deploy the current branch"}]}
+        return {}
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        chat = app.query_one("#chat")
+        from textual.widgets import TabbedContent
+        app.query_one(TabbedContent).active = "tab-chat"
+        await pilot.pause()
+        await pilot.click("#chat-input")
+        await pilot.press("/")
+        await pilot.pause()
+        assert chat.query("CommandPalette")
+
+
+async def test_palette_filters_as_you_type(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.command_palette import CommandPalette
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        palette = CommandPalette(builtins=[("new", "start a fresh chat"),
+                                          ("stop", "cancel the current turn")],
+                                 customs=[])
+        matches = palette.filter("st")
+        assert [m[0] for m in matches] == ["stop"]
+
+
+async def test_selecting_a_custom_command_invokes_it(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    calls = []
+    async def fake_call(method, params=None, timeout=60.0):
+        calls.append((method, params))
+        if method == "command.list":
+            return {"commands": [{"name": "deploy", "description": "d",
+                                  "action_kind": "prompt"}]}
+        if method == "command.invoke":
+            return {"prompt": "deploy the current branch now"}
+        return {}
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        chat = app.query_one("#chat")
+        await chat.run_slash_command("deploy", "")
+        assert ("command.invoke", {"name": "deploy", "args": ""}) in calls

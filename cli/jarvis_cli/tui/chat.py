@@ -25,6 +25,23 @@ from textual.message import Message
 from textual.widgets import Input, RichLog, Static
 
 from jarvis_cli.control import ControlError
+from jarvis_cli.tui.command_palette import CommandPalette
+
+BUILTIN_COMMANDS = [
+    ("new", "start a fresh chat"), ("stop", "cancel the current turn"),
+    ("goal", "set the session goal"), ("y", "approve the pending action"),
+    ("n", "deny the pending action"), ("canvas", "open the Canvas tab"),
+    ("widgets", "open the Widgets tab"), ("phone", "open the Phone tab"),
+    ("computer", "open the Computer tab"), ("browser", "open the Browser tab"),
+    ("activity", "open the Activity tab"), ("replay", "open the Replay tab"),
+    ("mcp", "open the MCP tab"), ("plugins", "open the Plugins tab"),
+    ("ssh", "open the SSH tab"), ("memorygraph", "open the Memory Graph tab"),
+    ("home", "open the Home tab"), ("schedules", "open the Schedules tab"),
+    ("tui", "ask Jarvis to add/edit/remove a TUI page"),
+]
+
+TAB_JUMP_COMMANDS = {name for name, _ in BUILTIN_COMMANDS
+                    if name not in ("new", "stop", "goal", "y", "n")}
 
 
 class BrainEvent(Message):
@@ -131,24 +148,86 @@ class ChatPane(Vertical):
             pass
 
     # -- input -----------------------------------------------------------------
+    async def on_input_changed(self, event) -> None:
+        if event.input.id != "chat-input":
+            return
+        value = event.value
+        if value.startswith("/") and " " not in value:
+            await self._open_or_update_palette(value[1:])
+        else:
+            self._close_palette()
+
+    async def _open_or_update_palette(self, query: str) -> None:
+        try:
+            existing = self.query_one(CommandPalette)
+        except Exception:
+            try:
+                res = await self.client.call("command.list", {})
+                customs = [(c["name"], c.get("description", "")) for c in res.get("commands", [])]
+            except Exception:
+                customs = []
+            existing = CommandPalette(BUILTIN_COMMANDS, customs)
+            await self.mount(existing)
+        existing.filter(query)
+
+    def _close_palette(self) -> None:
+        try:
+            self.query_one(CommandPalette).remove()
+        except Exception:
+            pass
+
+    async def run_slash_command(self, name: str, args: str) -> None:
+        if name in ("y", "yes"):
+            await self._respond_approval(True)
+        elif name in ("n", "no"):
+            await self._respond_approval(False)
+        elif name == "new":
+            await self.new_session()
+        elif name == "stop":
+            await self._stop_turn()
+        elif name == "goal":
+            await self._set_goal(args)
+        elif name in TAB_JUMP_COMMANDS:
+            from textual.widgets import TabbedContent
+            self.app.query_one(TabbedContent).active = f"tab-{name}"
+        else:
+            try:
+                res = await self.app.client.call("command.invoke", {"name": name, "args": args})
+            except Exception as exc:
+                self.notify(str(exc), severity="error")
+                return
+            if "prompt" in res:
+                await self._send(res["prompt"])
+            elif "mcp_tool" in res:
+                self.notify(f"custom command '{name}' calls MCP tool "
+                           f"'{res['mcp_tool']}' — invoke it via a normal chat turn "
+                           f"for now (direct in-TUI MCP dispatch is a fast-follow)")
+            elif "shell" in res:
+                self.notify(f"custom command '{name}' would run script "
+                           f"'{res['shell']}' — shell execution wiring is a fast-follow")
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "chat-input":
             return
         text = event.value.strip()
+        try:
+            palette = self.query_one(CommandPalette)
+        except Exception:
+            palette = None
+        if palette is not None:
+            name = palette.selected_name() or (text[1:] if text.startswith("/") else text[1:])
+            self._close_palette()
+            event.input.value = ""
+            if name:
+                parts = name.split(" ", 1)
+                await self.run_slash_command(parts[0], parts[1] if len(parts) > 1 else "")
+            return
         event.input.value = ""
         if not text:
             return
-        if text in ("/y", "/yes") or text in ("/n", "/no"):
-            await self._respond_approval(text.startswith("/y"))
-            return
-        if text == "/new":
-            await self.new_session()
-            return
-        if text == "/stop":
-            await self._stop_turn()
-            return
-        if text.startswith("/goal"):
-            await self._set_goal(text[5:].strip())
+        if text.startswith("/"):
+            parts = text[1:].split(" ", 1)
+            await self.run_slash_command(parts[0], parts[1] if len(parts) > 1 else "")
             return
         await self._send(text)
 
