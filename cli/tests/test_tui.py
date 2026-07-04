@@ -222,10 +222,53 @@ async def test_browser_pane_shows_status_after_navigate(monkeypatch):
                 return False
         monkeypatch.setattr(browser_pane.httpx, "AsyncClient", lambda **kw: FakeClient())
 
-        pane.session_id = "s1"
+        app.query_one("#computer").session_id = "s1"
         await pane.navigate("https://example.com")
         assert pane.url == "https://example.com"
         assert pane.title == "Example"
+
+
+async def test_browser_pane_refreshes_session_id_when_it_changes(monkeypatch):
+    """Regression test: _post() used to cache session_id forever once it went
+    non-empty (`if not self.session_id: self.session_id = computer.session_id`),
+    so a co-work session ending and a new one starting (a different id) left
+    the Browser tab silently posting against a dead session id. It must
+    re-read computer.session_id fresh on every _post() call."""
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui import browser_pane
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#browser")
+        computer = app.query_one("#computer")
+
+        seen_session_ids = []
+
+        async def fake_resolve(client, session_id):
+            seen_session_ids.append(session_id)
+            return ("8810", "test-bearer")
+        monkeypatch.setattr(browser_pane, "resolve_engine_endpoint", fake_resolve)
+
+        class FakeResponse:
+            def json(self):
+                return {"ok": True}
+        class FakeClient:
+            async def post(self, url, json=None, headers=None):
+                return FakeResponse()
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+        monkeypatch.setattr(browser_pane.httpx, "AsyncClient", lambda **kw: FakeClient())
+
+        computer.session_id = "A"
+        await pane._post("/browser/status")
+        assert seen_session_ids[-1] == "A"
+        assert pane.session_id == "A"
+
+        computer.session_id = "B"
+        await pane._post("/browser/status")
+        assert seen_session_ids[-1] == "B"
+        assert pane.session_id == "B"
 
 
 async def test_activity_pane_lists_audit_entries(monkeypatch):
@@ -388,14 +431,67 @@ async def test_custom_pages_mount_from_tui_layout_list(monkeypatch, tmp_path):
         assert app.query_one("#tab-custom-errorlog") is not None
 
 
-def test_custom_pages_hot_reload_on_broadcast():
+async def test_custom_pages_hot_reload_on_broadcast():
+    """tui.layout.changed fans out to _reconcile_custom_pages (run as a
+    worker off the sync broadcast callback), which mounts brand-new pages
+    via _mount_custom_page — same observable behavior as before the
+    reconciliation rework, just routed through the new method."""
     from jarvis_cli.tui.app import JarvisTui
     app = JarvisTui()
     added = []
     app._mount_custom_page = lambda page: added.append(page["id"])
-    app._on_broadcast("tui.layout.changed", {"pages": [{"id": "x", "title": "X",
-                                                        "kind": "log", "config": {}}]})
-    assert added == ["x"]
+    async with app.run_test() as pilot:
+        app._on_broadcast("tui.layout.changed", {"pages": [{"id": "x", "title": "X",
+                                                            "kind": "log", "config": {}}]})
+        await pilot.pause(0.2)
+        assert added == ["x"]
+
+
+async def test_custom_page_removed_when_broadcast_omits_it():
+    """Bug fix: a tab-custom-* pane for a page that tui_remove_page dropped
+    (i.e. no longer present in the tui.layout.changed broadcast's page list)
+    used to be left mounted forever — _mount_custom_page is add-if-absent
+    only and nothing ever called remove_pane. Reconciliation must tear down
+    any pane whose id isn't in the new list."""
+    from textual.css.query import NoMatches
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        app._mount_custom_page({"id": "errorlog", "title": "Error Log", "kind": "log",
+                                "config": {}})
+        await pilot.pause(0.2)
+        assert app.query_one("#tab-custom-errorlog") is not None
+
+        app._on_broadcast("tui.layout.changed", {"pages": []})
+        await pilot.pause(0.3)
+
+        with pytest.raises(NoMatches):
+            app.query_one("#tab-custom-errorlog")
+
+
+async def test_custom_page_content_updates_on_edit_broadcast():
+    """Bug fix: CustomPane bakes self.config once in __init__, so re-delivering
+    the SAME page id with a changed config (tui_edit_page) used to render
+    stale content forever (_mount_custom_page no-ops once the tab exists).
+    Reconciliation must detect the config diff and remount fresh content."""
+    from textual.widgets import Markdown
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.custom_pane import CustomPane
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        app._mount_custom_page({"id": "notes", "title": "Notes", "kind": "markdown",
+                                "config": {"text": "v1"}})
+        await pilot.pause(0.2)
+        pane = app.query_one("#custom-notes", CustomPane)
+        assert pane.query_one(Markdown)._markdown == "v1"
+
+        app._on_broadcast("tui.layout.changed", {"pages": [
+            {"id": "notes", "title": "Notes", "kind": "markdown", "config": {"text": "v2"}}]})
+        await pilot.pause(0.3)
+
+        pane = app.query_one("#custom-notes", CustomPane)
+        assert pane.config.get("text") == "v2"
+        assert pane.query_one(Markdown)._markdown == "v2"
 
 
 async def test_typing_slash_opens_the_command_palette(monkeypatch):

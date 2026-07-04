@@ -35,9 +35,11 @@ class BrowserPane(Vertical):
         yield Static("", id="browser-snapshot")
 
     async def _post(self, path: str, payload: dict | None = None) -> dict:
-        if not self.session_id:
-            computer = self.app.query_one("#computer")
-            self.session_id = computer.session_id
+        # Always re-read the CURRENT session id — a co-work session can end
+        # and a new one start (different id) while this pane is open, and a
+        # cached id from a prior session is invalid against the new engine.
+        computer = self.app.query_one("#computer")
+        self.session_id = computer.session_id
         if not self.session_id:
             raise ControlError("no active computer-use session — start one in the Computer tab")
         port, bearer = await resolve_engine_endpoint(self.client, self.session_id)

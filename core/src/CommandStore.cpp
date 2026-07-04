@@ -4,6 +4,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QSaveFile>
 #include <QTextStream>
 
 namespace jarvis {
@@ -33,7 +34,12 @@ QString CommandStore::defaultDir() { return jarvis::dataDir() + QStringLiteral("
 bool CommandStore::isBuiltinName(const QString &name) { return kBuiltins.contains(name); }
 bool CommandStore::isValidActionKind(const QString &kind) { return kKinds.contains(kind); }
 
-QString CommandStore::commandDir(const QString &name) const { return m_dir + QStringLiteral("/") + name; }
+QString CommandStore::slug(const QString &name) { return jarvis::slugComponent(name); }
+
+// Always build the on-disk path from the SANITIZED name so a caller-supplied
+// name can never escape m_dir (path traversal). commandDir("") would be the
+// store root, but create() rejects an empty-slug name before it gets here.
+QString CommandStore::commandDir(const QString &name) const { return m_dir + QStringLiteral("/") + slug(name); }
 
 QVector<CommandRow> CommandStore::list() const
 {
@@ -70,10 +76,17 @@ bool CommandStore::create(const QString &name, const QString &description,
 {
     if (isBuiltinName(name) || !isValidActionKind(actionKind))
         return false;
+    // A name that sanitizes to nothing (e.g. "..." / "///") has no safe
+    // directory component — fail rather than writing to the store root.
+    if (slug(name).isEmpty())
+        return false;
     if (get(name).has_value())
         return false;
     QDir().mkpath(commandDir(name));
-    QFile f(commandDir(name) + QStringLiteral("/COMMAND.md"));
+    // Atomic write: QSaveFile writes to a temp file and only replaces
+    // COMMAND.md on commit(), so a crash/disk-full mid-write can't truncate an
+    // existing command file (mirrors HookStore/SettingsStore).
+    QSaveFile f(commandDir(name) + QStringLiteral("/COMMAND.md"));
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
         return false;
     QMap<QString, QString> fm;
@@ -81,9 +94,11 @@ bool CommandStore::create(const QString &name, const QString &description,
     fm[QStringLiteral("action_kind")] = actionKind;
     fm[QStringLiteral("action_target")] = actionTarget;
     fm[QStringLiteral("self_authored")] = selfAuthored ? QStringLiteral("true") : QStringLiteral("false");
-    QTextStream out(&f);
-    out << writeFlatFrontmatter(fm) << "\n" << body;
-    return true;
+    {
+        QTextStream out(&f);
+        out << writeFlatFrontmatter(fm) << "\n" << body;
+    }
+    return f.commit();
 }
 
 bool CommandStore::remove(const QString &name)

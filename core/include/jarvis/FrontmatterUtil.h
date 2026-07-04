@@ -15,6 +15,30 @@
 
 namespace jarvis {
 
+// Sanitize an arbitrary caller-supplied name into a single, filesystem-safe
+// path component (lowercased; letters/digits and '-'/'_' kept; whitespace and
+// '/' folded to '-'; runs of '-' collapsed; everything else — including '.' —
+// dropped). This makes path traversal impossible: the result can never contain
+// '/', '.' sequences, or escape its parent directory. Returns EMPTY when the
+// name has no usable characters — each caller decides its own fallback/fail
+// policy (SkillStore falls back to "skill"; CommandStore fails the create).
+// Shared by SkillStore::slug() and CommandStore so both sanitize identically.
+inline QString slugComponent(const QString &name)
+{
+    QString out;
+    for (const QChar &ch : name) {
+        if (ch.isLetterOrNumber())
+            out.append(ch.toLower());
+        else if (ch == QLatin1Char('-') || ch == QLatin1Char('_'))
+            out.append(ch);
+        else if (ch.isSpace() || ch == QLatin1Char('/'))
+            out.append(QLatin1Char('-'));
+    }
+    while (out.contains(QStringLiteral("--")))
+        out.replace(QStringLiteral("--"), QStringLiteral("-"));
+    return out;
+}
+
 // Strip a matching pair of surrounding single/double quotes from a scalar.
 inline QString fmUnquote(const QString &raw)
 {

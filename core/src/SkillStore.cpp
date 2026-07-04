@@ -101,20 +101,10 @@ QString SkillStore::root() const
 
 QString SkillStore::slug(const QString &name)
 {
-    QString out;
-    for (const QChar &ch : name) {
-        if (ch.isLetterOrNumber())
-            out.append(ch.toLower());
-        else if (ch == QLatin1Char('-') || ch == QLatin1Char('_'))
-            out.append(ch);
-        else if (ch.isSpace() || ch == QLatin1Char('/'))
-            out.append(QLatin1Char('-'));
-    }
-    while (out.contains(QStringLiteral("--")))
-        out.replace(QStringLiteral("--"), QStringLiteral("-"));
-    if (out.isEmpty())
-        out = QStringLiteral("skill");
-    return out;
+    // Shared sanitizer (jarvis::slugComponent, in FrontmatterUtil.h) with the
+    // SkillStore-specific fallback for a name that reduces to nothing.
+    const QString out = jarvis::slugComponent(name);
+    return out.isEmpty() ? QStringLiteral("skill") : out;
 }
 
 bool SkillStore::parse(const QString &text, SkillFrontmatter *fmOut, QString *bodyOut)

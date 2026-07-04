@@ -5,6 +5,9 @@
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QSaveFile>
+
+#include <algorithm>
 
 namespace jarvis {
 
@@ -73,11 +76,14 @@ bool TuiLayoutStore::save(const QVector<TuiPageSpec> &pages) const
         o.insert(QStringLiteral("order"), p.order);
         arr.append(o);
     }
-    QFile f(filePath());
+    // Atomic write: QSaveFile writes to a temp file and only replaces
+    // tui_layout.json on commit(), so a crash/disk-full mid-write can't
+    // truncate the existing layout to empty (mirrors HookStore/SettingsStore).
+    QSaveFile f(filePath());
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
         return false;
     f.write(QJsonDocument(arr).toJson(QJsonDocument::Compact));
-    return true;
+    return f.commit();
 }
 
 QVector<TuiPageSpec> TuiLayoutStore::list() const
@@ -106,7 +112,15 @@ bool TuiLayoutStore::addPage(const TuiPageSpec &page, QString *error)
         }
     }
     TuiPageSpec toAdd = page;
-    toAdd.order = static_cast<int>(pages.size());
+    // Order must be STRICTLY greater than every existing order, never
+    // pages.size(): after a remove-then-add the size can equal a surviving
+    // page's order (add a,b,c -> 0,1,2; remove b -> a=0,c=2,size=2; a new
+    // page at size=2 would collide with c). list()'s std::sort isn't stable,
+    // so a collision leaves relative order unspecified. Take max(order)+1.
+    int maxOrder = -1;
+    for (const auto &p : pages)
+        maxOrder = std::max(maxOrder, p.order);
+    toAdd.order = maxOrder + 1; // 0 when there are no existing pages
     pages.push_back(toAdd);
     return save(pages);
 }

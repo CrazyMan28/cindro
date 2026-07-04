@@ -4,6 +4,8 @@
 
 #include "jarvis/CommandStore.h"
 
+#include <QDir>
+#include <QFileInfo>
 #include <QTemporaryDir>
 
 #include <cstdio>
@@ -64,6 +66,48 @@ int main()
     check(store.remove(QStringLiteral("deploy")), "remove() succeeds for an existing command");
     check(store.list().isEmpty(), "remove() actually removes it");
     check(!store.remove(QStringLiteral("missing")), "remove() fails for a missing command");
+
+    // --- path-traversal guard (code-review fix) ----------------------------
+    // A caller-supplied name must never escape the store dir. A name with a
+    // traversal payload is sanitized into a single safe path component and the
+    // file lands INSIDE the store root; a name that sanitizes to nothing fails
+    // cleanly and never writes to the store root.
+    {
+        QTemporaryDir sandbox;
+        jarvis::CommandStore s(sandbox.path());
+
+        check(s.create(QStringLiteral("../../../etc/evil"),
+                       QStringLiteral("d"), QStringLiteral("prompt"),
+                       QStringLiteral(""), QStringLiteral("b"), false),
+              "create() accepts a traversal-style name (sanitized)");
+
+        // Exactly one subdir was created, directly under the store root, and its
+        // name contains no '/' or '..' — so it cannot escape the root.
+        const QStringList subdirs =
+            QDir(sandbox.path()).entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+        check(subdirs.size() == 1, "traversal name created exactly one subdir");
+        check(!subdirs.value(0).contains(QLatin1Char('/'))
+                  && !subdirs.value(0).contains(QStringLiteral("..")),
+              "the created dir name has no '/' or '..' (cannot escape root)");
+
+        // The COMMAND.md path canonically resolves to inside the store root —
+        // it never lands at ${dir}/../.../etc/evil/COMMAND.md.
+        const QString md = QFileInfo(sandbox.path() + QStringLiteral("/") +
+                                     subdirs.value(0) + QStringLiteral("/COMMAND.md"))
+                               .canonicalFilePath();
+        const QString rootCanon = QFileInfo(sandbox.path()).canonicalFilePath();
+        check(!md.isEmpty() && md.startsWith(rootCanon + QStringLiteral("/")),
+              "COMMAND.md stays inside the store root (no traversal escape)");
+
+        // A name that sanitizes to empty (all dropped chars) must fail cleanly
+        // and never write COMMAND.md to the store root itself.
+        check(!s.create(QStringLiteral("..."), QStringLiteral("d"),
+                        QStringLiteral("prompt"), QStringLiteral(""),
+                        QStringLiteral("b"), false),
+              "create() fails for a name that sanitizes to empty");
+        check(!QFileInfo::exists(sandbox.path() + QStringLiteral("/COMMAND.md")),
+              "no COMMAND.md was written to the store root");
+    }
 
     if (g_failures == 0)
         std::fprintf(stderr, "ALL CommandStore TESTS PASSED\n");

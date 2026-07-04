@@ -40,6 +40,11 @@ public:
     static QString defaultDir();
 
 private:
+    // Sanitize a caller-supplied command name into a filesystem-safe directory
+    // component (via jarvis::slugComponent). Returns empty if the name has no
+    // usable characters — create() treats that as an error rather than writing
+    // to the store root. Prevents path traversal (e.g. "../../etc/evil").
+    static QString slug(const QString &name);
     QString commandDir(const QString &name) const;
     QString m_dir;
 };

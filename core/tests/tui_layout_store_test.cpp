@@ -113,6 +113,44 @@ int main()
               "reorder writes the new order field");
     }
 
+    // Order never collides after a remove-then-add (code-review fix).
+    // add a,b,c (orders 0,1,2); remove b (leaves a=0,c=2, size=2); add d.
+    // The old `order = pages.size()` gave d order=2, colliding with c; the
+    // new page's order must be STRICTLY greater than every other page's.
+    {
+        const QString dir = tmp.path() + QStringLiteral("/collision");
+        jarvis::TuiLayoutStore store(dir);
+        QString err;
+        for (const char *id : {"a", "b", "c"}) {
+            jarvis::TuiPageSpec p;
+            p.id = QString::fromLatin1(id);
+            p.title = p.id.toUpper();
+            p.kind = QStringLiteral("log");
+            check(store.addPage(p, &err), "collision setup: addPage succeeds");
+        }
+        check(store.removePage(QStringLiteral("b"), &err), "remove the middle page");
+
+        jarvis::TuiPageSpec d;
+        d.id = QStringLiteral("d");
+        d.title = QStringLiteral("D");
+        d.kind = QStringLiteral("log");
+        check(store.addPage(d, &err), "add a page after a remove");
+
+        const auto pages = store.list();
+        check(pages.size() == 3, "three pages remain (a, c, d)");
+        int dOrder = -1;
+        for (const auto &p : pages)
+            if (p.id == QStringLiteral("d"))
+                dOrder = p.order;
+        check(dOrder >= 0, "the new page 'd' is present");
+        bool strictlyGreater = true;
+        for (const auto &p : pages)
+            if (p.id != QStringLiteral("d") && p.order >= dOrder)
+                strictlyGreater = false;
+        check(strictlyGreater,
+              "new page's order is strictly greater than every other page's");
+    }
+
     if (g_failures == 0)
         std::fprintf(stderr, "ALL TuiLayoutStore TESTS PASSED\n");
     return g_failures == 0 ? 0 : 1;

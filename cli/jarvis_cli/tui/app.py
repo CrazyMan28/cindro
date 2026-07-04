@@ -102,6 +102,10 @@ class JarvisTui(App):
         super().__init__(**kw)
         self.client = ControlClient(on_broadcast=self._on_broadcast)
         self._daemon_line = "connecting…"
+        # last-seen page dict per custom-page id, keyed the same as the
+        # tab-custom-{id} pane — lets tui.layout.changed reconciliation tell
+        # add vs. edit vs. remove apart without re-diffing widget internals.
+        self._custom_pages: dict[str, dict] = {}
 
     # -- layout ----------------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -195,6 +199,37 @@ class JarvisTui(App):
         pane = CustomPane(page["id"], page["title"], page["kind"], page.get("config", {}),
                           id=f"custom-{page['id']}")
         tabbed.add_pane(TabPane(page["title"], pane, id=tab_id))
+        self._custom_pages[page["id"]] = page
+
+    async def _reconcile_custom_pages(self, pages: list[dict]) -> None:
+        """Full reconciliation against the daemon's CURRENT page list — called
+        on every tui.layout.changed broadcast (fired for add/edit/remove/
+        reorder alike). CustomPane bakes its config in __init__, so an edited
+        page can't be patched in place: drop the pane for any page that
+        vanished (tui_remove_page took effect) or whose kind/title/config
+        changed (tui_edit_page), then remount fresh; anything unchanged is
+        left alone; anything brand new gets mounted. This is what makes the
+        documented "live, no restart needed" promise actually true."""
+        tabbed = self.query_one(TabbedContent)
+        new_ids = {page["id"] for page in pages}
+        for stale_id in [pid for pid in self._custom_pages if pid not in new_ids]:
+            tab_id = f"tab-custom-{stale_id}"
+            if tabbed.query(f"#{tab_id}"):
+                await tabbed.remove_pane(tab_id)
+            del self._custom_pages[stale_id]
+        for page in pages:
+            prev = self._custom_pages.get(page["id"])
+            changed = prev is not None and (
+                prev.get("kind") != page.get("kind")
+                or prev.get("config") != page.get("config")
+                or prev.get("title") != page.get("title")
+            )
+            if changed:
+                tab_id = f"tab-custom-{page['id']}"
+                if tabbed.query(f"#{tab_id}"):
+                    await tabbed.remove_pane(tab_id)
+                del self._custom_pages[page["id"]]
+            self._mount_custom_page(page)
 
     def _on_broadcast(self, event: str, data: dict) -> None:
         # session.opened / phone.event / auth.event — refresh the header lazily.
@@ -204,8 +239,7 @@ class JarvisTui(App):
             except Exception:
                 pass
         elif event == "tui.layout.changed":
-            for page in data.get("pages", []):
-                self._mount_custom_page(page)
+            self.run_worker(self._reconcile_custom_pages(data.get("pages", [])))
 
     # -- cross-tab actions --------------------------------------------------------
     async def open_chat(self, session_id: str, title: str) -> None:
