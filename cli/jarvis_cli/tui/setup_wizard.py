@@ -23,6 +23,7 @@ SetupWizard.qml's own ``finish()`` builds, then dismisses.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Optional
 
 from textual.app import ComposeResult
@@ -162,10 +163,20 @@ class SetupWizardScreen(ModalScreen[None]):
     # -- daemon round-trips (mirrors SetupWizard.qml's load()/onSettingsLoaded/
     # onVoicesListed) -------------------------------------------------------------
     async def _load(self) -> None:
-        try:
-            res = await self.client.call("settings.get", {}, timeout=15)
-        except Exception:
-            res = None
+        # Neither call depends on the other's result -- fire them
+        # concurrently. Each has its own independent fallback (settings
+        # failing must not blank the voice list, and vice versa), so
+        # return_exceptions=True is required here -- unlike a plain
+        # gather(), it keeps one call's failure from cancelling/aborting
+        # the other and lets each branch handle its own error exactly as
+        # it did when the two awaits were sequential.
+        settings_result, voices_result = await asyncio.gather(
+            self.client.call("settings.get", {}, timeout=15),
+            self.client.call("voice.list_voices", {}, timeout=15),
+            return_exceptions=True,
+        )
+
+        res = None if isinstance(settings_result, Exception) else settings_result
         if res is not None:
             settings = res.get("settings", res)
             available = settings.get("available_brains") or {}
@@ -184,11 +195,10 @@ class SetupWizardScreen(ModalScreen[None]):
             self.auto_update = True if au is None else bool(au)
             self._apply_loaded_values_to_inputs()
 
-        try:
-            vres = await self.client.call("voice.list_voices", {}, timeout=15)
-            self.voice_list = vres.get("voices") or []
-        except Exception:
+        if isinstance(voices_result, Exception):
             self.voice_list = []
+        else:
+            self.voice_list = voices_result.get("voices") or []
         self._populate_voice_list()
         self._update_step_display()
 

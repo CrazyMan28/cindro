@@ -124,6 +124,101 @@ async def test_each_step_advances_and_toggles_the_right_panel(daemon):
 
 
 @pytest.mark.asyncio
+async def test_load_calls_both_settings_get_and_voice_list_voices(daemon):
+    """Regression test: _load() must issue BOTH settings.get and
+    voice.list_voices (order-independent -- neither depends on the
+    other's result) and still render the resulting step content
+    (assistant name pulled from settings, voices populated in the list)."""
+    daemon.settings["assistant_name"] = "Friday"
+
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        wiz = SetupWizardScreen(app.client)
+        await app.push_screen(wiz)
+        await pilot.pause(0.3)
+
+        methods = [m for (m, _p) in daemon.calls]
+        assert "settings.get" in methods
+        assert "voice.list_voices" in methods
+
+        # settings.get's result landed on the wizard + its step-0 input.
+        assert wiz.assistant_name == "Friday"
+        assert wiz.query_one("#name-field", Input).value == "Friday"
+
+        # voice.list_voices' result populated the (still-hidden step-1) list.
+        lv = wiz.query_one("#voice-list", ListView)
+        assert len(lv.children) == len(daemon.voices)
+
+
+@pytest.mark.asyncio
+async def test_load_runs_settings_get_and_voice_list_voices_concurrently(daemon, monkeypatch):
+    """Regression test for the fix: settings.get and voice.list_voices must
+    run concurrently (via asyncio.gather), not sequentially. Each mocked
+    call is delayed by DELAY seconds; sequential awaits would take
+    ~2*DELAY, concurrent ones ~1*DELAY."""
+    import asyncio
+    import time
+
+    DELAY = 0.2
+
+    async def slow_call(method, params=None, timeout=None):
+        await asyncio.sleep(DELAY)
+        if method == "settings.get":
+            return {"settings": dict(daemon.settings)}
+        if method == "voice.list_voices":
+            return {"voices": list(daemon.voices)}
+        return {}
+
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.2)
+        wiz = SetupWizardScreen(app.client)
+        monkeypatch.setattr(app.client, "call", slow_call)
+
+        start = time.monotonic()
+        await app.push_screen(wiz)
+        # push_screen's on_mount (-> _load) is fired as a task; wait for
+        # the voice list to actually be populated (proof _load finished).
+        for _ in range(50):
+            if wiz.voice_list:
+                break
+            await pilot.pause(0.05)
+        elapsed = time.monotonic() - start
+
+        assert wiz.voice_list  # _load did complete
+        assert elapsed < DELAY * 1.75
+
+
+@pytest.mark.asyncio
+async def test_load_tolerates_voice_list_voices_failing(daemon, monkeypatch):
+    """Each call keeps its own independent error handling after the
+    gather(): a failing voice.list_voices must not blank out settings
+    that DID load successfully (return_exceptions=True, not a shared
+    try/except)."""
+    daemon.settings["assistant_name"] = "Friday"
+
+    async def flaky_call(method, params=None, timeout=None):
+        if method == "voice.list_voices":
+            raise RuntimeError("boom")
+        if method == "settings.get":
+            return {"settings": dict(daemon.settings)}
+        return {}
+
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.2)
+        wiz = SetupWizardScreen(app.client)
+        monkeypatch.setattr(app.client, "call", flaky_call)
+        await app.push_screen(wiz)
+        await pilot.pause(0.3)
+
+        # settings.get's result still landed despite voice_list_voices raising.
+        assert wiz.assistant_name == "Friday"
+        assert wiz.voice_list == []
+
+
+@pytest.mark.asyncio
 async def test_voice_list_populated_from_voice_list_voices(daemon):
     app = JarvisTui()
     async with app.run_test(size=(100, 30)) as pilot:

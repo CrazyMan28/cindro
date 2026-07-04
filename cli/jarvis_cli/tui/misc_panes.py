@@ -4,6 +4,8 @@ HomePane (read-only status/recent-sessions dashboard) + SchedulesPane
 
 from __future__ import annotations
 
+import asyncio
+
 from rich.text import Text
 from rich.tree import Tree
 from textual.app import ComposeResult
@@ -121,8 +123,18 @@ class HomePane(Vertical):
     async def refresh_data(self) -> None:
         try:
             async with spinner_guard(self, "home-spinner"):
-                sessions = (await self.client.call("session.list", {})).get("sessions", [])
-                settings = (await self.client.call("settings.get", {})).get("settings", {})
+                # Neither call depends on the other's result -- run them
+                # concurrently instead of paying two round-trips in series.
+                # A single try/except already covers both calls (either
+                # failing aborts the whole refresh the same way it did when
+                # they were sequential), so plain gather() -- not
+                # return_exceptions=True -- keeps that behavior identical.
+                sessions_res, settings_res = await asyncio.gather(
+                    self.client.call("session.list", {}),
+                    self.client.call("settings.get", {}),
+                )
+                sessions = sessions_res.get("sessions", [])
+                settings = settings_res.get("settings", {})
         except (ControlError, ConnectionError, TimeoutError) as exc:
             self.notify(str(exc), severity="error")
             return

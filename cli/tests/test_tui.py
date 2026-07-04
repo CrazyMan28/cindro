@@ -995,6 +995,57 @@ async def test_home_pane_shows_recent_sessions(monkeypatch):
         assert "chat about X" in "\n".join(pane.lines)
 
 
+async def test_home_pane_refresh_data_calls_both_endpoints_and_renders(monkeypatch):
+    """Regression test: refresh_data() must issue BOTH session.list and
+    settings.get (order-independent -- they no longer depend on each
+    other) and still render the exact same dashboard lines afterward."""
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#home")
+        calls = []
+        async def fake_call(method, params=None, timeout=60.0):
+            calls.append(method)
+            if method == "session.list":
+                return {"sessions": [{"id": "s1", "title": "chat about X", "brain": "claude"}]}
+            return {"settings": {"version": "1.2.3", "default_brain": "claude"}}
+        monkeypatch.setattr(app.client, "call", fake_call)
+        await pane.refresh_data()
+
+        assert set(calls) == {"session.list", "settings.get"}
+        assert "jarvisd v1.2.3 · default brain: claude" in pane.lines
+        assert "chat about X" in "\n".join(pane.lines)
+
+
+async def test_home_pane_refresh_data_runs_calls_concurrently(monkeypatch):
+    """Regression test for the fix: session.list and settings.get must run
+    concurrently (via asyncio.gather), not sequentially. Each mocked call
+    sleeps for DELAY seconds; if they ran one-after-another refresh_data()
+    would take ~2*DELAY, but run concurrently it takes ~1*DELAY."""
+    import asyncio
+    import time
+    from jarvis_cli.tui.app import JarvisTui
+
+    DELAY = 0.2
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#home")
+        async def fake_call(method, params=None, timeout=60.0):
+            await asyncio.sleep(DELAY)
+            if method == "session.list":
+                return {"sessions": []}
+            return {"settings": {"version": "1.2.3", "default_brain": "claude"}}
+        monkeypatch.setattr(app.client, "call", fake_call)
+
+        start = time.monotonic()
+        await pane.refresh_data()
+        elapsed = time.monotonic() - start
+
+        # Comfortably below 2*DELAY (which sequential awaits would need)
+        # and close to a single DELAY.
+        assert elapsed < DELAY * 1.75
+
+
 async def test_schedules_pane_creates_a_job(monkeypatch):
     from jarvis_cli.tui.app import JarvisTui
     app = JarvisTui()
