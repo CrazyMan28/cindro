@@ -153,6 +153,7 @@ class JarvisTui(App):
         await self.client.start()
         self._set_topbar()
         self.load_daemon_line()
+        self.run_worker(self.load_custom_pages())
 
     async def on_unmount(self) -> None:
         await self.client.close()
@@ -177,13 +178,34 @@ class JarvisTui(App):
             self._daemon_line = f"daemon unreachable ({exc})"
         self._set_topbar()
 
-    def _on_broadcast(self, event: str, _data: dict) -> None:
+    async def load_custom_pages(self) -> None:
+        try:
+            res = await self.client.call("tui.layout.list", {})
+        except Exception:
+            return
+        for page in res.get("pages", []):
+            self._mount_custom_page(page)
+
+    def _mount_custom_page(self, page: dict) -> None:
+        tabbed = self.query_one(TabbedContent)
+        tab_id = f"tab-custom-{page['id']}"
+        if tabbed.query(f"#{tab_id}"):
+            return
+        from jarvis_cli.tui.custom_pane import CustomPane
+        pane = CustomPane(page["id"], page["title"], page["kind"], page.get("config", {}),
+                          id=f"custom-{page['id']}")
+        tabbed.add_pane(TabPane(page["title"], pane, id=tab_id))
+
+    def _on_broadcast(self, event: str, data: dict) -> None:
         # session.opened / phone.event / auth.event — refresh the header lazily.
         if event == "session.opened":
             try:
                 self.query_one("#sessions", SessionsPane).refresh_data()
             except Exception:
                 pass
+        elif event == "tui.layout.changed":
+            for page in data.get("pages", []):
+                self._mount_custom_page(page)
 
     # -- cross-tab actions --------------------------------------------------------
     async def open_chat(self, session_id: str, title: str) -> None:

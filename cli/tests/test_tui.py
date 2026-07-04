@@ -319,3 +319,32 @@ async def test_schedules_pane_creates_a_job(monkeypatch):
         await pane.on_input_submitted(Input.Submitted(pane.query_one("#schedule-add"),
                                                        "water plants :: remind me to water the plants"))
         assert calls[0][0] == "schedule.create"
+
+
+async def test_custom_pages_mount_from_tui_layout_list(monkeypatch, tmp_path):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    log_file = tmp_path / "err.log"
+    log_file.write_text("line one\nline two\n")
+
+    async def fake_call(method, params=None, timeout=60.0):
+        if method == "tui.layout.list":
+            return {"pages": [{"id": "errorlog", "title": "Error Log", "kind": "log",
+                              "config": {"path": str(log_file)}, "order": 0}]}
+        return {}
+    monkeypatch.setattr(app.client, "call", fake_call)
+
+    async with app.run_test() as pilot:
+        await app.load_custom_pages()
+        await pilot.pause()
+        assert app.query_one("#tab-custom-errorlog") is not None
+
+
+def test_custom_pages_hot_reload_on_broadcast():
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    added = []
+    app._mount_custom_page = lambda page: added.append(page["id"])
+    app._on_broadcast("tui.layout.changed", {"pages": [{"id": "x", "title": "X",
+                                                        "kind": "log", "config": {}}]})
+    assert added == ["x"]
