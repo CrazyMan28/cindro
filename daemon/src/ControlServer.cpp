@@ -5791,6 +5791,7 @@ bool ControlServer::isOpsMethod(const QString &method)
 {
     return method.startsWith(QStringLiteral("schedule.")) ||
            method.startsWith(QStringLiteral("tui.layout.")) ||
+           method.startsWith(QStringLiteral("command.")) ||
            method.startsWith(QStringLiteral("ssh.")) ||
            method == QStringLiteral("audit.list");
 }
@@ -5964,6 +5965,10 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("tui.layout.edit"))    return handleTuiLayoutEdit(req);
     if (m == QStringLiteral("tui.layout.remove"))  return handleTuiLayoutRemove(req);
     if (m == QStringLiteral("tui.layout.reorder")) return handleTuiLayoutReorder(req);
+    if (m == QStringLiteral("command.list"))       return handleCommandList(req);
+    if (m == QStringLiteral("command.create"))     return handleCommandCreate(req);
+    if (m == QStringLiteral("command.remove"))     return handleCommandRemove(req);
+    if (m == QStringLiteral("command.invoke"))     return handleCommandInvoke(req);
     if (m == QStringLiteral("ssh.allow_list"))       return handleSshAllowList(req);
     if (m == QStringLiteral("ssh.allow_add"))        return handleSshAllowAdd(req);
     if (m == QStringLiteral("ssh.allow_remove"))     return handleSshAllowRemove(req);
@@ -6158,6 +6163,77 @@ void ControlServer::broadcastTuiLayoutChanged()
         QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
     for (QWebSocket *client : std::as_const(m_clients))
         client->sendTextMessage(payload);
+}
+
+// --- self-authored slash commands: command.* --------------------------------
+
+static QJsonArray commandsToJson(const QVector<jarvis::CommandRow> &rows)
+{
+    QJsonArray arr;
+    for (const auto &r : rows) {
+        QJsonObject o;
+        o.insert(QStringLiteral("name"), r.name);
+        o.insert(QStringLiteral("description"), r.description);
+        o.insert(QStringLiteral("action_kind"), r.actionKind);
+        o.insert(QStringLiteral("action_target"), r.actionTarget);
+        o.insert(QStringLiteral("self_authored"), r.selfAuthored);
+        arr.append(o);
+    }
+    return arr;
+}
+
+Response ControlServer::handleCommandList(const Request &req)
+{
+    QJsonObject result;
+    result.insert(QStringLiteral("commands"), commandsToJson(m_commandStore.list()));
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleCommandCreate(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    const QString description = req.params.value(QStringLiteral("description")).toString();
+    const QString actionKind = req.params.value(QStringLiteral("action_kind")).toString();
+    const QString actionTarget = req.params.value(QStringLiteral("action_target")).toString();
+    const QString body = req.params.value(QStringLiteral("body")).toString();
+    // Authored through the create_slash_command MCP tool -> self_authored.
+    if (!m_commandStore.create(name, description, actionKind, actionTarget, body,
+                               /*selfAuthored=*/true))
+        return Response::failure(req.id, QStringLiteral("invalid_command"),
+                                 QStringLiteral("name collides with a built-in, already "
+                                                "exists, or has an invalid action_kind"));
+    return Response::success(req.id, {{QStringLiteral("ok"), true}});
+}
+
+Response ControlServer::handleCommandRemove(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    if (!m_commandStore.remove(name))
+        return Response::failure(req.id, QStringLiteral("not_found"),
+                                 QStringLiteral("no such command"));
+    return Response::success(req.id, {{QStringLiteral("ok"), true}});
+}
+
+Response ControlServer::handleCommandInvoke(const Request &req)
+{
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    const auto row = m_commandStore.get(name);
+    if (!row)
+        return Response::failure(req.id, QStringLiteral("not_found"), QStringLiteral("no such command"));
+    QJsonObject result;
+    if (row->actionKind == QStringLiteral("prompt")) {
+        QString prompt = row->body;
+        prompt.replace(QStringLiteral("{{ARGS}}"),
+                       req.params.value(QStringLiteral("args")).toString());
+        result.insert(QStringLiteral("prompt"), prompt);
+    } else if (row->actionKind == QStringLiteral("mcp_tool")) {
+        result.insert(QStringLiteral("mcp_tool"), row->actionTarget);
+        result.insert(QStringLiteral("args"), req.params.value(QStringLiteral("args")));
+    } else {
+        result.insert(QStringLiteral("shell"), row->actionTarget);
+        result.insert(QStringLiteral("args"), req.params.value(QStringLiteral("args")));
+    }
+    return Response::success(req.id, result);
 }
 
 Response ControlServer::handleSshAllowList(const Request &req)

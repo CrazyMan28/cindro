@@ -71,6 +71,8 @@ add_library(jarvis-core STATIC
     # File-backed CRUD for the TUI's custom (non-builtin) page layout — Jarvis
     # can add/edit/remove/reorder terminal pages via MCP without touching code.
     src/TuiLayoutStore.cpp
+    # Self-authored slash commands (Markdown+frontmatter, mirrors SkillStore).
+    src/CommandStore.cpp
     # Headers listed so AUTOMOC processes the Q_OBJECT types (Brain, CodexBrain),
     # generating their staticMetaObject + vtable into this static lib.
     include/jarvis/Protocol.h
@@ -326,6 +328,10 @@ add_test(NAME widget_lease_test COMMAND widget_lease_test)
 add_executable(tui_layout_store_test tests/tui_layout_store_test.cpp)
 target_link_libraries(tui_layout_store_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME tui_layout_store_test COMMAND tui_layout_store_test)
+
+add_executable(command_store_test tests/command_store_test.cpp)
+target_link_libraries(command_store_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME command_store_test COMMAND command_store_test)
 
 # Wave 7 plugin marketplace backend test.
 # PluginSigner: sign a manifest+payload -> verify ok against a trusted key;

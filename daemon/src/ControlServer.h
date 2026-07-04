@@ -38,6 +38,7 @@
 #include "jarvis/VoiceLibrary.h"
 #include "jarvis/WidgetLeaseRegistry.h"
 #include "jarvis/TuiLayoutStore.h"
+#include "jarvis/CommandStore.h"
 
 #include <QHash>
 #include <QObject>
@@ -437,6 +438,11 @@ private:
     Response handleTuiLayoutRemove(const Request &req);
     Response handleTuiLayoutReorder(const Request &req);
     void broadcastTuiLayoutChanged();
+    // Self-authored slash commands — command.list/create/remove/invoke.
+    Response handleCommandList(const Request &req);
+    Response handleCommandCreate(const Request &req);
+    Response handleCommandRemove(const Request &req);
+    Response handleCommandInvoke(const Request &req);
     // Wave 8: SSH allow-list + gated exec.
     Response handleSshAllowList(const Request &req);
     Response handleSshAllowAdd(const Request &req);
@@ -533,6 +539,8 @@ private:
     WidgetLeaseRegistry m_widgetLeases;
     // TUI custom-page layout (Jarvis self-edits terminal pages via tui.layout.*).
     jarvis::TuiLayoutStore m_tuiLayoutStore;
+    // Self-authored slash commands (command.* verbs) — mirrors SkillStore.
+    jarvis::CommandStore m_commandStore;
     std::unique_ptr<McpRegistry> m_mcp;
     std::unique_ptr<PluginRegistry> m_plugins;
     // Wave 7: sandboxed launcher for kind=mcp/both stdio plugins (systemd-run
