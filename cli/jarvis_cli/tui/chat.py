@@ -8,6 +8,10 @@ an Input at the bottom sends turns. Slash commands:
     /stop            cancel the running turn
     /goal <text>     set a persistent goal on this session (empty clears)
     /y  /n           approve / deny the pending permission request
+    /stage <file>    stage a file from the last `diff` event
+    /commit [msg]    commit staged changes (message optional)
+    /revert <file>   revert a file from the last `diff` event
+    /openpr [title]  open a pull request (title optional)
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from jarvis_cli.control import ControlError
 from jarvis_cli.tui.activity_pane import ActivityPane
 from jarvis_cli.tui.arc_reactor import ArcReactorWidget
 from jarvis_cli.tui.command_palette import CommandPalette, PALETTE_TRANSITION_MS
+from jarvis_cli.tui.diff_render import render_diff_event
 from jarvis_cli.tui.misc_panes import MemoryGraphPane, SchedulesPane
 from jarvis_cli.tui.quick_view import QuickViewScreen
 from jarvis_cli.tui.screens import AgentsPane, MemoryPane, QueuePane, SessionsPane, SkillsPane
@@ -59,6 +64,10 @@ BUILTIN_COMMANDS = [
     ("tui", "ask Jarvis to add/edit/remove a TUI page"),
     ("model", "pick the active model"),
     ("provider", "pick codex, claude, or api"),
+    ("stage", "stage a file from the last diff"),
+    ("commit", "commit staged changes"),
+    ("revert", "revert a file from the last diff"),
+    ("openpr", "open a pull request for the current branch"),
 ]
 
 # These 11 open as an inline QuickViewScreen popup (see quick_view.py) instead
@@ -83,10 +92,12 @@ POPUP_COMMANDS = set(POPUP_PANE_FACTORIES)
 # The remaining tab-jump commands still switch TabbedContent.active. "tui" is
 # an ACTION command (asks Jarvis to edit the TUI layout), not a tab to jump
 # to — there is no "tab-tui" TabPane in app.py. "model"/"provider" are picker
-# commands (see run_slash_command), not tab jumps either.
+# commands (see run_slash_command), not tab jumps either. "stage"/"commit"/
+# "revert"/"openpr" are diff-review actions (see _diff_action) — also not tabs.
 TAB_JUMP_COMMANDS = {name for name, _ in BUILTIN_COMMANDS
                     if name not in ("new", "stop", "goal", "y", "n", "tui",
-                                     "model", "provider")
+                                     "model", "provider", "stage", "commit",
+                                     "revert", "openpr")
                     and name not in POPUP_COMMANDS}
 
 
@@ -403,6 +414,12 @@ class ChatPane(Vertical):
             await self._open_provider_picker()
         elif name == "model":
             await self._open_model_picker()
+        elif name in ("stage", "revert"):
+            await self._diff_action(name, args)
+        elif name == "commit":
+            await self._diff_action("commit", args)
+        elif name == "openpr":
+            await self._diff_action("open_pr", args)
         elif name in POPUP_COMMANDS:
             factory = POPUP_PANE_FACTORIES[name]
             title = name.capitalize() if name != "mcp" else "MCP"
@@ -571,6 +588,51 @@ class ChatPane(Vertical):
         self.app.push_screen(QuickViewScreen(
             "Model", lambda: PickerWidget(options, on_pick)))
 
+    # -- /stage /commit /revert /openpr (diff-review actions) -------------------
+    async def _diff_action(self, verb: str, args: str) -> None:
+        """Call a `diff.*` daemon verb for one of the /stage /commit /revert
+        /openpr commands. RichLog transcript entries aren't interactive (no
+        clickable Stage/Commit/Revert/Open-PR buttons like the QML
+        DiffReviewPanel's PillButtons), so these slash commands ARE the
+        action row — same input-driven style as /y //n for approvals.
+
+        Param shapes mirror desktop/src/Bridge.cpp's diffStage/diffRevert/
+        diffCommit/diffOpenPr exactly: stage/revert take {session_id, path};
+        commit takes {session_id, message}; open_pr takes
+        {session_id, title} — message/title come from the command's free-text
+        remainder and are optional (the daemon/brain can craft its own)."""
+        params: dict = {}
+        if self.session_id:
+            params["session_id"] = self.session_id
+        if verb in ("stage", "revert"):
+            path = args.strip()
+            if not path:
+                self._log(Text(f"/{verb} needs a file path", style="yellow"))
+                return
+            params["path"] = path
+        else:  # commit / open_pr — an optional free-text message/title
+            text = args.strip()
+            if text:
+                params["message" if verb == "commit" else "title"] = text
+        label = "PR" if verb == "open_pr" else verb
+        try:
+            res = await self.client.call(f"diff.{verb}", params)
+        except ControlError as exc:
+            if exc.code == "unknown_method":
+                self._log(Text(f"diff.{verb} is not available yet", style="yellow"))
+            else:
+                self._log(Text(f"{label} failed: {exc}", style="red"))
+            return
+        except (ConnectionError, TimeoutError) as exc:
+            self._log(Text(f"{label} failed: {exc}", style="red"))
+            return
+        ok = res.get("ok", True) if isinstance(res, dict) else True
+        detail = ""
+        if isinstance(res, dict):
+            detail = res.get("message") or res.get("url") or ""
+        text = ("✓ " if ok else "✕ ") + label + (f"  {detail}" if detail else "")
+        self._log(Text(text, style="green" if ok else "red"))
+
     async def _respond_approval(self, allow: bool) -> None:
         if not self.pending_approval or not self.session_id:
             self._status("no approval pending")
@@ -624,6 +686,8 @@ class ChatPane(Vertical):
             if out:
                 self._log(Text("  ↳ " + out[:200].replace("\n", " ⏎ "),
                                style="bright_black"))
+        elif kind == "diff":
+            self._log(render_diff_event(ev))
         elif kind == "approval":
             self.pending_approval = str(ev.get("approval_id", ""))
             what = ev.get("summary") or ev.get("tool") or "an action"

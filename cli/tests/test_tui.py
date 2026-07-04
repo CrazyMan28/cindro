@@ -164,6 +164,189 @@ async def test_chat_second_live_message_cancels_prior_reveal_cleanly(daemon):
 
 
 @pytest.mark.asyncio
+async def test_diff_event_renders_file_summary_in_transcript(daemon):
+    """A `diff`-kind event renders per-file names + +/- change counts into
+    the transcript (via diff_render.render_diff_event)."""
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        _activate_chat_tab(app)
+        await pilot.pause(0.05)
+        chat = app.query_one("#chat", ChatPane)
+        chat._render_ev({"kind": "diff", "path": "foo.py",
+                         "patch": "+new line\n-old line\n"})
+        await pilot.pause(0.05)
+        transcript = chat.query_one("#transcript")
+        rendered = "\n".join(strip.text for strip in transcript.lines)
+        assert "foo.py" in rendered
+        assert "+1" in rendered
+        assert "-1" in rendered
+
+
+@pytest.mark.asyncio
+async def test_diff_stage_against_real_daemon_degrades_quietly_on_unknown_method(daemon):
+    """MockDaemon doesn't implement diff.* yet (matches production — Bridge.cpp
+    documents diff.* as landing daemon-side later, degrading on
+    "unknown_method" until then). /stage must still send the call with the
+    right shape and surface a quiet status line instead of crashing."""
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        _activate_chat_tab(app)
+        await pilot.pause(0.05)
+        chat = app.query_one("#chat", ChatPane)
+        await chat.run_slash_command("stage", "foo.py")
+        await pilot.pause(0.2)
+        stages = [(m, p) for (m, p) in daemon.calls if m == "diff.stage"]
+        assert stages and stages[0][1]["path"] == "foo.py"
+        transcript = chat.query_one("#transcript")
+        rendered = "\n".join(strip.text for strip in transcript.lines)
+        assert "not available yet" in rendered
+
+
+@pytest.mark.asyncio
+async def test_stage_command_calls_diff_stage_with_path(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui as App
+
+    app = App()
+    calls = []
+
+    async def fake_call(method, params=None, timeout=60.0):
+        calls.append((method, params))
+        return {"ok": True}
+
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        chat = app.query_one("#chat", ChatPane)
+        await chat.run_slash_command("stage", "foo.py")
+        await pilot.pause(0.1)
+        stages = [(m, p) for (m, p) in calls if m == "diff.stage"]
+        assert stages and stages[0][1] == {"path": "foo.py"}
+
+
+@pytest.mark.asyncio
+async def test_stage_command_without_a_path_does_not_call_the_daemon(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui as App
+
+    app = App()
+    calls = []
+
+    async def fake_call(method, params=None, timeout=60.0):
+        calls.append((method, params))
+        return {"ok": True}
+
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        chat = app.query_one("#chat", ChatPane)
+        await chat.run_slash_command("stage", "")
+        await pilot.pause(0.1)
+        assert not [(m, p) for (m, p) in calls if m == "diff.stage"]
+
+
+@pytest.mark.asyncio
+async def test_revert_command_calls_diff_revert_with_path(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui as App
+
+    app = App()
+    calls = []
+
+    async def fake_call(method, params=None, timeout=60.0):
+        calls.append((method, params))
+        return {"ok": True}
+
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        chat = app.query_one("#chat", ChatPane)
+        await chat.run_slash_command("revert", "bar.py")
+        await pilot.pause(0.1)
+        reverts = [(m, p) for (m, p) in calls if m == "diff.revert"]
+        assert reverts and reverts[0][1] == {"path": "bar.py"}
+
+
+@pytest.mark.asyncio
+async def test_commit_command_calls_diff_commit_with_optional_message(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui as App
+
+    app = App()
+    calls = []
+
+    async def fake_call(method, params=None, timeout=60.0):
+        calls.append((method, params))
+        return {"ok": True}
+
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        chat = app.query_one("#chat", ChatPane)
+        await chat.run_slash_command("commit", "fix the thing")
+        await pilot.pause(0.1)
+        commits = [(m, p) for (m, p) in calls if m == "diff.commit"]
+        assert commits and commits[0][1] == {"message": "fix the thing"}
+
+
+@pytest.mark.asyncio
+async def test_commit_command_with_no_args_omits_the_message_key(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui as App
+
+    app = App()
+    calls = []
+
+    async def fake_call(method, params=None, timeout=60.0):
+        calls.append((method, params))
+        return {"ok": True}
+
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        chat = app.query_one("#chat", ChatPane)
+        await chat.run_slash_command("commit", "")
+        await pilot.pause(0.1)
+        commits = [(m, p) for (m, p) in calls if m == "diff.commit"]
+        assert commits and commits[0][1] == {}
+
+
+@pytest.mark.asyncio
+async def test_openpr_command_calls_diff_open_pr_with_optional_title(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui as App
+
+    app = App()
+    calls = []
+
+    async def fake_call(method, params=None, timeout=60.0):
+        calls.append((method, params))
+        return {"ok": True}
+
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        chat = app.query_one("#chat", ChatPane)
+        await chat.run_slash_command("openpr", "Add feature X")
+        await pilot.pause(0.1)
+        prs = [(m, p) for (m, p) in calls if m == "diff.open_pr"]
+        assert prs and prs[0][1] == {"title": "Add feature X"}
+
+
+@pytest.mark.asyncio
+async def test_diff_action_includes_session_id_when_a_session_exists(monkeypatch):
+    """Bridge::diffStage/diffCommit/etc. all include session_id when one is
+    set — the TUI's params must match that shape exactly."""
+    from jarvis_cli.tui.app import JarvisTui as App
+
+    app = App()
+    calls = []
+
+    async def fake_call(method, params=None, timeout=60.0):
+        calls.append((method, params))
+        return {"ok": True}
+
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        chat = app.query_one("#chat", ChatPane)
+        chat.session_id = "sess_active"
+        await chat.run_slash_command("stage", "foo.py")
+        await pilot.pause(0.1)
+        stages = [(m, p) for (m, p) in calls if m == "diff.stage"]
+        assert stages and stages[0][1] == {"session_id": "sess_active", "path": "foo.py"}
+
+
+@pytest.mark.asyncio
 async def test_sessions_tab_lists_rows(daemon):
     app = JarvisTui()
     async with app.run_test(size=(100, 30)) as pilot:
