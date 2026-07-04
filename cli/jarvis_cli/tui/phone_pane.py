@@ -168,6 +168,37 @@ class PhonePane(Vertical):
         self._calls_timer = self.set_interval(3.0, self._poll_calls_and_banner)
         self._screening_timer = self.set_interval(4.0, self._poll_screening)
 
+    def on_unmount(self) -> None:
+        """Stop both polling timers outright — they're recreated fresh by
+        the next on_mount, so there's nothing to resume into after this."""
+        if self._calls_timer is not None:
+            self._calls_timer.stop()
+            self._calls_timer = None
+        if self._screening_timer is not None:
+            self._screening_timer.stop()
+            self._screening_timer = None
+
+    def pause_timers(self) -> None:
+        """Pause the calls/screening poll timers — called by app.py's
+        on_tabbed_content_tab_activated whenever some OTHER tab becomes
+        active, so the Dialer/Screening round trips (every 3-4s) don't keep
+        firing while the Phone tab isn't even visible. Same
+        ArcReactorWidget.pause()/.resume() convention already used
+        elsewhere in this codebase for gating background ticks on
+        visibility."""
+        if self._calls_timer is not None:
+            self._calls_timer.pause()
+        if self._screening_timer is not None:
+            self._screening_timer.pause()
+
+    def resume_timers(self) -> None:
+        """Resume the calls/screening poll timers — called when the Phone
+        tab becomes active again."""
+        if self._calls_timer is not None:
+            self._calls_timer.resume()
+        if self._screening_timer is not None:
+            self._screening_timer.resume()
+
     def refresh_if_stale(self) -> None:
         self.call_later(self.refresh_data)
         self.call_later(self._poll_calls_and_banner)
@@ -271,31 +302,38 @@ class PhonePane(Vertical):
                           route, c.get("reason", "") or "")
 
     async def _update_incoming_banner(self, calls: list[dict]) -> None:
-        found = None
-        for c in calls:
-            if c.get("state") in _RINGING_STATES:
-                found = c
-                break
-        if found is None:
+        # This whole body is wrapped in one try/except (rather than only
+        # guarding the first widget lookup) because it's driven by a
+        # recurring 3s set_interval timer (see on_mount) — a transient
+        # NoMatches on ANY of the widget lookups below (mid-teardown, or a
+        # test that removed one) must never bubble out of a background timer
+        # callback and crash the whole app. Same convention as
+        # _render_banner below and app.py's `_set_topbar` fix.
+        try:
+            found = None
             for c in calls:
-                if c.get("state") in _ACTIVE_STATES:
+                if c.get("state") in _RINGING_STATES:
                     found = c
                     break
+            if found is None:
+                for c in calls:
+                    if c.get("state") in _ACTIVE_STATES:
+                        found = c
+                        break
 
-        prev_id = str(self.incoming.get("id", "")) if self.incoming else ""
-        new_id = str(found.get("id", "")) if found else ""
-        self.incoming = dict(found) if found else {}
-        self._render_banner()
+            prev_id = str(self.incoming.get("id", "")) if self.incoming else ""
+            new_id = str(found.get("id", "")) if found else ""
+            self.incoming = dict(found) if found else {}
+            self._render_banner()
 
-        if found and found.get("state") in _ACTIVE_STATES:
-            if new_id != prev_id:
-                self.query_one("#phone-call-transcript", Static).update("Awaiting transcript…")
-            await self._load_call_transcript(new_id)
-        elif not found:
-            try:
+            if found and found.get("state") in _ACTIVE_STATES:
+                if new_id != prev_id:
+                    self.query_one("#phone-call-transcript", Static).update("Awaiting transcript…")
+                await self._load_call_transcript(new_id)
+            elif not found:
                 self.query_one("#phone-call-transcript", Static).update("")
-            except Exception:
-                pass
+        except Exception:
+            return
 
     async def _load_call_transcript(self, call_id: str) -> None:
         if not call_id:
@@ -320,35 +358,40 @@ class PhonePane(Vertical):
             pass
 
     def _render_banner(self) -> None:
+        # Entire body wrapped in one try/except — this runs off the same
+        # recurring 3s timer as _update_incoming_banner above (via
+        # _poll_calls_and_banner), so any of these widget lookups hitting a
+        # transient NoMatches must degrade quietly instead of crashing the
+        # app from a background timer callback.
         try:
             alert = self.query_one("#phone-call-alert")
+            if not self.incoming:
+                alert.display = False
+                alert.remove_class("ringing")
+                return
+            alert.display = True
+            state = self.incoming.get("state", "")
+            ringing = state in _RINGING_STATES
+            alert.set_class(ringing, "ringing")
+
+            self.query_one("#phone-call-title", Static).update(
+                Text("INCOMING CALL" if ringing else "ACTIVE CALL",
+                     style="bold #e8b339" if ringing else "bold #35c8f0"))
+
+            from_ext = self.incoming.get("from_extension", "—")
+            to_ext = self.incoming.get("to_extension", "—")
+            reason = self.incoming.get("reason", "")
+            sub_text = f"ext {from_ext} → {to_ext}"
+            if reason:
+                sub_text += f"  ·  {reason}"
+            self.query_one("#phone-call-sub", Static).update(sub_text)
+
+            self.query_one("#phone-call-accept", Button).display = ringing
+            self.query_one("#phone-call-reject", Button).display = ringing
+            self.query_one("#phone-call-end", Button).display = not ringing
+            self.query_one("#phone-call-transcript", Static).display = not ringing
         except Exception:
             return
-        if not self.incoming:
-            alert.display = False
-            alert.remove_class("ringing")
-            return
-        alert.display = True
-        state = self.incoming.get("state", "")
-        ringing = state in _RINGING_STATES
-        alert.set_class(ringing, "ringing")
-
-        self.query_one("#phone-call-title", Static).update(
-            Text("INCOMING CALL" if ringing else "ACTIVE CALL",
-                 style="bold #e8b339" if ringing else "bold #35c8f0"))
-
-        from_ext = self.incoming.get("from_extension", "—")
-        to_ext = self.incoming.get("to_extension", "—")
-        reason = self.incoming.get("reason", "")
-        sub_text = f"ext {from_ext} → {to_ext}"
-        if reason:
-            sub_text += f"  ·  {reason}"
-        self.query_one("#phone-call-sub", Static).update(sub_text)
-
-        self.query_one("#phone-call-accept", Button).display = ringing
-        self.query_one("#phone-call-reject", Button).display = ringing
-        self.query_one("#phone-call-end", Button).display = not ringing
-        self.query_one("#phone-call-transcript", Static).display = not ringing
 
     # -- incoming-call actions (phone.http POST /api/calls/:id/accept|reject) ---
     def on_button_pressed(self, event: Button.Pressed) -> None:

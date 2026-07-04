@@ -425,10 +425,29 @@ class JarvisTui(App):
     def on_tabbed_content_tab_activated(self, event) -> None:
         """Refresh a data tab when it becomes visible (throttled — mount
         already fetched, and tab-hopping shouldn't hammer the daemon)."""
+        pane_id = event.pane.id or ""
+        if not pane_id.startswith("tab-"):
+            # Bubbled up from a NESTED TabbedContent (e.g. PhonePane's own
+            # Devices/Dialer/Screening sub-tabs, id="phone-subtabs") rather
+            # than this top-level one — not an outer tab switch, ignore.
+            return
+        widget_id = pane_id.removeprefix("tab-")
         try:
-            widget_id = event.pane.id.removeprefix("tab-")
             pane = self.query_one(f"#{widget_id}")
             if hasattr(pane, "refresh_if_stale"):
                 pane.refresh_if_stale()
+        except Exception:
+            pass
+        # PhonePane's Dialer/Screening poll timers only need to run while
+        # the Phone tab is actually visible (see PhonePane.pause_timers/
+        # resume_timers) — this hook is the SAME "tab became active"
+        # signal already used above for refresh_if_stale, reused here
+        # rather than inventing a second mechanism.
+        try:
+            phone = self.query_one("#phone", PhonePane)
+            if widget_id == "phone":
+                phone.resume_timers()
+            else:
+                phone.pause_timers()
         except Exception:
             pass

@@ -742,6 +742,89 @@ async def test_phone_pane_phone_verbs_unknown_method_degrades_quietly(daemon):
         assert pane.query_one("#phone-call-alert").display is False
 
 
+async def test_phone_pane_banner_widget_missing_mid_flight_does_not_crash(daemon):
+    """A banner sub-widget removed mid-flight (e.g. a stale query racing
+    teardown) must not raise out of _render_banner/_update_incoming_banner —
+    both wrap their ENTIRE body in one try/except now (previously only the
+    FIRST query_one call in each was guarded), since these run off the same
+    recurring 3s set_interval timer (_poll_calls_and_banner) that keeps
+    firing in the background regardless of which tab is focused."""
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#phone")
+        daemon.active_calls = [
+            {"id": "callX", "state": "ringing", "from_extension": "555",
+             "to_extension": "100", "reason": "incoming"},
+        ]
+        # Break the banner: remove a widget deep inside _render_banner's
+        # unguarded-before-this-fix tail (title/sub/accept/reject/end/
+        # transcript lookups all come after the first query_one call).
+        pane.query_one("#phone-call-title").remove()
+        await pilot.pause(0.05)
+
+        # Must not raise even though a widget _render_banner needs is gone —
+        # this is exactly what the recurring timer callback does every 3s.
+        await pane._poll_calls_and_banner()
+        await pilot.pause(0.1)
+        assert pane.incoming.get("id") == "callX"
+
+        # A second poll (transcript load path through _update_incoming_banner,
+        # since the call is already "active"-equivalent via ringing state)
+        # must also stay quiet.
+        daemon.active_calls[0]["state"] = "active"
+        await pane._poll_calls_and_banner()
+        await pilot.pause(0.1)
+
+
+async def test_phone_pane_timers_pause_when_tab_inactive_and_resume_when_active(daemon):
+    """PhonePane's Dialer/Screening poll timers (every 3s/4s) must not keep
+    firing while some OTHER tab is active — app.py's
+    on_tabbed_content_tab_activated pauses them via PhonePane.pause_timers()
+    and resumes them via .resume_timers() using the SAME tab-activation hook
+    already used for refresh_if_stale."""
+    from textual.widgets import TabbedContent
+
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#phone")
+        await pilot.pause(0.2)
+        # "Home" is the initial active tab (see JarvisTui.compose), so Phone
+        # starts inactive — its timers should already be paused.
+        assert pane._calls_timer is not None and pane._screening_timer is not None
+        assert pane._calls_timer._active.is_set() is False
+        assert pane._screening_timer._active.is_set() is False
+
+        app.query_one(TabbedContent).active = "tab-phone"
+        await pilot.pause(0.1)
+        assert pane._calls_timer._active.is_set() is True
+        assert pane._screening_timer._active.is_set() is True
+
+        app.query_one(TabbedContent).active = "tab-chat"
+        await pilot.pause(0.1)
+        assert pane._calls_timer._active.is_set() is False
+        assert pane._screening_timer._active.is_set() is False
+
+
+async def test_phone_pane_on_unmount_stops_both_timers(daemon):
+    """Unmounting the Phone pane (e.g. a custom-page reconcile, or app
+    teardown) must stop both timers outright, not merely pause them —
+    otherwise a stale Timer object with a dead widget reference lingers."""
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#phone")
+        await pilot.pause(0.1)
+        assert pane._calls_timer is not None
+        assert pane._screening_timer is not None
+
+        await pane.remove()
+        await pilot.pause(0.1)
+        assert pane._calls_timer is None
+        assert pane._screening_timer is None
+
+
 async def test_computer_pane_starts_a_coworker_session(monkeypatch):
     from jarvis_cli.tui.app import JarvisTui
     app = JarvisTui()
