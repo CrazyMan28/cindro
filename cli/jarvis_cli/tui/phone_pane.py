@@ -45,6 +45,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, DataTable, Input, Static, TabbedContent, TabPane
 
 from jarvis_cli.control import ControlError
+from jarvis_cli.tui.degrade import call_degrading
 
 # Extensions are short numeric dial strings (mirrors PhoneDialerTab.qml's
 # `/^\d{1,6}$/.test(target)` — numeric-only means "dial this extension",
@@ -230,22 +231,24 @@ class PhonePane(Vertical):
         """Call a phone MCP tool via the daemon's phone.mcp proxy verb.
         Returns the {tool, data?, text?, error?} payload Bridge.cpp/QML
         expect — never raises: transport failures are folded into the same
-        `{"error": {...}}` shape callers already check for."""
-        try:
-            return await self.client.call(
-                "phone.mcp", {"name": name, "arguments": arguments or {}})
-        except (ControlError, ConnectionError, TimeoutError) as exc:
-            return {"tool": name, "error": {"code": "transport_error", "message": str(exc)}}
+        `{"error": {...}}` shape callers already check for (via the shared
+        call_degrading helper in tui/degrade.py — unlike chat.py/
+        settings_extras.py this doesn't special-case "unknown_method", every
+        failure folds into the same wrap_error() shape)."""
+        return await call_degrading(
+            self.client, "phone.mcp", {"name": name, "arguments": arguments or {}},
+            wrap_error=lambda exc: {
+                "tool": name, "error": {"code": "transport_error", "message": str(exc)}})
 
     async def _phone_http(self, method: str, path: str, body: dict | None = None) -> dict:
         """Call a phone REST route via the daemon's phone.http proxy verb
         (see the module docstring for why this is a control-channel call,
         not an httpx request). Never raises, same convention as _phone_mcp."""
-        try:
-            return await self.client.call(
-                "phone.http", {"method": method, "path": path, "body": body or {}})
-        except (ControlError, ConnectionError, TimeoutError) as exc:
-            return {"status": 0, "error": {"code": "transport_error", "message": str(exc)}}
+        return await call_degrading(
+            self.client, "phone.http",
+            {"method": method, "path": path, "body": body or {}},
+            wrap_error=lambda exc: {
+                "status": 0, "error": {"code": "transport_error", "message": str(exc)}})
 
     async def dial(self, target: str) -> None:
         """Numeric -> call_extension(from_extension="100", extension=target);

@@ -34,6 +34,7 @@ from jarvis_cli.control import ControlError
 from jarvis_cli.tui.activity_pane import ActivityPane
 from jarvis_cli.tui.arc_reactor import ArcReactorWidget
 from jarvis_cli.tui.command_palette import CommandPalette, PALETTE_TRANSITION_MS
+from jarvis_cli.tui.degrade import call_degrading
 from jarvis_cli.tui.diff_render import render_diff_event
 from jarvis_cli.tui.misc_panes import MemoryGraphPane, SchedulesPane
 from jarvis_cli.tui.quick_view import QuickViewScreen
@@ -615,16 +616,12 @@ class ChatPane(Vertical):
             if text:
                 params["message" if verb == "commit" else "title"] = text
         label = "PR" if verb == "open_pr" else verb
-        try:
-            res = await self.client.call(f"diff.{verb}", params)
-        except ControlError as exc:
-            if exc.code == "unknown_method":
-                self._log(Text(f"diff.{verb} is not available yet", style="yellow"))
-            else:
-                self._log(Text(f"{label} failed: {exc}", style="red"))
-            return
-        except (ConnectionError, TimeoutError) as exc:
-            self._log(Text(f"{label} failed: {exc}", style="red"))
+        res = await call_degrading(
+            self.client, f"diff.{verb}", params,
+            on_unknown_method=lambda exc: self._log(
+                Text(f"diff.{verb} is not available yet", style="yellow")),
+            on_error=lambda exc: self._log(Text(f"{label} failed: {exc}", style="red")))
+        if res is None:
             return
         ok = res.get("ok", True) if isinstance(res, dict) else True
         detail = ""

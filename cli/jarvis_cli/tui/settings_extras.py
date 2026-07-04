@@ -24,7 +24,7 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.widgets import DataTable, Input, Static
 
-from jarvis_cli.control import ControlError
+from jarvis_cli.tui.degrade import call_degrading
 from jarvis_cli.tui.phone_pane import _ascii_qr
 from jarvis_cli.tui.screens import TablePane
 
@@ -41,7 +41,8 @@ def _next_action(current: str) -> str:
 
 async def _call_degrading(pane, method: str, params: dict, status_id: str):
     """Call a daemon verb that might not be implemented yet, mirroring
-    ChatPane._diff_action's degrade-on-"unknown_method" precedent: on
+    ChatPane._diff_action's degrade-on-"unknown_method" precedent (both now
+    share the ONE call_degrading helper in tui/degrade.py): on
     "unknown_method" this writes a quiet muted line into the `status_id`
     Static (falling back to a non-error notify if that widget isn't mounted)
     instead of an error toast or a crash. Any OTHER failure still surfaces
@@ -52,24 +53,25 @@ async def _call_degrading(pane, method: str, params: dict, status_id: str):
         status = pane.query_one(f"#{status_id}", Static)
     except Exception:
         status = None
-    try:
-        res = await pane.client.call(method, params)
+
+    def _on_success(_res) -> None:
         if status is not None:
             status.update("")
-        return res
-    except ControlError as exc:
-        if exc.code == "unknown_method":
-            msg = f"{method} is not available yet"
-            if status is not None:
-                status.update(Text(msg, style="yellow"))
-            else:
-                pane.notify(msg, severity="warning")
+
+    def _on_unknown_method(exc: Exception) -> None:
+        msg = f"{method} is not available yet"
+        if status is not None:
+            status.update(Text(msg, style="yellow"))
         else:
-            pane.notify(str(exc), severity="error")
-        return None
-    except (ConnectionError, TimeoutError) as exc:
+            pane.notify(msg, severity="warning")
+
+    def _on_error(exc: Exception) -> None:
         pane.notify(str(exc), severity="error")
-        return None
+
+    return await call_degrading(
+        pane.client, method, params,
+        on_unknown_method=_on_unknown_method, on_error=_on_error,
+        on_success=_on_success)
 
 
 class ConnectorsPane(TablePane):
