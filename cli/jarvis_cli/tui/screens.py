@@ -8,6 +8,7 @@ queue item, cycle a setting).
 
 from __future__ import annotations
 
+import re
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
@@ -173,12 +174,21 @@ class SessionsPane(TablePane):
 
 
 class MemoryPane(TablePane):
-    HINT = "type to search · enter: search · x: forget · r: refresh"
+    HINT = ("type to search · enter: search · type below + enter: remember (#tags) · "
+            "x: forget · r: refresh")
     COLUMNS = ("memory", "tags", "id")
+
+    # Matches the GUI's exact tagging convention (MemoryPage.qml commitAdd():
+    # `raw.match(/#[\w-]+/g)`) — "#work #project" tokens are pulled out of the
+    # typed text and sent as a separate tags array; the remainder (whitespace
+    # collapsed) becomes the memory text.
+    _TAG_RE = re.compile(r"#[\w-]+")
 
     def compose(self) -> ComposeResult:
         yield Static(Text(self.HINT, style="bright_black"), classes="pane-hint")
         yield Input(placeholder="search memory…", id="memory-q")
+        yield Input(placeholder="Remember this…  (tag with #work #project)",
+                    id="memory-add")
         table = DataTable(cursor_type="row")
         table.add_columns(*self.COLUMNS)
         yield table
@@ -204,6 +214,21 @@ class MemoryPane(TablePane):
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "memory-q":
             self.refresh_data()
+        elif event.input.id == "memory-add":
+            raw = event.value.strip()
+            event.input.value = ""
+            if not raw:
+                return
+            tags = [tok[1:] for tok in self._TAG_RE.findall(raw)]
+            text = " ".join(self._TAG_RE.sub("", raw).split())
+            if not text:
+                return
+            try:
+                await self.client.call("memory.add", {"text": text, "tags": tags})
+                self.notify("remembered")
+            except (ControlError, ConnectionError, TimeoutError) as exc:
+                self.notify(str(exc), severity="error")
+            self.refresh_data()
 
     async def on_key(self, event) -> None:
         if event.key == "r":
@@ -219,7 +244,7 @@ class MemoryPane(TablePane):
 
 
 class SkillsPane(TablePane):
-    HINT = ("enter: run in Chat · p: pin/unpin · a: archive · "
+    HINT = ("enter: run in Chat · p: pin/unpin · a: archive/restore · x: remove · "
             "v: live/archived view · r: refresh")
     COLUMNS = ("skill", "group", "uses", "📌", "description")
 
@@ -268,31 +293,126 @@ class SkillsPane(TablePane):
             else:
                 self.notify("archiving happens via the stale sweep; "
                             "pin (p) protects a skill instead", timeout=5)
+        elif event.key == "x" and row:
+            # skills.remove is a hard delete (unlike 'a', which only
+            # restores from the archive) — wired in BOTH views, matching
+            # SkillsPage.qml's own "Remove" button (which lives on the LIVE
+            # row delegate, not the archived one — see report).
+            name = row.get("name", "")
+            try:
+                await self.client.call("skills.remove", {"name": name})
+                self.notify(f"removed {name}")
+            except ControlError as exc:
+                self.notify(str(exc), severity="error")
+            self.refresh_data()
         elif event.key == "enter" and row and not self.archived_view:
             await self.app.run_skill(row.get("name", ""))
             event.stop()
 
 
 class AgentsPane(TablePane):
-    HINT = "background agent sessions (agents.running) · r: refresh"
+    """Runtime rows (agents.running) by default, toggling to the saved agent
+    DEFINITIONS (agents.list) with 'v' — same live/archived convention as
+    SkillsPane's 'v' key.
+
+    Why the toggle exists: agents.running returns SessionRow-shaped rows
+    (agent/state/title, keyed by the *running session*) while agents.list
+    returns the saved AGENT.md definitions (name/description/brain, no
+    runtime state) — two different row shapes for two different questions
+    ("what's running" vs "what agents exist"). agents.remove(name) and
+    agents.dispatch(agent, task) both act on the DEFINITION by name, so
+    'x' (remove) only fires in the defs view where a selected row
+    unambiguously names one; dispatch is a free-typed Input (needs no
+    selection) and works from either view.
+    """
+
+    HINT = ("type 'agent :: task' + enter: dispatch · x: remove (defs view) · "
+            "v: running/defs view · r: refresh")
     COLUMNS = ("agent", "state", "task")
+    DEFS_COLUMNS = ("agent", "brain", "description")
+
+    def __init__(self, **kw) -> None:
+        super().__init__(**kw)
+        self.defs_view = False
+
+    def compose(self) -> ComposeResult:
+        yield Static(Text(self.HINT, style="bright_black"), classes="pane-hint")
+        yield Input(placeholder="dispatch a task: <agent name> :: <task>",
+                    id="agent-dispatch")
+        table = DataTable(cursor_type="row")
+        table.add_columns(*self.COLUMNS)
+        yield table
+
+    def _set_columns(self) -> None:
+        table = self.query_one(DataTable)
+        table.clear(columns=True)
+        table.add_columns(*(self.DEFS_COLUMNS if self.defs_view else self.COLUMNS))
 
     async def fetch(self) -> list[dict]:
         # agents.running returns SessionRow-shaped rows (+ live/running flags)
         # for agent-driven sessions — NOT agents.list, which is the saved
         # agent DEFINITIONS (name/description/brain) with no runtime state.
-        res = await self.client.call("agents.running", {})
+        # Both response shapes use the same top-level "agents" key.
+        method = "agents.list" if self.defs_view else "agents.running"
+        res = await self.client.call(method, {})
         return list(res.get("agents", []))
 
     def to_cells(self, r: dict) -> tuple:
+        if self.defs_view:
+            return (r.get("name", ""), r.get("brain", "") or "-",
+                    (r.get("description") or "")[:70])
         state = r.get("state", "")
         style = "yellow" if r.get("running") else             {"done": "green", "error": "red"}.get(state, "bright_black")
         return (r.get("agent", ""), Text(state, style=style),
                 (r.get("title") or r.get("goals") or "")[:80])
 
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Mirrors QueuePane's "title :: prompt" convention exactly, except
+        # agents.dispatch has no single-field shorthand (queue.add can fall
+        # back to using the title as the prompt; a dispatch with no task
+        # doesn't mean anything) — both sides of "::" are required here.
+        if event.input.id != "agent-dispatch":
+            return
+        raw = event.value.strip()
+        event.input.value = ""
+        if not raw:
+            return
+        name, _, task = raw.partition("::")
+        name = name.strip()
+        task = task.strip()
+        if not name or not task:
+            self.notify("usage: <agent name> :: <task>", severity="error")
+            return
+        try:
+            await self.client.call("agents.dispatch", {"agent": name, "task": task})
+            self.notify(f"dispatched: {name}")
+        except (ControlError, ConnectionError, TimeoutError) as exc:
+            self.notify(str(exc), severity="error")
+        self.refresh_data()
+
     async def on_key(self, event) -> None:
         if event.key == "r":
             self.refresh_data()
+        elif event.key == "v":
+            self.defs_view = not self.defs_view
+            self.notify("saved agent definitions" if self.defs_view
+                        else "running agent sessions")
+            self._set_columns()
+            self.refresh_data()
+        elif event.key == "x":
+            if not self.defs_view:
+                self.notify("switch to the definitions view (v) to remove an agent",
+                            timeout=4)
+                return
+            row = self.selected()
+            if row:
+                name = row.get("name", "")
+                try:
+                    await self.client.call("agents.remove", {"name": name})
+                    self.notify(f"removed {name}")
+                except ControlError as exc:
+                    self.notify(str(exc), severity="error")
+                self.refresh_data()
 
 
 class QueuePane(TablePane):

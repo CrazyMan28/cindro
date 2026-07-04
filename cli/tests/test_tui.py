@@ -192,6 +192,161 @@ async def test_settings_cycle_writes_patch(daemon):
         assert daemon.settings["agent_mode"] == "plan"
 
 
+async def test_memory_pane_remember_parses_hash_tags(monkeypatch):
+    """The "Remember" field (mirroring MemoryPage.qml's commitAdd()) must
+    pull #tag tokens out of the typed text and send the remainder as the
+    memory text plus a separate tags array via memory.add."""
+    from textual.widgets import Input
+
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.screens import MemoryPane
+
+    app = JarvisTui()
+    calls = []
+
+    async def fake_call(method, params=None, timeout=60.0):
+        calls.append((method, params))
+        if method in ("memory.list", "memory.search"):
+            return {"memories": []}
+        return {"ok": True}
+
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        pane = app.query_one("#memory", MemoryPane)
+        field = pane.query_one("#memory-add", Input)
+        field.value = "buy milk #errand #home"
+        await pane.on_input_submitted(Input.Submitted(field, field.value))
+        await pilot.pause(0.2)
+
+        adds = [(m, p) for (m, p) in calls if m == "memory.add"]
+        assert adds, "memory.add was called"
+        assert adds[0][1]["text"] == "buy milk"
+        assert adds[0][1]["tags"] == ["errand", "home"]
+        assert field.value == ""  # input cleared after submit
+
+
+async def test_skills_pane_remove_calls_skills_remove(monkeypatch):
+    """'x' removes the selected skill via skills.remove (a real DELETE,
+    distinct from 'a' which only restores an archived skill)."""
+    from textual.widgets import DataTable
+
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.screens import SkillsPane
+
+    app = JarvisTui()
+    calls = []
+
+    async def fake_call(method, params=None, timeout=60.0):
+        calls.append((method, params))
+        if method == "skills.list":
+            return {"skills": [{"name": "deploy", "group": "self",
+                                "description": "ship it", "use_count": 3,
+                                "pinned": False}]}
+        if method == "skills.list_archived":
+            return {"skills": []}
+        return {"ok": True}
+
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        pane = app.query_one("#skills", SkillsPane)
+        pane.refresh_data()
+        await pilot.pause(0.3)
+        assert pane.rows
+
+        table = pane.query_one(DataTable)
+        table.move_cursor(row=0)
+        await pane.on_key(type("K", (), {"key": "x",
+                                         "stop": lambda self=None: None})())
+        await pilot.pause(0.2)
+
+        removes = [(m, p) for (m, p) in calls if m == "skills.remove"]
+        assert removes and removes[0][1]["name"] == "deploy"
+
+
+async def test_agents_pane_dispatch_input_calls_agents_dispatch(monkeypatch):
+    """The 'agent :: task' Input (mirroring QueuePane's 'title :: prompt')
+    calls agents.dispatch with {agent, task}."""
+    from textual.widgets import Input
+
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.screens import AgentsPane
+
+    app = JarvisTui()
+    calls = []
+
+    async def fake_call(method, params=None, timeout=60.0):
+        calls.append((method, params))
+        if method in ("agents.running", "agents.list"):
+            return {"agents": []}
+        return {"ok": True}
+
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        pane = app.query_one("#agents", AgentsPane)
+        field = pane.query_one("#agent-dispatch", Input)
+        field.value = "researcher :: sort my downloads folder"
+        await pane.on_input_submitted(Input.Submitted(field, field.value))
+        await pilot.pause(0.2)
+
+        dispatches = [(m, p) for (m, p) in calls if m == "agents.dispatch"]
+        assert dispatches, "agents.dispatch was called"
+        assert dispatches[0][1]["agent"] == "researcher"
+        assert dispatches[0][1]["task"] == "sort my downloads folder"
+
+
+async def test_agents_pane_remove_only_fires_in_defs_view(monkeypatch):
+    """'x' is a no-op (with a hint) in the default agents.running view (rows
+    there are runtime sessions, not stable named definitions); 'v' toggles to
+    the agents.list defs view (mirrors SkillsPane's live/archived 'v' key),
+    where 'x' on the selected row calls agents.remove(name)."""
+    from textual.widgets import DataTable
+
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.screens import AgentsPane
+
+    app = JarvisTui()
+    calls = []
+
+    async def fake_call(method, params=None, timeout=60.0):
+        calls.append((method, params))
+        if method == "agents.running":
+            return {"agents": [{"agent": "researcher", "state": "running",
+                                "running": True, "title": "sort downloads"}]}
+        if method == "agents.list":
+            return {"agents": [{"name": "researcher", "description": "digs stuff up",
+                                "brain": "claude"}]}
+        return {"ok": True}
+
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+        pane = app.query_one("#agents", AgentsPane)
+        pane.refresh_data()
+        await pilot.pause(0.3)
+        assert pane.rows and not pane.defs_view
+
+        # 'x' in the running view must NOT call agents.remove.
+        table = pane.query_one(DataTable)
+        table.move_cursor(row=0)
+        await pane.on_key(type("K", (), {"key": "x",
+                                         "stop": lambda self=None: None})())
+        await pilot.pause(0.2)
+        assert not [c for c in calls if c[0] == "agents.remove"]
+
+        # 'v' toggles into the defs view.
+        await pane.on_key(type("K", (), {"key": "v",
+                                         "stop": lambda self=None: None})())
+        await pilot.pause(0.3)
+        assert pane.defs_view
+        assert pane.rows and pane.rows[0]["name"] == "researcher"
+
+        table.move_cursor(row=0)
+        await pane.on_key(type("K", (), {"key": "x",
+                                         "stop": lambda self=None: None})())
+        await pilot.pause(0.2)
+        removes = [(m, p) for (m, p) in calls if m == "agents.remove"]
+        assert removes and removes[0][1]["name"] == "researcher"
+
+
 async def test_canvas_pane_renders_a_widget_render_broadcast():
     """A widget.render broadcast event appends a rendered widget to the Canvas pane."""
     from jarvis_cli.tui.app import JarvisTui
