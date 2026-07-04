@@ -198,3 +198,34 @@ async def test_browser_pane_shows_status_after_navigate(monkeypatch):
         await pane.navigate("https://example.com")
         assert pane.url == "https://example.com"
         assert pane.title == "Example"
+
+
+async def test_activity_pane_lists_audit_entries(monkeypatch):
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#activity")
+        async def fake_call(method, params=None, timeout=60.0):
+            assert method == "audit.list"
+            return {"entries": [{"ts": "12:00", "tool": "shell", "ok": True,
+                                 "risk": "low", "summary": "ran ls"}]}
+        monkeypatch.setattr(app.client, "call", fake_call)
+        # TablePane.refresh_data is @work-decorated (screens.py) — it returns a
+        # Worker, not an awaitable, same as every other TablePane test in this
+        # file (e.g. test_sessions_tab_lists_rows): fire it and pump the pilot.
+        pane.refresh_data()
+        await pilot.pause(0.3)
+        assert pane.rows[0]["summary"] == "ran ls"
+
+
+async def test_replay_pane_loads_a_session_and_seeks():
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#replay")
+        pane.events = [{"seq": 0, "kind": "user", "text": "hi"},
+                      {"seq": 1, "kind": "assistant", "text": "hello"}]
+        pane.cursor = 0
+        assert pane.current_line() == "[user] hi"
+        pane.seek(1)
+        assert pane.current_line() == "[assistant] hello"

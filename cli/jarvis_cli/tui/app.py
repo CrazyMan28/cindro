@@ -19,6 +19,7 @@ from textual.widgets import Footer, Static, TabbedContent, TabPane
 
 from jarvis_cli import __version__, config
 from jarvis_cli.control import ControlClient
+from jarvis_cli.tui.activity_pane import ActivityPane, ReplayPane
 from jarvis_cli.tui.browser_pane import BrowserPane
 from jarvis_cli.tui.canvas_pane import CanvasPane, WidgetsPane
 from jarvis_cli.tui.chat import ChatPane
@@ -128,6 +129,10 @@ class JarvisTui(App):
                 yield ComputerPane(id="computer")
             with TabPane("Browser", id="tab-browser"):
                 yield BrowserPane(id="browser")
+            with TabPane("Activity", id="tab-activity"):
+                yield ActivityPane(id="activity")
+            with TabPane("Replay", id="tab-replay"):
+                yield ReplayPane(id="replay")
         yield Footer()
 
     async def on_mount(self) -> None:
