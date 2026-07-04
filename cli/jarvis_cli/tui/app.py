@@ -282,6 +282,17 @@ class JarvisTui(App):
                f"[bright_black]·[/bright_black] mode: [cyan]{self._agent_mode}[/cyan]")
         self.query_one("#topbar", Static).update(Text.from_markup(bar))
 
+    def refresh_mode_display(self, mode: str) -> None:
+        """Update the cached agent_mode + re-render the topbar so it shows a
+        CURRENT value — shared by F3's action_cycle_mode (below) and
+        SettingsPane's own enter-cycle (screens.py SettingsPane.on_key),
+        the two surfaces that both write agent_mode via settings.set. Before
+        this existed, only F3 (and the one-time startup load_daemon_line)
+        ever touched the topbar, so changing agent_mode from the Settings
+        tab left it silently stale until the next F3 press or restart."""
+        self._agent_mode = mode
+        self._set_topbar()
+
     @work(exclusive=True)
     async def load_daemon_line(self) -> None:
         try:
@@ -355,10 +366,24 @@ class JarvisTui(App):
             self._mount_custom_page(page)
 
     def _on_broadcast(self, event: str, data: dict) -> None:
-        # session.opened / phone.event / auth.event: Sessions is popup-only
-        # now (no persistent "#sessions" main-tab instance to proactively
-        # refresh) — each popup instance already fetches fresh data in its
-        # own on_mount(), so there's nothing to do here for session.opened.
+        # Sessions is popup-only now (no persistent "#sessions" main-tab
+        # instance to proactively refresh) — each fresh popup instance
+        # already fetches its own data in on_mount(), so session.opened only
+        # matters here if a Sessions QuickViewScreen popup happens to be
+        # open RIGHT NOW (another client just created a session, a
+        # scheduled task fired, …) — mirrors the old main-tab behavior of
+        # keeping the visible list live without polling. Nothing to do (and
+        # no error) if no such popup is currently open — there's nothing
+        # visible to refresh.
+        if event == "session.opened":
+            if isinstance(self.screen, QuickViewScreen):
+                from jarvis_cli.tui.screens import SessionsPane
+                try:
+                    sessions_pane = self.screen.query_one(SessionsPane)
+                except Exception:
+                    return
+                sessions_pane.refresh_data()
+            return
         if event == "tui.layout.changed":
             self.run_worker(self._reconcile_custom_pages(data.get("pages", [])))
 
@@ -415,13 +440,24 @@ class JarvisTui(App):
         the terminal analog of desktop/qml/VoiceMode.qml."""
         self.push_screen(VoiceModeScreen(self.client))
 
+    @work(exclusive=True)
     async def action_cycle_mode(self) -> None:
         """F3 — cycle agent_mode through AGENT_MODES (coworker -> plan ->
         build -> coworker -> …) and write it back via settings.set, mirroring
         SettingsPane's own KNOBS-cycling call shape exactly (screens.py
         SettingsPane.on_key) — this is a fast path to the SAME setting, not a
         parallel concept. The topbar is refreshed immediately so the new mode
-        is visible without needing to open Settings at all."""
+        is visible without needing to open Settings at all.
+
+        @work(exclusive=True) — the same guard load_daemon_line uses — closes
+        a race: without it, a second F3 press landing while the first's
+        settings.get -> compute-next -> settings.set round trip is still in
+        flight would read the SAME stale "current" mode before either
+        write-back lands, so both presses compute the identical "next" value
+        and one press's intended advance is silently swallowed. Exclusivity
+        cancels any still-in-flight cycle the moment a new one starts, so a
+        stale read can never race a fresh one into (re)writing the same
+        value."""
         try:
             res = await self.client.call("settings.get", {})
             settings = res.get("settings", res)
@@ -435,9 +471,8 @@ class JarvisTui(App):
         except Exception as exc:
             self.notify(str(exc), severity="error")
             return
-        self._agent_mode = nxt
+        self.refresh_mode_display(nxt)
         self.notify(f"agent_mode → {nxt}")
-        self._set_topbar()
 
     def action_refresh_tab(self) -> None:
         active = self.query_one(TabbedContent).active

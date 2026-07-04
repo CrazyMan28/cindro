@@ -35,11 +35,28 @@ async def _open_popup_pane(app, pilot, name: str, cls):
     """Run the "/<name>" slash command (one of chat.py's POPUP_COMMANDS) and
     return the fresh pane instance mounted inside the QuickViewScreen popup
     it pushes — the popup-only screens no longer have a stable "#<name>" main
-    tab to query directly."""
+    tab to query directly.
+
+    Waits for the pane's own on_mount-triggered initial fetch to actually
+    settle instead of a single fixed pilot.pause() — every pane reachable
+    this way (TablePane's @work(exclusive=True) refresh_data,
+    MemoryGraphPane's call_later(load_graph), …) shows the SAME shared
+    ".pane-spinner"-classed ArcReactorWidget while its fetch is in flight and
+    hides it again once done (see screens.py's spinner_guard), so polling
+    that back to hidden is a pane-agnostic way to know the fetch settled. A
+    flat sleep was either wasteful (most fetches resolve almost instantly)
+    or, worse, too short under a slower test runner — several dependent
+    tests assert spinner/row state that only holds once this initial fetch
+    has actually finished."""
     chat = app.query_one("#chat")
     await chat.run_slash_command(name, "")
-    await pilot.pause(0.2)
-    return app.screen.query_one(cls)
+    await pilot.pause(0.1)  # let the popup + pane mount, its worker start
+    pane = app.screen.query_one(cls)
+    for _ in range(40):  # poll up to ~2s total before giving up
+        if not any(s.display for s in pane.query(".pane-spinner")):
+            break
+        await pilot.pause(0.05)
+    return pane
 
 
 @pytest.mark.asyncio
@@ -452,6 +469,36 @@ async def test_settings_cycle_writes_patch(daemon):
         patches = [(m, p) for (m, p) in daemon.calls if m == "settings.set"]
         assert patches and "agent_mode" in patches[-1][1].get("patch", {})
         assert daemon.settings["agent_mode"] == "plan"
+
+
+@pytest.mark.asyncio
+async def test_settings_cycle_agent_mode_also_refreshes_topbar(daemon):
+    """Regression: cycling agent_mode via SettingsPane's enter-key wrote
+    settings.set correctly but never touched the topbar -- only F3's
+    action_cycle_mode and the one-time startup load_daemon_line ever did.
+    Changing agent_mode from the Settings tab must update the topbar's
+    "mode: ..." display too, without needing to press F3 afterward."""
+    app = JarvisTui()
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.5)
+        topbar = app.query_one("#topbar")
+        assert "coworker" in str(topbar.content)
+
+        pane = app.query_one("#settings", SettingsPane)
+        pane.refresh_data()
+        await pilot.pause(0.5)
+        assert pane.rows, "settings knobs loaded"
+        row = pane.rows[0]  # agent_mode: coworker -> plan
+        assert row["key"] == "agent_mode"
+        await pane.on_key(type("K", (), {"key": "enter",
+                                         "stop": lambda self=None: None})())
+        await pilot.pause(0.4)
+
+        assert daemon.settings["agent_mode"] == "plan"
+        assert "plan" in str(topbar.content), (
+            "topbar must reflect the new agent_mode without a separate F3 press"
+        )
+        assert app._agent_mode == "plan"
 
 
 async def test_memory_pane_remember_parses_hash_tags(monkeypatch):
@@ -1590,6 +1637,73 @@ async def test_f3_cycles_agent_mode_through_all_three_values_and_back(daemon):
         assert "coworker" in str(topbar.content)
 
 
+async def test_action_cycle_mode_has_exclusivity_guard_against_races(monkeypatch):
+    """Regression: action_cycle_mode had NO exclusivity guard, unlike
+    load_daemon_line's @work(exclusive=True) -- two overlapping calls could
+    both read the SAME current agent_mode via settings.get before either
+    write-back landed, each compute the identical "next" value from that
+    stale read, and each fire its OWN settings.set with it: a real F3
+    press's effect got silently duplicated onto the wire (and, in general,
+    a genuinely-stale read racing a fresh one is exactly the kind of bug
+    that can corrupt which value "wins").
+
+    With @work(exclusive=True) added (mirroring load_daemon_line's own
+    decorator exactly), firing a second overlapping cycle CANCELS the first
+    before it can act on its now-stale read -- so an overlapping pair
+    always resolves to exactly ONE clean settings.set (never two racing,
+    duplicate ones), and the mode ends up exactly one valid step from
+    wherever it actually started: never stuck back at the starting value
+    (a fully swallowed press) and never skipped past the correct next
+    value (a corrupted/double-advanced one)."""
+    import asyncio
+
+    from jarvis_cli.tui.app import JarvisTui
+
+    app = JarvisTui()
+    state = {"agent_mode": "coworker"}
+    set_calls: list = []
+    get_calls = 0
+    gate = asyncio.Event()
+
+    async def fake_call(method, params=None, timeout=60.0):
+        nonlocal get_calls
+        if method == "settings.get":
+            get_calls += 1
+            call_no = get_calls
+            # The daemon "processes" the read instantly on receipt -- this
+            # snapshot reflects state as of right now -- but only the
+            # FIRST call's reply is slow to actually arrive back, modelling
+            # the real network round trip a second F3 press can land inside.
+            snapshot = dict(state)
+            if call_no == 1:
+                await gate.wait()
+            return {"settings": snapshot}
+        if method == "settings.set":
+            patch = params.get("patch") or {}
+            set_calls.append(patch.get("agent_mode"))
+            state.update(patch)
+            return {"ok": True}
+        return {}
+
+    async with app.run_test() as pilot:
+        monkeypatch.setattr(app.client, "call", fake_call)
+
+        app.action_cycle_mode()  # worker #1: stuck awaiting its slow settings.get reply
+        await pilot.pause(0.05)  # let it actually start (registers as call #1)
+        app.action_cycle_mode()  # worker #2: exclusive -> cancels #1 before it can write
+        gate.set()               # release #1's reply -- moot, #1 is already cancelled
+        await pilot.pause(0.3)
+
+        # Exactly ONE settings.set landed -- the stale, overlapping attempt
+        # never got to write its (by-then outdated) computed value.
+        assert set_calls == ["plan"], (
+            f"expected exactly one clean write (the racing duplicate must "
+            f"be cancelled before it can write), got {set_calls}"
+        )
+        assert state["agent_mode"] == "plan"  # advanced, not stuck at "coworker"
+        assert app._agent_mode == "plan"      # topbar's cached mode kept in sync too
+
+
 async def test_sessions_pane_spinner_shows_during_fetch_and_hides_after(monkeypatch):
     """TablePane's shared spinner (added in screens.py) must appear the
     moment refresh_data() starts awaiting fetch() and disappear once it
@@ -1851,6 +1965,45 @@ async def test_open_chat_dismisses_quick_view_popup(daemon):
 
         assert not isinstance(app.screen, QuickViewScreen)
         assert app.query_one(TabbedContent).active == "tab-chat"
+
+
+async def test_session_opened_broadcast_refreshes_open_sessions_popup(daemon):
+    """Regression: _on_broadcast dropped ALL session.opened handling once
+    Sessions became popup-only, on the theory that each fresh popup
+    instance already fetches its own data in on_mount() so there was
+    "nothing to do". But if a Sessions QuickViewScreen popup is CURRENTLY
+    open when a session.opened broadcast arrives (another client created a
+    session, a scheduled task fired, …), the open popup must refresh live —
+    matching the old main-tab behavior — rather than sitting there stale
+    until the user closes and reopens it."""
+    from jarvis_cli.tui.app import JarvisTui
+    from jarvis_cli.tui.screens import SessionsPane
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = await _open_popup_pane(app, pilot, "sessions", SessionsPane)
+
+        refreshed = []
+        pane.refresh_data = lambda: refreshed.append(True)
+
+        app._on_broadcast("session.opened", {"session_id": "s2", "title": "new"})
+        await pilot.pause(0.1)
+
+        assert refreshed == [True]
+
+
+async def test_session_opened_broadcast_is_noop_with_no_popup_open(daemon):
+    """Companion to the above: when NO Sessions popup is open (the common
+    case — most broadcasts land while the user is just in Chat), the same
+    session.opened broadcast must be silently ignored rather than raising
+    (there is nothing visible to refresh)."""
+    from jarvis_cli.tui.app import JarvisTui
+
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.2)
+        app._on_broadcast("session.opened", {"session_id": "s2", "title": "new"})
+        await pilot.pause(0.1)  # must not raise
 
 
 async def test_spinner_guard_shows_resumes_hides_and_pauses_on_success():
