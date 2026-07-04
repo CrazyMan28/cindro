@@ -19,6 +19,7 @@ from textual.widgets import Footer, Static, TabbedContent, TabPane
 
 from jarvis_cli import __version__, config
 from jarvis_cli.control import ControlClient
+from jarvis_cli.tui.canvas_pane import CanvasPane, WidgetsPane
 from jarvis_cli.tui.chat import ChatPane
 from jarvis_cli.tui.screens import (AgentsPane, MemoryPane, QueuePane,
                                     SessionsPane, SettingsPane, SkillsPane)
@@ -114,6 +115,10 @@ class JarvisTui(App):
                 yield QueuePane(id="queue")
             with TabPane("Settings", id="tab-settings"):
                 yield SettingsPane(id="settings")
+            with TabPane("Canvas", id="tab-canvas"):
+                yield CanvasPane(id="canvas")
+            with TabPane("Widgets", id="tab-widgets"):
+                yield WidgetsPane(id="widgets")
         yield Footer()
 
     async def on_mount(self) -> None:

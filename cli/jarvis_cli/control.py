@@ -50,6 +50,7 @@ class ControlClient:
         self._url_factory = url_factory
         self._max_backoff = max_backoff
         self.on_broadcast = on_broadcast
+        self.on_broadcast_extra: Optional[Callable[[str, dict], None]] = None
 
         self._ws: Optional[Any] = None
         self._next_id = 0
@@ -154,6 +155,11 @@ class ControlClient:
                     self.on_broadcast(event, msg.get("data") or {})
                 except Exception:
                     log.exception("broadcast handler failed for %s", event)
+            if self.on_broadcast_extra is not None:
+                try:
+                    self.on_broadcast_extra(event, msg.get("data") or {})
+                except Exception:
+                    log.exception("broadcast_extra handler failed for %s", event)
             return
 
         mid = msg.get("id")

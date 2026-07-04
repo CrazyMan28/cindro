@@ -91,3 +91,37 @@ async def test_settings_cycle_writes_patch(daemon):
         patches = [(m, p) for (m, p) in daemon.calls if m == "settings.set"]
         assert patches and "agent_mode" in patches[-1][1].get("patch", {})
         assert daemon.settings["agent_mode"] == "plan"
+
+
+async def test_canvas_pane_renders_a_widget_render_broadcast():
+    """A widget.render broadcast event appends a rendered widget to the Canvas pane."""
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        canvas = app.query_one("#canvas")
+        canvas._on_widget_event("widget.render", {
+            "id": "w1", "title": "Test Widget",
+            "spec": {"type": "text", "text": "hello from canvas"},
+        })
+        await pilot.pause()
+        assert any("Test Widget" in str(item.content) for item in canvas.items.values())
+
+
+async def test_widgets_pane_lists_saved_widgets(tmp_path, monkeypatch):
+    """WidgetsPane reads the saved-widget library from the data dir."""
+    import json
+    from jarvis_cli import config
+    monkeypatch.setenv("JARVIS_DATA_DIR", str(tmp_path))
+    (tmp_path / "saved_widgets.json").write_text(json.dumps({
+        "widgets": [{"id": "w1", "name": "My Widget",
+                    "spec": json.dumps({"type": "text", "text": "hi"})}]
+    }))
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        pane = app.query_one("#widgets")
+        pane.refresh_saved()
+        await pilot.pause()
+        assert any(w["name"] == "My Widget" for w in pane.saved)
