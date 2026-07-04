@@ -37,6 +37,7 @@
 #include "jarvis/VoiceService.h"
 #include "jarvis/VoiceLibrary.h"
 #include "jarvis/WidgetLeaseRegistry.h"
+#include "jarvis/TuiLayoutStore.h"
 
 #include <QHash>
 #include <QObject>
@@ -429,6 +430,13 @@ private:
     Response handleScheduleList(const Request &req);
     Response handleScheduleSetEnabled(const Request &req);
     Response handleScheduleRemove(const Request &req);
+    // TUI self-edit layout — tui.layout.list/add/edit/remove/reorder.
+    Response handleTuiLayoutList(const Request &req);
+    Response handleTuiLayoutAdd(const Request &req);
+    Response handleTuiLayoutEdit(const Request &req);
+    Response handleTuiLayoutRemove(const Request &req);
+    Response handleTuiLayoutReorder(const Request &req);
+    void broadcastTuiLayoutChanged();
     // Wave 8: SSH allow-list + gated exec.
     Response handleSshAllowList(const Request &req);
     Response handleSshAllowAdd(const Request &req);
@@ -523,6 +531,8 @@ private:
     // Live-widget viewer leases (who is watching which live widget) — gates the
     // engine's live-widget supervisor so an unwatched widget stops doing work.
     WidgetLeaseRegistry m_widgetLeases;
+    // TUI custom-page layout (Jarvis self-edits terminal pages via tui.layout.*).
+    jarvis::TuiLayoutStore m_tuiLayoutStore;
     std::unique_ptr<McpRegistry> m_mcp;
     std::unique_ptr<PluginRegistry> m_plugins;
     // Wave 7: sandboxed launcher for kind=mcp/both stdio plugins (systemd-run

@@ -5790,6 +5790,7 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
 bool ControlServer::isOpsMethod(const QString &method)
 {
     return method.startsWith(QStringLiteral("schedule.")) ||
+           method.startsWith(QStringLiteral("tui.layout.")) ||
            method.startsWith(QStringLiteral("ssh.")) ||
            method == QStringLiteral("audit.list");
 }
@@ -5958,6 +5959,11 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("schedule.list"))        return handleScheduleList(req);
     if (m == QStringLiteral("schedule.set_enabled")) return handleScheduleSetEnabled(req);
     if (m == QStringLiteral("schedule.remove"))      return handleScheduleRemove(req);
+    if (m == QStringLiteral("tui.layout.list"))    return handleTuiLayoutList(req);
+    if (m == QStringLiteral("tui.layout.add"))     return handleTuiLayoutAdd(req);
+    if (m == QStringLiteral("tui.layout.edit"))    return handleTuiLayoutEdit(req);
+    if (m == QStringLiteral("tui.layout.remove"))  return handleTuiLayoutRemove(req);
+    if (m == QStringLiteral("tui.layout.reorder")) return handleTuiLayoutReorder(req);
     if (m == QStringLiteral("ssh.allow_list"))       return handleSshAllowList(req);
     if (m == QStringLiteral("ssh.allow_add"))        return handleSshAllowAdd(req);
     if (m == QStringLiteral("ssh.allow_remove"))     return handleSshAllowRemove(req);
@@ -6065,6 +6071,93 @@ Response ControlServer::handleScheduleRemove(const Request &req)
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
+}
+
+// --- TUI self-edit layout: tui.layout.* -------------------------------------
+
+static QJsonArray tuiPagesToJson(const QVector<jarvis::TuiPageSpec> &pages)
+{
+    QJsonArray arr;
+    for (const auto &p : pages) {
+        QJsonObject o;
+        o.insert(QStringLiteral("id"), p.id);
+        o.insert(QStringLiteral("title"), p.title);
+        o.insert(QStringLiteral("kind"), p.kind);
+        o.insert(QStringLiteral("config"), p.config);
+        o.insert(QStringLiteral("order"), p.order);
+        arr.append(o);
+    }
+    return arr;
+}
+
+Response ControlServer::handleTuiLayoutList(const Request &req)
+{
+    QJsonObject result;
+    result.insert(QStringLiteral("pages"), tuiPagesToJson(m_tuiLayoutStore.list()));
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleTuiLayoutAdd(const Request &req)
+{
+    jarvis::TuiPageSpec spec;
+    spec.id = req.params.value(QStringLiteral("id")).toString();
+    spec.title = req.params.value(QStringLiteral("title")).toString();
+    spec.kind = req.params.value(QStringLiteral("kind")).toString();
+    spec.config = req.params.value(QStringLiteral("config")).toObject();
+    QString err;
+    if (!m_tuiLayoutStore.addPage(spec, &err))
+        return Response::failure(req.id, QStringLiteral("invalid_page"), err);
+    broadcastTuiLayoutChanged();
+    return Response::success(req.id, {{QStringLiteral("ok"), true}});
+}
+
+Response ControlServer::handleTuiLayoutEdit(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const QJsonObject config = req.params.value(QStringLiteral("config")).toObject();
+    QString err;
+    if (!m_tuiLayoutStore.editPage(id, config, &err))
+        return Response::failure(req.id, QStringLiteral("not_found"), err);
+    broadcastTuiLayoutChanged();
+    return Response::success(req.id, {{QStringLiteral("ok"), true}});
+}
+
+Response ControlServer::handleTuiLayoutRemove(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    QString err;
+    if (!m_tuiLayoutStore.removePage(id, &err))
+        return Response::failure(req.id, QStringLiteral("not_found"), err);
+    broadcastTuiLayoutChanged();
+    return Response::success(req.id, {{QStringLiteral("ok"), true}});
+}
+
+Response ControlServer::handleTuiLayoutReorder(const Request &req)
+{
+    QStringList order;
+    for (const auto &v : req.params.value(QStringLiteral("order")).toArray())
+        order << v.toString();
+    QString err;
+    if (!m_tuiLayoutStore.reorder(order, &err))
+        return Response::failure(req.id, QStringLiteral("invalid_order"), err);
+    broadcastTuiLayoutChanged();
+    return Response::success(req.id, {{QStringLiteral("ok"), true}});
+}
+
+void ControlServer::broadcastTuiLayoutChanged()
+{
+    // Same shape as broadcastSessionOpened (ControlServer.cpp:4285) — a
+    // global, non-session-scoped event every connected client hears.
+    QJsonObject data;
+    data.insert(QStringLiteral("pages"), tuiPagesToJson(m_tuiLayoutStore.list()));
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), 1);
+    frame.insert(QStringLiteral("event"), QStringLiteral("tui.layout.changed"));
+    frame.insert(QStringLiteral("data"), data);
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+    for (QWebSocket *client : std::as_const(m_clients))
+        client->sendTextMessage(payload);
 }
 
 Response ControlServer::handleSshAllowList(const Request &req)
