@@ -44,10 +44,15 @@ class PhonePane(Vertical):
         yield Static("", id="phone-qr")
 
     def on_mount(self) -> None:
-        self.refresh_data()
+        # refresh_data is a plain async method (no @work decorator, unlike
+        # TablePane's), so calling it bare would only create a coroutine
+        # object and drop it unawaited (RuntimeWarning, no actual fetch) —
+        # call_later is how MemoryGraphPane/HomePane schedule the same shape
+        # of method from a sync callback.
+        self.call_later(self.refresh_data)
 
     def refresh_if_stale(self) -> None:
-        self.refresh_data()
+        self.call_later(self.refresh_data)
 
     async def refresh_data(self) -> None:
         try:
