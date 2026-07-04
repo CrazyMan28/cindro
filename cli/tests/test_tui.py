@@ -170,6 +170,34 @@ async def test_computer_pane_logs_approval_events():
         assert any("open Spotify" in line for line in pane.log_lines)
 
 
+async def test_computer_pane_pump_delivers_approval_event(daemon):
+    """End-to-end: start_coworker subscribes, the daemon pushes a real
+    session.event approval frame over the wire (no session.send involved —
+    a co-work session's approvals arrive unprompted), and the pane's OWN
+    pump loop must drain the client's queue and route it into
+    _on_session_event. A previous version of this test called
+    _on_session_event() directly, which passed even when nothing was
+    actually pumping events off the queue — this one exercises the real
+    subscribe -> daemon.emit -> client queue -> pump -> handler path."""
+    from jarvis_cli.tui.app import JarvisTui
+    app = JarvisTui()
+    async with app.run_test() as pilot:
+        pane = app.query_one("#computer")
+        await pane.start_coworker("agent")
+        await pilot.pause(0.1)
+        assert pane.session_id == daemon.created_sid
+        assert daemon.ws is not None
+
+        await daemon.emit(daemon.ws, pane.session_id, {
+            "kind": "approval", "risk": "medium", "approval_id": "ap-1",
+            "summary": "open Spotify",
+        })
+        await pilot.pause(0.8)
+
+        assert pane._last_approval_id == "ap-1"
+        assert any("open Spotify" in line for line in pane.log_lines)
+
+
 async def test_browser_pane_shows_status_after_navigate(monkeypatch):
     from jarvis_cli.tui.app import JarvisTui
     from jarvis_cli.tui import browser_pane

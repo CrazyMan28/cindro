@@ -30,7 +30,11 @@ from jarvis_cli.tui.command_palette import CommandPalette
 BUILTIN_COMMANDS = [
     ("new", "start a fresh chat"), ("stop", "cancel the current turn"),
     ("goal", "set the session goal"), ("y", "approve the pending action"),
-    ("n", "deny the pending action"), ("canvas", "open the Canvas tab"),
+    ("n", "deny the pending action"), ("chat", "open the Chat tab"),
+    ("sessions", "open the Sessions tab"), ("memory", "open the Memory tab"),
+    ("skills", "open the Skills tab"), ("agents", "open the Agents tab"),
+    ("queue", "open the Queue tab"), ("settings", "open the Settings tab"),
+    ("canvas", "open the Canvas tab"),
     ("widgets", "open the Widgets tab"), ("phone", "open the Phone tab"),
     ("computer", "open the Computer tab"), ("browser", "open the Browser tab"),
     ("activity", "open the Activity tab"), ("replay", "open the Replay tab"),
@@ -40,8 +44,11 @@ BUILTIN_COMMANDS = [
     ("tui", "ask Jarvis to add/edit/remove a TUI page"),
 ]
 
+# "tui" is an ACTION command (asks Jarvis to edit the TUI layout), not a tab
+# to jump to — there is no "tab-tui" TabPane in app.py, so it must be
+# excluded here alongside the other non-tab-jump builtins.
 TAB_JUMP_COMMANDS = {name for name, _ in BUILTIN_COMMANDS
-                    if name not in ("new", "stop", "goal", "y", "n")}
+                    if name not in ("new", "stop", "goal", "y", "n", "tui")}
 
 
 class BrainEvent(Message):
@@ -187,6 +194,9 @@ class ChatPane(Vertical):
             await self._stop_turn()
         elif name == "goal":
             await self._set_goal(args)
+        elif name == "tui":
+            await self._send(f"Please help me with the TUI page layout: {args}"
+                             if args else "Please help me with the TUI page layout.")
         elif name in TAB_JUMP_COMMANDS:
             from textual.widgets import TabbedContent
             self.app.query_one(TabbedContent).active = f"tab-{name}"
