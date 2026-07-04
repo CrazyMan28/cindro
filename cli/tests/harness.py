@@ -9,8 +9,11 @@ required (though it is installed in the cli venv).
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import threading
+import wave
 from typing import Any, Awaitable, Callable, Optional
 
 import websockets
@@ -18,6 +21,20 @@ import websockets
 
 def run(coro: Awaitable) -> Any:
     return asyncio.run(coro)
+
+
+def _silent_wav_b64(seconds: float = 0.1, samplerate: int = 16000) -> str:
+    """A tiny valid (silent) WAV blob, base64-encoded — stands in for
+    voice.tts's audio_b64 reply so tests can round-trip it through
+    voice_mode.wav_to_pcm exactly like a real Voxtral response."""
+    n_frames = int(seconds * samplerate)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(samplerate)
+        w.writeframes(b"\x00\x00" * n_frames)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 class MockDaemon:
@@ -41,7 +58,27 @@ class MockDaemon:
             "self_improve": "off", "auto_continue": "off",
             "auto_update": True, "auto_update_apply": False,
             "has_desktop_pin": False,
+            # First-run onboarding (SetupWizardScreen) defaults to ALREADY
+            # onboarded — same precedent as `paired = False` below for
+            # LockGate — so the broad test suite (which isn't testing
+            # onboarding) never sees an unexpected wizard overlay. Tests that
+            # DO want to exercise the wizard flip this False explicitly
+            # (see test_setup_wizard.py).
+            "setup_complete": True,
+            "assistant_name": "Jarvis", "user_name": "",
+            "tts_voice": "", "permission_level": "medium",
+            "api_keys_set": {"mistral": False},
         }
+        self.voices: list = [
+            {"id": "en_paul_neutral", "label": "Paul — neutral (EN)", "custom": False},
+            {"id": "en_emma_neutral", "label": "Emma — neutral (EN)", "custom": False},
+        ]
+        # voice.stt/voice.tts canned replies (see handleVoiceStt/handleVoiceTts
+        # in daemon/src/ControlServer.cpp) — tests override these directly.
+        self.stt_text = "hello jarvis"
+        self.tts_audio_b64 = _silent_wav_b64()
+        self.tts_mime = "audio/wav"
+        self.voice_calls: list[tuple[str, dict]] = []
         self.models_by_brain: dict = {
             "codex": ["gpt-5.5", "gpt-5.5-mini"],
             "claude": ["claude-sonnet-5", "claude-haiku-4-5"],
@@ -170,6 +207,16 @@ class MockDaemon:
                 if it["id"] == params.get("id"):
                     it["status"] = "cancelled"
             return {"ok": True}
+        if method == "voice.stt":
+            self.voice_calls.append((method, params))
+            return {"text": self.stt_text}
+        if method == "voice.tts":
+            self.voice_calls.append((method, params))
+            return {"audio_b64": self.tts_audio_b64, "mime": self.tts_mime}
+        if method == "voice.list_voices":
+            self.voice_calls.append((method, params))
+            return {"voices": list(self.voices),
+                    "default": self.settings.get("tts_voice", "")}
         if method == "phone.event.subscribe":
             return {"subscribed": True, "bridge_connected": False}
         if method == "auth.request":

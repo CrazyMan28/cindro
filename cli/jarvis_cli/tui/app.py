@@ -32,7 +32,9 @@ from jarvis_cli.tui.phone_pane import PhonePane
 from jarvis_cli.tui.quick_view import QuickViewScreen
 from jarvis_cli.tui.screens import (AgentsPane, MemoryPane, QueuePane,
                                     SessionsPane, SettingsPane, SkillsPane)
+from jarvis_cli.tui.setup_wizard import SetupWizardScreen
 from jarvis_cli.tui.system_panes import McpPane, PluginsPane, SshPane
+from jarvis_cli.tui.voice_mode import VoiceModeScreen
 
 
 class JarvisTui(App):
@@ -131,6 +133,7 @@ class JarvisTui(App):
         Binding("ctrl+c", "quit_confirm", "Quit", show=False),
         Binding("ctrl+n", "new_chat", "New chat"),
         Binding("f5", "refresh_tab", "Refresh"),
+        Binding("f2", "voice_mode", "Voice"),
     ]
 
     def __init__(self, **kw) -> None:
@@ -205,10 +208,22 @@ class JarvisTui(App):
         self._set_topbar()
         self.load_daemon_line()
         self.run_worker(self.load_custom_pages())
-        self.run_worker(self._check_lock_gate())
+        self.run_worker(self._startup_gates())
 
     async def on_unmount(self) -> None:
         await self.client.close()
+
+    # -- startup overlays: LockGate then (only once resolved) SetupWizard -------
+    async def _startup_gates(self) -> None:
+        """Sequenced startup gates, run as ONE worker so the ordering is a
+        real guarantee, not a race between two independently-scheduled
+        workers: the 2FA/fingerprint LockGate (if a phone is paired) fully
+        resolves FIRST (``_check_lock_gate`` blocks on it via
+        ``push_screen_wait``), and only THEN is first-run onboarding even
+        considered. A locked device must never flash the setup wizard before
+        (or underneath) the lock screen."""
+        await self._check_lock_gate()
+        await self._check_first_run()
 
     # -- 2FA / fingerprint cross-device unlock (LockGate) -----------------------
     async def _check_lock_gate(self) -> None:
@@ -219,7 +234,12 @@ class JarvisTui(App):
         phone paired, or an already-approved state. Only when there's a REAL
         pending challenge to wait on does LockGateScreen get pushed — so a
         user with no paired device (or a daemon that isn't up yet) is never
-        locked out, and this never delays/blocks startup otherwise."""
+        locked out, and this never delays/blocks startup otherwise.
+
+        Uses ``push_screen_wait`` (not a bare ``push_screen``) so this
+        genuinely blocks until the gate dismisses — required for
+        ``_startup_gates`` above to sequence the SetupWizard strictly after
+        it, not just after the gate is merely mounted."""
         try:
             result = await self.client.call(
                 "auth.request", {"origin": "desktop"}, timeout=15)
@@ -227,8 +247,28 @@ class JarvisTui(App):
             return
         if not result.get("paired") or result.get("state") == "approved":
             return
-        await self.push_screen(
+        await self.push_screen_wait(
             LockGateScreen(self.client, result.get("challenge_id", "")))
+
+    # -- first-run onboarding (SetupWizard) --------------------------------------
+    async def _check_first_run(self) -> None:
+        """Mirrors Main.qml showing SetupWizard.qml whenever settings.get's
+        ``setup_complete`` is falsy — the EXACT SAME flag the desktop uses
+        (SettingsStore::setupComplete(), round-tripped through
+        handleSettingsGet/handleSettingsSet), not a separate TUI-only marker.
+        That's deliberate: finishing the wizard from either front-end
+        persists on the one shared daemon, so the two can never desync.
+        Fails open (no daemon reachable => no wizard) just like the lock
+        gate above, for the same reason: never block startup on a daemon
+        that isn't up yet."""
+        try:
+            result = await self.client.call("settings.get", {}, timeout=15)
+        except Exception:
+            return
+        settings = result.get("settings", result)
+        if settings.get("setup_complete"):
+            return
+        await self.push_screen_wait(SetupWizardScreen(self.client))
 
     # -- header ----------------------------------------------------------------
     def _set_topbar(self) -> None:
@@ -366,6 +406,11 @@ class JarvisTui(App):
     def action_new_chat(self) -> None:
         self.query_one("#chat", ChatPane).new_session()
         self.query_one(TabbedContent).active = "tab-chat"
+
+    def action_voice_mode(self) -> None:
+        """F2 — push the full-screen push-to-talk voice UI (VoiceModeScreen),
+        the terminal analog of desktop/qml/VoiceMode.qml."""
+        self.push_screen(VoiceModeScreen(self.client))
 
     def action_refresh_tab(self) -> None:
         active = self.query_one(TabbedContent).active
