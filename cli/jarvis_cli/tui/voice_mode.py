@@ -56,6 +56,7 @@ from textual.widgets import Static
 from jarvis_cli.control import ControlClient, ControlError
 from jarvis_cli.tui.arc_reactor import ArcReactorWidget
 from jarvis_cli.tui.chat import PickerWidget
+from jarvis_cli.tui.modal_base import modal_box_css, modal_screen_css
 from jarvis_cli.tui.quick_view import QuickViewScreen
 
 # A curated slice of VoiceMode.qml's WORK_PHRASES-style "thinking" phrases —
@@ -222,15 +223,10 @@ class VoiceModeScreen(ModalScreen[None]):
         Binding("v", "pick_voice", "Voice"),
     ]
 
-    DEFAULT_CSS = """
-    VoiceModeScreen {
-        align: center middle;
-        background: #06090d;
-    }
+    DEFAULT_CSS = modal_screen_css("VoiceModeScreen") + modal_box_css(
+        "VoiceModeScreen", "voice-box") + """
     VoiceModeScreen > #voice-box {
         width: 70;
-        height: auto;
-        padding: 1 2;
     }
     VoiceModeScreen #voice-reactor {
         margin: 0 0 1 0;

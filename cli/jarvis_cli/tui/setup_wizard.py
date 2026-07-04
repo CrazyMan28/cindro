@@ -33,6 +33,7 @@ from textual.widgets import Button, Input, ListItem, ListView, Static, Switch
 
 from jarvis_cli.control import ControlClient
 from jarvis_cli.tui.arc_reactor import ArcReactorWidget
+from jarvis_cli.tui.modal_base import modal_box_css, modal_screen_css
 
 STEP_TITLES = ["Welcome", "Voice", "Brain", "Permissions"]
 STEP_COUNT = len(STEP_TITLES)
@@ -49,16 +50,11 @@ class SetupWizardScreen(ModalScreen[None]):
     ``_check_first_run`` in app.py) when ``settings.get``'s ``setup_complete``
     is falsy — AFTER the LockGate has already resolved."""
 
-    DEFAULT_CSS = """
-    SetupWizardScreen {
-        align: center middle;
-        background: #06090d;
-    }
+    DEFAULT_CSS = modal_screen_css("SetupWizardScreen") + modal_box_css(
+        "SetupWizardScreen", "wizard-box") + """
     SetupWizardScreen > #wizard-box {
         width: 74;
-        height: auto;
         max-height: 90%;
-        padding: 1 2;
         border: round #1b3242;
     }
     SetupWizardScreen #wizard-reactor {

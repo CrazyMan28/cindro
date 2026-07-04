@@ -43,6 +43,7 @@ from textual.widgets import Button, Input, Static
 
 from jarvis_cli.control import ControlClient
 from jarvis_cli.tui.arc_reactor import ArcReactorWidget
+from jarvis_cli.tui.modal_base import modal_box_css, modal_screen_css
 
 # Message text per phase — lifted straight from LockGate.qml's `text: { ... }`.
 _PHASE_MESSAGES = {
@@ -69,15 +70,10 @@ class LockGateScreen(ModalScreen[None]):
         Binding("r", "retry", "Retry", show=False),
     ]
 
-    DEFAULT_CSS = """
-    LockGateScreen {
-        align: center middle;
-        background: #06090d;
-    }
+    DEFAULT_CSS = modal_screen_css("LockGateScreen") + modal_box_css(
+        "LockGateScreen", "lock-box") + """
     LockGateScreen > #lock-box {
         width: 56;
-        height: auto;
-        padding: 1 2;
     }
     LockGateScreen #lock-reactor {
         margin: 0 0 1 0;

@@ -30,6 +30,8 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Static
 
+from jarvis_cli.tui.modal_base import modal_screen_css
+
 
 class QuickViewScreen(ModalScreen[None]):
     """Bordered, centered popup (~80% x 70%) hosting a fresh pane instance."""
@@ -38,11 +40,8 @@ class QuickViewScreen(ModalScreen[None]):
         Binding("escape", "dismiss_overlay", "Close"),
     ]
 
-    DEFAULT_CSS = """
-    QuickViewScreen {
-        align: center middle;
-        background: #06090d 60%;
-    }
+    DEFAULT_CSS = modal_screen_css(
+        "QuickViewScreen", background="#06090d 60%") + """
     QuickViewScreen > #quick-view-box {
         width: 80%;
         height: 70%;
