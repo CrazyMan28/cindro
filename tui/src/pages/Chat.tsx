@@ -19,6 +19,7 @@ import { theme } from "../theme"
 export interface ChatProps {
   session: SessionController
   active: () => boolean
+  onOpenSubagent?: (sessionId: string) => void
 }
 
 interface PickerState {
@@ -230,6 +231,7 @@ export function Chat(props: ChatProps) {
     <box flexDirection="column" flexGrow={1}>
       <Transcript
         session={session}
+        onOpenSubagent={props.onOpenSubagent}
         onWidgetAction={(text) =>
           text.startsWith("/")
             ? void app.registry.execute(

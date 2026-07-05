@@ -57,7 +57,6 @@ async function bootChat() {
     { width: 100, height: 32 },
   )
   // Switch to the Chat tab (Alt+2) and let the composer mount + focus.
-  await setup.mockInput.pressKey("2", { meta: true })
   await sleep(150)
   await setup.renderOnce()
   return setup

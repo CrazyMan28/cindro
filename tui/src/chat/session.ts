@@ -48,6 +48,19 @@ export type ChatItem =
       answered?: string
     }
   | { id: number; kind: "widget"; title: string; spec: Record<string, unknown> }
+  | {
+      id: number
+      kind: "todo"
+      items: Array<{ text: string; status: "pending" | "in_progress" | "completed" }>
+    }
+  | {
+      id: number
+      kind: "subagent"
+      sessionId: string
+      name: string
+      task: string
+      status: string
+    }
   | { id: number; kind: "error"; message: string }
   | { id: number; kind: "divider" }
   | {
@@ -117,10 +130,23 @@ export class SessionController {
     // Session-scoped widget.render broadcasts fold into the transcript, the
     // GUI ChatDelegate "widget" kind. Multi-subscriber bus: Canvas can
     // listen too without clobbering us (the old single-slot landmine).
+    // Render widgets INLINE in chat (the duck, plans, cards) — this is the
+    // primary surface, not a Canvas tab. A broadcast whose session_id matches
+    // this session renders; one with NO session_id (the widgets.jsonl file
+    // bus doesn't always stamp it) also renders into the active session so
+    // "show me a duck" draws right here.
     this.offWidget = client.on("widget.render", (_ev, data) => {
       const sid = String(data.session_id ?? "")
-      if (!sid || sid !== this.sessionId()) return
-      const spec = (data.spec ?? data.widget ?? {}) as Record<string, unknown>
+      if (sid && sid !== this.sessionId()) return
+      if (!sid && !this.sessionId()) return
+      let spec = (data.spec ?? data.widget ?? {}) as Record<string, unknown>
+      if (typeof spec === "string") {
+        try {
+          spec = JSON.parse(spec) as Record<string, unknown>
+        } catch {
+          spec = {}
+        }
+      }
       this.push({
         id: mkId(),
         kind: "widget",
@@ -358,8 +384,36 @@ export class SessionController {
       }
       case "tool_call": {
         const rawArgs = ev.args
-        const args = typeof rawArgs === "string" ? rawArgs : JSON.stringify(rawArgs ?? "")
         const name = String(ev.name ?? "tool")
+        const argsObj = parseArgs(rawArgs)
+
+        // todo_write / todowrite → a live Claude-Code-style checklist card
+        // (rendered as checkboxes, updated in place), not a raw JSON tool row.
+        if (/^todo[_ ]?write$/i.test(name) || name === "TodoWrite") {
+          const todos = extractTodos(argsObj)
+          if (todos.length) {
+            this.upsertTodo(todos)
+            if (!replay) this.setStatus("")
+            return
+          }
+        }
+
+        // Subagent dispatch (Task / agents.dispatch / dispatch_agent) → an
+        // inline subagent card you can open to watch its own chat.
+        if (/^(task|dispatch_agent|agents?\.dispatch|dispatch)$/i.test(name)) {
+          this.push({
+            id: mkId(),
+            kind: "subagent",
+            sessionId: String(argsObj.session_id ?? argsObj.child_session_id ?? ""),
+            name: String(argsObj.agent ?? argsObj.name ?? argsObj.subagent_type ?? "subagent"),
+            task: String(argsObj.task ?? argsObj.description ?? argsObj.prompt ?? "").slice(0, 200),
+            status: "running",
+          })
+          if (!replay) this.setStatus(`dispatched ${String(argsObj.agent ?? "subagent")}…`)
+          return
+        }
+
+        const args = typeof rawArgs === "string" ? rawArgs : JSON.stringify(rawArgs ?? "")
         this.push({
           id: mkId(),
           kind: "tool",
@@ -429,6 +483,71 @@ export class SessionController {
       }
     })
   }
+
+  /** Update the single live todo card in place (Claude Code re-renders one
+   * checklist as it progresses) — or create it on the first todo_write. */
+  private upsertTodo(
+    todos: Array<{ text: string; status: "pending" | "in_progress" | "completed" }>,
+  ): void {
+    let updated = false
+    this.setItems((items) => {
+      for (let i = items.length - 1; i >= 0; i--) {
+        if (items[i].kind === "todo") {
+          ;(items[i] as Extract<ChatItem, { kind: "todo" }>).items = todos
+          updated = true
+          return
+        }
+      }
+    })
+    if (!updated) this.push({ id: mkId(), kind: "todo", items: todos })
+  }
+
+  /** Mark a subagent card's status (from agents.running polling or events). */
+  setSubagentStatus(sessionId: string, status: string): void {
+    this.setItems((items) => {
+      for (const item of items) {
+        if (item.kind === "subagent" && item.sessionId && item.sessionId === sessionId)
+          item.status = status
+      }
+    })
+  }
+}
+
+/** Parse a tool_call args value that may be a JSON string or an object. */
+function parseArgs(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === "object") return raw as Record<string, unknown>
+  if (typeof raw === "string") {
+    try {
+      const o = JSON.parse(raw)
+      return o && typeof o === "object" ? (o as Record<string, unknown>) : {}
+    } catch {
+      return {}
+    }
+  }
+  return {}
+}
+
+/** Pull the todo item list out of a todo_write args object (tolerates the
+ * common shapes: {items:[{text|content, status}]} / {todos:[…]}). */
+export function extractTodos(
+  args: Record<string, unknown>,
+): Array<{ text: string; status: "pending" | "in_progress" | "completed" }> {
+  const raw = (args.items ?? args.todos ?? args.tasks ?? []) as unknown[]
+  const norm = (s: unknown): "pending" | "in_progress" | "completed" => {
+    const v = String(s ?? "pending").toLowerCase()
+    if (v.startsWith("in") || v === "active" || v === "doing") return "in_progress"
+    if (v === "completed" || v === "done" || v === "complete") return "completed"
+    return "pending"
+  }
+  return (Array.isArray(raw) ? raw : [])
+    .map((r) => {
+      const o = (r ?? {}) as Record<string, unknown>
+      return {
+        text: String(o.text ?? o.content ?? o.title ?? o.task ?? ""),
+        status: norm(o.status ?? o.state),
+      }
+    })
+    .filter((t) => t.text)
 }
 
 /**

@@ -9,11 +9,15 @@ import { TextAttributes } from "@opentui/core"
 import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js"
 
 import { syntaxStyle, theme } from "../theme"
+import { ArcReactor } from "../ui/ArcReactor"
 import { Widget } from "../widgets/Widget"
 import type { ChatItem, SessionController } from "./session"
 
-const TYPEWRITER_CHARS = 3
-const TYPEWRITER_MS = 12
+// Word-by-word reveal (the user wants text to "go out word by word" with the
+// reactor spitting it): ~3 words per 45ms tick reads as fast, deliberate
+// speech rather than a character crawl.
+const TYPEWRITER_WORDS = 3
+const TYPEWRITER_MS = 45
 const MAX_DIFF_LINES = 30
 const TOOL_PREVIEW_CHARS = 140
 
@@ -24,35 +28,117 @@ function riskColor(risk: string) {
 }
 
 function AssistantMessage(props: { text: string; live: boolean }) {
-  const [revealed, setRevealed] = createSignal(props.live ? 0 : props.text.length)
+  // Split into word+whitespace tokens so revealing N words keeps the spacing.
+  const tokens = createMemo(() => props.text.match(/\S+\s*/g) ?? [])
+  const [shown, setShown] = createSignal(props.live ? 0 : tokens().length)
 
   onMount(() => {
     if (!props.live) return
     const timer = setInterval(() => {
-      setRevealed((n) => {
-        const next = n + TYPEWRITER_CHARS
-        if (next >= props.text.length) clearInterval(timer)
-        return Math.min(next, props.text.length)
+      setShown((n) => {
+        const next = n + TYPEWRITER_WORDS
+        if (next >= tokens().length) clearInterval(timer)
+        return Math.min(next, tokens().length)
       })
     }, TYPEWRITER_MS)
     onCleanup(() => clearInterval(timer))
   })
 
-  const done = createMemo(() => revealed() >= props.text.length)
+  const done = createMemo(() => shown() >= tokens().length)
   return (
     <box flexDirection="column" paddingBottom={1}>
-      <text fg={theme.accent} attributes={TextAttributes.BOLD} selectable={false}>
-        J.A.R.V.I.S
-      </text>
+      {/* The reactor sits beside the name and SPINS/THINKS while the words
+          are still streaming — it reads as the thing spitting out the text. */}
+      <box flexDirection="row" gap={1} alignItems="center">
+        <Show when={!done()} fallback={<ArcReactor size={3} spinning={false} />}>
+          <ArcReactor size={3} thinking={true} />
+        </Show>
+        <text fg={theme.accent} attributes={TextAttributes.BOLD} selectable={false}>
+          J.A.R.V.I.S
+        </text>
+      </box>
       <Show
         when={done()}
         fallback={
           <text fg={theme.text} wrapMode="word">
-            {props.text.slice(0, revealed())}
+            {tokens().slice(0, shown()).join("")}
           </text>
         }
       >
         <markdown content={props.text} syntaxStyle={syntaxStyle()} />
+      </Show>
+    </box>
+  )
+}
+
+function TodoCard(props: { items: Extract<ChatItem, { kind: "todo" }>["items"] }) {
+  const done = () => props.items.filter((t) => t.status === "completed").length
+  const glyph = (s: string) => (s === "completed" ? "✔" : s === "in_progress" ? "▶" : "☐")
+  const color = (s: string) =>
+    s === "completed" ? theme.success : s === "in_progress" ? theme.accentBright : theme.textMuted
+  return (
+    <box flexDirection="column" paddingBottom={1} border={["left"]} borderColor={theme.accent}>
+      <box flexDirection="row" gap={1} paddingLeft={1}>
+        <text fg={theme.accent} attributes={TextAttributes.BOLD} selectable={false}>
+          ⏱ To-dos
+        </text>
+        <text fg={theme.textFaint} selectable={false}>
+          {done()}/{props.items.length}
+        </text>
+      </box>
+      <For each={props.items}>
+        {(t) => (
+          <box flexDirection="row" gap={1} paddingLeft={1}>
+            <text fg={color(t.status)} selectable={false}>
+              {glyph(t.status)}
+            </text>
+            <text
+              fg={t.status === "completed" ? theme.textFaint : theme.text}
+              attributes={t.status === "in_progress" ? TextAttributes.BOLD : undefined}
+              wrapMode="word"
+            >
+              {t.text}
+            </text>
+          </box>
+        )}
+      </For>
+    </box>
+  )
+}
+
+function SubagentCard(props: {
+  item: Extract<ChatItem, { kind: "subagent" }>
+  onOpen: (sessionId: string) => void
+}) {
+  const running = () => props.item.status === "running" || props.item.status === "starting"
+  return (
+    <box
+      flexDirection="column"
+      paddingBottom={1}
+      border
+      borderColor={theme.violet}
+      onMouseDown={() => props.item.sessionId && props.onOpen(props.item.sessionId)}
+    >
+      <box flexDirection="row" gap={1}>
+        <Show when={running()} fallback={<text fg={theme.success} selectable={false}>◇</text>}>
+          <ArcReactor size={3} thinking={true} />
+        </Show>
+        <text fg={theme.violet} attributes={TextAttributes.BOLD} selectable={false}>
+          subagent: {props.item.name}
+        </text>
+        <text fg={theme.textFaint} selectable={false}>
+          {props.item.status}
+        </text>
+      </box>
+      <Show when={props.item.task}>
+        <text fg={theme.textMuted} wrapMode="word" paddingLeft={2}>
+          {props.item.task}
+        </text>
+      </Show>
+      <Show when={props.item.sessionId}>
+        <text fg={theme.textFaint} selectable={false} paddingLeft={2}>
+          click or /agents to watch its chat
+        </text>
       </Show>
     </box>
   )
@@ -153,6 +239,7 @@ function DiffCard(props: { item: Extract<ChatItem, { kind: "diff" }> }) {
 export function Transcript(props: {
   session: SessionController
   onWidgetAction?: (text: string) => void
+  onOpenSubagent?: (sessionId: string) => void
 }) {
   return (
     <scrollbox flexGrow={1} stickyScroll stickyStart="bottom" paddingLeft={1} paddingRight={1}>
@@ -169,6 +256,15 @@ export function Transcript(props: {
                 const a = item as Extract<ChatItem, { kind: "assistant" }>
                 return <AssistantMessage text={a.text} live={a.live} />
               })()}
+            </Match>
+            <Match when={item.kind === "todo"}>
+              <TodoCard items={(item as Extract<ChatItem, { kind: "todo" }>).items} />
+            </Match>
+            <Match when={item.kind === "subagent"}>
+              <SubagentCard
+                item={item as Extract<ChatItem, { kind: "subagent" }>}
+                onOpen={(sid) => props.onOpenSubagent?.(sid)}
+              />
             </Match>
             <Match when={item.kind === "tool"}>
               <ToolCard

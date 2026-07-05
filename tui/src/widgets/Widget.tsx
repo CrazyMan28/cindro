@@ -16,6 +16,8 @@ import { RGBA, TextAttributes } from "@opentui/core"
 import { createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js"
 
 import { theme } from "../theme"
+import { tokens } from "../theme/tokens"
+import { rasterizeCanvas } from "./braille"
 
 export interface WidgetAction {
   send?: string
@@ -241,27 +243,31 @@ export function Widget(props: WidgetProps): any {
       </Match>
       <Match when={type() === "canvas"}>
         <Frame spec={spec()}>
-          <box flexDirection="column">
-            <For
-              each={(spec().ops ?? []) as Spec[]}
-              fallback={<text fg={theme.textFaint}>(empty canvas)</text>}
-            >
-              {(op) => {
-                const kind = str(op.op, "?")
-                const line =
-                  kind === "circle" || kind === "ellipse"
-                    ? `● at (${num(op.x)},${num(op.y)}) r=${num(op.r, num(op.rx))}`
-                    : kind === "rect"
-                      ? `▭ (${num(op.x)},${num(op.y)}) ${num(op.w)}x${num(op.h)}`
-                      : kind === "line"
-                        ? `─ (${num(op.x1)},${num(op.y1)}) → (${num(op.x2)},${num(op.y2)})`
-                        : kind === "path"
-                          ? `⟨path ${((op.points ?? []) as unknown[]).length} pts${op.close ? " (closed)" : ""}⟩`
-                          : `? ${kind}`
-                return <text fg={theme.textFaint}>{line}</text>
-              }}
-            </For>
-          </box>
+          {/* Actually DRAW the vector ops with braille dots (the GUI
+              rasterizes; we do too) instead of listing coordinates. */}
+          <Show
+            when={((spec().ops ?? []) as Spec[]).length > 0}
+            fallback={<text fg={theme.textFaint}>(empty canvas)</text>}
+          >
+            <box flexDirection="column">
+              <For each={rasterizeCanvas(spec(), { defaultColor: tokens.accent })}>
+                {(row) => (
+                  <box flexDirection="row">
+                    <For each={row.runs}>
+                      {(run) => (
+                        <text
+                          fg={run.color ? colorOf(run.color) : theme.accent}
+                          selectable={false}
+                        >
+                          {run.text}
+                        </text>
+                      )}
+                    </For>
+                  </box>
+                )}
+              </For>
+            </box>
+          </Show>
         </Frame>
       </Match>
       <Match when={type() === "pager"}>

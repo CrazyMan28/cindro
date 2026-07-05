@@ -91,17 +91,27 @@ async function boot() {
   return setup
 }
 
-test("custom manifest pages appear as live tabs and render", async () => {
+test("custom manifest pages open as a /command subpage and render", async () => {
   const setup = await boot()
-  const frame = setup.captureCharFrame()
-  expect(frame).toContain("✦Build Log")
+  // Single-view: no tab strip — the Jarvis-authored custom page opens by /id.
+  await setup.mockInput.pressKeys([..."/buildlog"])
+  await setup.mockInput.pressKey("RETURN")
+  const frame = await setup.waitForFrame((f) => f.includes("BUILD LOG"))
+  // The custom page opened as a subpage (the whole point of FIX-6). Its
+  // markdown body renders via the async tree-sitter pass; pump a few frames
+  // to let it land.
+  let body = frame
+  for (let i = 0; i < 30 && !body.includes("everything green"); i++) {
+    await setup.renderOnce()
+    await sleep(20)
+    body = setup.captureCharFrame()
+  }
+  expect(body).toContain("everything green")
 }, 15000)
 
 test("/sessions opens the generic TablePage overlay with daemon rows; Esc closes", async () => {
   const setup = await boot()
-  // chat tab → /sessions via the popup's typed-name path
-  await setup.mockInput.pressKey("2", { meta: true })
-  await sleep(120)
+  // chat is the root — type /sessions directly (no tab switch needed).
   await setup.mockInput.pressKeys([..."/sessions"])
   await setup.mockInput.pressKey("RETURN")
   await setup.waitForFrame((f) => f.includes("// SESSIONS"))
@@ -119,7 +129,6 @@ test("/sessions opens the generic TablePage overlay with daemon rows; Esc closes
 test("row action menu: Enter opens actions, confirm step guards delete", async () => {
   const setup = await boot()
   daemon!.handlers["session.delete"] = () => ({ ok: true })
-  await setup.mockInput.pressKey("2", { meta: true })
   await sleep(120)
   await setup.mockInput.pressKeys([..."/sessions"])
   await setup.mockInput.pressKey("RETURN")
@@ -139,7 +148,6 @@ test("row action menu: Enter opens actions, confirm step guards delete", async (
 
 test("widget DSL renders inline in chat (text/progress/badge/button)", async () => {
   const setup = await boot()
-  await setup.mockInput.pressKey("2", { meta: true })
   await sleep(120)
   await setup.mockInput.pressKeys([..."hi"])
   await setup.mockInput.pressKey("RETURN")

@@ -66,10 +66,15 @@ test("shell boots: topbar telemetry + tabs + manifest pages render", async () =>
   expect(frame).toContain("AGENTS 2")
   expect(frame).toContain("mode: coworker")
   expect(frame).toContain("LINK")
-  expect(frame).toContain("2:Chat") // tab strip
-  expect(frame).toContain("Good") // greeting
-  expect(frame).toContain("Issac")
-  expect(frame).toContain("// WORKSPACE") // manifest section
-  expect(frame).toContain("Error Log") // custom page in the directory
-  expect(frame).toContain("✦ custom")
+  // Single-view: chat is the ROOT (no tab strip) — the composer is present.
+  expect(frame).toContain("message · / for commands")
+
+  // The Home directory is now a /home subpage. Open it and check the
+  // manifest-driven page list renders (with the custom page).
+  await setup.mockInput.pressKeys([..."/home"])
+  await setup.mockInput.pressKey("RETURN")
+  await sleep(250)
+  const homeFrame = await setup.waitForFrame((f) => f.includes("// WORKSPACE"))
+  expect(homeFrame).toContain("Good") // greeting
+  expect(homeFrame).toContain("Error Log") // custom page in the directory
 })

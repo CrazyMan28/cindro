@@ -26,6 +26,7 @@ import { CanvasPage } from "./pages/Canvas"
 import { Chat } from "./pages/Chat"
 import { ComputerPage } from "./pages/Computer"
 import { DiffReview } from "./chat/DiffReview"
+import { SubagentView } from "./chat/SubagentView"
 import { CustomPage } from "./pages/engine/CustomPage"
 import { TablePage } from "./pages/engine/TablePage"
 import { HomeDashboard } from "./pages/Home"
@@ -42,20 +43,6 @@ import { Topbar } from "./ui/Topbar"
 import { WhichKey } from "./ui/WhichKey"
 import { CanvasStore } from "./widgets/store"
 
-// The 9 main-bar tabs (same set the Textual TUI ships; the 11 popup pages
-// arrive with the pages engine in Phase 3).
-const TABS: Array<{ id: string; title: string; phase?: string }> = [
-  { id: "home", title: "Home" },
-  { id: "chat", title: "Chat" },
-  { id: "canvas", title: "Canvas", phase: "Phase 4b" },
-  { id: "widgets", title: "Widgets", phase: "Phase 4b" },
-  { id: "phone", title: "Phone", phase: "Phase 4a" },
-  { id: "computer", title: "Computer", phase: "Phase 4c" },
-  { id: "browser", title: "Browser", phase: "Phase 4c" },
-  { id: "replay", title: "Replay", phase: "Phase 4e" },
-  { id: "settings", title: "Settings", phase: "Phase 4d" },
-]
-
 export interface AppProps {
   client: ControlClient
   registry: CommandRegistry
@@ -63,8 +50,12 @@ export interface AppProps {
 }
 
 export function App(props: AppProps) {
-  const [page, setPage] = createSignal("home")
+  // Single-view: chat is root; `overlay` is the /command subpage on top of
+  // it (null = plain chat). `page()` in the shared context = the visible
+  // surface id.
   const [overlay, setOverlay] = createSignal<string | null>(null)
+  const page = () => overlay() ?? "chat"
+  const [subagentView, setSubagentView] = createSignal<string | null>(null)
   const [notice, setNotice] = createSignal("")
   // Startup gates, run in order like the legacy _startup_gates worker:
   // lock gate (when auth_lock_enabled) then setup wizard (when
@@ -93,7 +84,24 @@ export function App(props: AppProps) {
   const session = new SessionController(props.client)
   const manifest = new ManifestStore(props.client)
   const canvasStore = new CanvasStore(props.client)
-  void manifest.refresh()
+
+  // Every manifest page — builtin, data, AND Jarvis-authored custom (e.g.
+  // "GitHub Open PRs") — gets a /command that opens it as a subpage, so a
+  // page Jarvis creates with tui_add_page is instantly reachable by /id.
+  const syncPageCommands = () => {
+    props.registry.registerLocal(
+      manifest.pages().map((p) => ({
+        name: p.id,
+        description: `open ${p.title}${p.source === "custom" ? " ✦" : ""}`,
+        kind: "navigate" as const,
+        target: p.id,
+        run: () => navigate(p.id),
+      })),
+    )
+  }
+  void manifest.refresh().then(syncPageCommands)
+  props.client.on("ui.manifest.changed", () => void manifest.refresh().then(syncPageCommands))
+  props.client.on("tui.layout.changed", () => void manifest.refresh().then(syncPageCommands))
 
   const keybinds = Keybinds.load()
   const toasts = createToasts()
@@ -195,20 +203,25 @@ export function App(props: AppProps) {
     ])
   })
 
+  // Single-view model (Claude Code style): chat is the ONE root screen.
+  // Every other surface — home/canvas/widgets/settings/phone/computer/
+  // browser/replay/voice + manifest data pages + Jarvis-authored custom
+  // pages — opens as a full-screen SUBPAGE overlay via its /command, and
+  // Esc returns to chat. There is no tab bar.
+  const KNOWN_SUBPAGES = new Set([
+    "home", "canvas", "widgets", "settings", "phone", "computer",
+    "browser", "replay", "voice",
+  ])
   const navigate = (id: string) => {
-    if (
-      TABS.some((t) => t.id === id) ||
-      id === "voice" || // full-page bespoke route (F2 / /voice), not a tab
-      manifest.page(id)?.source === "custom"
-    ) {
+    if (id === "chat") {
       setOverlay(null)
-      setPage(id)
       return
     }
-    // Non-tab manifest pages (the 11 data pages) open as an overlay route on
-    // top of whatever tab is active — the QuickViewScreen pattern, kept.
-    if (manifest.page(id)) setOverlay(id)
-    else setNotice(`no such page: ${id}`)
+    if (KNOWN_SUBPAGES.has(id) || manifest.page(id)) {
+      setOverlay(id)
+      return
+    }
+    setNotice(`no such page: ${id}`)
   }
 
   const api: AppApi = {
@@ -260,6 +273,10 @@ export function App(props: AppProps) {
         setShowPalette(false)
         return
       }
+      if (key.name === "escape" && subagentView()) {
+        setSubagentView(null)
+        return
+      }
       // Escape closes an open overlay page — but only if nothing INSIDE the
       // overlay (action menu, confirm, search input) consumed it first, so
       // check after every handler has run.
@@ -275,14 +292,6 @@ export function App(props: AppProps) {
         }, 0)
         return
       }
-      // Alt+digit switches tabs (ESC-prefixed, so it works in legacy
-      // terminals too — Ctrl+digit famously doesn't encode; bare digits
-      // belong to the chat composer and question shortcuts).
-      const n = Number.parseInt(key.name ?? "", 10)
-      if ((key.meta || key.option) && Number.isInteger(n) && n >= 1 && n <= TABS.length) {
-        setOverlay(null)
-        setPage(TABS[n - 1].id)
-      }
     },
     {},
   )
@@ -291,132 +300,88 @@ export function App(props: AppProps) {
     <AppContext.Provider value={api}>
       <box flexDirection="column" flexGrow={1} backgroundColor={theme.bg}>
         <Topbar />
-        <box flexDirection="row" gap={1} paddingLeft={1}>
-          <For each={TABS}>
-            {(tab, i) => (
-              <text
-                fg={page() === tab.id ? theme.accentBright : theme.textMuted}
-                attributes={page() === tab.id ? TextAttributes.BOLD : undefined}
-                selectable={false}
-                onMouseDown={() => navigate(tab.id)}
-              >
-                {i() + 1}:{tab.title}
-              </text>
-            )}
-          </For>
-          <For each={manifest.customPages()}>
-            {(cp) => (
-              <text
-                fg={page() === cp.id ? theme.accentBright : theme.violet}
-                attributes={page() === cp.id ? TextAttributes.BOLD : undefined}
-                selectable={false}
-                onMouseDown={() => navigate(cp.id)}
-              >
-                ✦{cp.title}
-              </text>
-            )}
-          </For>
-        </box>
-        <Switch
-          fallback={
-            <box padding={2} flexDirection="column" gap={1} flexGrow={1}>
-              <text fg={theme.amber} attributes={TextAttributes.BOLD}>
-                {TABS.find((t) => t.id === page())?.title ?? page()}
-              </text>
-              <text fg={theme.textMuted}>
-                Lands in {TABS.find((t) => t.id === page())?.phase ?? "a later phase"} of
-                the TUI v2 build — the legacy TUI (jarvis tui --legacy) still has it
-                today.
-              </text>
-            </box>
-          }
-        >
-          <Match when={page() === "home"}>
-            <HomeDashboard
-              active={() => page() === "home" && !overlay()}
-              onOpenSession={(id, title) => {
-                navigate("chat")
-                void session.openSession(id, title).catch((e) => setNotice(String(e)))
-              }}
-            />
-          </Match>
-          <Match when={page() === "chat"}>
-            <Chat session={session} active={() => page() === "chat" && !overlay()} />
-          </Match>
-          <Match when={page() === "canvas"}>
-            <CanvasPage
-              store={canvasStore}
-              active={() => page() === "canvas" && !overlay()}
-              onSendChat={sendChat}
-            />
-          </Match>
-          <Match when={page() === "widgets"}>
-            <WidgetsPage
-              active={() => page() === "widgets" && !overlay()}
-              onRenderToCanvas={(item) => {
-                canvasStore.inject(item)
-                navigate("canvas")
-              }}
-              onRenderToChat={(title, spec) => {
-                session.injectWidget(title, spec)
-                navigate("chat")
-              }}
-            />
-          </Match>
-          <Match when={page() === "settings"}>
-            <SettingsPage active={() => page() === "settings" && !overlay()} />
-          </Match>
-          <Match when={page() === "phone"}>
-            <PhonePage active={() => page() === "phone" && !overlay()} />
-          </Match>
-          <Match when={page() === "computer"}>
-            <ComputerPage active={() => page() === "computer" && !overlay()} />
-          </Match>
-          <Match when={page() === "browser"}>
-            <BrowserPage active={() => page() === "browser" && !overlay()} />
-          </Match>
-          <Match when={page() === "replay"}>
-            <ReplayPage active={() => page() === "replay" && !overlay()} />
-          </Match>
-          <Match when={page() === "voice"}>
-            <VoicePage active={() => page() === "voice" && !overlay()} store={canvasStore} />
-          </Match>
-          <Match when={manifest.page(page())?.source === "custom"}>
-            <CustomPage page={manifest.page(page())!} onSendChat={sendChat} />
-          </Match>
-        </Switch>
-        <Show when={overlay() ? manifest.page(overlay()!) : undefined}>
-          {(op) => (
+        {/* Chat is the ONE root screen. Everything else is a /command
+            subpage overlaid on top (below). */}
+        <Chat
+          session={session}
+          active={() => !overlay() && !showPalette() && !showDiff() && !gate()}
+          onOpenSubagent={(sid) => setSubagentView(sid)}
+        />
+        {/* Full-screen subpage overlay — the surface a /command opens. */}
+        <Show when={overlay()}>
+          {(id) => (
             <box
               position="absolute"
               left={0}
               right={0}
-              top={4}
+              top={3}
               bottom={1}
               zIndex={30}
               flexDirection="column"
               backgroundColor={theme.bg}
-              border
-              borderColor={theme.accent}
             >
               <Switch
                 fallback={
-                  <CustomPage
-                    page={op()}
-                    onSendChat={(text) => {
-                      setOverlay(null)
-                      navigate("chat")
-                      void session.send(text).catch((e) => setNotice(String(e)))
-                    }}
-                  />
+                  <Show
+                    when={manifest.page(id())}
+                    fallback={
+                      <text fg={theme.amber}>{id()} — not available</text>
+                    }
+                  >
+                    {(mp) => (
+                      <Switch
+                        fallback={
+                          <CustomPage page={mp()} onSendChat={(t) => { setOverlay(null); sendChat(t) }} />
+                        }
+                      >
+                        <Match when={mp().kind === "table"}>
+                          <TablePage page={mp()} active={() => !!overlay()} />
+                        </Match>
+                      </Switch>
+                    )}
+                  </Show>
                 }
               >
-                <Match when={op().kind === "table"}>
-                  <TablePage page={op()} active={() => true} />
+                <Match when={id() === "home"}>
+                  <HomeDashboard
+                    active={() => overlay() === "home"}
+                    onOpenSession={(sid, title) => {
+                      setOverlay(null)
+                      void session.openSession(sid, title).catch((e) => setNotice(String(e)))
+                    }}
+                  />
+                </Match>
+                <Match when={id() === "canvas"}>
+                  <CanvasPage store={canvasStore} active={() => overlay() === "canvas"} onSendChat={sendChat} />
+                </Match>
+                <Match when={id() === "widgets"}>
+                  <WidgetsPage
+                    active={() => overlay() === "widgets"}
+                    onRenderToCanvas={(item) => { canvasStore.inject(item); navigate("canvas") }}
+                    onRenderToChat={(title, spec) => { session.injectWidget(title, spec); setOverlay(null) }}
+                  />
+                </Match>
+                <Match when={id() === "settings"}>
+                  <SettingsPage active={() => overlay() === "settings"} />
+                </Match>
+                <Match when={id() === "phone"}>
+                  <PhonePage active={() => overlay() === "phone"} />
+                </Match>
+                <Match when={id() === "computer"}>
+                  <ComputerPage active={() => overlay() === "computer"} />
+                </Match>
+                <Match when={id() === "browser"}>
+                  <BrowserPage active={() => overlay() === "browser"} />
+                </Match>
+                <Match when={id() === "replay"}>
+                  <ReplayPage active={() => overlay() === "replay"} />
+                </Match>
+                <Match when={id() === "voice"}>
+                  <VoicePage active={() => overlay() === "voice"} store={canvasStore} />
                 </Match>
               </Switch>
               <text fg={theme.textFaint} selectable={false}>
-                Esc close
+                Esc → chat
               </text>
             </box>
           )}
@@ -428,9 +393,25 @@ export function App(props: AppProps) {
           borderColor={theme.hairlineSoft}
         >
           <text fg={theme.textFaint} selectable={false}>
-            {notice() || "Alt+1-9 tabs · / commands · Ctrl+Q quit"}
+            {notice() || "/ commands & subpages · Ctrl+K palette · Ctrl+Q quit"}
           </text>
         </box>
+        <Show when={subagentView()}>
+          {(sid) => (
+            <box
+              position="absolute"
+              left={0}
+              right={0}
+              top={3}
+              bottom={1}
+              zIndex={50}
+              flexDirection="column"
+              backgroundColor={theme.bg}
+            >
+              <SubagentView sessionId={sid()} onClose={() => setSubagentView(null)} />
+            </box>
+          )}
+        </Show>
         <CallOverlay />
         <ToastLayer toasts={toasts.toasts} />
         <Show when={leaderActive()}>
