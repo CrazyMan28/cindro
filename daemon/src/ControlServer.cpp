@@ -6,6 +6,7 @@
 #include "jarvis/ClaudeBrain.h"
 #include "jarvis/CodexBrain.h"
 #include "jarvis/Connectors.h"
+#include "jarvis/GitOps.h"
 #include "jarvis/InjectionGuard.h"
 #include "jarvis/OsvAdvisory.h"
 #include "jarvis/PluginSigner.h"
@@ -2216,6 +2217,10 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
         }
     }
 
+    // Remember the RESOLVED workdir for this session (diff.* runs git here).
+    // Mirrors makeBrain's cwdOverride-else-config-default resolution.
+    m_sessionCwd.insert(row.id, cwd.isEmpty() ? m_config.effectiveCwd() : cwd);
+
     Brain *brain = makeBrain(row, cwd, agentOverrides);
     if (!brain) {
         // Tear down any nested desktop we just spun up for this session.
@@ -2950,6 +2955,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_sessionAgentPrompt.remove(sessionId);
     m_agentGuided.remove(sessionId);
     m_subagentPendingWake.remove(sessionId);   // as a child awaiting parent-wake
+    m_sessionCwd.remove(sessionId);
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
     m_toolLoopWarned.remove(sessionId);
@@ -5834,6 +5840,7 @@ bool ControlServer::isOpsMethod(const QString &method)
            method.startsWith(QStringLiteral("tui.layout.")) ||
            method.startsWith(QStringLiteral("command.")) ||
            method.startsWith(QStringLiteral("ssh.")) ||
+           method.startsWith(QStringLiteral("diff.")) ||
            method == QStringLiteral("audit.list");
 }
 
@@ -6011,6 +6018,10 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("command.create"))     return handleCommandCreate(req);
     if (m == QStringLiteral("command.remove"))     return handleCommandRemove(req);
     if (m == QStringLiteral("command.invoke"))     return handleCommandInvoke(req);
+    if (m == QStringLiteral("diff.stage"))           return handleDiffStage(req);
+    if (m == QStringLiteral("diff.revert"))          return handleDiffRevert(req);
+    if (m == QStringLiteral("diff.commit"))          return handleDiffCommit(req);
+    if (m == QStringLiteral("diff.open_pr"))         return handleDiffOpenPr(req);
     if (m == QStringLiteral("ssh.allow_list"))       return handleSshAllowList(req);
     if (m == QStringLiteral("ssh.allow_add"))        return handleSshAllowAdd(req);
     if (m == QStringLiteral("ssh.allow_remove"))     return handleSshAllowRemove(req);
@@ -6138,6 +6149,101 @@ Response ControlServer::handleScheduleRunNow(const Request &req)
     result.insert(QStringLiteral("ok"), !sid->isEmpty());
     result.insert(QStringLiteral("session_id"), *sid);
     return Response::success(req.id, result);
+}
+
+// --- diff review: diff.* -----------------------------------------------------
+// Git actions behind the GUI DiffReviewPanel's PillButtons and the TUI's
+// /stage /commit /revert /openpr slash commands. Both frontends already sent
+// these verbs; until now the daemon answered unknown_method and each client
+// quietly degraded. Git-level failures come back as success{ok:false,message}
+// (not Response::failure) so the clients render git's own text inline instead
+// of a generic error path. Blocking QProcess in the handler follows the
+// ssh.exec precedent (SshAllowList::exec).
+
+namespace {
+Response diffResult(const Request &req, const jarvis::GitResult &r,
+                    bool urlOnSuccess = false)
+{
+    QJsonObject o;
+    o.insert(QStringLiteral("ok"), r.ok);
+    if (urlOnSuccess && r.ok)
+        o.insert(QStringLiteral("url"), r.output);
+    else if (!r.output.isEmpty())
+        o.insert(QStringLiteral("message"), r.output);
+    return Response::success(req.id, o);
+}
+} // namespace
+
+QString ControlServer::diffWorkdirFor(const QString &sessionId) const
+{
+    const QString mapped = m_sessionCwd.value(sessionId);
+    return mapped.isEmpty() ? m_config.effectiveCwd() : mapped;
+}
+
+Response ControlServer::handleDiffStage(const Request &req)
+{
+    const QString path = req.params.value(QStringLiteral("path")).toString();
+    if (path.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("path is required"));
+    const QString wd =
+        diffWorkdirFor(req.params.value(QStringLiteral("session_id")).toString());
+    if (!jarvis::GitOps::isRepo(wd))
+        return diffResult(req, {false, -1,
+                                QStringLiteral("not a git repository: ") + wd});
+    const jarvis::GitResult r = jarvis::GitOps::stage(wd, path);
+    m_audit.record(QStringLiteral("diff.stage"), r.ok, QStringLiteral("low"),
+                   QStringLiteral("git add %1 (in %2)").arg(path, wd));
+    return diffResult(req, r);
+}
+
+Response ControlServer::handleDiffRevert(const Request &req)
+{
+    const QString path = req.params.value(QStringLiteral("path")).toString();
+    if (path.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("path is required"));
+    const QString wd =
+        diffWorkdirFor(req.params.value(QStringLiteral("session_id")).toString());
+    if (!jarvis::GitOps::isRepo(wd))
+        return diffResult(req, {false, -1,
+                                QStringLiteral("not a git repository: ") + wd});
+    // Destroys local edits to the file — the GUI gates this behind an inline
+    // approval and the TUI requires the explicit /revert <path>; audit high.
+    const jarvis::GitResult r = jarvis::GitOps::revertFile(wd, path);
+    m_audit.record(QStringLiteral("diff.revert"), r.ok, QStringLiteral("high"),
+                   QStringLiteral("git checkout HEAD -- %1 (in %2)").arg(path, wd));
+    return diffResult(req, r);
+}
+
+Response ControlServer::handleDiffCommit(const Request &req)
+{
+    const QString message = req.params.value(QStringLiteral("message")).toString();
+    const QString wd =
+        diffWorkdirFor(req.params.value(QStringLiteral("session_id")).toString());
+    if (!jarvis::GitOps::isRepo(wd))
+        return diffResult(req, {false, -1,
+                                QStringLiteral("not a git repository: ") + wd});
+    const jarvis::GitResult r = jarvis::GitOps::commit(wd, message);
+    m_audit.record(QStringLiteral("diff.commit"), r.ok, QStringLiteral("medium"),
+                   QStringLiteral("git commit (in %1): %2")
+                       .arg(wd, message.left(60)));
+    return diffResult(req, r);
+}
+
+Response ControlServer::handleDiffOpenPr(const Request &req)
+{
+    const QString title = req.params.value(QStringLiteral("title")).toString();
+    const QString wd =
+        diffWorkdirFor(req.params.value(QStringLiteral("session_id")).toString());
+    if (!jarvis::GitOps::isRepo(wd))
+        return diffResult(req, {false, -1,
+                                QStringLiteral("not a git repository: ") + wd});
+    const jarvis::GitResult r = jarvis::GitOps::openPr(wd, title);
+    m_audit.record(QStringLiteral("diff.open_pr"), r.ok, QStringLiteral("medium"),
+                   QStringLiteral("push + gh pr create (in %1): %2")
+                       .arg(wd, title.left(60)));
+    return diffResult(req, r, /*urlOnSuccess=*/true);
 }
 
 // --- TUI self-edit layout: tui.layout.* -------------------------------------

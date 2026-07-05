@@ -450,6 +450,13 @@ private:
     Response handleSshAllowAdd(const Request &req);
     Response handleSshAllowRemove(const Request &req);
     Response handleSshExec(const Request &req, bool remote);
+    // diff review actions (diff.stage/revert/commit/open_pr) — git in the
+    // session's workdir via jarvis::GitOps.
+    Response handleDiffStage(const Request &req);
+    Response handleDiffRevert(const Request &req);
+    Response handleDiffCommit(const Request &req);
+    Response handleDiffOpenPr(const Request &req);
+    QString diffWorkdirFor(const QString &sessionId) const;
     // Wave 8: audit log surface.
     Response handleAuditList(const Request &req);
 
@@ -707,6 +714,9 @@ private:
     Response handleWidgetSubscribe(QWebSocket *client, const Request &req);
     // sessionId -> live brain.
     QHash<QString, Brain *> m_brains;
+    // session id -> RESOLVED brain working dir (cwd override else the config
+    // default, mirroring makeBrain). In-memory only; diff.* runs git here.
+    QHash<QString, QString> m_sessionCwd;
 };
 
 } // namespace jarvis

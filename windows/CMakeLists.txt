@@ -134,6 +134,8 @@ add_library(jarvis-core STATIC
     # Self-authored slash commands (Markdown+frontmatter, mirrors SkillStore;
     # must match core/CMakeLists.txt).
     ${CORE_DIR}/src/CommandStore.cpp
+    # Git actions behind the diff.* verbs (must match core/CMakeLists.txt).
+    ${CORE_DIR}/src/GitOps.cpp
     # Headers (AUTOMOC) — same set as core/CMakeLists.txt.
     ${CORE_DIR}/include/jarvis/Protocol.h
     ${CORE_DIR}/include/jarvis/Config.h
