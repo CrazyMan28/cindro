@@ -120,11 +120,15 @@ jobs:
         run: .\windows\scripts\build.ps1 -Version ${{ steps.ver.outputs.version }} -VcpkgRoot $env:VCPKG_ROOT
 
       - name: Upload installer artifact
+        # Installer is already built above; a transient GitHub artifact-storage
+        # quota hit must not red the PR. Short retention stops re-accumulation.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: Jarvis-Setup-${{ steps.ver.outputs.version }}
           path: windows/dist/Jarvis-Setup-*.exe
           if-no-files-found: error
+          retention-days: 7
 
       # On a version tag, attach the installer to the Release.
       - name: Attach to Release

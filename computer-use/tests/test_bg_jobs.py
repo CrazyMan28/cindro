@@ -75,4 +75,8 @@ def test_listing_and_stop():
     _wait(jid, {"running"}, timeout=6)
     assert jid in [j["id"] for j in bg_jobs.listing()["jobs"]]
     bg_jobs.stop(jid)
-    assert bg_jobs.status(jid)["state"] == "stopped"
+    # stop() signals the detached process; the "stopped" state lands once the
+    # runner records the terminated exit, which isn't instant — poll for it
+    # instead of asserting on the same tick (fixed a CI flake).
+    m = _wait(jid, {"stopped"}, timeout=10)
+    assert m["state"] == "stopped"
