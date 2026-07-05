@@ -8,10 +8,15 @@ an Input at the bottom sends turns. Slash commands:
     /stop            cancel the running turn
     /goal <text>     set a persistent goal on this session (empty clears)
     /y  /n           approve / deny the pending permission request
+    /voice           open push-to-talk voice mode (same as F2)
     /stage <file>    stage a file from the last `diff` event
     /commit [msg]    commit staged changes (message optional)
     /revert <file>   revert a file from the last `diff` event
     /openpr [title]  open a pull request (title optional)
+
+The command palette itself (see command_palette.py) renders directly ABOVE
+this Input, not below it — mounted with before=<the Input widget> rather than
+appended after it.
 """
 
 from __future__ import annotations
@@ -65,16 +70,17 @@ BUILTIN_COMMANDS = [
     ("tui", "ask Jarvis to add/edit/remove a TUI page"),
     ("model", "pick the active model"),
     ("provider", "pick codex, claude, or api"),
+    ("voice", "open push-to-talk voice mode"),
     ("stage", "🚧 stage a file from the last diff (not yet available)"),
     ("commit", "🚧 commit staged changes (not yet available)"),
     ("revert", "🚧 revert a file from the last diff (not yet available)"),
     ("openpr", "🚧 open a pull request for the current branch (not yet available)"),
 ]
 
-# These 11 open as an inline QuickViewScreen popup (see quick_view.py) instead
-# of switching the main TabbedContent's active tab — a fresh pane instance is
-# built by the factory each time, with its OWN id (distinct from the id of
-# the pane already mounted in the main TabbedContent) so nothing collides.
+# These 11 screens have NO tab-* TabPane in app.py's main TabbedContent at
+# all anymore — they open ONLY as an inline QuickViewScreen popup (see
+# quick_view.py). A fresh pane instance is built by the factory each time,
+# with its own "*-quick" id, so repeated opens never collide with each other.
 POPUP_PANE_FACTORIES = {
     "memory": lambda: MemoryPane(id="memory-quick"),
     "skills": lambda: SkillsPane(id="skills-quick"),
@@ -90,15 +96,18 @@ POPUP_PANE_FACTORIES = {
 }
 POPUP_COMMANDS = set(POPUP_PANE_FACTORIES)
 
-# The remaining tab-jump commands still switch TabbedContent.active. "tui" is
+# The remaining tab-jump commands still switch TabbedContent.active — these
+# now equal EXACTLY the 9 real "tab-*" ids in app.py's TabbedContent (home,
+# chat, canvas, widgets, phone, computer, browser, replay, settings). "tui" is
 # an ACTION command (asks Jarvis to edit the TUI layout), not a tab to jump
 # to — there is no "tab-tui" TabPane in app.py. "model"/"provider" are picker
-# commands (see run_slash_command), not tab jumps either. "stage"/"commit"/
+# commands (see run_slash_command), not tab jumps either. "voice" pushes the
+# full-screen VoiceModeScreen (same as F2) — also not a tab. "stage"/"commit"/
 # "revert"/"openpr" are diff-review actions (see _diff_action) — also not tabs.
 TAB_JUMP_COMMANDS = {name for name, _ in BUILTIN_COMMANDS
                     if name not in ("new", "stop", "goal", "y", "n", "tui",
-                                     "model", "provider", "stage", "commit",
-                                     "revert", "openpr")
+                                     "model", "provider", "voice", "stage",
+                                     "commit", "revert", "openpr")
                     and name not in POPUP_COMMANDS}
 
 
@@ -372,7 +381,11 @@ class ChatPane(Vertical):
             except Exception:
                 customs = []
             existing = CommandPalette(BUILTIN_COMMANDS, customs)
-            await self.mount(existing)
+            # Mount directly ABOVE the input line (not appended after it,
+            # which would render below) — same before=/after= positional
+            # mount TablePane uses to place its spinner right after a
+            # specific widget (see screens.py TablePane.on_mount).
+            await self.mount(existing, before=self.query_one("#chat-input"))
         existing.filter(query)
 
     def _close_palette(self) -> None:
@@ -415,6 +428,10 @@ class ChatPane(Vertical):
             await self._open_provider_picker()
         elif name == "model":
             await self._open_model_picker()
+        elif name == "voice":
+            # Same call F2's action_voice_mode makes — reuse it rather than
+            # duplicating the push_screen(VoiceModeScreen(...)) call.
+            self.app.action_voice_mode()
         elif name in ("stage", "revert"):
             await self._diff_action(name, args)
         elif name == "commit":
@@ -440,13 +457,24 @@ class ChatPane(Vertical):
                 return
             if "prompt" in res:
                 await self._send(res["prompt"])
-            elif "mcp_tool" in res:
-                self.notify(f"custom command '{name}' calls MCP tool "
-                           f"'{res['mcp_tool']}' — invoke it via a normal chat turn "
-                           f"for now (direct in-TUI MCP dispatch is a fast-follow)")
-            elif "shell" in res:
-                self.notify(f"custom command '{name}' would run script "
-                           f"'{res['shell']}' — shell execution wiring is a fast-follow")
+            elif "mcp_tool" in res or "shell" in res:
+                # The daemon now EXECUTES these kinds server-side and returns
+                # {executed, ok, output} (an old daemon just echoes the target
+                # back — keep the honest degrade for that skew).
+                if res.get("executed"):
+                    ok = bool(res.get("ok"))
+                    out = str(res.get("output") or "").strip()
+                    kind = "mcp_tool" if "mcp_tool" in res else "shell"
+                    target = res.get(kind, "")
+                    head = Text(("✓ " if ok else "✕ ") + f"/{name} → {target}",
+                                style="green" if ok else "red")
+                    self._log(head)
+                    if out:
+                        self._log(Text(out[:4000], style="" if ok else "red"))
+                else:
+                    self.notify(f"custom command '{name}' targets "
+                                f"'{res.get('mcp_tool') or res.get('shell')}' but this "
+                                f"daemon predates server-side execution — update jarvisd")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "chat-input":

@@ -31,6 +31,13 @@ struct McpTestResult {
     QString error;
 };
 
+// One executed MCP tools/call (command.invoke's mcp_tool custom commands).
+struct McpCallResult {
+    bool ok = false;
+    QString content;  // concatenated text content items from the result
+    QString error;    // JSON-RPC error message / isError content / transport error
+};
+
 // The codex `-c mcp_servers.<key>...` overrides PLUS the bearer-token env vars
 // they reference. codex 0.135 rejects an inline `bearer_token=` for a streamable
 // HTTP MCP server ("bearer_token is not supported for streamable_http") and
@@ -72,6 +79,13 @@ public:
     // Real MCP initialize + tools/list with a timeout. For http, `server.token`
     // (or computerUseBearer() for the built-in) is sent as Bearer.
     static McpTestResult test(const McpServerRow &server, int timeoutMs = 5000);
+
+    // --- live tool call ----------------------------------------------------
+    // Real MCP initialize + tools/call (same transports/bearer rules as
+    // test()). Powers command.invoke's mcp_tool custom commands — previously
+    // those only echoed the tool name back and nothing ever executed.
+    static McpCallResult callTool(const McpServerRow &server, const QString &tool,
+                                  const QJsonObject &arguments, int timeoutMs = 30000);
 
     // Resolves a row.env value (a "secret:<key>" reference or a literal) to the
     // concrete value to inject. The daemon supplies one backed by SettingsStore;

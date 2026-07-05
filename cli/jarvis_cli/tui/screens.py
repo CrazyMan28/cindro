@@ -525,6 +525,13 @@ class SettingsPane(TablePane):
             try:
                 await self.client.call("settings.set", {"patch": {row["key"]: nxt}})
                 self.notify(f"{row['key']} → {nxt}")
+                if row["key"] == "agent_mode":
+                    # F3 (app.py's action_cycle_mode) refreshes the topbar's
+                    # mode display immediately after writing agent_mode —
+                    # this is the SAME setting via a different surface, so it
+                    # must not leave the topbar stale either. Narrowly scoped
+                    # to agent_mode specifically, not every settings knob.
+                    self.app.refresh_mode_display(nxt)
             except (ControlError, ConnectionError, TimeoutError) as exc:
                 self.notify(str(exc), severity="error")
             self.refresh_data()

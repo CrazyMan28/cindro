@@ -137,7 +137,11 @@ computer-use/ Python FastMCP engine (mouse/kbd/screen, Chrome bridge, render_wid
               nested agent desktop, per-session input routing, agent pointer bus)
 extension/    Chrome MV3 "Computer Use Bridge" + Jarvis side-panel
 acp-bridge/   ACP (Agent Client Protocol) stdio bridge — Zed/JetBrains drive Jarvis natively
-cli/          the jarvis terminal: TUI agent + doctor/status/start/web/ask commands
+cli/          the jarvis terminal (legacy TUI): Python/Textual agent + doctor/
+              status/start/web/ask commands — superseded by tui/, ops
+              commands still live here
+tui/          jarvis-tui v2 — TypeScript/Bun + OpenTUI/SolidJS terminal UI,
+              a thin client over the same control websocket (see tui/README.md)
 web/          No-build browser dashboard (static SPA + stdlib serve.py)
 android/      Kotlin/Compose app (MVVM, Room, DataStore, foreground WS service)
 kde-applet/   Plasma 6 applet to toggle the sidebar

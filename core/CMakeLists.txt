@@ -73,6 +73,12 @@ add_library(jarvis-core STATIC
     src/TuiLayoutStore.cpp
     # Self-authored slash commands (Markdown+frontmatter, mirrors SkillStore).
     src/CommandStore.cpp
+    # Git actions behind the diff.* verbs (stage/revert/commit/open_pr) shared
+    # by the desktop DiffReviewPanel and the TUI slash commands.
+    src/GitOps.cpp
+    # The daemon-owned surface manifest (ui.manifest.get) both frontends render
+    # from — pages/commands/settings/status declared ONCE, custom pages merged.
+    src/UiManifest.cpp
     # Headers listed so AUTOMOC processes the Q_OBJECT types (Brain, CodexBrain),
     # generating their staticMetaObject + vtable into this static lib.
     include/jarvis/Protocol.h
@@ -216,6 +222,18 @@ add_test(NAME codex_buildargs_test COMMAND codex_buildargs_test)
 add_executable(api_brain_tools_test tests/api_brain_tools_test.cpp)
 target_link_libraries(api_brain_tools_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME api_brain_tools_test COMMAND api_brain_tools_test)
+
+# GitOps: the diff.* verb engine — stage/revert/commit roundtrip in a real
+# temp git repo + path-containment guards (network-free; openPr fails at push).
+add_executable(git_ops_test tests/git_ops_test.cpp)
+target_link_libraries(git_ops_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME git_ops_test COMMAND git_ops_test)
+
+# UiManifest: the shared surface contract — embedded-manifest shape validation
+# (unique page ids, generic table pages carry verbs/columns) + custom merge.
+add_executable(ui_manifest_test tests/ui_manifest_test.cpp)
+target_link_libraries(ui_manifest_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME ui_manifest_test COMMAND ui_manifest_test)
 
 # MemoryStore: add + FTS5 search + replace + remove roundtrip (temp DB).
 add_executable(memory_store_test tests/memory_store_test.cpp)

@@ -1,0 +1,6 @@
+# @opentui/solid ships a bun preload plugin that applies the Solid JSX
+# transform (bun has no babel-preset-solid) — required for run AND test.
+preload = ["@opentui/solid/preload"]
+
+[test]
+preload = ["@opentui/solid/preload"]

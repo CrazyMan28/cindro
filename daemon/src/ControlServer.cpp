@@ -6,10 +6,14 @@
 #include "jarvis/ClaudeBrain.h"
 #include "jarvis/CodexBrain.h"
 #include "jarvis/Connectors.h"
+#include "jarvis/GitOps.h"
 #include "jarvis/InjectionGuard.h"
+#include "jarvis/UiManifest.h"
 #include "jarvis/OsvAdvisory.h"
 #include "jarvis/PluginSigner.h"
 #include "jarvis/Updater.h"
+
+#include <algorithm>
 
 #include <QDateTime>
 #include <QDebug>
@@ -431,6 +435,10 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
 
     if (m == QStringLiteral("ping"))
         resp = handlePing(req);
+    else if (m == QStringLiteral("status.get"))
+        resp = handleStatusGet(req);
+    else if (m == QStringLiteral("ui.manifest.get"))
+        resp = handleUiManifestGet(req);
     else if (m == QStringLiteral("settings.get"))
         resp = handleSettingsGet(req);
     else if (m == QStringLiteral("settings.set"))
@@ -582,6 +590,43 @@ Response ControlServer::handlePing(const Request &req)
     result.insert(QStringLiteral("pong"), true);
     result.insert(QStringLiteral("ts"), QDateTime::currentMSecsSinceEpoch());
     return Response::success(req.id, result);
+}
+
+Response ControlServer::handleStatusGet(const Request &req)
+{
+    // Live HUD telemetry for both frontends' status strips (the GUI's
+    // HudStatusStrip previously hardcoded mcpCount=1; the TUI topbar had no
+    // MCP/agent stats at all). Cheap counters only — no per-server liveness
+    // probes here (that's mcp.test's job).
+    QJsonObject r;
+    r.insert(QStringLiteral("version"), Updater::runningVersion());
+    r.insert(QStringLiteral("git_sha"), Updater::runningSha());
+    r.insert(QStringLiteral("default_brain"), m_settings.defaultBrain());
+
+    int mcpTotal = 0, mcpEnabled = 0;
+    if (m_mcp) {
+        for (const McpServerRow &row : m_mcp->list()) {
+            ++mcpTotal;
+            if (row.enabled)
+                ++mcpEnabled;
+        }
+    }
+    QJsonObject mcp;
+    mcp.insert(QStringLiteral("total"), mcpTotal);
+    mcp.insert(QStringLiteral("enabled"), mcpEnabled);
+    r.insert(QStringLiteral("mcp"), mcp);
+
+    int agentsRunning = 0;
+    for (const SessionRow &s : m_store.list()) {
+        if (s.agent.isEmpty())
+            continue;
+        if (m_brains.contains(s.id) && (s.state == QStringLiteral("running") ||
+                                        s.state == QStringLiteral("starting")))
+            ++agentsRunning;
+    }
+    r.insert(QStringLiteral("agents_running"), agentsRunning);
+    r.insert(QStringLiteral("sessions_live"), int(m_brains.size()));
+    return Response::success(req.id, r);
 }
 
 // Static model lists per brain. Codex also merges anything in ~/.codex/config.toml.
@@ -2177,6 +2222,10 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
         }
     }
 
+    // Remember the RESOLVED workdir for this session (diff.* runs git here).
+    // Mirrors makeBrain's cwdOverride-else-config-default resolution.
+    m_sessionCwd.insert(row.id, cwd.isEmpty() ? m_config.effectiveCwd() : cwd);
+
     Brain *brain = makeBrain(row, cwd, agentOverrides);
     if (!brain) {
         // Tear down any nested desktop we just spun up for this session.
@@ -2911,6 +2960,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_sessionAgentPrompt.remove(sessionId);
     m_agentGuided.remove(sessionId);
     m_subagentPendingWake.remove(sessionId);   // as a child awaiting parent-wake
+    m_sessionCwd.remove(sessionId);
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
     m_toolLoopWarned.remove(sessionId);
@@ -5703,6 +5753,7 @@ bool ControlServer::isConfigMethod(const QString &method)
 {
     static const QSet<QString> methods = {
         QStringLiteral("settings.get"),      QStringLiteral("settings.set"),
+        QStringLiteral("status.get"),        QStringLiteral("ui.manifest.get"),
         QStringLiteral("model.list"),        QStringLiteral("mcp.list"),
         QStringLiteral("mcp.add"),           QStringLiteral("mcp.remove"),
         QStringLiteral("mcp.set_enabled"),   QStringLiteral("mcp.test"),
@@ -5741,6 +5792,8 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
     const QString &m = req.method;
     if (m == QStringLiteral("settings.get"))    return handleSettingsGet(req);
     if (m == QStringLiteral("settings.set"))    return handleSettingsSet(req);
+    if (m == QStringLiteral("status.get"))      return handleStatusGet(req);
+    if (m == QStringLiteral("ui.manifest.get")) return handleUiManifestGet(req);
     if (m == QStringLiteral("phone.mcp"))       return handlePhoneMcp(req);
     if (m == QStringLiteral("phone.http"))      return handlePhoneHttp(req);
     if (m == QStringLiteral("hooks.list"))      return handleHooksList(req);
@@ -5793,6 +5846,7 @@ bool ControlServer::isOpsMethod(const QString &method)
            method.startsWith(QStringLiteral("tui.layout.")) ||
            method.startsWith(QStringLiteral("command.")) ||
            method.startsWith(QStringLiteral("ssh.")) ||
+           method.startsWith(QStringLiteral("diff.")) ||
            method == QStringLiteral("audit.list");
 }
 
@@ -5960,6 +6014,7 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("schedule.list"))        return handleScheduleList(req);
     if (m == QStringLiteral("schedule.set_enabled")) return handleScheduleSetEnabled(req);
     if (m == QStringLiteral("schedule.remove"))      return handleScheduleRemove(req);
+    if (m == QStringLiteral("schedule.run_now"))     return handleScheduleRunNow(req);
     if (m == QStringLiteral("tui.layout.list"))    return handleTuiLayoutList(req);
     if (m == QStringLiteral("tui.layout.add"))     return handleTuiLayoutAdd(req);
     if (m == QStringLiteral("tui.layout.edit"))    return handleTuiLayoutEdit(req);
@@ -5969,6 +6024,10 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("command.create"))     return handleCommandCreate(req);
     if (m == QStringLiteral("command.remove"))     return handleCommandRemove(req);
     if (m == QStringLiteral("command.invoke"))     return handleCommandInvoke(req);
+    if (m == QStringLiteral("diff.stage"))           return handleDiffStage(req);
+    if (m == QStringLiteral("diff.revert"))          return handleDiffRevert(req);
+    if (m == QStringLiteral("diff.commit"))          return handleDiffCommit(req);
+    if (m == QStringLiteral("diff.open_pr"))         return handleDiffOpenPr(req);
     if (m == QStringLiteral("ssh.allow_list"))       return handleSshAllowList(req);
     if (m == QStringLiteral("ssh.allow_add"))        return handleSshAllowAdd(req);
     if (m == QStringLiteral("ssh.allow_remove"))     return handleSshAllowRemove(req);
@@ -6078,6 +6137,121 @@ Response ControlServer::handleScheduleRemove(const Request &req)
     return Response::success(req.id, ok);
 }
 
+Response ControlServer::handleScheduleRunNow(const Request &req)
+{
+    // Fires the job immediately (even if disabled — pressing Run IS the
+    // approval), without touching next_run. Both the GUI's Run button and the
+    // TUI's "g" key call this; it previously didn't exist and always failed
+    // with unknown_method.
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const std::optional<QString> sid = m_scheduler.runNow(id);
+    if (!sid)
+        return Response::failure(req.id, QStringLiteral("no_schedule"),
+                                 QStringLiteral("unknown schedule: ") + id);
+    m_audit.record(QStringLiteral("schedule.run_now"), !sid->isEmpty(),
+                   QStringLiteral("low"),
+                   QStringLiteral("manually fired schedule %1").arg(id));
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), !sid->isEmpty());
+    result.insert(QStringLiteral("session_id"), *sid);
+    return Response::success(req.id, result);
+}
+
+// --- diff review: diff.* -----------------------------------------------------
+// Git actions behind the GUI DiffReviewPanel's PillButtons and the TUI's
+// /stage /commit /revert /openpr slash commands. Both frontends already sent
+// these verbs; until now the daemon answered unknown_method and each client
+// quietly degraded. Git-level failures come back as success{ok:false,message}
+// (not Response::failure) so the clients render git's own text inline instead
+// of a generic error path. Blocking QProcess in the handler follows the
+// ssh.exec precedent (SshAllowList::exec).
+
+namespace {
+Response diffResult(const Request &req, const jarvis::GitResult &r,
+                    bool urlOnSuccess = false)
+{
+    QJsonObject o;
+    o.insert(QStringLiteral("ok"), r.ok);
+    if (urlOnSuccess && r.ok)
+        o.insert(QStringLiteral("url"), r.output);
+    else if (!r.output.isEmpty())
+        o.insert(QStringLiteral("message"), r.output);
+    return Response::success(req.id, o);
+}
+} // namespace
+
+QString ControlServer::diffWorkdirFor(const QString &sessionId) const
+{
+    const QString mapped = m_sessionCwd.value(sessionId);
+    return mapped.isEmpty() ? m_config.effectiveCwd() : mapped;
+}
+
+Response ControlServer::handleDiffStage(const Request &req)
+{
+    const QString path = req.params.value(QStringLiteral("path")).toString();
+    if (path.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("path is required"));
+    const QString wd =
+        diffWorkdirFor(req.params.value(QStringLiteral("session_id")).toString());
+    if (!jarvis::GitOps::isRepo(wd))
+        return diffResult(req, {false, -1,
+                                QStringLiteral("not a git repository: ") + wd});
+    const jarvis::GitResult r = jarvis::GitOps::stage(wd, path);
+    m_audit.record(QStringLiteral("diff.stage"), r.ok, QStringLiteral("low"),
+                   QStringLiteral("git add %1 (in %2)").arg(path, wd));
+    return diffResult(req, r);
+}
+
+Response ControlServer::handleDiffRevert(const Request &req)
+{
+    const QString path = req.params.value(QStringLiteral("path")).toString();
+    if (path.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("path is required"));
+    const QString wd =
+        diffWorkdirFor(req.params.value(QStringLiteral("session_id")).toString());
+    if (!jarvis::GitOps::isRepo(wd))
+        return diffResult(req, {false, -1,
+                                QStringLiteral("not a git repository: ") + wd});
+    // Destroys local edits to the file — the GUI gates this behind an inline
+    // approval and the TUI requires the explicit /revert <path>; audit high.
+    const jarvis::GitResult r = jarvis::GitOps::revertFile(wd, path);
+    m_audit.record(QStringLiteral("diff.revert"), r.ok, QStringLiteral("high"),
+                   QStringLiteral("git checkout HEAD -- %1 (in %2)").arg(path, wd));
+    return diffResult(req, r);
+}
+
+Response ControlServer::handleDiffCommit(const Request &req)
+{
+    const QString message = req.params.value(QStringLiteral("message")).toString();
+    const QString wd =
+        diffWorkdirFor(req.params.value(QStringLiteral("session_id")).toString());
+    if (!jarvis::GitOps::isRepo(wd))
+        return diffResult(req, {false, -1,
+                                QStringLiteral("not a git repository: ") + wd});
+    const jarvis::GitResult r = jarvis::GitOps::commit(wd, message);
+    m_audit.record(QStringLiteral("diff.commit"), r.ok, QStringLiteral("medium"),
+                   QStringLiteral("git commit (in %1): %2")
+                       .arg(wd, message.left(60)));
+    return diffResult(req, r);
+}
+
+Response ControlServer::handleDiffOpenPr(const Request &req)
+{
+    const QString title = req.params.value(QStringLiteral("title")).toString();
+    const QString wd =
+        diffWorkdirFor(req.params.value(QStringLiteral("session_id")).toString());
+    if (!jarvis::GitOps::isRepo(wd))
+        return diffResult(req, {false, -1,
+                                QStringLiteral("not a git repository: ") + wd});
+    const jarvis::GitResult r = jarvis::GitOps::openPr(wd, title);
+    m_audit.record(QStringLiteral("diff.open_pr"), r.ok, QStringLiteral("medium"),
+                   QStringLiteral("push + gh pr create (in %1): %2")
+                       .arg(wd, title.left(60)));
+    return diffResult(req, r, /*urlOnSuccess=*/true);
+}
+
 // --- TUI self-edit layout: tui.layout.* -------------------------------------
 
 static QJsonArray tuiPagesToJson(const QVector<jarvis::TuiPageSpec> &pages)
@@ -6163,6 +6337,31 @@ void ControlServer::broadcastTuiLayoutChanged()
         QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
     for (QWebSocket *client : std::as_const(m_clients))
         client->sendTextMessage(payload);
+    // Custom pages are part of the merged surface manifest too.
+    broadcastUiManifestChanged();
+}
+
+// --- shared surface manifest: ui.manifest.* ----------------------------------
+
+Response ControlServer::handleUiManifestGet(const Request &req)
+{
+    return Response::success(
+        req.id, jarvis::UiManifest::merged(m_tuiLayoutStore.list(),
+                                           m_commandStore.list()));
+}
+
+void ControlServer::broadcastUiManifestChanged()
+{
+    // Payload-free nudge: clients refetch ui.manifest.get (keeps the frame
+    // tiny and avoids double-encoding the whole manifest on every change).
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), 1);
+    frame.insert(QStringLiteral("event"), QStringLiteral("ui.manifest.changed"));
+    frame.insert(QStringLiteral("data"), QJsonObject{});
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+    for (QWebSocket *client : std::as_const(m_clients))
+        client->sendTextMessage(payload);
 }
 
 // --- self-authored slash commands: command.* --------------------------------
@@ -6202,6 +6401,7 @@ Response ControlServer::handleCommandCreate(const Request &req)
         return Response::failure(req.id, QStringLiteral("invalid_command"),
                                  QStringLiteral("name collides with a built-in, already "
                                                 "exists, or has an invalid action_kind"));
+    broadcastUiManifestChanged(); // custom commands are part of the manifest
     return Response::success(req.id, {{QStringLiteral("ok"), true}});
 }
 
@@ -6211,6 +6411,7 @@ Response ControlServer::handleCommandRemove(const Request &req)
     if (!m_commandStore.remove(name))
         return Response::failure(req.id, QStringLiteral("not_found"),
                                  QStringLiteral("no such command"));
+    broadcastUiManifestChanged();
     return Response::success(req.id, {{QStringLiteral("ok"), true}});
 }
 
@@ -6220,18 +6421,104 @@ Response ControlServer::handleCommandInvoke(const Request &req)
     const auto row = m_commandStore.get(name);
     if (!row)
         return Response::failure(req.id, QStringLiteral("not_found"), QStringLiteral("no such command"));
+    const QString argsText = req.params.value(QStringLiteral("args")).toString();
     QJsonObject result;
     if (row->actionKind == QStringLiteral("prompt")) {
         QString prompt = row->body;
-        prompt.replace(QStringLiteral("{{ARGS}}"),
-                       req.params.value(QStringLiteral("args")).toString());
+        prompt.replace(QStringLiteral("{{ARGS}}"), argsText);
         result.insert(QStringLiteral("prompt"), prompt);
     } else if (row->actionKind == QStringLiteral("mcp_tool")) {
+        // EXECUTE the tool (previously this only echoed the name back and
+        // both frontends notified "dispatch is a fast-follow"). The target is
+        // a bare tool name, so try every enabled server — built-in
+        // computer-use first, where self-authored tools live — and keep the
+        // last error when none succeeds. JSON-object args pass through
+        // verbatim; free text rides as {"args": "<text>"}.
+        QJsonObject toolArgs;
+        const QJsonDocument doc = QJsonDocument::fromJson(argsText.toUtf8());
+        if (doc.isObject())
+            toolArgs = doc.object();
+        else if (!argsText.trimmed().isEmpty())
+            toolArgs.insert(QStringLiteral("args"), argsText);
+
+        jarvis::McpCallResult call;
+        call.error = QStringLiteral("no enabled MCP server");
+        QVector<McpServerRow> servers = m_mcp->list();
+        std::stable_sort(servers.begin(), servers.end(),
+                         [](const McpServerRow &a, const McpServerRow &b) {
+                             return (a.id == McpRegistry::builtinId()) >
+                                    (b.id == McpRegistry::builtinId());
+                         });
+        for (const McpServerRow &srv : servers) {
+            if (!srv.enabled)
+                continue;
+            call = McpRegistry::callTool(srv, row->actionTarget, toolArgs);
+            if (call.ok)
+                break;
+        }
+        m_audit.record(QStringLiteral("command.invoke"), call.ok,
+                       QStringLiteral("medium"),
+                       QStringLiteral("/%1 -> mcp_tool %2").arg(name, row->actionTarget));
         result.insert(QStringLiteral("mcp_tool"), row->actionTarget);
-        result.insert(QStringLiteral("args"), req.params.value(QStringLiteral("args")));
+        result.insert(QStringLiteral("executed"), true);
+        result.insert(QStringLiteral("ok"), call.ok);
+        result.insert(QStringLiteral("output"), call.ok ? call.content : call.error);
     } else {
+        // EXECUTE the script (same "was vapor" story as mcp_tool). Targets
+        // resolve ONLY under <commands>/scripts/ with the diff.* containment
+        // guard, and an explicit trust-policy deny blocks execution — the
+        // user's explicit /invoke answers any "ask".
         result.insert(QStringLiteral("shell"), row->actionTarget);
-        result.insert(QStringLiteral("args"), req.params.value(QStringLiteral("args")));
+        result.insert(QStringLiteral("executed"), true);
+        const TrustDecision d =
+            m_trustPolicies.evaluate(QStringLiteral("command.shell"), name);
+        if (d.action == QStringLiteral("deny")) {
+            m_audit.record(QStringLiteral("command.invoke"), false,
+                           QStringLiteral("high"),
+                           QStringLiteral("DENIED shell /%1 (policy %2)")
+                               .arg(name, d.ruleId));
+            result.insert(QStringLiteral("ok"), false);
+            result.insert(QStringLiteral("output"),
+                          QStringLiteral("blocked by trust policy (deny)"));
+            return Response::success(req.id, result);
+        }
+        if (!jarvis::GitOps::pathInside(row->actionTarget)) {
+            result.insert(QStringLiteral("ok"), false);
+            result.insert(QStringLiteral("output"),
+                          QStringLiteral("script path escapes the scripts dir: ")
+                              + row->actionTarget);
+            return Response::success(req.id, result);
+        }
+        const QString scriptPath = QDir(m_commandStore.dir())
+                                       .filePath(QStringLiteral("scripts/") + row->actionTarget);
+        const QFileInfo fi(scriptPath);
+        if (!fi.exists()) {
+            result.insert(QStringLiteral("ok"), false);
+            result.insert(QStringLiteral("output"),
+                          QStringLiteral("script not found: ") + scriptPath);
+            return Response::success(req.id, result);
+        }
+        QString prog = scriptPath;
+        QStringList shArgs;
+        if (!fi.isExecutable()) {
+#ifdef Q_OS_WIN
+            prog = QStringLiteral("cmd");
+            shArgs << QStringLiteral("/c") << scriptPath;
+#else
+            prog = QStringLiteral("/bin/sh");
+            shArgs << scriptPath;
+#endif
+        }
+        if (!argsText.trimmed().isEmpty())
+            shArgs << argsText; // one argv entry — the script parses further
+        const jarvis::GitResult r =
+            jarvis::GitOps::run(m_config.effectiveCwd(), prog, shArgs, 30000);
+        m_audit.record(QStringLiteral("command.invoke"), r.ok,
+                       QStringLiteral("high"),
+                       QStringLiteral("shell /%1 -> %2").arg(name, row->actionTarget));
+        result.insert(QStringLiteral("ok"), r.ok);
+        result.insert(QStringLiteral("exit_code"), r.exitCode);
+        result.insert(QStringLiteral("output"), r.output);
     }
     return Response::success(req.id, result);
 }

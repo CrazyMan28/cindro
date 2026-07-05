@@ -142,6 +142,25 @@ if (-not $jarvisdExe) { throw "jarvisd.exe not found under $build" }
 if (-not $sidebarExe) { throw "jarvis-sidebar.exe not found under $build" }
 Copy-Item $jarvisdExe $payload
 Copy-Item $sidebarExe $payload
+
+# jarvis-tui.exe — the TypeScript/OpenTUI terminal UI v2, compiled here on
+# Windows (bun install pulls @opentui/core-win32-x64, which can't extract on
+# Linux). Non-fatal if bun is absent so the GUI-only installer still builds.
+$tuiDir = Join-Path $repo "tui"
+if (Get-Command bun -ErrorAction SilentlyContinue) {
+  Write-Host "Building jarvis-tui.exe (TS TUI v2)…"
+  Push-Location $tuiDir
+  try {
+    bun install --frozen-lockfile
+    bun run build win
+    $tuiExe = Join-Path $tuiDir "dist\jarvis-tui.exe"
+    if (Test-Path $tuiExe) { Copy-Item $tuiExe $payload; Write-Host "  staged jarvis-tui.exe" }
+    else { Write-Warning "jarvis-tui.exe not produced — TUI v2 will be absent from this installer" }
+  } finally { Pop-Location }
+} else {
+  Write-Warning "bun not found — jarvis-tui.exe (TUI v2) NOT bundled. Install bun on the runner."
+}
+
 Copy-Item (Join-Path $repo "LICENSE") (Join-Path $payload "LICENSE.txt")
 # The launchers: jarvis-launch.vbs (HIDDEN — what the shortcuts use, no terminal)
 # + jarvis-start.cmd (visible, for manual/debug use).

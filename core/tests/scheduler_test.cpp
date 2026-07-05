@@ -155,6 +155,22 @@ int main(int argc, char **argv)
         const int fired2 = sched.tick(later.addSecs(600));
         check(fired2 == 0, "disabled job does not fire");
 
+        // schedule.run_now: manual fire works even while disabled, stamps
+        // last_run, and leaves next_run untouched (a manual run must not
+        // shift the configured cadence — tick() owns next_run advancement).
+        const qint64 lastBefore = row3 ? row3->lastRun : 0;
+        const auto manualSid = sched.runNow(id, later.addSecs(1200));
+        check(manualSid.has_value(), "runNow finds the schedule");
+        check(manualSid && *manualSid == QStringLiteral("sess_fake"),
+              "runNow returns the fire callback's session id");
+        check(fireCount == 2, "runNow invoked the fire callback (even disabled)");
+        auto row4 = sched.get(id);
+        check(row4 && row4->lastRun > lastBefore, "runNow stamps last_run");
+        check(row4 && row3 && row4->nextRun == row3->nextRun,
+              "runNow leaves next_run untouched");
+        check(!sched.runNow(QStringLiteral("sched_nope")).has_value(),
+              "runNow unknown id returns nullopt");
+
         // Remove.
         check(sched.remove(id), "remove existing schedule");
         check(sched.list().isEmpty(), "list empty after remove");

@@ -1,19 +1,18 @@
 """QuickViewScreen — a reusable inline popup overlay for peeking at any pane
 without leaving the tab you're on.
 
-Any of the existing tab panes (MemoryPane, SkillsPane, AgentsPane, QueuePane,
-ActivityPane, MemoryGraphPane, SchedulesPane, McpPane, PluginsPane, SshPane,
-SessionsPane, …) can be popped up as a floating overlay on top of whatever
-screen is active (e.g. Chat) via:
+MemoryPane, SkillsPane, AgentsPane, QueuePane, ActivityPane, MemoryGraphPane,
+SchedulesPane, McpPane, PluginsPane, SshPane, and SessionsPane have NO tab-*
+TabPane in app.py's main TabbedContent at all — they live ONLY as a popup,
+pushed as a floating overlay on top of whatever screen is active (e.g. Chat)
+via:
 
     self.app.push_screen(QuickViewScreen("Memory", lambda: MemoryPane(id="memory-quick")))
 
 Every one of those pane classes already fetches its own data in on_mount(),
-so a FRESH instance built by ``pane_factory`` is fully self-sufficient — do
-NOT try to reuse the instance already mounted inside the main TabbedContent
-(a Textual widget can only be mounted in one place at a time). Give the
-fresh instance its own id if the factory sets one, to avoid colliding with
-the id of the pane already living in the main TabbedContent.
+so a FRESH instance built by ``pane_factory`` is fully self-sufficient. Give
+the fresh instance its own id (the "*-quick" convention chat.py's
+POPUP_PANE_FACTORIES uses) so repeated opens never collide with each other.
 
 Escape closes the overlay and returns to whatever screen was underneath
 (e.g. still Chat) without touching the main TabbedContent's active tab.

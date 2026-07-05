@@ -258,6 +258,9 @@ private:
 
     // Method handlers return a Response for the request id.
     Response handlePing(const Request &req);
+    Response handleStatusGet(const Request &req);
+    Response handleUiManifestGet(const Request &req);
+    void broadcastUiManifestChanged();
     Response handleSettingsGet(const Request &req);
     Response handleSettingsSet(const Request &req);
     // Cross-platform self-update (update.* Contract A): check reports
@@ -431,6 +434,7 @@ private:
     Response handleScheduleList(const Request &req);
     Response handleScheduleSetEnabled(const Request &req);
     Response handleScheduleRemove(const Request &req);
+    Response handleScheduleRunNow(const Request &req);
     // TUI self-edit layout — tui.layout.list/add/edit/remove/reorder.
     Response handleTuiLayoutList(const Request &req);
     Response handleTuiLayoutAdd(const Request &req);
@@ -448,6 +452,13 @@ private:
     Response handleSshAllowAdd(const Request &req);
     Response handleSshAllowRemove(const Request &req);
     Response handleSshExec(const Request &req, bool remote);
+    // diff review actions (diff.stage/revert/commit/open_pr) — git in the
+    // session's workdir via jarvis::GitOps.
+    Response handleDiffStage(const Request &req);
+    Response handleDiffRevert(const Request &req);
+    Response handleDiffCommit(const Request &req);
+    Response handleDiffOpenPr(const Request &req);
+    QString diffWorkdirFor(const QString &sessionId) const;
     // Wave 8: audit log surface.
     Response handleAuditList(const Request &req);
 
@@ -705,6 +716,9 @@ private:
     Response handleWidgetSubscribe(QWebSocket *client, const Request &req);
     // sessionId -> live brain.
     QHash<QString, Brain *> m_brains;
+    // session id -> RESOLVED brain working dir (cwd override else the config
+    // default, mirroring makeBrain). In-memory only; diff.* runs git here.
+    QHash<QString, QString> m_sessionCwd;
 };
 
 } // namespace jarvis

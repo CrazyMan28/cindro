@@ -1,0 +1,7 @@
+// Embeds the Jarvis arc-reactor icon into jarvis-sidebar.exe. Windows uses
+// the exe's first icon group for Explorer, the taskbar, the window class,
+// and the Start-menu shortcut (the Inno [Icons] entry points IconFilename at
+// this exe) — before this file existed the Windows app shipped iconless
+// while Linux got packaging/jarvis.svg via hicolor. jarvis.ico is generated
+// from packaging/jarvis.svg (magick -define icon:auto-resize=256..16).
+IDI_ICON1 ICON "jarvis.ico"

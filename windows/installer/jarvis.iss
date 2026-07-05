@@ -29,6 +29,11 @@ OutputDir=..\dist
 OutputBaseFilename=Jarvis-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
+; Jarvis arc-reactor icon on the installer itself + Add/Remove Programs
+; (the app/shortcut/taskbar icon comes from the exe's embedded RC icon —
+; windows/jarvis.rc — which didn't exist before, hence the iconless app).
+SetupIconFile=..\jarvis.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -52,6 +57,9 @@ Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubd
 ; HIDDEN VBS launcher (wscript) — so jarvisd + the engine start with NO console
 ; window; only jarvis-sidebar (the GUI) appears. Jarvis icon kept.
 Name: "{group}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; IconFilename: "{app}\{#MyAppExeName}"
+; Terminal UI v2 (jarvis-tui.exe) — a console app, launched directly. Only
+; created when the payload actually contains it (built on a bun-equipped runner).
+Name: "{group}\Jarvis Terminal (TUI)"; Filename: "{app}\jarvis-tui.exe"; IconFilename: "{app}\{#MyAppExeName}"; Check: FileExists(ExpandConstant('{app}\jarvis-tui.exe'))
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 

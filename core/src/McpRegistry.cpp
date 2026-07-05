@@ -66,6 +66,47 @@ QByteArray initializedNotification()
     return QJsonDocument(req).toJson(QJsonDocument::Compact);
 }
 
+QByteArray toolsCallRequest(int id, const QString &tool, const QJsonObject &arguments)
+{
+    QJsonObject params;
+    params.insert(QStringLiteral("name"), tool);
+    params.insert(QStringLiteral("arguments"), arguments);
+
+    QJsonObject req;
+    req.insert(QStringLiteral("jsonrpc"), QStringLiteral("2.0"));
+    req.insert(QStringLiteral("id"), id);
+    req.insert(QStringLiteral("method"), QStringLiteral("tools/call"));
+    req.insert(QStringLiteral("params"), params);
+    return QJsonDocument(req).toJson(QJsonDocument::Compact);
+}
+
+// Fold one tools/call JSON-RPC reply into an McpCallResult: top-level `error`
+// or `result.isError` become .error; text content items concatenate into
+// .content.
+void fillCallResult(const QJsonObject &rpc, McpCallResult *res)
+{
+    if (rpc.contains(QStringLiteral("error"))) {
+        res->error = rpc.value(QStringLiteral("error")).toObject()
+                         .value(QStringLiteral("message"))
+                         .toString(QStringLiteral("tools/call error"));
+        return;
+    }
+    const QJsonObject result = rpc.value(QStringLiteral("result")).toObject();
+    QStringList parts;
+    for (const QJsonValue &v : result.value(QStringLiteral("content")).toArray()) {
+        const QJsonObject item = v.toObject();
+        if (item.value(QStringLiteral("type")).toString() == QStringLiteral("text"))
+            parts << item.value(QStringLiteral("text")).toString();
+    }
+    res->content = parts.join(QLatin1Char('\n'));
+    if (result.value(QStringLiteral("isError")).toBool(false)) {
+        res->error = res->content.isEmpty()
+            ? QStringLiteral("tool reported an error") : res->content;
+        return;
+    }
+    res->ok = true;
+}
+
 // Pull a JSON-RPC result object out of a body that may be raw JSON or SSE
 // ("data: {json}"). Matches `wantId` (or any result if wantId<0).
 std::optional<QJsonObject> extractRpcResult(const QByteArray &body, int wantId)
@@ -254,6 +295,152 @@ McpTestResult testStdio(const McpServerRow &server, int timeoutMs)
     return res;
 }
 
+McpCallResult callToolHttp(const McpServerRow &server, const QString &bearer,
+                           const QString &tool, const QJsonObject &arguments,
+                           int timeoutMs)
+{
+    McpCallResult res;
+    QNetworkAccessManager nam;
+    QString sessionId;
+    QElapsedTimer clock;
+    clock.start();
+
+    // Same Streamable-HTTP post shape as testHttp (kept in lockstep).
+    auto post = [&](const QByteArray &body, int wantId,
+                    std::optional<QJsonObject> *out) -> bool {
+        QNetworkRequest req{QUrl(server.endpoint)};
+        req.setHeader(QNetworkRequest::ContentTypeHeader, QByteArray("application/json"));
+        req.setRawHeader("Accept", "application/json, text/event-stream");
+        if (!bearer.isEmpty())
+            req.setRawHeader("Authorization", QByteArray("Bearer ") + bearer.toUtf8());
+        if (!sessionId.isEmpty())
+            req.setRawHeader("Mcp-Session-Id", sessionId.toUtf8());
+
+        QEventLoop loop;
+        QTimer timer;
+        timer.setSingleShot(true);
+        const int remaining = qMax(1, timeoutMs - int(clock.elapsed()));
+        QNetworkReply *reply = nam.post(req, body);
+        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
+            reply->abort();
+            loop.quit();
+        });
+        timer.start(remaining);
+        loop.exec();
+        timer.stop();
+
+        if (reply->error() != QNetworkReply::NoError &&
+            reply->error() != QNetworkReply::OperationCanceledError) {
+            res.error = reply->errorString();
+            reply->deleteLater();
+            return false;
+        }
+        const QByteArray sid = reply->rawHeader("Mcp-Session-Id");
+        if (!sid.isEmpty())
+            sessionId = QString::fromUtf8(sid);
+        const QByteArray payload = reply->readAll();
+        reply->deleteLater();
+        if (out)
+            *out = extractRpcResult(payload, wantId);
+        return true;
+    };
+
+    std::optional<QJsonObject> initResult;
+    if (!post(initializeRequest(1), 1, &initResult)) {
+        if (res.error.isEmpty())
+            res.error = QStringLiteral("initialize request failed");
+        return res;
+    }
+    if (!initResult) {
+        res.error = QStringLiteral("no JSON-RPC result for initialize");
+        return res;
+    }
+    if (initResult->contains(QStringLiteral("error"))) {
+        res.error = initResult->value(QStringLiteral("error")).toObject()
+                        .value(QStringLiteral("message"))
+                        .toString(QStringLiteral("initialize error"));
+        return res;
+    }
+
+    {
+        std::optional<QJsonObject> ignore;
+        post(initializedNotification(), -1, &ignore);
+    }
+
+    std::optional<QJsonObject> callResult;
+    if (!post(toolsCallRequest(2, tool, arguments), 2, &callResult)) {
+        if (res.error.isEmpty())
+            res.error = QStringLiteral("tools/call request failed");
+        return res;
+    }
+    if (!callResult) {
+        res.error = QStringLiteral("no JSON-RPC result for tools/call");
+        return res;
+    }
+    fillCallResult(*callResult, &res);
+    return res;
+}
+
+McpCallResult callToolStdio(const McpServerRow &server, const QString &tool,
+                            const QJsonObject &arguments, int timeoutMs)
+{
+    McpCallResult res;
+    const QStringList parts = server.endpoint.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (parts.isEmpty()) {
+        res.error = QStringLiteral("empty stdio command");
+        return res;
+    }
+
+    QProcess proc;
+    proc.setProgram(parts.first());
+    proc.setArguments(parts.mid(1));
+    proc.setProcessChannelMode(QProcess::SeparateChannels);
+    proc.start();
+    if (!proc.waitForStarted(qMin(timeoutMs, 3000))) {
+        res.error = QStringLiteral("failed to start stdio server: ") + proc.errorString();
+        return res;
+    }
+
+    QElapsedTimer clock;
+    clock.start();
+    proc.write(initializeRequest(1) + "\n");
+    proc.write(initializedNotification() + "\n");
+    proc.write(toolsCallRequest(2, tool, arguments) + "\n");
+
+    QByteArray buf;
+    std::optional<QJsonObject> callResult;
+    while (clock.elapsed() < timeoutMs) {
+        if (!proc.waitForReadyRead(qMax(1, timeoutMs - int(clock.elapsed()))))
+            break;
+        buf += proc.readAllStandardOutput();
+        int nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+            const QByteArray line = buf.left(nl);
+            buf.remove(0, nl + 1);
+            if (auto r = extractRpcResult(line, 2)) {
+                callResult = r;
+                break;
+            }
+        }
+        if (callResult)
+            break;
+    }
+
+    if (proc.state() != QProcess::NotRunning) {
+        proc.terminate();
+        if (!proc.waitForFinished(1000))
+            proc.kill();
+    }
+
+    if (!callResult) {
+        res.error = QStringLiteral("no tools/call result from stdio server");
+        return res;
+    }
+    fillCallResult(*callResult, &res);
+    return res;
+}
+
 } // namespace
 
 QString McpRegistry::computerUseBearer()
@@ -321,6 +508,18 @@ McpTestResult McpRegistry::test(const McpServerRow &server, int timeoutMs)
     if (bearer.isEmpty() && server.id == builtinId())
         bearer = computerUseBearer();
     return testHttp(server, bearer, timeoutMs);
+}
+
+McpCallResult McpRegistry::callTool(const McpServerRow &server, const QString &tool,
+                                    const QJsonObject &arguments, int timeoutMs)
+{
+    if (server.transport == QStringLiteral("stdio"))
+        return callToolStdio(server, tool, arguments, timeoutMs);
+    // http: built-in computer-use falls back to its config.yaml bearer.
+    QString bearer = server.token;
+    if (bearer.isEmpty() && server.id == builtinId())
+        bearer = computerUseBearer();
+    return callToolHttp(server, bearer, tool, arguments, timeoutMs);
 }
 
 QString McpRegistry::codexKey(const McpServerRow &row)

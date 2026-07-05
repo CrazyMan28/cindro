@@ -73,11 +73,16 @@ jobs:
           echo "AppImage selftest OK"
 
       - name: Upload AppImage artifact
+        # The AppImage is already built + selftested above; a transient GitHub
+        # artifact-storage-quota hit must not red the whole PR. Short retention
+        # keeps the quota from re-accumulating (dev builds are throwaway).
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: Jarvis-${{ steps.ver.outputs.version }}-AppImage
           path: dist/Jarvis-*.AppImage
           if-no-files-found: error
+          retention-days: 7
 
       - name: Attach to Release (on a v* tag)
         if: startsWith(github.ref, 'refs/tags/v')
