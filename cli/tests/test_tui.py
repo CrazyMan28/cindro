@@ -1302,13 +1302,22 @@ async def test_custom_pages_mount_from_tui_layout_list(monkeypatch, tmp_path):
         assert app.query_one("#tab-custom-errorlog") is not None
 
 
-async def test_custom_pages_hot_reload_on_broadcast():
+async def test_custom_pages_hot_reload_on_broadcast(monkeypatch):
     """tui.layout.changed fans out to _reconcile_custom_pages (run as a
     worker off the sync broadcast callback), which mounts brand-new pages
     via _mount_custom_page — same observable behavior as before the
-    reconciliation rework, just routed through the new method."""
+    reconciliation rework, just routed through the new method.
+
+    client.call is stubbed to {} so the test is hermetic: with a REAL
+    jarvisd running on this machine, startup's load_custom_pages would
+    otherwise mount the user's actual custom pages into `added` first."""
     from jarvis_cli.tui.app import JarvisTui
     app = JarvisTui()
+
+    async def fake_call(method, params=None, timeout=60.0):
+        return {}
+    monkeypatch.setattr(app.client, "call", fake_call)
+
     added = []
     app._mount_custom_page = lambda page: added.append(page["id"])
     async with app.run_test() as pilot:

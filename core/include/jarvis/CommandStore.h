@@ -30,6 +30,9 @@ public:
 
     QVector<CommandRow> list() const;
     std::optional<CommandRow> get(const QString &name) const;
+    // The store root (…/commands). Shell-kind targets resolve against
+    // <dir()>/scripts — the daemon needs this to execute them.
+    QString dir() const { return m_dir; }
     bool create(const QString &name, const QString &description,
                 const QString &actionKind, const QString &actionTarget,
                 const QString &body, bool selfAuthored);

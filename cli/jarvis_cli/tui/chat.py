@@ -457,13 +457,24 @@ class ChatPane(Vertical):
                 return
             if "prompt" in res:
                 await self._send(res["prompt"])
-            elif "mcp_tool" in res:
-                self.notify(f"custom command '{name}' calls MCP tool "
-                           f"'{res['mcp_tool']}' — invoke it via a normal chat turn "
-                           f"for now (direct in-TUI MCP dispatch is a fast-follow)")
-            elif "shell" in res:
-                self.notify(f"custom command '{name}' would run script "
-                           f"'{res['shell']}' — shell execution wiring is a fast-follow")
+            elif "mcp_tool" in res or "shell" in res:
+                # The daemon now EXECUTES these kinds server-side and returns
+                # {executed, ok, output} (an old daemon just echoes the target
+                # back — keep the honest degrade for that skew).
+                if res.get("executed"):
+                    ok = bool(res.get("ok"))
+                    out = str(res.get("output") or "").strip()
+                    kind = "mcp_tool" if "mcp_tool" in res else "shell"
+                    target = res.get(kind, "")
+                    head = Text(("✓ " if ok else "✕ ") + f"/{name} → {target}",
+                                style="green" if ok else "red")
+                    self._log(head)
+                    if out:
+                        self._log(Text(out[:4000], style="" if ok else "red"))
+                else:
+                    self.notify(f"custom command '{name}' targets "
+                                f"'{res.get('mcp_tool') or res.get('shell')}' but this "
+                                f"daemon predates server-side execution — update jarvisd")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "chat-input":

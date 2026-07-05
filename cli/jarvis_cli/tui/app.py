@@ -324,8 +324,23 @@ class JarvisTui(App):
         for page in res.get("pages", []):
             self._mount_custom_page(page)
 
+    def _main_tabs(self) -> TabbedContent:
+        """The main tab bar, regardless of what screen is on top.
+
+        App.query_one searches only the TOP of the screen stack, so while any
+        full-screen modal is up (voice mode, a quick-view popup, the lock
+        gate / setup wizard startup gates) it cannot see the base screen's
+        TabbedContent — a tui.layout.changed broadcast arriving mid-popup
+        used to crash the reconcile worker with NoMatches and silently drop
+        the layout update. Fall back to the base screen explicitly."""
+        from textual.css.query import NoMatches
+        try:
+            return self.query_one(TabbedContent)
+        except NoMatches:
+            return self.screen_stack[0].query_one(TabbedContent)
+
     def _mount_custom_page(self, page: dict) -> None:
-        tabbed = self.query_one(TabbedContent)
+        tabbed = self._main_tabs()
         tab_id = f"tab-custom-{page['id']}"
         if tabbed.query(f"#{tab_id}"):
             return
@@ -344,7 +359,7 @@ class JarvisTui(App):
         changed (tui_edit_page), then remount fresh; anything unchanged is
         left alone; anything brand new gets mounted. This is what makes the
         documented "live, no restart needed" promise actually true."""
-        tabbed = self.query_one(TabbedContent)
+        tabbed = self._main_tabs()
         new_ids = {page["id"] for page in pages}
         for stale_id in [pid for pid in self._custom_pages if pid not in new_ids]:
             tab_id = f"tab-custom-{stale_id}"

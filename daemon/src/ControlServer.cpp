@@ -12,6 +12,8 @@
 #include "jarvis/PluginSigner.h"
 #include "jarvis/Updater.h"
 
+#include <algorithm>
+
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
@@ -6388,18 +6390,104 @@ Response ControlServer::handleCommandInvoke(const Request &req)
     const auto row = m_commandStore.get(name);
     if (!row)
         return Response::failure(req.id, QStringLiteral("not_found"), QStringLiteral("no such command"));
+    const QString argsText = req.params.value(QStringLiteral("args")).toString();
     QJsonObject result;
     if (row->actionKind == QStringLiteral("prompt")) {
         QString prompt = row->body;
-        prompt.replace(QStringLiteral("{{ARGS}}"),
-                       req.params.value(QStringLiteral("args")).toString());
+        prompt.replace(QStringLiteral("{{ARGS}}"), argsText);
         result.insert(QStringLiteral("prompt"), prompt);
     } else if (row->actionKind == QStringLiteral("mcp_tool")) {
+        // EXECUTE the tool (previously this only echoed the name back and
+        // both frontends notified "dispatch is a fast-follow"). The target is
+        // a bare tool name, so try every enabled server — built-in
+        // computer-use first, where self-authored tools live — and keep the
+        // last error when none succeeds. JSON-object args pass through
+        // verbatim; free text rides as {"args": "<text>"}.
+        QJsonObject toolArgs;
+        const QJsonDocument doc = QJsonDocument::fromJson(argsText.toUtf8());
+        if (doc.isObject())
+            toolArgs = doc.object();
+        else if (!argsText.trimmed().isEmpty())
+            toolArgs.insert(QStringLiteral("args"), argsText);
+
+        jarvis::McpCallResult call;
+        call.error = QStringLiteral("no enabled MCP server");
+        QVector<McpServerRow> servers = m_mcp->list();
+        std::stable_sort(servers.begin(), servers.end(),
+                         [](const McpServerRow &a, const McpServerRow &b) {
+                             return (a.id == McpRegistry::builtinId()) >
+                                    (b.id == McpRegistry::builtinId());
+                         });
+        for (const McpServerRow &srv : servers) {
+            if (!srv.enabled)
+                continue;
+            call = McpRegistry::callTool(srv, row->actionTarget, toolArgs);
+            if (call.ok)
+                break;
+        }
+        m_audit.record(QStringLiteral("command.invoke"), call.ok,
+                       QStringLiteral("medium"),
+                       QStringLiteral("/%1 -> mcp_tool %2").arg(name, row->actionTarget));
         result.insert(QStringLiteral("mcp_tool"), row->actionTarget);
-        result.insert(QStringLiteral("args"), req.params.value(QStringLiteral("args")));
+        result.insert(QStringLiteral("executed"), true);
+        result.insert(QStringLiteral("ok"), call.ok);
+        result.insert(QStringLiteral("output"), call.ok ? call.content : call.error);
     } else {
+        // EXECUTE the script (same "was vapor" story as mcp_tool). Targets
+        // resolve ONLY under <commands>/scripts/ with the diff.* containment
+        // guard, and an explicit trust-policy deny blocks execution — the
+        // user's explicit /invoke answers any "ask".
         result.insert(QStringLiteral("shell"), row->actionTarget);
-        result.insert(QStringLiteral("args"), req.params.value(QStringLiteral("args")));
+        result.insert(QStringLiteral("executed"), true);
+        const TrustDecision d =
+            m_trustPolicies.evaluate(QStringLiteral("command.shell"), name);
+        if (d.action == QStringLiteral("deny")) {
+            m_audit.record(QStringLiteral("command.invoke"), false,
+                           QStringLiteral("high"),
+                           QStringLiteral("DENIED shell /%1 (policy %2)")
+                               .arg(name, d.ruleId));
+            result.insert(QStringLiteral("ok"), false);
+            result.insert(QStringLiteral("output"),
+                          QStringLiteral("blocked by trust policy (deny)"));
+            return Response::success(req.id, result);
+        }
+        if (!jarvis::GitOps::pathInside(row->actionTarget)) {
+            result.insert(QStringLiteral("ok"), false);
+            result.insert(QStringLiteral("output"),
+                          QStringLiteral("script path escapes the scripts dir: ")
+                              + row->actionTarget);
+            return Response::success(req.id, result);
+        }
+        const QString scriptPath = QDir(m_commandStore.dir())
+                                       .filePath(QStringLiteral("scripts/") + row->actionTarget);
+        const QFileInfo fi(scriptPath);
+        if (!fi.exists()) {
+            result.insert(QStringLiteral("ok"), false);
+            result.insert(QStringLiteral("output"),
+                          QStringLiteral("script not found: ") + scriptPath);
+            return Response::success(req.id, result);
+        }
+        QString prog = scriptPath;
+        QStringList shArgs;
+        if (!fi.isExecutable()) {
+#ifdef Q_OS_WIN
+            prog = QStringLiteral("cmd");
+            shArgs << QStringLiteral("/c") << scriptPath;
+#else
+            prog = QStringLiteral("/bin/sh");
+            shArgs << scriptPath;
+#endif
+        }
+        if (!argsText.trimmed().isEmpty())
+            shArgs << argsText; // one argv entry — the script parses further
+        const jarvis::GitResult r =
+            jarvis::GitOps::run(m_config.effectiveCwd(), prog, shArgs, 30000);
+        m_audit.record(QStringLiteral("command.invoke"), r.ok,
+                       QStringLiteral("high"),
+                       QStringLiteral("shell /%1 -> %2").arg(name, row->actionTarget));
+        result.insert(QStringLiteral("ok"), r.ok);
+        result.insert(QStringLiteral("exit_code"), r.exitCode);
+        result.insert(QStringLiteral("output"), r.output);
     }
     return Response::success(req.id, result);
 }
