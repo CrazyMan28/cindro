@@ -3,7 +3,7 @@
 // identity, live status.get telemetry (not the GUI's old hardcoded
 // mcpCount), the tab strip, and Home's manifest-driven page directory.
 
-import { testRender } from "@opentui/solid"
+import { render } from "./render"
 import { afterEach, expect, test } from "bun:test"
 
 import { App } from "../src/app"
@@ -50,7 +50,7 @@ test("shell boots: topbar telemetry + tabs + manifest pages render", async () =>
   client = new ControlClient(() => daemon!.url, 1000)
   const registry = new CommandRegistry()
 
-  const setup = await testRender(
+  const setup = await render(
     () => <App client={client!} registry={registry} onQuit={() => {}} />,
     { width: 100, height: 30 },
   )

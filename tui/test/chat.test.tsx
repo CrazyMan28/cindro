@@ -8,7 +8,7 @@
 //   plus: Escape closes the popup (there was NO way to cancel before), the
 //   send flow, and approval y-key handling.
 
-import { testRender } from "@opentui/solid"
+import { render } from "./render"
 import { afterEach, expect, test } from "bun:test"
 
 import { App } from "../src/app"
@@ -52,7 +52,7 @@ async function bootChat() {
   const m = await client.call("ui.manifest.get")
   registry.mergeManifest((m.commands ?? []) as Array<Record<string, unknown>>)
 
-  const setup = await testRender(
+  const setup = await render(
     () => <App client={client!} registry={registry} onQuit={() => {}} />,
     { width: 100, height: 32 },
   )

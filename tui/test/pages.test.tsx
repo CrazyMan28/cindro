@@ -3,9 +3,9 @@
 // custom pages appear as live tabs, and a widget DSL spec renders inline in
 // chat with its interactive parts.
 
-import { testRender } from "@opentui/solid"
 import { afterEach, expect, test } from "bun:test"
 
+import { render } from "./render"
 import { App } from "../src/app"
 import { CommandRegistry } from "../src/commands/registry"
 import { ControlClient } from "../src/control/client"
@@ -82,7 +82,7 @@ async function boot() {
   const m = await client.call("ui.manifest.get")
   registry.mergeManifest((m.commands ?? []) as Array<Record<string, unknown>>)
 
-  const setup = await testRender(
+  const setup = await render(
     () => <App client={client!} registry={registry} onQuit={() => {}} />,
     { width: 110, height: 34 },
   )
@@ -145,8 +145,12 @@ test("widget DSL renders inline in chat (text/progress/badge/button)", async () 
   await setup.mockInput.pressKey("RETURN")
   await setup.waitForFrame((f) => f.includes("❯ hi"))
 
+  // The chat widget item is session-scoped, so the session must exist before
+  // the broadcast — session.send only fires AFTER session.create resolves,
+  // so waiting for it guarantees sessionId() is set (avoids a load race).
+  await setup.waitFor(() => daemon!.callsFor("session.send").length > 0)
   await sleep(120)
-  daemon!.broadcast("widget.render", {
+  const widget = {
     session_id: "sess_test",
     title: "deploy status",
     spec: {
@@ -159,9 +163,18 @@ test("widget DSL renders inline in chat (text/progress/badge/button)", async () 
         { type: "button", text: "evil", action: { eval: "rm -rf /" } },
       ],
     },
-  })
-  await sleep(500)
-  const frame = await setup.waitForFrame((f) => f.includes("deploy pipeline"))
+  }
+  // Re-broadcast each pass (idempotent: the store updates by id) so a
+  // broadcast that raced the subscription can't leave the test hung, and
+  // drive explicit render passes since the push doesn't always auto-schedule
+  // a repaint under suite load. The content is always correct once it lands.
+  let frame = ""
+  for (let i = 0; i < 80 && !frame.includes("deploy pipeline"); i++) {
+    daemon!.broadcast("widget.render", widget)
+    await sleep(25)
+    await setup.renderOnce()
+    frame = setup.captureCharFrame()
+  }
   expect(frame).toContain("◆ CANVAS · deploy status")
   expect(frame).toContain("50%")
   expect(frame).toContain("LIVE")

@@ -5,7 +5,7 @@
 // the engine's /browser/* REST surface (Bun.serve stub) with the
 // stale-session guard + selectable snapshot rows the legacy TUI never wired.
 
-import { testRender } from "@opentui/solid"
+import { render } from "./render"
 import { afterEach, expect, test } from "bun:test"
 
 import type { AppApi } from "../src/app-context"
@@ -103,7 +103,7 @@ async function boot(which: "computer" | "browser", active: () => boolean = () =>
     notify: () => {},
     quit: () => {},
   }
-  const setup = await testRender(
+  const setup = await render(
     () => (
       <AppContext.Provider value={api}>
         {which === "computer" ? (

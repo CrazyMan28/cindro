@@ -5,7 +5,7 @@
 // four contract scenarios: dial-extension flow, incoming-call banner +
 // accept, screening transcript render, and the red-alert confirm step.
 
-import { testRender } from "@opentui/solid"
+import { render } from "./render"
 import { afterEach, expect, test } from "bun:test"
 
 import type { AppApi } from "../src/app-context"
@@ -175,7 +175,7 @@ async function bootPage(over: Partial<PhoneState> = {}) {
   installPhoneHandlers(daemon, st)
   client = new ControlClient(() => daemon!.url, 1000)
   const api = makeApi()
-  const setup = await testRender(
+  const setup = await render(
     () => (
       <AppContext.Provider value={api}>
         <PhonePage active={() => true} />
@@ -263,7 +263,7 @@ test("CallOverlay: ringing banner + A accepts via POST /api/calls/:id/accept", a
   installPhoneHandlers(daemon, st)
   client = new ControlClient(() => daemon!.url, 1000)
   const api = makeApi()
-  const setup = await testRender(
+  const setup = await render(
     () => (
       <AppContext.Provider value={api}>
         <CallOverlay />
@@ -299,7 +299,7 @@ test("CallOverlay: R rejects with the QML body and clears the banner", async () 
   installPhoneHandlers(daemon, st)
   client = new ControlClient(() => daemon!.url, 1000)
   const api = makeApi()
-  const setup = await testRender(
+  const setup = await render(
     () => (
       <AppContext.Provider value={api}>
         <CallOverlay />

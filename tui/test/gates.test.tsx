@@ -13,7 +13,7 @@
 
 import { writeFileSync } from "node:fs"
 
-import { testRender } from "@opentui/solid"
+import { render } from "./render"
 import { afterEach, expect, test } from "bun:test"
 
 import type { AppApi } from "../src/app-context"
@@ -52,7 +52,7 @@ function makeApi(): AppApi {
 }
 
 async function mount(node: () => unknown, size = { width: 100, height: 32 }) {
-  const setup = await testRender(
+  const setup = await render(
     () => <AppContext.Provider value={makeApi()}>{node() as never}</AppContext.Provider>,
     size,
   )

@@ -1,7 +1,7 @@
 // Phase 5 delight layer: keybind resolution + remap, theme cycle persistence,
 // and the Ctrl+K palette running a command end-to-end through the shell.
 
-import { testRender } from "@opentui/solid"
+import { render } from "./render"
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -81,7 +81,7 @@ test("Ctrl+K opens the palette and running an entry navigates", async () => {
   const m = await client.call("ui.manifest.get")
   registry.mergeManifest((m.commands ?? []) as Array<Record<string, unknown>>)
 
-  const setup = await testRender(
+  const setup = await render(
     () => <App client={client} registry={registry} onQuit={() => {}} />,
     { width: 100, height: 30 },
   )

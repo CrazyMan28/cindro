@@ -4,7 +4,7 @@
 // chips + 30-line truncation and drives the REAL diff.* verbs — with the
 // destructive revert gated behind a confirm picker.
 
-import { testRender } from "@opentui/solid"
+import { render } from "./render"
 import { afterEach, expect, test } from "bun:test"
 
 import type { AppApi } from "../src/app-context"
@@ -50,7 +50,7 @@ async function bootReplay(history: Array<Record<string, unknown>>) {
     events: history.map((ev, i) => ({ seq: i + 1, ts: i, ev })),
   })
   client = new ControlClient(() => daemon!.url, 1000)
-  const setup = await testRender(
+  const setup = await render(
     () => (
       <AppContext.Provider value={makeApi(client!)}>
         <ReplayPage active={() => true} />
@@ -162,7 +162,7 @@ async function bootDiff(active?: () => boolean) {
   daemon.handlers["diff.commit"] = () => ({ ok: true, message: "committed 2 files" })
   daemon.handlers["diff.revert"] = () => ({ ok: true })
   client = new ControlClient(() => daemon!.url, 1000)
-  const setup = await testRender(
+  const setup = await render(
     () => (
       <AppContext.Provider value={makeApi(client!)}>
         <DiffReview files={FILES} sessionId="sess_diff" active={active} />
