@@ -251,6 +251,8 @@ Item {
             videoResolutionCombo.syncFromState()
             videoFormatCombo.syncFromState()
             videoModeCombo.syncFromState()
+            videoFpsCombo.syncFromState()
+            videoMaxFramesCombo.syncFromState()
         }
         function onVoicesListed(voices) {
             page.voiceList = voices !== undefined ? voices : []
@@ -1111,6 +1113,42 @@ Item {
                                 currentIndex = i >= 0 ? i : 0
                             }
                             onActivated: { page.videoFrameMode = ids[currentIndex]; page.dirty = true }
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 14
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "Default fps"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: videoFpsCombo
+                            Layout.fillWidth: true
+                            property var ids: ["auto", "0.2", "0.5", "1", "2"]
+                            model: ["auto (by duration)", "0.2 fps", "0.5 fps", "1 fps", "2 fps"]
+                            function syncFromState() {
+                                var i = ids.indexOf(page.videoDefaultFps)
+                                currentIndex = i >= 0 ? i : 0
+                            }
+                            onActivated: { page.videoDefaultFps = ids[currentIndex]; page.dirty = true }
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "Max frames per call"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: videoMaxFramesCombo
+                            Layout.fillWidth: true
+                            property var ids: [50, 100, 200]
+                            model: ["50", "100 (default)", "200"]
+                            function syncFromState() {
+                                var i = ids.indexOf(page.videoMaxFrames)
+                                currentIndex = i >= 0 ? i : 1
+                            }
+                            onActivated: { page.videoMaxFrames = ids[currentIndex]; page.dirty = true }
                         }
                     }
                 }

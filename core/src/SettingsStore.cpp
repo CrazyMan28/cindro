@@ -115,7 +115,10 @@ static const QJsonObject &videoDefaults()
 static QJsonValue normalizeVideoValue(const QString &key, const QJsonValue &value)
 {
     const auto oneOf = [&](std::initializer_list<const char *> allowed) -> QJsonValue {
-        const QString v = value.toString().trimmed().toLower();
+        // toVariant() first: QJsonValue::toString() yields "" for non-String
+        // JSON values, which would silently reset a numeric-typed slip to the
+        // default instead of even attempting a match.
+        const QString v = value.toVariant().toString().trimmed().toLower();
         for (const char *a : allowed)
             if (v == QLatin1String(a))
                 return v;
@@ -161,6 +164,8 @@ static QJsonValue normalizeVideoValue(const QString &key, const QJsonValue &valu
     if (key == QLatin1String("video_enable_index")) {
         if (value.isBool())
             return value;
+        if (value.isDouble()) // config.toml `= 1` parses as a JSON number
+            return value.toDouble() != 0.0;
         const QString v = value.toString().trimmed().toLower();
         return v == QLatin1String("true") || v == QLatin1String("1");
     }

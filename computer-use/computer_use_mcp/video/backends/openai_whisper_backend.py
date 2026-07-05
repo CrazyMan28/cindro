@@ -15,14 +15,9 @@ from pathlib import Path
 
 from computer_use_mcp.video import platform_info
 from computer_use_mcp.video.types import AudioResult, AudioTag, TranscriptionSegment
+from computer_use_mcp.video.backends import resolve_model
 
 
-def resolve_model(cfg: dict) -> str:
-    """cfg["video_whisper_model"], resolving "auto" to a RAM-based pick."""
-    model = cfg.get("video_whisper_model", "large-v3")
-    if model == "auto":
-        return platform_info.recommend_whisper_model()
-    return model
 
 
 def _find_binary() -> tuple[str, bool]:
@@ -65,9 +60,12 @@ def transcribe(wav_path: str, cfg: dict) -> AudioResult:
     exe, is_whisper_at = _find_binary()
     model = resolve_model(cfg)
     with tempfile.TemporaryDirectory() as tmpdir:
+        # The timeout converts a wedged CLI into a retryable error instead
+        # of blocking the chunk worker forever; big-model CPU runs are slow
+        # but nowhere near an hour per <=10min chunk.
         subprocess.run(
             [exe, wav_path, "--model", model, "--output_format", "json", "--output_dir", tmpdir],
-            capture_output=True, text=True, check=True)
+            capture_output=True, text=True, check=True, timeout=3600)
         stem = Path(wav_path).stem
         with open(Path(tmpdir) / f"{stem}.json", encoding="utf-8") as f:
             data = json.load(f)

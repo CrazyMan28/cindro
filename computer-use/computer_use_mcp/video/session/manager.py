@@ -57,6 +57,11 @@ def load_manifest(video_hash: str) -> dict | None:
 def save_manifest(video_hash: str, manifest: dict) -> None:
     """Atomic write: tmp file + os.replace, so a crash mid-write never leaves
     a half-written manifest.json for load_manifest to trip over."""
+    # Every save marks the session as freshly used, so an actively re-watched
+    # video's cache survives the age sweep (created_at alone would expire a
+    # session that was used yesterday but created last week — the downloads
+    # cache refreshes mtime on hits for the same reason).
+    manifest["last_used_at"] = datetime.now(timezone.utc).isoformat()
     d = session_dir(video_hash)
     tmp = d / f".{_MANIFEST_NAME}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -93,7 +98,8 @@ def _session_age_reference(entry: Path) -> float:
     """Unix timestamp to compare against the cutoff: manifest created_at when
     present and parseable, else the directory's own mtime."""
     manifest = load_manifest(entry.name)
-    if manifest and "created_at" in manifest:
-        with contextlib.suppress(ValueError, TypeError):
-            return datetime.fromisoformat(manifest["created_at"]).timestamp()
+    for key in ("last_used_at", "created_at"):
+        if manifest and key in manifest:
+            with contextlib.suppress(ValueError, TypeError):
+                return datetime.fromisoformat(manifest[key]).timestamp()
     return entry.stat().st_mtime

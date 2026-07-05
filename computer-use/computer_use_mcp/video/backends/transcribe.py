@@ -47,14 +47,28 @@ def _pick_backend(cfg: dict) -> ModuleType:
 
 
 def _window_silence_provider(path: str, start: float, window_end: float):
-    """make_silence_provider shifted into window-relative coordinates."""
+    """make_silence_provider shifted into window-relative coordinates.
+
+    Also drops anything outside [0, window_len] defensively — a silence from
+    beyond the window must never become a chunk-boundary snap target."""
     raw = audio_chunker.make_silence_provider(path, start=start, end=window_end)
+    window_len = window_end - start
 
     def provider(loose: bool) -> list[Interval]:
-        return [Interval(start=i.start - start, end=i.end - start)
-                for i in raw(loose)]
+        shifted = [Interval(start=i.start - start, end=i.end - start)
+                   for i in raw(loose)]
+        return [i for i in shifted if i.end > 0 and i.start < window_len]
 
     return provider
+
+
+def _transcribe_once(backend: ModuleType, wav: str, cfg: dict) -> AudioResult:
+    """One transcription call, with the backend's own retry wrapper when it
+    has one (cloud calls are flaky in ways local inference isn't)."""
+    retry = getattr(backend, "transcribe_with_retry", None)
+    if retry is not None:
+        return retry(wav, cfg)
+    return backend.transcribe(wav, cfg)
 
 
 def transcribe_video(
@@ -87,7 +101,7 @@ def transcribe_video(
             wav = audio.extract_audio(
                 video_path, os.path.join(tmp, "audio.wav"), start=start,
                 end=end)
-            return shift_audio_result(backend.transcribe(wav, cfg), start)
+            return shift_audio_result(_transcribe_once(backend, wav, cfg), start)
         return _transcribe_chunked(
             video_path, backend, cfg, tmp,
             start=start, window_end=window_end, window_len=window_len)
@@ -112,11 +126,13 @@ def _transcribe_chunked(
         silence_provider=_window_silence_provider(video_path, start, window_end),
     )
 
-    # Cloud calls are network-bound (3 in flight is fine); the local engines
-    # share one in-process model, so keep it at 2 to bound memory while the
-    # GIL-releasing inference still overlaps with the next chunk's ffmpeg.
+    # Cloud calls are network-bound (3 in flight is fine). Local engines run
+    # ONE chunk at a time: the in-process engines share a single model
+    # instance whose thread-safety under concurrent transcribe() calls
+    # ctranslate2 does not guarantee, and parallel CLI invocations would
+    # multiply peak memory — sequential is the safe baseline.
     cloud = str(cfg.get("video_backend")) in ("gemini-api", "openai-api")
-    max_workers = 3 if cloud else 2
+    max_workers = 3 if cloud else 1
 
     def work(chunk: ChunkPlan) -> AudioResult:
         wav = audio.extract_audio(
@@ -125,7 +141,7 @@ def _transcribe_chunked(
         last: Exception | None = None
         for _attempt in range(2):  # one retry per chunk
             try:
-                return shift_audio_result(backend.transcribe(wav, cfg),
+                return shift_audio_result(_transcribe_once(backend, wav, cfg),
                                           start + chunk.start)
             except Exception as exc:  # noqa: BLE001
                 last = exc

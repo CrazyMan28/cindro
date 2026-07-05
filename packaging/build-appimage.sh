@@ -55,7 +55,9 @@ if ( set -e
      ENV_VENV="$BUILD/appimg-venv"
      env -u PYTHONPATH python3 -m venv "$ENV_VENV"
      env -u PYTHONPATH "$ENV_VENV/bin/pip" install -q --upgrade pip pyinstaller
-     env -u PYTHONPATH "$ENV_VENV/bin/pip" install -q -e "$REPO/computer-use"
+     # [cloud-video]: bundle the optional Gemini/OpenAI SDKs so the Settings
+     # UI's "available when API key set" promise holds in the AppImage too.
+     env -u PYTHONPATH "$ENV_VENV/bin/pip" install -q -e "$REPO/computer-use[cloud-video]"
      printf 'from computer_use_mcp.server import main\nif __name__=="__main__":\n    main()\n' \
         > "$BUILD/engine_entry.py"
      # --collect-data + --copy-metadata: jsonschema_specifications ships its

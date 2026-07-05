@@ -15,13 +15,45 @@ import hashlib
 import html
 import os
 import re
+import threading
 import time
 import urllib.request
+from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import urlparse
 
 from computer_use_mcp.video import config as vconfig
 from computer_use_mcp.video.types import AudioResult, SourceInfo, TranscriptionSegment
+
+# Recent yt_dlp info dicts by URL, so the captions fetch (and video_info's
+# metadata-only path) reuse what a download in the same process already
+# learned instead of hitting YouTube again. Small + in-memory on purpose.
+_INFO_CACHE: OrderedDict[str, dict] = OrderedDict()
+_INFO_CACHE_MAX = 8
+_INFO_CACHE_LOCK = threading.Lock()
+
+# One in-flight download per URL hash: two concurrent video_watch calls on
+# the same fresh URL would otherwise both write the same outtmpl path.
+_DOWNLOAD_LOCKS: dict[str, threading.Lock] = {}
+_DOWNLOAD_LOCKS_GUARD = threading.Lock()
+
+
+def _cache_info(url: str, info: dict) -> None:
+    with _INFO_CACHE_LOCK:
+        _INFO_CACHE[url] = info
+        _INFO_CACHE.move_to_end(url)
+        while len(_INFO_CACHE) > _INFO_CACHE_MAX:
+            _INFO_CACHE.popitem(last=False)
+
+
+def _cached_info(url: str) -> dict | None:
+    with _INFO_CACHE_LOCK:
+        return _INFO_CACHE.get(url)
+
+
+def _download_lock(url_hash: str) -> threading.Lock:
+    with _DOWNLOAD_LOCKS_GUARD:
+        return _DOWNLOAD_LOCKS.setdefault(url_hash, threading.Lock())
 
 _YOUTUBE_HOSTS = frozenset({
     "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be",
@@ -77,36 +109,10 @@ def resolve_source(path_or_url: str, cfg: dict) -> tuple[str, SourceInfo]:
     return str(local_path), SourceInfo(kind="local", path=str(local_path))
 
 
-def _resolve_youtube(url: str, cfg: dict) -> tuple[str, SourceInfo]:
-    downloads_dir = vconfig.downloads_dir()
-    url_hash = hashlib.sha256(url.encode()).hexdigest()[:12]
-
-    cached = _find_cached_download(downloads_dir, url_hash)
-    if cached is not None:
-        os.utime(cached, None)  # fresh mtime so the expiry sweep keeps it
-        return str(cached), SourceInfo(kind="youtube", path=str(cached), url=url)
-
-    import yt_dlp  # heavy optional dep — only touched on an actual download
-
-    opts = {
-        "noplaylist": True,
-        "restrictfilenames": True,
-        "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
-        "merge_output_format": "mp4",
-        "outtmpl": str(downloads_dir / f"{url_hash}-%(id)s.%(ext)s"),
-        "quiet": True,
-        "no_warnings": True,
-        # quiet alone still lets the progress bar through to stdout, which
-        # would interleave with MCP tool output — silence it explicitly.
-        "noprogress": True,
-    }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        filepath = _extract_filepath(info, ydl)
-
+def _source_from_info(url: str, info: dict, path: str = "") -> SourceInfo:
     source = SourceInfo(
         kind="youtube",
-        path=filepath,
+        path=path,
         url=url,
         title=info.get("title") or "",
         channel=info.get("uploader") or "",
@@ -118,11 +124,68 @@ def _resolve_youtube(url: str, cfg: dict) -> tuple[str, SourceInfo]:
     choice = choose_caption_track(info)
     if choice is not None:
         source.caption_track, source.captions_manual = choice
-    return filepath, source
+    return source
+
+
+def probe_youtube(url: str) -> tuple[dict, SourceInfo]:
+    """Metadata-only info fetch — NO download. Used by video_info so asking
+    about a 2-hour video doesn't pull multi-GB of media first. The info dict
+    is cached so a following video_watch's caption fetch reuses it."""
+    info = _cached_info(url)
+    if info is None:
+        import yt_dlp  # heavy optional dep — only touched for YouTube input
+
+        with yt_dlp.YoutubeDL({"noplaylist": True, "quiet": True,
+                               "no_warnings": True, "noprogress": True,
+                               "skip_download": True}) as ydl:
+            info = ydl.extract_info(url, download=False) or {}
+        _cache_info(url, info)
+    return info, _source_from_info(url, info)
+
+
+def _resolve_youtube(url: str, cfg: dict) -> tuple[str, SourceInfo]:
+    downloads_dir = vconfig.downloads_dir()
+    url_hash = hashlib.sha256(url.encode()).hexdigest()[:12]
+
+    with _download_lock(url_hash):
+        cached = _find_cached_download(downloads_dir, url_hash)
+        if cached is not None:
+            os.utime(cached, None)  # fresh mtime so the expiry sweep keeps it
+            return str(cached), SourceInfo(kind="youtube", path=str(cached), url=url)
+
+        import yt_dlp  # heavy optional dep — only touched on an actual download
+
+        opts = {
+            "noplaylist": True,
+            "restrictfilenames": True,
+            "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
+            "merge_output_format": "mp4",
+            "outtmpl": str(downloads_dir / f"{url_hash}-%(id)s.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+            # quiet alone still lets the progress bar through to stdout, which
+            # would interleave with MCP tool output — silence it explicitly.
+            "noprogress": True,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filepath = _extract_filepath(info, ydl)
+
+    _cache_info(url, info)
+    return filepath, _source_from_info(url, info, path=filepath)
+
+
+# yt-dlp writes in-progress and per-format intermediates next to the final
+# merged file: *.part downloads, and *.f<id>.<ext> single-stream pieces. A
+# cache hit on one of those would feed a truncated/half-merged file to
+# ffmpeg/whisper forever (the mtime refresh would even keep it alive).
+_INCOMPLETE_DOWNLOAD_RE = re.compile(r"(\.part(-Frag\d+)?$|\.ytdl$|\.f\d+\.[A-Za-z0-9]+$)")
 
 
 def _find_cached_download(downloads_dir: Path, url_hash: str) -> Path | None:
-    matches = sorted(p for p in downloads_dir.glob(f"{url_hash}-*") if p.is_file())
+    matches = sorted(
+        p for p in downloads_dir.glob(f"{url_hash}-*")
+        if p.is_file() and not _INCOMPLETE_DOWNLOAD_RE.search(p.name))
     return matches[0] if matches else None
 
 
@@ -182,18 +245,14 @@ def fetch_youtube_captions(info: dict, lang: str, is_manual: bool) -> AudioResul
 def fetch_captions_for_url(url: str, cfg: dict) -> AudioResult | None:
     """Captions-first transcript for a YouTube URL, in one call.
 
-    Re-fetches the metadata-only info dict (cheap, no download — needed
-    because resolve_source's cached-download fast path never has one), picks
-    the best track and fetches/parses it. Best-effort like
+    Reuses the info dict a download or probe in this process already fetched
+    (see _INFO_CACHE); only hits YouTube again when there isn't one (e.g. the
+    cached-download fast path across engine restarts). Best-effort like
     fetch_youtube_captions: None on any failure, so callers just fall through
     to the whisper backend."""
     try:
-        import yt_dlp  # heavy optional dep — only touched for YouTube input
-
-        with yt_dlp.YoutubeDL({"noplaylist": True, "quiet": True,
-                               "no_warnings": True, "skip_download": True}) as ydl:
-            info = ydl.extract_info(url, download=False)
-        choice = choose_caption_track(info or {})
+        info, _source = probe_youtube(url)
+        choice = choose_caption_track(info)
         if choice is None:
             return None
         return fetch_youtube_captions(info, choice[0], choice[1])

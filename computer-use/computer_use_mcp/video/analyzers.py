@@ -30,7 +30,10 @@ from computer_use_mcp.video.types import (
 )
 
 _PROBE_TIMEOUT = 10
-_ANALYSIS_TIMEOUT = 600
+# A full per-frame analysis pass (siti/blurdetect/signalstats) over a multi-
+# hour video on CPU can legitimately take a long time — the ceiling exists to
+# turn a wedged ffmpeg into an error, not to cap honest work.
+_ANALYSIS_TIMEOUT = 3600
 _FRAME_STATS_CAP = 200
 
 # filters= key -> the ffmpeg filter expression it turns on. Iterated in this
@@ -407,6 +410,8 @@ def run_analysis(
     start: float = 0.0,
     end: float | None = None,
     work_dir: str | None = None,
+    has_audio: bool | None = None,
+    duration: float | None = None,
 ) -> VideoAnalysis:
     """Run every requested structural analyzer in one ffmpeg pass and return
     a merged VideoAnalysis. NOT responsible for transcription — that's the
@@ -427,8 +432,12 @@ def run_analysis(
     audio_filters = [spec for key, spec in _AUDIO_FILTER_SPECS.items() if filters.get(key)]
 
     # No audio stream at all -> audio filters are dropped, not errored on.
-    if audio_filters and not probe_has_audio(path):
-        audio_filters = []
+    # Callers that already ffprobed the file pass has_audio/duration through
+    # so one video_analyze call doesn't spawn three probes on the same file.
+    if audio_filters:
+        audible = has_audio if has_audio is not None else probe_has_audio(path)
+        if not audible:
+            audio_filters = []
 
     if not video_filters and not audio_filters:
         return VideoAnalysis()
@@ -476,7 +485,8 @@ def run_analysis(
             analysis.black_intervals = _shift_intervals(parse_blackdetect(stderr), start)
 
         if filters.get("freeze"):
-            clip_len = (end - start) if end is not None else max(0.0, probe_duration(path) - start)
+            total = duration if duration is not None else probe_duration(path)
+            clip_len = (end - start) if end is not None else max(0.0, total - start)
             analysis.freeze_intervals = _shift_intervals(
                 parse_freezedetect(stderr, duration=clip_len), start)
 

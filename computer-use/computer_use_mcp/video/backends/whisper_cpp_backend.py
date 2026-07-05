@@ -29,6 +29,7 @@ from pathlib import Path
 
 from computer_use_mcp.video import config, platform_info
 from computer_use_mcp.video.types import AudioResult, TranscriptionSegment
+from computer_use_mcp.video.backends import resolve_model
 
 _HF_BASE_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 
@@ -44,12 +45,6 @@ _MAGIC_PREFIXES = (b"ggml", b"lmgg", b"GGUF")
 _MIN_PLAUSIBLE_BYTES = 10 * 1024 * 1024
 
 
-def resolve_model(cfg: dict) -> str:
-    """cfg["video_whisper_model"], resolving "auto" to a RAM-based pick."""
-    model = cfg.get("video_whisper_model", "large-v3")
-    if model == "auto":
-        return platform_info.recommend_whisper_model()
-    return model
 
 
 def _find_binary() -> str:
@@ -131,9 +126,11 @@ def transcribe(wav_path: str, cfg: dict) -> AudioResult:
     model_path = ensure_model_file(resolve_model(cfg))
     with tempfile.TemporaryDirectory() as tmpdir:
         out_prefix = os.path.join(tmpdir, "out")
+        # Timeout: a wedged whisper-cli must become a retryable error, not
+        # an indefinitely blocked chunk worker.
         subprocess.run(
             [exe, "-m", model_path, "-f", wav_path, "-oj", "-of", out_prefix, "-l", "auto", "-np"],
-            capture_output=True, text=True, check=True)
+            capture_output=True, text=True, check=True, timeout=3600)
         with open(f"{out_prefix}.json", encoding="utf-8") as f:
             data = json.load(f)
     return AudioResult(segments=_parse_segments(data), transcription_source="whisper-cpp")

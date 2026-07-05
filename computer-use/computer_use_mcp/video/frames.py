@@ -13,17 +13,20 @@ import os
 import subprocess
 from pathlib import Path
 
-from computer_use_mcp.video.timestamps import format_hms, parse_hms
+from computer_use_mcp.video.timestamps import format_hms_frac, parse_hms
 from computer_use_mcp.video.types import Frame, Segment, VideoMetadata
 
 _PROBE_TIMEOUT = 30
 _EXTRACT_TIMEOUT = 300
 
-# Per-format ffmpeg encoder args + output file extension.
+# Per-format ffmpeg encoder args + output file extension. webp pins the
+# still-image encoder explicitly: with a numbered-pattern .webp output ffmpeg
+# otherwise auto-selects libwebp_anim and silently bundles EVERY frame into
+# one animated frame_0001.webp instead of one file per frame.
 _FORMAT_ARGS: dict[str, tuple[list[str], str]] = {
     "jpeg": (["-q:v", "5"], "jpg"),
     "png": ([], "png"),
-    "webp": (["-quality", "80"], "webp"),
+    "webp": (["-c:v", "libwebp", "-quality", "80"], "webp"),
 }
 
 
@@ -162,7 +165,10 @@ def extract_frames(
     for index, frame_path in enumerate(sorted(out_path.glob(f"frame_*.{ext}"))):
         seconds = start + index / fps
         frames.append(Frame(
-            timestamp=format_hms(seconds),
+            # Fractional formatter: at any fps > 1 several frames share one
+            # whole second — a plain HH:MM:SS label would collide their cache
+            # filenames/manifest entries and silently drop frames.
+            timestamp=format_hms_frac(seconds),
             seconds=seconds,
             path=str(frame_path),
             resolution=resolution,

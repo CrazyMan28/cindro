@@ -132,8 +132,15 @@ class VideoAnalysis:
     audio_warnings: list[ChunkWarning] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        # Drop ONLY None (analyzer not requested). An empty list must survive:
+        # it means the analyzer RAN and found nothing, which the model needs
+        # to distinguish from "you never asked for this". audio_warnings is
+        # the exception — it defaults to [] rather than None, so empty just
+        # means "nothing to warn about" and stays out of the JSON.
         d = asdict(self)
-        return {k: v for k, v in d.items() if v not in (None, [], {})}
+        if not d.get("audio_warnings"):
+            d.pop("audio_warnings", None)
+        return {k: v for k, v in d.items() if v is not None}
 
 
 @dataclass

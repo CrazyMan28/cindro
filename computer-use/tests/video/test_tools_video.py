@@ -90,6 +90,7 @@ def test_register_schedules_startup_maintenance(monkeypatch):
     ran = []
     monkeypatch.setattr(tools_video, "_startup_maintenance",
                         lambda: ran.append(True))
+    tools_video._MAINTENANCE_STARTED.clear()  # once-per-process guard
     m = FastMCP("test-video-seed")
     tools_video.register(m)
     for _ in range(50):

@@ -226,8 +226,10 @@ export function SettingsPage(props: { active: () => boolean }) {
         setRows([
           ...VIDEO_KNOBS.map((k) => ({
             id: k.id, label: k.label, kind: "enum" as const,
+            // Booleans first: String(false) is truthy, so a str()-first ||
+            // chain would display literal true/false instead of on/off.
             value:
-              (str(k.id) || (s()[k.id] === true ? "on" : s()[k.id] === false ? "off" : "")) +
+              (typeof s()[k.id] === "boolean" ? (s()[k.id] ? "on" : "off") : str(k.id)) +
               (k.id === "video_backend" ? availability(str(k.id)) : ""),
             choices: k.choices,
             run: async () => {

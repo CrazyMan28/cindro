@@ -149,7 +149,16 @@ def _generate(client, uploaded_file, cfg: dict) -> dict:
     except TypeError:
         plain_prompt = _PROMPT + "\n\nRespond with ONLY the JSON object."
         response = client.models.generate_content(model=model, contents=[uploaded_file, plain_prompt])
-    return json.loads(_strip_code_fence(response.text))
+    text = _strip_code_fence(response.text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        # A response cut off mid-object is almost always the output-token cap,
+        # not a flaky call — retrying identically can't fix it, so say so.
+        raise RuntimeError(
+            "Gemini returned invalid/truncated JSON (likely hit "
+            "video_gemini_max_output_tokens — raise it or lower "
+            f"video_audio_chunk_size_seconds): {exc}") from exc
 
 
 def _map_response(payload: dict) -> AudioResult:

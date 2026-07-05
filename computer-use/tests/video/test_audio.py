@@ -15,12 +15,14 @@ from computer_use_mcp.video.types import Interval
 # ---- build_extract_args (argv shape, no ffmpeg needed) ---------------------
 
 
-def test_extract_args_seeks_after_input_for_accuracy():
+def test_extract_args_input_seek_with_duration_bound():
     args = build_extract_args("in.mp4", "out.wav", start=1.5, end=4.0)
-    # Accurate (output) seeking requires -ss AFTER -i, unlike frame extraction's
-    # fast input seeking — transcription timestamps must be sample-accurate.
-    assert args.index("-i") < args.index("-ss")
-    assert args.index("-i") < args.index("-to")
+    # Input-side -ss (before -i): an -af filter sees the whole stream with
+    # output seeking, and chunked extraction would re-decode from t=0 per
+    # chunk. The window is bounded with -t <duration> after -i.
+    assert args.index("-ss") < args.index("-i")
+    assert args[args.index("-t") + 1] == "2.5"
+    assert "-to" not in args
 
 
 def test_extract_args_pcm_16k_mono():
@@ -41,7 +43,7 @@ def test_extract_args_no_window_omits_ss_and_to():
 def test_extract_args_end_only():
     args = build_extract_args("in.mp4", "out.wav", end=5.0)
     assert "-ss" not in args
-    assert args[args.index("-to") + 1] == "5.0"
+    assert args[args.index("-t") + 1] == "5.0"
 
 
 def test_extract_args_includes_path_and_output():

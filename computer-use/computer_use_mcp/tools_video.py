@@ -37,12 +37,17 @@ from computer_use_mcp.video.backends import faster_whisper_backend
 from computer_use_mcp.video.backends import transcribe as vtranscribe
 from computer_use_mcp.video.session import manager as vsession
 from computer_use_mcp.video.session import manifest as vmanifest
-from computer_use_mcp.video.timestamps import format_hms, parse_hms
-from computer_use_mcp.video.types import AudioResult, Frame, Segment
+from computer_use_mcp.video.timestamps import format_hms_frac, parse_hms
+from computer_use_mcp.video.types import AudioResult, Frame, Segment, TranscriptionSegment
 
 _DESCRIBER_AGENT = "video-frame-describer"
 _DESCRIBER_POLL_SECONDS = 2.0
 _SCRATCH_MAX_AGE_SECONDS = 24 * 3600
+
+# One engine process can run video_watch and video_detail concurrently on the
+# same video; manifest updates are read-modify-write, so serialize them.
+_MANIFEST_LOCK = threading.Lock()
+_MAINTENANCE_STARTED = threading.Event()
 
 FRAME_DESCRIBER_PROMPT = """\
 You are a video-frame describer. You receive a list of video frames as
@@ -85,15 +90,37 @@ def _parse_segments(segments_json: str) -> list[Segment]:
         raise ValueError("segments must be a non-empty JSON array")
     out = []
     for item in raw:
-        out.append(Segment(start=item["start"], end=item["end"],
-                           fps=float(item["fps"]),
-                           resolution=int(item["resolution"]) if item.get("resolution") else None))
+        fps = float(item["fps"])
+        if fps <= 0:
+            raise ValueError(f"segment fps must be positive, got {item['fps']!r}")
+        resolution = item.get("resolution")
+        out.append(Segment(start=item["start"], end=item["end"], fps=fps,
+                           resolution=int(resolution) if resolution is not None else None))
     return out
+
+
+_LAST_FULL_SWEEP = [0.0]
+_FULL_SWEEP_INTERVAL_SECONDS = 6 * 3600
 
 
 def _scratch_dir() -> str:
     root = vconfig.video_dir() / "scratch"
     root.mkdir(parents=True, exist_ok=True)
+    # Opportunistic sweep on every allocation (a stat-walk of a small dir) so
+    # a long-running engine can't accumulate scratch forever between restarts;
+    # every few hours also re-run the session/download expiry sweeps, which
+    # would otherwise only ever fire once at process start.
+    _sweep_scratch()
+    now = time.monotonic()
+    if now - _LAST_FULL_SWEEP[0] > _FULL_SWEEP_INTERVAL_SECONDS:
+        _LAST_FULL_SWEEP[0] = now
+        try:
+            cfg = vconfig.load_video_config()
+            with _MANIFEST_LOCK:
+                vsession.clean_expired_sessions(int(cfg["video_session_max_age_days"]))
+            video_source.clean_expired_downloads(int(cfg["video_downloads_max_age_days"]))
+        except Exception:  # noqa: BLE001 — maintenance is best-effort
+            pass
     return tempfile.mkdtemp(prefix="watch-", dir=str(root))
 
 
@@ -115,9 +142,13 @@ def _startup_maintenance() -> None:
     slow/down daemon can never block engine boot."""
     try:
         cfg = vconfig.load_video_config()
-        vsession.clean_expired_sessions(int(cfg["video_session_max_age_days"]))
+        # Under the manifest lock so a sweep can never rmtree a session dir
+        # that _index_frames is mid-way through populating.
+        with _MANIFEST_LOCK:
+            vsession.clean_expired_sessions(int(cfg["video_session_max_age_days"]))
         video_source.clean_expired_downloads(int(cfg["video_downloads_max_age_days"]))
         _sweep_scratch()
+        _LAST_FULL_SWEEP[0] = time.monotonic()
     except Exception:  # noqa: BLE001 — maintenance is best-effort
         pass
     try:
@@ -135,25 +166,30 @@ def _session_frame_path(video_hash: str, resolution: int, fmt: str,
 def _index_frames(video_hash: str, video_path: str,
                   frames: list[Frame], fmt: str) -> tuple[dict, list[Frame]]:
     """Copy extracted frames into the session cache layout and merge the
-    manifest. Returns (manifest, frames rewritten to their cached paths)."""
-    manifest = vsession.load_manifest(video_hash) or vmanifest.new_manifest(
-        video_hash, video_path)
-    by_resolution: dict[int, list[dict]] = {}
-    cached: list[Frame] = []
-    for frame in frames:
-        filename = vmanifest.frame_filename(frame.timestamp, fmt)
-        dest = _session_frame_path(video_hash, frame.resolution, fmt, filename)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(frame.path, dest)
-        by_resolution.setdefault(frame.resolution, []).append(
-            {"timestamp": frame.timestamp, "file": filename})
-        cached.append(Frame(timestamp=frame.timestamp, seconds=frame.seconds,
-                            path=str(dest), resolution=frame.resolution,
-                            format=fmt))
-    for resolution, rows in by_resolution.items():
-        vmanifest.merge_frames(manifest, resolution, fmt, rows)
-    vsession.save_manifest(video_hash, manifest)
-    return manifest, cached
+    manifest. Returns (manifest, frames rewritten to their cached paths).
+
+    Serialized under _MANIFEST_LOCK: load→merge→save is read-modify-write, so
+    a concurrent video_watch + video_detail on the same video would otherwise
+    silently drop whichever merge saved first."""
+    with _MANIFEST_LOCK:
+        manifest = vsession.load_manifest(video_hash) or vmanifest.new_manifest(
+            video_hash, video_path)
+        by_resolution: dict[int, list[dict]] = {}
+        cached: list[Frame] = []
+        for frame in frames:
+            filename = vmanifest.frame_filename(frame.timestamp, fmt)
+            dest = _session_frame_path(video_hash, frame.resolution, fmt, filename)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(frame.path, dest)
+            by_resolution.setdefault(frame.resolution, []).append(
+                {"timestamp": frame.timestamp, "file": filename})
+            cached.append(Frame(timestamp=frame.timestamp, seconds=frame.seconds,
+                                path=str(dest), resolution=frame.resolution,
+                                format=fmt))
+        for resolution, rows in by_resolution.items():
+            vmanifest.merge_frames(manifest, resolution, fmt, rows)
+        vsession.save_manifest(video_hash, manifest)
+        return manifest, cached
 
 
 def _describe_frames(frames: list[Frame], cfg: dict, describer_model: str) -> str:
@@ -207,6 +243,26 @@ def _load_image(frame: Frame, fmt: str) -> Image:
         return Image(data=f.read(), format="jpeg" if fmt == "jpeg" else fmt)
 
 
+def _clip_audio_to_window(audio: AudioResult, start: float,
+                          end: float | None) -> AudioResult:
+    """Keep only segments/tags overlapping [start, end) — captions come back
+    for the WHOLE video, but a windowed request must not pair 30s of frames
+    with a 2-hour transcript."""
+    if not start and end is None:
+        return audio
+    upper = end if end is not None else float("inf")
+
+    def _keep(seg_start: float, seg_end: float) -> bool:
+        return seg_end > start and seg_start < upper
+
+    return AudioResult(
+        segments=[s for s in audio.segments if _keep(s.start, s.end)],
+        audio_tags=[t for t in audio.audio_tags if _keep(t.start, t.end)],
+        transcription_source=audio.transcription_source,
+        warnings=list(audio.warnings),
+    )
+
+
 def _audio_branch(local_path: str, source, meta, cfg: dict, *,
                   skip_audio: bool, start: float,
                   end: float | None) -> tuple[AudioResult, str | None]:
@@ -219,7 +275,12 @@ def _audio_branch(local_path: str, source, meta, cfg: dict, *,
         fallback_reason = video_source.caption_fallback_reason(
             captions, meta.duration_seconds)
         if fallback_reason is None and captions is not None:
-            return captions, None
+            clipped = _clip_audio_to_window(captions, start, end)
+            if clipped.segments or not captions.segments:
+                return clipped, None
+            # Captions exist but none inside the requested window — whisper
+            # the window instead of returning an empty transcript.
+            fallback_reason = "captions_outside_window"
     result = vtranscribe.transcribe_video(
         local_path, duration=meta.duration_seconds, has_audio=True, cfg=cfg,
         start=start, end=end)
@@ -227,8 +288,12 @@ def _audio_branch(local_path: str, source, meta, cfg: dict, *,
 
 
 def register(mcp: FastMCP) -> None:
-    threading.Thread(target=_startup_maintenance, daemon=True,
-                     name="video-startup").start()
+    # Once per process, not per register() — tests build several FastMCP
+    # instances and a second engine import must not race a second sweep.
+    if not _MAINTENANCE_STARTED.is_set():
+        _MAINTENANCE_STARTED.set()
+        threading.Thread(target=_startup_maintenance, daemon=True,
+                         name="video-startup").start()
 
     # ---- INFO ---------------------------------------------------------------
     @mcp.tool()
@@ -236,13 +301,30 @@ def register(mcp: FastMCP) -> None:
         """Get a video's metadata WITHOUT processing it — ALWAYS call this first.
 
         `path` is a local video file (.mp4/.mov/.avi/.mkv/.webm) or a YouTube
-        URL (youtube.com / youtu.be — downloaded and cached automatically).
-        Returns duration, resolution, codec, fps, size, has_audio, plus YouTube
-        title/channel/description when the input was a URL. Cheap: one ffprobe.
-        For videos longer than 30s, call video_analyze next — before extracting
-        any frames — to plan WHERE to look."""
+        URL (youtube.com / youtu.be). Returns duration, resolution, codec, fps,
+        size, has_audio, plus YouTube title/channel/description for URLs.
+        Cheap on purpose: local files get one ffprobe; a YouTube URL is probed
+        WITHOUT downloading (the download happens on the first video_watch/
+        video_analyze). For videos longer than 30s, call video_analyze next —
+        before extracting any frames — to plan WHERE to look."""
         try:
             cfg = vconfig.load_video_config()
+            if video_source.is_youtube_url(path):
+                info, source = video_source.probe_youtube(path)
+                metadata = {
+                    "path": "",  # nothing downloaded yet
+                    "duration_seconds": float(info.get("duration") or 0.0),
+                    "width": int(info.get("width") or 0),
+                    "height": int(info.get("height") or 0),
+                    "codec": str(info.get("vcodec") or ""),
+                    "fps": float(info.get("fps") or 0.0),
+                    "size_bytes": int(info.get("filesize")
+                                      or info.get("filesize_approx") or 0),
+                    "has_audio": (info.get("acodec") or "none") != "none",
+                }
+                return json.dumps({"metadata": metadata,
+                                   "source": source.to_dict(),
+                                   "downloaded": False})
             local_path, source = video_source.resolve_source(path, cfg)
             meta = vframes.get_video_metadata(local_path)
             return json.dumps({"metadata": meta.to_dict(),
@@ -335,7 +417,9 @@ def register(mcp: FastMCP) -> None:
         number), video_max_frames, video_frame_describer_model,
         video_frame_describer_timeout_sec, video_enable_index (bool),
         video_session_max_age_days, video_downloads_max_age_days,
-        video_audio_chunk_{trigger,size,overlap}_seconds, video_gemini_model,
+        video_audio_chunk_trigger_seconds, video_audio_chunk_size_seconds,
+        video_audio_chunk_overlap_seconds (reserved — stored but chunking does
+        not apply overlap yet), video_gemini_model,
         video_gemini_max_output_tokens. `clear_sessions=true` deletes the
         cached-frames store."""
         try:
@@ -380,7 +464,12 @@ def register(mcp: FastMCP) -> None:
             start = parse_hms(start_time) if start_time else 0.0
             end = parse_hms(end_time) if end_time else None
             window_end = end if end is not None else meta.duration_seconds
-            window_len = max(window_end - start, 0.0)
+            window_len = window_end - start
+            if window_len <= 0:
+                return [_err(ValueError(
+                    f"empty time window: start {start_time or '00:00:00'} must be "
+                    f"before end {end_time or format_hms_frac(meta.duration_seconds)} "
+                    f"and inside the video ({meta.duration_seconds:.1f}s)"))]
 
             segments = _parse_segments(segments_json) if segments_json else None
             fmt = (frame_format or cfg["video_frame_format"]).lower()
@@ -393,7 +482,11 @@ def register(mcp: FastMCP) -> None:
                                   has_segments=bool(segments))
 
             out_dir = _scratch_dir()
-            with ThreadPoolExecutor(max_workers=2) as pool:
+            # No `with` block: Executor.__exit__ waits for BOTH futures, so a
+            # fast frame-extraction failure would still block on a minutes-long
+            # transcription before the caller sees the error.
+            pool = ThreadPoolExecutor(max_workers=2)
+            try:
                 frames_future = pool.submit(
                     lambda: vframes.extract_frames_by_segments(
                         local_path, out_dir, segments,
@@ -406,12 +499,20 @@ def register(mcp: FastMCP) -> None:
                     skip_audio=skip_audio, start=start, end=end)
                 frames_list = frames_future.result()
                 audio, fallback_reason = audio_future.result()
+            except Exception:
+                shutil.rmtree(out_dir, ignore_errors=True)
+                raise
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
 
             session_info = None
             if cfg["video_enable_index"]:
                 video_hash = vsession.compute_video_hash(local_path)
                 manifest, frames_list = _index_frames(
                     video_hash, local_path, frames_list, fmt)
+                # Frames now live (and are referenced) in the session cache —
+                # drop the scratch originals instead of doubling disk usage.
+                shutil.rmtree(out_dir, ignore_errors=True)
                 session_info = {
                     "video_hash": video_hash,
                     "cached_frames": sum(len(v.get("frames", []))
@@ -430,7 +531,9 @@ def register(mcp: FastMCP) -> None:
                 "metadata": meta.to_dict(),
                 "source": source.to_dict(),
                 "audio": audio.to_dict(),
-                "fps_used": used_fps,
+                # With segments each range used its own density — a single
+                # number would misreport what actually ran.
+                "fps_used": "per-segment" if segments else used_fps,
                 "frames": [{"timestamp": f.timestamp, "path": f.path,
                             "resolution": f.resolution} for f in returned],
                 "frames_extracted": len(frames_list),
@@ -443,7 +546,10 @@ def register(mcp: FastMCP) -> None:
             if mode == "descriptions" and returned:
                 try:
                     text = _describe_frames(returned, cfg, describer_model)
-                    return [json.dumps(header), text]
+                    # ONE text block: the api brain's tool loop concatenates
+                    # multiple text parts with no separator, which would fuse
+                    # the JSON straight into the prose.
+                    return [json.dumps(header) + "\n\n" + text]
                 except Exception as exc:  # noqa: BLE001 — degrade to images
                     header["describer_fallback"] = str(exc)
             return [json.dumps(header)] + [_load_image(f, fmt) for f in returned]
@@ -480,24 +586,29 @@ def register(mcp: FastMCP) -> None:
                 {"scene_changes": scene_changes, "black_intervals": black_intervals,
                  "silence": silence, "freeze": freeze, "motion": motion,
                  "blur": blur, "exposure": exposure, "loudness": loudness},
-                start=start, end=end)
+                start=start, end=end,
+                has_audio=meta.has_audio, duration=meta.duration_seconds)
+            fallback_reason = None
             if transcription:
                 audio, fallback_reason = _audio_branch(
                     local_path, source, meta, cfg,
                     skip_audio=False, start=start, end=end)
                 analysis.transcription = audio
                 analysis.audio_warnings = list(audio.warnings)
-                if fallback_reason:
-                    analysis.audio_warnings = analysis.audio_warnings or []
 
             result = {"metadata": meta.to_dict(), "source": source.to_dict(),
                       "analysis": analysis.to_dict()}
+            if fallback_reason:
+                result["transcription_fallback_reason"] = fallback_reason
             if cfg["video_enable_index"]:
                 video_hash = vsession.compute_video_hash(local_path)
-                manifest = vsession.load_manifest(video_hash) \
-                    or vmanifest.new_manifest(video_hash, local_path)
-                manifest["analysis"] = analysis.to_dict()
-                vsession.save_manifest(video_hash, manifest)
+                # Same lock as _index_frames: this is the second read-modify-
+                # write path into the manifest and must not race the first.
+                with _MANIFEST_LOCK:
+                    manifest = vsession.load_manifest(video_hash) \
+                        or vmanifest.new_manifest(video_hash, local_path)
+                    manifest["analysis"] = analysis.to_dict()
+                    vsession.save_manifest(video_hash, manifest)
                 result["session"] = {"video_hash": video_hash}
             return json.dumps(result)
         except Exception as exc:  # noqa: BLE001
@@ -546,6 +657,7 @@ def register(mcp: FastMCP) -> None:
                     if enable_index:
                         manifest, extracted = _index_frames(
                             video_hash, local_path, extracted, fmt)
+                        shutil.rmtree(out_dir, ignore_errors=True)
 
             # The viewable pool: what we just extracted, else the whole cache.
             pool: list[Frame] = extracted
@@ -564,7 +676,7 @@ def register(mcp: FastMCP) -> None:
 
             missing: list[str] = []
             if view_json:
-                wanted = [format_hms(parse_hms(t)) for t in json.loads(view_json)]
+                wanted = [format_hms_frac(parse_hms(t)) for t in json.loads(view_json)]
                 by_ts = {f.timestamp: f for f in pool}
                 viewed = []
                 for ts in wanted:
@@ -588,6 +700,16 @@ def register(mcp: FastMCP) -> None:
                 header["missing_timestamps"] = missing
             if enable_index:
                 header["session"] = {"video_hash": video_hash}
+
+            # Honor descriptions mode here too — an api-brain session that set
+            # it in video_watch would otherwise get images video_detail's
+            # caller can never see.
+            if cfg["video_frame_mode"] == "descriptions" and viewed:
+                try:
+                    text = _describe_frames(viewed, cfg, "")
+                    return [json.dumps(header) + "\n\n" + text]
+                except Exception as exc:  # noqa: BLE001 — degrade to images
+                    header["describer_fallback"] = str(exc)
             return [json.dumps(header)] + [_load_image(f, fmt) for f in viewed]
         except Exception as exc:  # noqa: BLE001
             return [_err(exc)]
@@ -604,7 +726,7 @@ def _segment_uncached(manifest: dict, segment: Segment, cfg: dict,
     t = start
     index = 0
     while t < end and index < 10000:
-        wanted.append(format_hms(t))
+        wanted.append(format_hms_frac(t))
         index += 1
         t = start + index / segment.fps
     return bool(vmanifest.uncached_timestamps(manifest, resolution, fmt, wanted))

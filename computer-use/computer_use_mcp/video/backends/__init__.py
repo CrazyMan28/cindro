@@ -21,6 +21,8 @@ from __future__ import annotations
 import importlib
 from types import ModuleType
 
+from computer_use_mcp.video import platform_info
+
 # Engine ids as they appear in video_whisper_engine settings + transcription_source.
 LOCAL_ENGINES = ("faster-whisper", "whisper-cpp", "openai-whisper")
 
@@ -43,3 +45,14 @@ def get_local_backend(engine: str) -> ModuleType:
         raise ValueError(
             f"unknown local whisper engine {engine!r}; expected one of {LOCAL_ENGINES}")
     return importlib.import_module(f"computer_use_mcp.video.backends.{modname}")
+
+
+def resolve_model(cfg: dict) -> str:
+    """cfg["video_whisper_model"], resolving "auto" to a RAM-based pick.
+
+    Shared by all three local engines so the "auto" policy can never drift
+    between them."""
+    model = cfg.get("video_whisper_model", "large-v3")
+    if model == "auto":
+        return platform_info.recommend_whisper_model()
+    return model

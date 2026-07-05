@@ -10,23 +10,32 @@ crashing video_watch.
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from computer_use_mcp.video import platform_info
 from computer_use_mcp.video.types import AudioResult, TranscriptionSegment
+from computer_use_mcp.video.backends import resolve_model
 
 # Loaded WhisperModel instances, keyed by (model, device, compute_type).
 # Loading large-v3 takes real seconds (weight load + CUDA context) — this
 # cache makes repeated video_watch calls in the same engine process free.
+# The lock closes the check-then-set race: two chunk-worker threads missing
+# the cache together would otherwise BOTH load a multi-GB model.
 _MODEL_CACHE: dict[tuple[str, str, str], Any] = {}
+_MODEL_CACHE_LOCK = threading.Lock()
+# ctranslate2 does not guarantee concurrent transcribe() on ONE model instance
+# is safe, and two independent MCP tool calls can share the cached instance —
+# serialize inference per model. (Chunk workers are already sequential; this
+# closes the cross-request path.)
+_INFERENCE_LOCKS: dict[tuple[str, str, str], threading.Lock] = {}
 
 
-def resolve_model(cfg: dict) -> str:
-    """cfg["video_whisper_model"], resolving "auto" to a RAM-based pick."""
-    model = cfg.get("video_whisper_model", "large-v3")
-    if model == "auto":
-        return platform_info.recommend_whisper_model()
-    return model
+def _inference_lock(key: tuple[str, str, str]) -> threading.Lock:
+    with _MODEL_CACHE_LOCK:
+        return _INFERENCE_LOCKS.setdefault(key, threading.Lock())
+
+
 
 
 def resolve_device(cfg: dict) -> tuple[str, str]:
@@ -54,14 +63,16 @@ def resolve_device(cfg: dict) -> tuple[str, str]:
 
 def _get_model(model: str, device: str, compute_type: str) -> Any:
     key = (model, device, compute_type)
-    cached = _MODEL_CACHE.get(key)
-    if cached is not None:
-        return cached
-    import faster_whisper
+    with _MODEL_CACHE_LOCK:
+        cached = _MODEL_CACHE.get(key)
+        if cached is not None:
+            return cached
+        import faster_whisper
 
-    instance = faster_whisper.WhisperModel(model, device=device, compute_type=compute_type)
-    _MODEL_CACHE[key] = instance
-    return instance
+        instance = faster_whisper.WhisperModel(model, device=device,
+                                               compute_type=compute_type)
+        _MODEL_CACHE[key] = instance
+        return instance
 
 
 def _run_transcription(model: Any, wav_path: str) -> list[TranscriptionSegment]:
@@ -88,13 +99,16 @@ def transcribe(wav_path: str, cfg: dict) -> AudioResult:
     device, compute_type = resolve_device(cfg)
     try:
         model = _get_model(model_name, device, compute_type)
-        result_segments = _run_transcription(model, wav_path)
+        with _inference_lock((model_name, device, compute_type)):
+            result_segments = _run_transcription(model, wav_path)
     except Exception:  # noqa: BLE001 — CUDA fails in ways the probe can't predict
         if device != "cuda":
             raise
-        _MODEL_CACHE.pop((model_name, device, compute_type), None)
+        with _MODEL_CACHE_LOCK:
+            _MODEL_CACHE.pop((model_name, device, compute_type), None)
         model = _get_model(model_name, "cpu", "int8")
-        result_segments = _run_transcription(model, wav_path)
+        with _inference_lock((model_name, "cpu", "int8")):
+            result_segments = _run_transcription(model, wav_path)
     return AudioResult(segments=result_segments, transcription_source="faster-whisper")
 
 

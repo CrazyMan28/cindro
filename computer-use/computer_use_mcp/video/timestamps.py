@@ -34,6 +34,20 @@ def format_hms(seconds: float) -> str:
     return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
 
 
+def format_hms_frac(seconds: float) -> str:
+    """Seconds -> 'HH:MM:SS' or 'HH:MM:SS.mmm' when there is a sub-second part.
+
+    Frame timestamps use this so two frames inside the same second (any fps
+    above 1) keep DISTINCT labels — a whole-second format would collide their
+    cache filenames and manifest entries, silently dropping frames. parse_hms
+    round-trips both shapes."""
+    clamped = max(0.0, seconds)
+    millis = round(clamped * 1000)
+    whole, frac = divmod(millis, 1000)
+    base = f"{whole // 3600:02d}:{(whole % 3600) // 60:02d}:{whole % 60:02d}"
+    return f"{base}.{frac:03d}" if frac else base
+
+
 def shift_audio_result(result: AudioResult, offset_seconds: float) -> AudioResult:
     """Return a copy with every segment/tag moved by offset_seconds."""
     if not offset_seconds:
