@@ -9,8 +9,10 @@ import { createSignal, For, Match, Switch } from "solid-js"
 
 import type { AppApi } from "./app-context"
 import { AppContext } from "./app-context"
+import { SessionController } from "./chat/session"
 import type { CommandRegistry } from "./commands/registry"
 import type { ControlClient } from "./control/client"
+import { Chat } from "./pages/Chat"
 import { Home } from "./pages/Home"
 import { theme } from "./theme"
 import { Topbar } from "./ui/Topbar"
@@ -19,7 +21,7 @@ import { Topbar } from "./ui/Topbar"
 // arrive with the pages engine in Phase 3).
 const TABS: Array<{ id: string; title: string; phase?: string }> = [
   { id: "home", title: "Home" },
-  { id: "chat", title: "Chat", phase: "Phase 2" },
+  { id: "chat", title: "Chat" },
   { id: "canvas", title: "Canvas", phase: "Phase 4b" },
   { id: "widgets", title: "Widgets", phase: "Phase 4b" },
   { id: "phone", title: "Phone", phase: "Phase 4a" },
@@ -38,6 +40,7 @@ export interface AppProps {
 export function App(props: AppProps) {
   const [page, setPage] = createSignal("home")
   const [notice, setNotice] = createSignal("")
+  const session = new SessionController(props.client)
 
   const api: AppApi = {
     client: props.client,
@@ -49,15 +52,16 @@ export function App(props: AppProps) {
   }
 
   useKeyboard(
-    (key: { name?: string; ctrl?: boolean }) => {
+    (key: { name?: string; ctrl?: boolean; meta?: boolean; option?: boolean }) => {
       if (key.ctrl && key.name === "q") {
         props.onQuit()
         return
       }
-      // Number keys switch tabs while no text input exists yet (Phase 2's
-      // composer will own printable keys through the keymap layers).
+      // Alt+digit switches tabs (ESC-prefixed, so it works in legacy
+      // terminals too — Ctrl+digit famously doesn't encode; bare digits
+      // belong to the chat composer and question shortcuts).
       const n = Number.parseInt(key.name ?? "", 10)
-      if (!key.ctrl && Number.isInteger(n) && n >= 1 && n <= TABS.length) {
+      if ((key.meta || key.option) && Number.isInteger(n) && n >= 1 && n <= TABS.length) {
         setPage(TABS[n - 1].id)
       }
     },
@@ -98,6 +102,9 @@ export function App(props: AppProps) {
           <Match when={page() === "home"}>
             <Home />
           </Match>
+          <Match when={page() === "chat"}>
+            <Chat session={session} active={() => page() === "chat"} />
+          </Match>
         </Switch>
         <box
           flexDirection="row"
@@ -106,7 +113,7 @@ export function App(props: AppProps) {
           borderColor={theme.hairlineSoft}
         >
           <text fg={theme.textFaint} selectable={false}>
-            {notice() || "1-9 tabs · Ctrl+Q quit"}
+            {notice() || "Alt+1-9 tabs · / commands · Ctrl+Q quit"}
           </text>
         </box>
       </box>
