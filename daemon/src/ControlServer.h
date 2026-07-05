@@ -259,6 +259,8 @@ private:
     // Method handlers return a Response for the request id.
     Response handlePing(const Request &req);
     Response handleStatusGet(const Request &req);
+    Response handleUiManifestGet(const Request &req);
+    void broadcastUiManifestChanged();
     Response handleSettingsGet(const Request &req);
     Response handleSettingsSet(const Request &req);
     // Cross-platform self-update (update.* Contract A): check reports

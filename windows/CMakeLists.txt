@@ -136,6 +136,8 @@ add_library(jarvis-core STATIC
     ${CORE_DIR}/src/CommandStore.cpp
     # Git actions behind the diff.* verbs (must match core/CMakeLists.txt).
     ${CORE_DIR}/src/GitOps.cpp
+    # Daemon-owned surface manifest (must match core/CMakeLists.txt).
+    ${CORE_DIR}/src/UiManifest.cpp
     # Headers (AUTOMOC) — same set as core/CMakeLists.txt.
     ${CORE_DIR}/include/jarvis/Protocol.h
     ${CORE_DIR}/include/jarvis/Config.h

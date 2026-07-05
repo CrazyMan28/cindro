@@ -8,6 +8,7 @@
 #include "jarvis/Connectors.h"
 #include "jarvis/GitOps.h"
 #include "jarvis/InjectionGuard.h"
+#include "jarvis/UiManifest.h"
 #include "jarvis/OsvAdvisory.h"
 #include "jarvis/PluginSigner.h"
 #include "jarvis/Updater.h"
@@ -436,6 +437,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handlePing(req);
     else if (m == QStringLiteral("status.get"))
         resp = handleStatusGet(req);
+    else if (m == QStringLiteral("ui.manifest.get"))
+        resp = handleUiManifestGet(req);
     else if (m == QStringLiteral("settings.get"))
         resp = handleSettingsGet(req);
     else if (m == QStringLiteral("settings.set"))
@@ -5750,7 +5753,7 @@ bool ControlServer::isConfigMethod(const QString &method)
 {
     static const QSet<QString> methods = {
         QStringLiteral("settings.get"),      QStringLiteral("settings.set"),
-        QStringLiteral("status.get"),
+        QStringLiteral("status.get"),        QStringLiteral("ui.manifest.get"),
         QStringLiteral("model.list"),        QStringLiteral("mcp.list"),
         QStringLiteral("mcp.add"),           QStringLiteral("mcp.remove"),
         QStringLiteral("mcp.set_enabled"),   QStringLiteral("mcp.test"),
@@ -5790,6 +5793,7 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
     if (m == QStringLiteral("settings.get"))    return handleSettingsGet(req);
     if (m == QStringLiteral("settings.set"))    return handleSettingsSet(req);
     if (m == QStringLiteral("status.get"))      return handleStatusGet(req);
+    if (m == QStringLiteral("ui.manifest.get")) return handleUiManifestGet(req);
     if (m == QStringLiteral("phone.mcp"))       return handlePhoneMcp(req);
     if (m == QStringLiteral("phone.http"))      return handlePhoneHttp(req);
     if (m == QStringLiteral("hooks.list"))      return handleHooksList(req);
@@ -6333,6 +6337,31 @@ void ControlServer::broadcastTuiLayoutChanged()
         QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
     for (QWebSocket *client : std::as_const(m_clients))
         client->sendTextMessage(payload);
+    // Custom pages are part of the merged surface manifest too.
+    broadcastUiManifestChanged();
+}
+
+// --- shared surface manifest: ui.manifest.* ----------------------------------
+
+Response ControlServer::handleUiManifestGet(const Request &req)
+{
+    return Response::success(
+        req.id, jarvis::UiManifest::merged(m_tuiLayoutStore.list(),
+                                           m_commandStore.list()));
+}
+
+void ControlServer::broadcastUiManifestChanged()
+{
+    // Payload-free nudge: clients refetch ui.manifest.get (keeps the frame
+    // tiny and avoids double-encoding the whole manifest on every change).
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), 1);
+    frame.insert(QStringLiteral("event"), QStringLiteral("ui.manifest.changed"));
+    frame.insert(QStringLiteral("data"), QJsonObject{});
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+    for (QWebSocket *client : std::as_const(m_clients))
+        client->sendTextMessage(payload);
 }
 
 // --- self-authored slash commands: command.* --------------------------------
@@ -6372,6 +6401,7 @@ Response ControlServer::handleCommandCreate(const Request &req)
         return Response::failure(req.id, QStringLiteral("invalid_command"),
                                  QStringLiteral("name collides with a built-in, already "
                                                 "exists, or has an invalid action_kind"));
+    broadcastUiManifestChanged(); // custom commands are part of the manifest
     return Response::success(req.id, {{QStringLiteral("ok"), true}});
 }
 
@@ -6381,6 +6411,7 @@ Response ControlServer::handleCommandRemove(const Request &req)
     if (!m_commandStore.remove(name))
         return Response::failure(req.id, QStringLiteral("not_found"),
                                  QStringLiteral("no such command"));
+    broadcastUiManifestChanged();
     return Response::success(req.id, {{QStringLiteral("ok"), true}});
 }
 
