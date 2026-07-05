@@ -55,7 +55,9 @@ if ( set -e
      ENV_VENV="$BUILD/appimg-venv"
      env -u PYTHONPATH python3 -m venv "$ENV_VENV"
      env -u PYTHONPATH "$ENV_VENV/bin/pip" install -q --upgrade pip pyinstaller
-     env -u PYTHONPATH "$ENV_VENV/bin/pip" install -q -e "$REPO/computer-use"
+     # [cloud-video]: bundle the optional Gemini/OpenAI SDKs so the Settings
+     # UI's "available when API key set" promise holds in the AppImage too.
+     env -u PYTHONPATH "$ENV_VENV/bin/pip" install -q -e "$REPO/computer-use[cloud-video]"
      printf 'from computer_use_mcp.server import main\nif __name__=="__main__":\n    main()\n' \
         > "$BUILD/engine_entry.py"
      # --collect-data + --copy-metadata: jsonschema_specifications ships its
@@ -63,10 +65,18 @@ if ( set -e
      # dist-info — a stale pyinstaller-hooks-contrib drops both and the frozen
      # engine then CRASHES AT IMPORT (the Windows "widgets never render" root
      # cause). Pass them explicitly so the freeze never regresses.
+     # Video understanding: ctranslate2/av/onnxruntime ship compiled payloads the
+     # default import scanner misses (same silent-drop class as jsonschema above);
+     # huggingface_hub/tokenizers dist-info feeds faster_whisper's version probes.
      env -u PYTHONPATH "$ENV_VENV/bin/pyinstaller" --noconfirm --name jarvis-engine \
         --distpath "$APPDIR/usr/bin/engine" --workpath "$BUILD/pyi-appimg" \
         --collect-data jsonschema_specifications --collect-data jsonschema \
         --copy-metadata mcp \
+        --collect-all faster_whisper --collect-all ctranslate2 --collect-all av \
+        --collect-all onnxruntime \
+        --collect-data huggingface_hub --copy-metadata huggingface_hub \
+        --copy-metadata tokenizers \
+        --collect-submodules yt_dlp --collect-data yt_dlp \
         --collect-submodules computer_use_mcp "$BUILD/engine_entry.py" >/dev/null
    ); then
   say "engine bundled."

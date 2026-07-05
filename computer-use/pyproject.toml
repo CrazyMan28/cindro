@@ -16,6 +16,22 @@ dependencies = [
     # never reach it. We inject keys via zwp_virtual_keyboard_v1 bound to the
     # nested WAYLAND_DISPLAY instead (computer_use_mcp/vkbd.py).
     "pywayland>=0.4.17",
+    # Video understanding (computer_use_mcp/video): yt-dlp is imported as a
+    # library (never shelled out — it freezes into the Windows exe), and
+    # faster-whisper is the default local transcription engine (models
+    # auto-download via huggingface-hub). Windows installs this package with
+    # --no-deps, so these MUST be mirrored in windows/engine/requirements-windows.txt.
+    "yt-dlp>=2026.1",
+    "faster-whisper>=1.2",
+    "huggingface-hub>=0.25",
+]
+
+[project.optional-dependencies]
+# Cloud transcription backends for video understanding (opt-in; the default
+# local backend needs neither). GEMINI_API_KEY / OPENAI_API_KEY select them.
+cloud-video = [
+    "google-genai>=1.0",
+    "openai>=1.60",
 ]
 
 [project.scripts]

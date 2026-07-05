@@ -16,3 +16,14 @@ pillow>=10.0
 # Windows computer-use backend:
 pywin32        # Win32 access (helper alongside the ctypes SendInput path)
 mss            # fast multi-monitor screen capture
+
+# Video understanding (computer_use_mcp/video) — keep in sync with the video
+# block in computer-use/pyproject.toml:
+yt-dlp>=2026.1        # imported as a library; freezes into the exe (no PATH binary)
+faster-whisper>=1.2   # default local transcription engine (ctranslate2 + av)
+huggingface-hub>=0.25 # model auto-download for faster-whisper
+# Cloud backends ship on Windows unconditionally (small pure-python wheels;
+# Windows users are less likely to have local whisper CLIs, so the cloud
+# fallback matters more here). Selected via GEMINI_API_KEY / OPENAI_API_KEY.
+google-genai>=1.0
+openai>=1.60

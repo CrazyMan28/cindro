@@ -47,6 +47,19 @@ Item {
     property var sttProviders: []                // [{id,label,available}]
     property var ttsProviders: []                // [{id,label,available}]
     property var voicesByProvider: ({})          // {provider: [{id,label}]}
+    // Video understanding (video_* keys; the yt-dlp/ffmpeg/whisper pipeline
+    // runs in the Python engine — these prefs just steer it).
+    property string videoBackend: "local"        // local|gemini-api|openai-api
+    property var videoBackends: []               // [{id,label,available}]
+    property string videoWhisperEngine: "faster-whisper"
+    property string videoWhisperModel: "large-v3"
+    property string videoWhisperDevice: "auto"   // auto|cpu|cuda
+    property string videoFrameMode: "images"     // images|descriptions
+    property string videoFrameFormat: "jpeg"     // jpeg|png|webp
+    property int videoFrameResolution: 512
+    property string videoDefaultFps: "auto"
+    property int videoMaxFrames: 100
+    property bool videoEnableIndex: false        // persistent frame cache
     property bool glow: true
     property bool compact: false
     property bool authLockEnabled: false        // require phone+fingerprint to open
@@ -184,6 +197,22 @@ Item {
             page.ttsProvider = s.tts_provider !== undefined ? s.tts_provider : "voxtral"
             if (s.stt_providers !== undefined) page.sttProviders = s.stt_providers
             if (s.tts_providers !== undefined) page.ttsProviders = s.tts_providers
+            page.videoBackend = s.video_backend !== undefined ? s.video_backend : "local"
+            if (s.video_backends !== undefined) page.videoBackends = s.video_backends
+            page.videoWhisperEngine = s.video_whisper_engine !== undefined
+                                      ? s.video_whisper_engine : "faster-whisper"
+            page.videoWhisperModel = s.video_whisper_model !== undefined
+                                     ? s.video_whisper_model : "large-v3"
+            page.videoWhisperDevice = s.video_whisper_device !== undefined
+                                      ? s.video_whisper_device : "auto"
+            page.videoFrameMode = s.video_frame_mode !== undefined ? s.video_frame_mode : "images"
+            page.videoFrameFormat = s.video_frame_format !== undefined ? s.video_frame_format : "jpeg"
+            page.videoFrameResolution = s.video_frame_resolution !== undefined
+                                        ? Number(s.video_frame_resolution) : 512
+            page.videoDefaultFps = s.video_default_fps !== undefined
+                                   ? ("" + s.video_default_fps) : "auto"
+            page.videoMaxFrames = s.video_max_frames !== undefined ? Number(s.video_max_frames) : 100
+            page.videoEnableIndex = (s.video_enable_index === true)
             page.authLockEnabled = s.auth_lock_enabled === true
             page.permissionLevel = (s.permission_level === "high" || s.permission_level === "low")
                                    ? s.permission_level : "medium"
@@ -215,6 +244,15 @@ Item {
             sttProviderCombo.syncFromState()
             ttsProviderCombo.syncFromState()
             voiceCombo.syncFromState()
+            videoBackendCombo.syncFromState()
+            videoEngineCombo.syncFromState()
+            videoModelCombo.syncFromState()
+            videoDeviceCombo.syncFromState()
+            videoResolutionCombo.syncFromState()
+            videoFormatCombo.syncFromState()
+            videoModeCombo.syncFromState()
+            videoFpsCombo.syncFromState()
+            videoMaxFramesCombo.syncFromState()
         }
         function onVoicesListed(voices) {
             page.voiceList = voices !== undefined ? voices : []
@@ -428,6 +466,16 @@ Item {
             "api_context_max_tokens": page.apiContextMaxTokens,
             "auto_update": page.autoUpdate,
             "auto_update_apply": page.autoUpdateApply,
+            "video_backend": page.videoBackend,
+            "video_whisper_engine": page.videoWhisperEngine,
+            "video_whisper_model": page.videoWhisperModel,
+            "video_whisper_device": page.videoWhisperDevice,
+            "video_frame_mode": page.videoFrameMode,
+            "video_frame_format": page.videoFrameFormat,
+            "video_frame_resolution": page.videoFrameResolution,
+            "video_default_fps": page.videoDefaultFps,
+            "video_max_frames": page.videoMaxFrames,
+            "video_enable_index": page.videoEnableIndex,
             "theme": { "glow": page.glow, "compact": page.compact }
         }
         // PIN is write-only: only send when the user typed/cleared one.
@@ -917,6 +965,216 @@ Item {
                             voiceNameField.text = ""
                         }
                     }
+                }
+            }
+
+            // ===== Video understanding ======================================
+            Widgets.SectionCard {
+                Layout.fillWidth: true
+                Text {
+                    text: "// VIDEO UNDERSTANDING"
+                    color: Theme.accent
+                    font.family: Theme.fontDisplay
+                    font.pixelSize: 11
+                    font.letterSpacing: Theme.trackMid
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "How Jarvis watches videos — frames become images it sees, audio becomes a timestamped transcript it reads. Paste a YouTube URL or a video path into chat and ask it to watch."
+                    color: Theme.textFaint
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                    wrapMode: Text.WordWrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 14
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "Audio backend"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: videoBackendCombo
+                            Layout.fillWidth: true
+                            model: page.providerLabels(page.videoBackends)
+                            function syncFromState() {
+                                model = page.providerLabels(page.videoBackends)
+                                currentIndex = page.providerIndexForId(page.videoBackends, page.videoBackend)
+                            }
+                            onActivated: {
+                                page.videoBackend = page.providerIdForIndex(page.videoBackends, currentIndex)
+                                page.dirty = true
+                            }
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "Local engine"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: videoEngineCombo
+                            Layout.fillWidth: true
+                            enabled: page.videoBackend === "local"
+                            property var ids: ["faster-whisper", "whisper-cpp", "openai-whisper"]
+                            model: ["faster-whisper (recommended)", "whisper.cpp", "openai-whisper"]
+                            function syncFromState() {
+                                var i = ids.indexOf(page.videoWhisperEngine)
+                                currentIndex = i >= 0 ? i : 0
+                            }
+                            onActivated: { page.videoWhisperEngine = ids[currentIndex]; page.dirty = true }
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 14
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "Whisper model"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: videoModelCombo
+                            Layout.fillWidth: true
+                            enabled: page.videoBackend === "local"
+                            property var ids: ["auto", "tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"]
+                            model: ["auto (pick by RAM)", "tiny (fastest)", "base", "small", "medium", "large-v3-turbo", "large-v3 (best)"]
+                            function syncFromState() {
+                                var i = ids.indexOf(page.videoWhisperModel)
+                                currentIndex = i >= 0 ? i : ids.length - 1
+                            }
+                            onActivated: { page.videoWhisperModel = ids[currentIndex]; page.dirty = true }
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "Device"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: videoDeviceCombo
+                            Layout.fillWidth: true
+                            enabled: page.videoBackend === "local" && page.videoWhisperEngine === "faster-whisper"
+                            property var ids: ["auto", "cpu", "cuda"]
+                            model: ["auto (GPU when present)", "CPU", "CUDA (NVIDIA GPU)"]
+                            function syncFromState() {
+                                var i = ids.indexOf(page.videoWhisperDevice)
+                                currentIndex = i >= 0 ? i : 0
+                            }
+                            onActivated: { page.videoWhisperDevice = ids[currentIndex]; page.dirty = true }
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 14
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "Frame resolution"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: videoResolutionCombo
+                            Layout.fillWidth: true
+                            property var ids: [256, 512, 768, 1024]
+                            model: ["256 px", "512 px (default)", "768 px", "1024 px (on-screen text)"]
+                            function syncFromState() {
+                                var i = ids.indexOf(page.videoFrameResolution)
+                                currentIndex = i >= 0 ? i : 1
+                            }
+                            onActivated: { page.videoFrameResolution = ids[currentIndex]; page.dirty = true }
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "Frame format"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: videoFormatCombo
+                            Layout.fillWidth: true
+                            property var ids: ["jpeg", "png", "webp"]
+                            model: ["jpeg (default)", "png (screen recordings)", "webp"]
+                            function syncFromState() {
+                                var i = ids.indexOf(page.videoFrameFormat)
+                                currentIndex = i >= 0 ? i : 0
+                            }
+                            onActivated: { page.videoFrameFormat = ids[currentIndex]; page.dirty = true }
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "Frame mode"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: videoModeCombo
+                            Layout.fillWidth: true
+                            property var ids: ["images", "descriptions"]
+                            model: ["Images (Jarvis sees frames)", "Descriptions (token-saving)"]
+                            function syncFromState() {
+                                var i = ids.indexOf(page.videoFrameMode)
+                                currentIndex = i >= 0 ? i : 0
+                            }
+                            onActivated: { page.videoFrameMode = ids[currentIndex]; page.dirty = true }
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 14
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "Default fps"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: videoFpsCombo
+                            Layout.fillWidth: true
+                            property var ids: ["auto", "0.2", "0.5", "1", "2"]
+                            model: ["auto (by duration)", "0.2 fps", "0.5 fps", "1 fps", "2 fps"]
+                            function syncFromState() {
+                                var i = ids.indexOf(page.videoDefaultFps)
+                                currentIndex = i >= 0 ? i : 0
+                            }
+                            onActivated: { page.videoDefaultFps = ids[currentIndex]; page.dirty = true }
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 5
+                        Text { text: "Max frames per call"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 12 }
+                        Widgets.StyledCombo {
+                            id: videoMaxFramesCombo
+                            Layout.fillWidth: true
+                            property var ids: [50, 100, 200]
+                            model: ["50", "100 (default)", "200"]
+                            function syncFromState() {
+                                var i = ids.indexOf(page.videoMaxFrames)
+                                currentIndex = i >= 0 ? i : 1
+                            }
+                            onActivated: { page.videoMaxFrames = ids[currentIndex]; page.dirty = true }
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    Widgets.StyledSwitch {
+                        checked: page.videoEnableIndex
+                        onToggled: function(v) { page.videoEnableIndex = v; page.dirty = true }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Cache extracted frames on disk (faster follow-up questions on the same video)"
+                        color: Theme.textMuted
+                        font.family: Theme.fontSans
+                        font.pixelSize: 12
+                        wrapMode: Text.WordWrap
+                    }
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: "Local whisper runs fully offline — nothing leaves this machine. Cloud backends need their API key under API KEYS. Say “run video_setup” in chat for a live dependency + model check."
+                    color: Theme.textFaint
+                    font.family: Theme.fontSans
+                    font.pixelSize: 11
+                    wrapMode: Text.WordWrap
                 }
             }
 
