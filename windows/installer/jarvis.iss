@@ -57,6 +57,9 @@ Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubd
 ; HIDDEN VBS launcher (wscript) — so jarvisd + the engine start with NO console
 ; window; only jarvis-sidebar (the GUI) appears. Jarvis icon kept.
 Name: "{group}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; IconFilename: "{app}\{#MyAppExeName}"
+; Terminal UI v2 (jarvis-tui.exe) — a console app, launched directly. Only
+; created when the payload actually contains it (built on a bun-equipped runner).
+Name: "{group}\Jarvis Terminal (TUI)"; Filename: "{app}\jarvis-tui.exe"; IconFilename: "{app}\{#MyAppExeName}"; Check: FileExists(ExpandConstant('{app}\jarvis-tui.exe'))
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Jarvis terminal UI v2 — OpenTUI + SolidJS over the jarvisd control websocket",
+  "description": "Jarvis terminal UI v2 \u2014 OpenTUI + SolidJS over the jarvisd control websocket",
   "scripts": {
     "dev": "bun run src/index.tsx",
     "test": "bun test",
@@ -20,5 +20,9 @@
   "devDependencies": {
     "@tsconfig/bun": "1.0.9",
     "@types/bun": "1.3.13"
+  },
+  "optionalDependencies": {
+    "@opentui/core-win32-x64": "0.3.4",
+    "@opentui/core-linux-x64": "0.3.4"
   }
 }

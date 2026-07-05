@@ -51,6 +51,52 @@ function tempWavPath(): string {
   return join(tmpdir(), `jarvis-voice-${randomUUID()}.wav`)
 }
 
+// Platform-appropriate capture/playback commands, tried in order. ffmpeg is
+// the cross-platform fallback everywhere (Windows dshow, macOS avfoundation,
+// Linux alsa) so voice works on Windows when ffmpeg is on PATH; else a clean
+// "install X" error surfaces instead of a crash.
+function recordCommands(file: string, seconds: number): string[][] {
+  const s = String(seconds)
+  if (process.platform === "win32") {
+    return [
+      ["ffmpeg", "-y", "-f", "dshow", "-i", "audio=default", "-t", s,
+        "-ar", "16000", "-ac", "1", file],
+    ]
+  }
+  if (process.platform === "darwin") {
+    return [
+      ["ffmpeg", "-y", "-f", "avfoundation", "-i", ":default", "-t", s,
+        "-ar", "16000", "-ac", "1", file],
+      ["sox", "-d", "-r", "16000", "-c", "1", file, "trim", "0", s],
+    ]
+  }
+  return [
+    ["arecord", "-f", "S16_LE", "-r", "16000", "-c", "1", "-t", "wav", "-d", s, file],
+    ["ffmpeg", "-y", "-f", "alsa", "-i", "default", "-t", s, "-ar", "16000", "-ac", "1", file],
+    ["sox", "-d", "-r", "16000", "-c", "1", file, "trim", "0", s],
+  ]
+}
+
+function playCommands(file: string): string[][] {
+  if (process.platform === "win32") {
+    return [
+      ["ffplay", "-autoexit", "-nodisp", "-loglevel", "quiet", file],
+      // PowerShell SoundPlayer — present on every Windows box, no install.
+      ["powershell", "-NoProfile", "-Command",
+        `(New-Object Media.SoundPlayer '${file}').PlaySync();`],
+    ]
+  }
+  if (process.platform === "darwin") return [["afplay", file], ["ffplay", "-autoexit", "-nodisp", "-loglevel", "quiet", file]]
+  return [["aplay", file], ["pw-play", file], ["ffplay", "-autoexit", "-nodisp", "-loglevel", "quiet", file]]
+}
+
+const recordHint =
+  process.platform === "win32"
+    ? "install ffmpeg (winget install ffmpeg) for voice capture"
+    : process.platform === "darwin"
+      ? "install ffmpeg or sox (brew install ffmpeg) for voice capture"
+      : "install alsa-utils (arecord) or ffmpeg for voice capture"
+
 // -- recording --------------------------------------------------------------
 
 let current: { proc: SpawnedProc; file: string } | null = null
@@ -75,25 +121,18 @@ export async function recordWav(maxSeconds: number): Promise<{ b64: string } | {
   if (current) return { error: "already recording" }
   const file = tempWavPath()
   const seconds = Math.max(1, Math.round(maxSeconds))
-  let proc: SpawnedProc
-  try {
-    proc = spawnImpl([
-      "arecord",
-      "-f",
-      "S16_LE",
-      "-r",
-      "16000",
-      "-c",
-      "1",
-      "-t",
-      "wav",
-      "-d",
-      String(seconds),
-      file,
-    ])
-  } catch (e) {
-    return { error: `arecord not found — install alsa-utils: ${String(e)}` }
+  const cmds = recordCommands(file, seconds)
+  let proc: SpawnedProc | null = null
+  let lastErr = ""
+  for (const cmd of cmds) {
+    try {
+      proc = spawnImpl(cmd)
+      break
+    } catch (e) {
+      lastErr = String(e)
+    }
   }
+  if (!proc) return { error: `${recordHint} (${lastErr})` }
   current = { proc, file }
   try {
     await proc.exited
@@ -127,14 +166,14 @@ export async function playWav(b64: string): Promise<void> {
   await writeFile(file, Buffer.from(b64, "base64"))
   try {
     const errors: string[] = []
-    for (const player of ["aplay", "pw-play"]) {
+    for (const cmd of playCommands(file)) {
       try {
-        const proc = spawnImpl([player, file])
+        const proc = spawnImpl(cmd)
         const code = await proc.exited
         if (code === 0) return
-        errors.push(`${player} exited with code ${code}`)
+        errors.push(`${cmd[0]} exited with code ${code}`)
       } catch (e) {
-        errors.push(`${player}: ${String(e)}`)
+        errors.push(`${cmd[0]}: ${String(e)}`)
       }
     }
     throw new Error(`playback failed — ${errors.join("; ")}`)
