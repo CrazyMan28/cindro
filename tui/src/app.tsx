@@ -18,6 +18,7 @@ import { Chat } from "./pages/Chat"
 import { CustomPage } from "./pages/engine/CustomPage"
 import { TablePage } from "./pages/engine/TablePage"
 import { HomeDashboard } from "./pages/Home"
+import { SettingsPage } from "./pages/Settings"
 import { WidgetsPage } from "./pages/Widgets"
 import { theme } from "./theme"
 import { Topbar } from "./ui/Topbar"
@@ -186,6 +187,9 @@ export function App(props: AppProps) {
                 navigate("chat")
               }}
             />
+          </Match>
+          <Match when={page() === "settings"}>
+            <SettingsPage active={() => page() === "settings" && !overlay()} />
           </Match>
           <Match when={manifest.page(page())?.source === "custom"}>
             <CustomPage page={manifest.page(page())!} onSendChat={sendChat} />

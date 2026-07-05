@@ -160,7 +160,7 @@ test("widget DSL renders inline in chat (text/progress/badge/button)", async () 
       ],
     },
   })
-  await sleep(200)
+  await sleep(500)
   const frame = await setup.waitForFrame((f) => f.includes("deploy pipeline"))
   expect(frame).toContain("◆ CANVAS · deploy status")
   expect(frame).toContain("50%")
