@@ -3,6 +3,17 @@
 A Claude-Code-style **terminal agent** plus the ops commands, speaking the same
 Contract A control WebSocket as every other Jarvis surface. Linux + Windows.
 
+> **This is the legacy TUI.** The Python/Textual TUI described below is kept
+> runnable, but is being superseded by the **TypeScript TUI v2** in
+> [`../tui`](../tui) (Bun + OpenTUI/SolidJS). This Textual TUI's "/" command
+> palette needed repeated patching around Textual's ancestor-only keybinding
+> chain and focus handling (composer losing focus to the tab bar, Up/Down
+> never reaching the popup list); v2 makes those failure modes structurally
+> impossible by construction — one component owns both the input and the
+> popup's selection state — rather than one-off fixes. See
+> [`../tui/README.md`](../tui/README.md). The ops subcommands (`status`,
+> `doctor`, `start`, `web`, `ask`, …) below are unaffected and still live here.
+
 ```
 jarvis                  # the full-screen TUI agent (below)
 jarvis status           # one-glance health snapshot of every component
@@ -82,17 +93,16 @@ close) without leaving Chat; `/voice` pushes the same full-screen push-to-talk
 voice mode as `F2`. Ask Jarvis to make you one ("make me a /deploy command
 that runs my deploy script") — it calls `create_slash_command` and it shows
 up immediately, no restart needed. `prompt`-kind commands run today;
-`mcp_tool`/`shell`-kind commands are recognized but notify rather than
-auto-execute (direct in-TUI dispatch is a fast-follow — see
-docs/superpowers/plans/2026-07-03-tui-gui-parity.md). `/model` and
-`/provider` pop up the same lightweight picker widget the Voice tab's
-brain/model/voice keys reuse (`b`/`m`/`v` — see Voice mode below).
+`mcp_tool`/`shell`-kind commands now execute server-side too (the daemon runs
+the MCP tool or the allow-listed script and returns the result — see daemon
+commit `36fa533`). `/model` and `/provider` pop up the same lightweight picker
+widget the Voice tab's brain/model/voice keys reuse (`b`/`m`/`v` — see Voice
+mode below).
 
-`/stage`, `/commit`, `/revert`, and `/openpr` are also recognized (for acting
-on a `diff` event the model streamed into the transcript — see "Reviewing
-diffs" below) but currently show 🚧 **not yet available** in the palette: the
-daemon doesn't implement the `diff.*` verbs yet, so this is honest
-forward-built scaffolding, not a working feature today.
+`/stage`, `/commit`, `/revert`, and `/openpr` act on a `diff` event the model
+streamed into the transcript (see "Reviewing diffs" below) and now run for
+real — the daemon implements the `diff.*` verbs (git in the session workdir;
+`open_pr` pushes + `gh pr create`).
 
 ### Self-editing the TUI's layout
 
@@ -175,11 +185,9 @@ Three popups off the Settings tab, matching the desktop's own sub-sections:
 When the model streams a `diff` event, Chat renders it inline — per-file
 `+N/-M` stat chips followed by a truncated, colorized unified-diff snippet —
 and `/stage <file>`, `/commit [msg]`, `/revert <file>`, and `/openpr [title]`
-are recognized commands for acting on it. **This is forward-built
-scaffolding**: the daemon doesn't implement the `diff.*` verbs yet, so those
-four commands currently show 🚧 *not yet available* in the palette rather
-than doing anything — the rendering and command wiring are ready for the
-day the daemon side lands.
+act on it for real. The daemon implements the `diff.*` verbs (git run in the
+session's working directory; `open_pr` pushes the branch and runs
+`gh pr create`), so each command reports git's own result inline.
 
 ### Phone: dialer, screening, and incoming calls
 
