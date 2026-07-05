@@ -228,7 +228,25 @@ export function Chat(props: ChatProps) {
 
   return (
     <box flexDirection="column" flexGrow={1}>
-      <Transcript session={session} />
+      <Transcript
+        session={session}
+        onWidgetAction={(text) =>
+          text.startsWith("/")
+            ? void app.registry.execute(
+                text.slice(1).split(/\s+/)[0] ?? "",
+                text.slice(1).split(/\s+/).slice(1).join(" "),
+                {
+                  navigate: app.navigate,
+                  sendChat: send,
+                  call: (m, p) => app.client.call(m, p ?? {}),
+                  notify: (msg) => session.notice(msg),
+                  openPicker: () => {},
+                  openHelp: () => {},
+                },
+              )
+            : send(text)
+        }
+      />
       <Show when={session.status()}>
         <text fg={theme.textFaint} selectable={false}>
           {session.status()}

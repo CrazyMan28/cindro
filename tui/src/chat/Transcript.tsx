@@ -9,6 +9,7 @@ import { TextAttributes } from "@opentui/core"
 import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js"
 
 import { syntaxStyle, theme } from "../theme"
+import { Widget } from "../widgets/Widget"
 import type { ChatItem, SessionController } from "./session"
 
 const TYPEWRITER_CHARS = 3
@@ -149,7 +150,10 @@ function DiffCard(props: { item: Extract<ChatItem, { kind: "diff" }> }) {
   )
 }
 
-export function Transcript(props: { session: SessionController }) {
+export function Transcript(props: {
+  session: SessionController
+  onWidgetAction?: (text: string) => void
+}) {
   return (
     <scrollbox flexGrow={1} stickyScroll stickyStart="bottom" paddingLeft={1} paddingRight={1}>
       <For each={props.session.items}>
@@ -244,9 +248,14 @@ export function Transcript(props: { session: SessionController }) {
                     <text fg={theme.accent} attributes={TextAttributes.BOLD}>
                       ◆ CANVAS · {w.title}
                     </text>
-                    <text fg={theme.textFaint} selectable={false}>
-                      full widget rendering lands with the Phase-4b DSL renderer
-                    </text>
+                    <Widget
+                      spec={w.spec}
+                      onAction={(a) => {
+                        if (a.send) props.onWidgetAction?.(a.send)
+                        else if (a.skill)
+                          props.onWidgetAction?.(`/${a.skill} ${a.args ?? ""}`.trim())
+                      }}
+                    />
                   </box>
                 )
               })()}

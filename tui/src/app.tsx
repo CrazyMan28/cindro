@@ -5,14 +5,17 @@
 
 import { TextAttributes } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
-import { createSignal, For, Match, Switch } from "solid-js"
+import { createSignal, For, Match, Show, Switch } from "solid-js"
 
 import type { AppApi } from "./app-context"
 import { AppContext } from "./app-context"
 import { SessionController } from "./chat/session"
 import type { CommandRegistry } from "./commands/registry"
 import type { ControlClient } from "./control/client"
+import { ManifestStore } from "./manifest"
 import { Chat } from "./pages/Chat"
+import { CustomPage } from "./pages/engine/CustomPage"
+import { TablePage } from "./pages/engine/TablePage"
 import { Home } from "./pages/Home"
 import { theme } from "./theme"
 import { Topbar } from "./ui/Topbar"
@@ -39,22 +42,52 @@ export interface AppProps {
 
 export function App(props: AppProps) {
   const [page, setPage] = createSignal("home")
+  const [overlay, setOverlay] = createSignal<string | null>(null)
   const [notice, setNotice] = createSignal("")
   const session = new SessionController(props.client)
+  const manifest = new ManifestStore(props.client)
+  void manifest.refresh()
+
+  const navigate = (id: string) => {
+    if (TABS.some((t) => t.id === id) || manifest.page(id)?.source === "custom") {
+      setOverlay(null)
+      setPage(id)
+      return
+    }
+    // Non-tab manifest pages (the 11 data pages) open as an overlay route on
+    // top of whatever tab is active — the QuickViewScreen pattern, kept.
+    if (manifest.page(id)) setOverlay(id)
+    else setNotice(`no such page: ${id}`)
+  }
 
   const api: AppApi = {
     client: props.client,
     registry: props.registry,
     page,
-    navigate: (p) => setPage(p),
+    navigate,
     notify: (message) => setNotice(message),
     quit: props.onQuit,
   }
 
   useKeyboard(
-    (key: { name?: string; ctrl?: boolean; meta?: boolean; option?: boolean }) => {
+    (key: {
+      name?: string
+      ctrl?: boolean
+      meta?: boolean
+      option?: boolean
+      defaultPrevented?: boolean
+    }) => {
       if (key.ctrl && key.name === "q") {
         props.onQuit()
+        return
+      }
+      // Escape closes an open overlay page — but only if nothing INSIDE the
+      // overlay (action menu, confirm, search input) consumed it first, so
+      // check after every handler has run.
+      if (key.name === "escape" && overlay()) {
+        setTimeout(() => {
+          if (!key.defaultPrevented) setOverlay(null)
+        }, 0)
         return
       }
       // Alt+digit switches tabs (ESC-prefixed, so it works in legacy
@@ -62,6 +95,7 @@ export function App(props: AppProps) {
       // belong to the chat composer and question shortcuts).
       const n = Number.parseInt(key.name ?? "", 10)
       if ((key.meta || key.option) && Number.isInteger(n) && n >= 1 && n <= TABS.length) {
+        setOverlay(null)
         setPage(TABS[n - 1].id)
       }
     },
@@ -79,8 +113,21 @@ export function App(props: AppProps) {
                 fg={page() === tab.id ? theme.accentBright : theme.textMuted}
                 attributes={page() === tab.id ? TextAttributes.BOLD : undefined}
                 selectable={false}
+                onMouseDown={() => navigate(tab.id)}
               >
                 {i() + 1}:{tab.title}
+              </text>
+            )}
+          </For>
+          <For each={manifest.customPages()}>
+            {(cp) => (
+              <text
+                fg={page() === cp.id ? theme.accentBright : theme.violet}
+                attributes={page() === cp.id ? TextAttributes.BOLD : undefined}
+                selectable={false}
+                onMouseDown={() => navigate(cp.id)}
+              >
+                ✦{cp.title}
               </text>
             )}
           </For>
@@ -103,9 +150,54 @@ export function App(props: AppProps) {
             <Home />
           </Match>
           <Match when={page() === "chat"}>
-            <Chat session={session} active={() => page() === "chat"} />
+            <Chat session={session} active={() => page() === "chat" && !overlay()} />
+          </Match>
+          <Match when={manifest.page(page())?.source === "custom"}>
+            <CustomPage
+              page={manifest.page(page())!}
+              onSendChat={(text) => {
+                navigate("chat")
+                void session.send(text).catch((e) => setNotice(String(e)))
+              }}
+            />
           </Match>
         </Switch>
+        <Show when={overlay() ? manifest.page(overlay()!) : undefined}>
+          {(op) => (
+            <box
+              position="absolute"
+              left={0}
+              right={0}
+              top={4}
+              bottom={1}
+              zIndex={30}
+              flexDirection="column"
+              backgroundColor={theme.bg}
+              border
+              borderColor={theme.accent}
+            >
+              <Switch
+                fallback={
+                  <CustomPage
+                    page={op()}
+                    onSendChat={(text) => {
+                      setOverlay(null)
+                      navigate("chat")
+                      void session.send(text).catch((e) => setNotice(String(e)))
+                    }}
+                  />
+                }
+              >
+                <Match when={op().kind === "table"}>
+                  <TablePage page={op()} active={() => true} />
+                </Match>
+              </Switch>
+              <text fg={theme.textFaint} selectable={false}>
+                Esc close
+              </text>
+            </box>
+          )}
+        </Show>
         <box
           flexDirection="row"
           paddingLeft={1}

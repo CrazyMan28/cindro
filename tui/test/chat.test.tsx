@@ -83,9 +83,10 @@ test("root cause B fixed: arrows move the highlight, Enter runs the pick", async
   await setup.mockInput.pressKey("ARROW_DOWN")
   await setup.mockInput.pressKey("ARROW_UP")
   await setup.mockInput.pressKey("RETURN")
-  // navigate("sessions") — not a main tab yet, so the shell shows the
-  // placeholder frame for it (proof the command EXECUTED via keyboard).
-  const frame = await setup.waitForFrame((f) => f.includes("Lands in"))
+  // navigate("sessions") — this MockDaemon publishes an empty manifest, so
+  // the shell reports the unknown page in the footer (proof the command
+  // EXECUTED via keyboard; the overlay path is covered in pages.test).
+  const frame = await setup.waitForFrame((f) => f.includes("no such page: sessions"))
   expect(frame.toLowerCase()).toContain("sessions")
 }, 15000)
 

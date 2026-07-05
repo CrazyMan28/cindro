@@ -19,6 +19,10 @@ export interface PickerProps {
 export function Picker(props: PickerProps) {
   let ref: SelectRenderable | undefined
   onMount(() => ref?.focus())
+  // Mount-grace: the keypress that OPENED this picker can be re-delivered to
+  // the freshly-focused select in the same dispatch, instantly "picking" the
+  // first option. Ignore select events for the first beat.
+  const bornAt = Date.now()
 
   useKeyboard(
     (key: { name?: string }) => {
@@ -55,6 +59,7 @@ export function Picker(props: PickerProps) {
           }),
         )}
         onSelect={(_i: number, option: SelectOption | null) => {
+          if (Date.now() - bornAt < 150) return
           if (option) props.onPick(String(option.value ?? option.name))
         }}
       />
