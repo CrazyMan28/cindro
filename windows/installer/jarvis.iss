@@ -29,6 +29,11 @@ OutputDir=..\dist
 OutputBaseFilename=Jarvis-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
+; Jarvis arc-reactor icon on the installer itself + Add/Remove Programs
+; (the app/shortcut/taskbar icon comes from the exe's embedded RC icon —
+; windows/jarvis.rc — which didn't exist before, hence the iconless app).
+SetupIconFile=..\jarvis.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible

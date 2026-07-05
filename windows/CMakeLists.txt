@@ -241,6 +241,9 @@ target_compile_options(jarvis-relay PRIVATE ${FORCE_INCLUDE_FLAGS})
 # shared desktop/qml/*.qml referenced (NOT copied) via qt_add_qml_module.
 qt_add_executable(jarvis-sidebar
     ${SHELL_DIR}/main.cpp
+    # Exe icon resource (Explorer/taskbar/window/shortcut all read it) —
+    # both MSVC and windres compile .rc natively through CMake.
+    ${CMAKE_CURRENT_SOURCE_DIR}/jarvis.rc
     ${SHELL_DIR}/WindowController.cpp
     ${SHELL_DIR}/WindowController.h
     ${DESKTOP_DIR}/src/Bridge.cpp
