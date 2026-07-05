@@ -33,7 +33,7 @@ test("shell boots: topbar telemetry + tabs + manifest pages render", async () =>
     sessions_live: 1,
   })
   daemon.handlers["settings.get"] = () => ({
-    settings: { agent_mode: "coworker", user_name: "Issac" },
+    settings: { agent_mode: "coworker", user_name: "Issac", setup_complete: true },
   })
   daemon.handlers["ui.manifest.get"] = () => ({
     v: 1,

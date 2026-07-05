@@ -33,7 +33,7 @@ async function bootChat() {
   daemon.handlers["status.get"] = () => ({
     version: "1", default_brain: "claude", mcp: { total: 1, enabled: 1 }, agents_running: 0,
   })
-  daemon.handlers["settings.get"] = () => ({ settings: { agent_mode: "coworker" } })
+  daemon.handlers["settings.get"] = () => ({ settings: { agent_mode: "coworker", setup_complete: true } })
   daemon.handlers["session.create"] = () => ({ session_id: "sess_test" })
   daemon.handlers["session.send"] = () => ({ ok: true })
   daemon.handlers["session.cancel"] = () => ({ ok: true })

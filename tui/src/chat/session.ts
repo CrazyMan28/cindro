@@ -151,6 +151,16 @@ export class SessionController {
     this.push({ id: mkId(), kind: "widget", title, spec })
   }
 
+  /** All diff files seen this session, de-duped by path (newest patch wins)
+   * — the input to the /diff review overlay. */
+  diffFiles(): Array<{ path: string; patch: string }> {
+    const byPath = new Map<string, { path: string; patch: string }>()
+    for (const item of this.items) {
+      if (item.kind === "diff") for (const f of item.files) byPath.set(f.path, f)
+    }
+    return [...byPath.values()]
+  }
+
   // -- lifecycle --------------------------------------------------------------
   async ensureSession(): Promise<string> {
     if (this.sessionId()) return this.sessionId()
