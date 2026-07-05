@@ -146,6 +146,11 @@ export class SessionController {
     this.push({ id: mkId(), kind: "notice", text, style })
   }
 
+  /** Render a widget spec inline in the transcript (Widgets page "→ Chat"). */
+  injectWidget(title: string, spec: Record<string, unknown>): void {
+    this.push({ id: mkId(), kind: "widget", title, spec })
+  }
+
   // -- lifecycle --------------------------------------------------------------
   async ensureSession(): Promise<string> {
     if (this.sessionId()) return this.sessionId()

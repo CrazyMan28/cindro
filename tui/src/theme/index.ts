@@ -15,6 +15,7 @@ export const theme = {
   surfaceStrong: hex(tokens.surfaceStrong),
   hairline: hex(tokens.hairline),
   hairlineSoft: hex(tokens.hairlineSoft),
+  hairlineFaint: hex(tokens.hairlineFaint),
 
   accent: hex(tokens.accent),
   accentBright: hex(tokens.accentBright),

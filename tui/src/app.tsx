@@ -13,12 +13,15 @@ import { SessionController } from "./chat/session"
 import type { CommandRegistry } from "./commands/registry"
 import type { ControlClient } from "./control/client"
 import { ManifestStore } from "./manifest"
+import { CanvasPage } from "./pages/Canvas"
 import { Chat } from "./pages/Chat"
 import { CustomPage } from "./pages/engine/CustomPage"
 import { TablePage } from "./pages/engine/TablePage"
-import { Home } from "./pages/Home"
+import { HomeDashboard } from "./pages/Home"
+import { WidgetsPage } from "./pages/Widgets"
 import { theme } from "./theme"
 import { Topbar } from "./ui/Topbar"
+import { CanvasStore } from "./widgets/store"
 
 // The 9 main-bar tabs (same set the Textual TUI ships; the 11 popup pages
 // arrive with the pages engine in Phase 3).
@@ -46,7 +49,13 @@ export function App(props: AppProps) {
   const [notice, setNotice] = createSignal("")
   const session = new SessionController(props.client)
   const manifest = new ManifestStore(props.client)
+  const canvasStore = new CanvasStore(props.client)
   void manifest.refresh()
+
+  const sendChat = (text: string) => {
+    navigate("chat")
+    void session.send(text).catch((e) => setNotice(String(e)))
+  }
 
   const navigate = (id: string) => {
     if (TABS.some((t) => t.id === id) || manifest.page(id)?.source === "custom") {
@@ -147,19 +156,39 @@ export function App(props: AppProps) {
           }
         >
           <Match when={page() === "home"}>
-            <Home />
+            <HomeDashboard
+              active={() => page() === "home" && !overlay()}
+              onOpenSession={(id, title) => {
+                navigate("chat")
+                void session.openSession(id, title).catch((e) => setNotice(String(e)))
+              }}
+            />
           </Match>
           <Match when={page() === "chat"}>
             <Chat session={session} active={() => page() === "chat" && !overlay()} />
           </Match>
-          <Match when={manifest.page(page())?.source === "custom"}>
-            <CustomPage
-              page={manifest.page(page())!}
-              onSendChat={(text) => {
+          <Match when={page() === "canvas"}>
+            <CanvasPage
+              store={canvasStore}
+              active={() => page() === "canvas" && !overlay()}
+              onSendChat={sendChat}
+            />
+          </Match>
+          <Match when={page() === "widgets"}>
+            <WidgetsPage
+              active={() => page() === "widgets" && !overlay()}
+              onRenderToCanvas={(item) => {
+                canvasStore.inject(item)
+                navigate("canvas")
+              }}
+              onRenderToChat={(title, spec) => {
+                session.injectWidget(title, spec)
                 navigate("chat")
-                void session.send(text).catch((e) => setNotice(String(e)))
               }}
             />
+          </Match>
+          <Match when={manifest.page(page())?.source === "custom"}>
+            <CustomPage page={manifest.page(page())!} onSendChat={sendChat} />
           </Match>
         </Switch>
         <Show when={overlay() ? manifest.page(overlay()!) : undefined}>
