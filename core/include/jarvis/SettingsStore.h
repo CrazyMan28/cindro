@@ -239,6 +239,18 @@ public:
     // The {codex,claude,openai,anthropic,ollama} -> bool map for settings.get.
     QJsonObject apiKeysSet() const;
 
+    // --- video understanding (video_* keys) --------------------------------
+    // The video pipeline (yt-dlp / ffmpeg / whisper) runs in the Python engine;
+    // the daemon only stores the user's preferences so desktop/TUI Settings and
+    // the engine's video tools read one source of truth. Kept as a flat
+    // key -> value map with typed defaults instead of 19 individual members:
+    // videoSettings() returns the full set (defaults filled in), and
+    // setVideoSetting() rejects unknown keys and normalizes enum-ish values so
+    // a bad pref can never select a nonexistent backend/engine. Round-tripped
+    // in config.toml as flat `video_*` keys.
+    QJsonObject videoSettings() const;
+    bool setVideoSetting(const QString &key, const QJsonValue &value);
+
     // Persist prefs (config.toml) and secrets (secrets.json, chmod 0600).
     bool saveConfig();
     bool saveSecrets();
@@ -269,6 +281,7 @@ private:
     bool m_autoUpdateApply = false;     // AND install automatically (default OFF)
     int m_autoUpdateIntervalHours = 6;  // auto-check cadence (hours, >=1)
     QJsonObject m_theme;
+    QJsonObject m_videoOverrides; // video_* keys that differ from defaults
     QJsonObject m_apiKeys; // provider -> value
     QString m_lastError;
 };

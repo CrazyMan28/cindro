@@ -208,6 +208,76 @@ int main()
         check(s3.wakeNotify() == QStringLiteral("always"), "wake_notify=always round-trips");
     }
 
+    // --- Video understanding (video_* map): defaults, normalize, round-trip -
+    {
+        writeConfig(QStringLiteral("default_brain = \"codex\"\n"));
+        jarvis::SettingsStore s;
+        s.load();
+        const QJsonObject v = s.videoSettings();
+        check(v.value(QStringLiteral("video_backend")).toString() ==
+                  QStringLiteral("local"),
+              "fresh config => video_backend defaults local");
+        check(v.value(QStringLiteral("video_whisper_model")).toString() ==
+                  QStringLiteral("large-v3"),
+              "fresh config => video_whisper_model defaults large-v3");
+        check(v.value(QStringLiteral("video_frame_resolution")).toInt() == 512,
+              "fresh config => video_frame_resolution defaults 512");
+        check(v.value(QStringLiteral("video_enable_index")).toBool() == false,
+              "fresh config => video_enable_index defaults off");
+
+        // Unknown key rejected; unknown enum value normalizes to default.
+        check(!s.setVideoSetting(QStringLiteral("video_bogus"), 1),
+              "unknown video_* key is rejected");
+        check(s.setVideoSetting(QStringLiteral("video_backend"),
+                                QStringLiteral("bogus")),
+              "known key with bogus value is accepted (normalized)");
+        check(s.videoSettings().value(QStringLiteral("video_backend")).toString() ==
+                  QStringLiteral("local"),
+              "bogus video_backend normalizes to local");
+
+        // Int clamp + string-typed numbers coerce.
+        s.setVideoSetting(QStringLiteral("video_frame_resolution"),
+                          QStringLiteral("99999"));
+        check(s.videoSettings()
+                      .value(QStringLiteral("video_frame_resolution"))
+                      .toInt() == 2048,
+              "video_frame_resolution clamps to 2048");
+
+        // Changed values round-trip; untouched keys stay implicit defaults.
+        s.setVideoSetting(QStringLiteral("video_backend"),
+                          QStringLiteral("gemini-api"));
+        s.setVideoSetting(QStringLiteral("video_whisper_model"),
+                          QStringLiteral("tiny"));
+        s.setVideoSetting(QStringLiteral("video_enable_index"), true);
+        check(s.saveConfig(), "saveConfig() with video prefs succeeds");
+
+        jarvis::SettingsStore s2;
+        s2.load();
+        const QJsonObject v2 = s2.videoSettings();
+        check(v2.value(QStringLiteral("video_backend")).toString() ==
+                  QStringLiteral("gemini-api"),
+              "video_backend=gemini-api round-trips");
+        check(v2.value(QStringLiteral("video_whisper_model")).toString() ==
+                  QStringLiteral("tiny"),
+              "video_whisper_model=tiny round-trips");
+        check(v2.value(QStringLiteral("video_enable_index")).toBool() == true,
+              "video_enable_index=true round-trips");
+        check(v2.value(QStringLiteral("video_max_frames")).toInt() == 100,
+              "untouched video_max_frames stays default after round-trip");
+
+        // Setting a key back to its default removes the config.toml line.
+        s2.setVideoSetting(QStringLiteral("video_backend"), QStringLiteral("local"));
+        s2.saveConfig();
+        QFile f(jarvis::Config::configFilePath());
+        f.open(QIODevice::ReadOnly | QIODevice::Text);
+        const QString text = QString::fromUtf8(f.readAll());
+        f.close();
+        check(!text.contains(QStringLiteral("video_backend")),
+              "default-valued video_backend is not written to config.toml");
+        check(text.contains(QStringLiteral("video_whisper_model = \"tiny\"")),
+              "non-default video_whisper_model stays in config.toml");
+    }
+
     if (g_failures == 0) {
         std::fprintf(stderr, "\nPASS settings_store_test\n");
         return 0;

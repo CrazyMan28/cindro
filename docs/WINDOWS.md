@@ -21,6 +21,7 @@ platform guards; it never changes how Linux/Android build or run.
 | Multi-seat isolated agent cursor | ✅ forked KWin | ❌ | No compositor to fork; agent shares your input queue (gated by the take-over banner + consent). |
 | Real-screen take-over (glow cursor + banner + consent + Esc) | ✅ | ✅ | Transparent click-through overlay (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST`). |
 | Voice (Voxtral STT/TTS, voice library, voice mode) | ✅ | ✅ | Voxtral is HTTP. Mic capture via Qt Multimedia (WASAPI) wherever `pw-record` doesn't exist — chat dictation, hands-free voice mode, and the clip recorder all fall back to it. |
+| Video understanding (YouTube URL / local file → frames + whisper transcript) | ✅ | ✅ needs ffmpeg | Pipeline is pure Python (`computer_use_mcp/video`): yt-dlp + faster-whisper freeze into `jarvis-engine.exe`; only **ffmpeg** stays external — `winget install Gyan.FFmpeg`, then restart Jarvis so the updated PATH is seen. Whisper models auto-download from Hugging Face on first use. |
 | Generative widgets / canvas / pager / Home pins / live widgets | ✅ | ✅ | Daemon/engine-driven; QML renderer reused. |
 | Agents / subagents, scheduler, memory, skills, hooks, modes, permissions | ✅ | ✅ | Core is cross-platform. |
 | Plugins (signed Ed25519, install) | ✅ | ✅ render/install; ⚠ sandbox | The Linux `systemd-run` sandbox has no Win32 equal → Windows uses a Job-Object/restricted-token sandbox (or runs with explicit consent). |

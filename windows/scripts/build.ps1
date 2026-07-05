@@ -244,14 +244,29 @@ if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed" }
 if ($LASTEXITCODE -ne 0) { throw "pip install engine (--no-deps) failed" }
 & $venvPy -m pip install -r (Join-Path $win "engine\requirements-windows.txt")
 if ($LASTEXITCODE -ne 0) { throw "pip install windows requirements failed" }
+# Fail FAST if a video-understanding wheel is broken for this Python — a bad
+# ctranslate2/av wheel would otherwise only surface after the (slow) freeze.
+& $venvPy -c "import faster_whisper, ctranslate2, av, yt_dlp, huggingface_hub, onnxruntime"
+if ($LASTEXITCODE -ne 0) { throw "video deps import probe failed (faster-whisper/ctranslate2/av/yt-dlp/onnxruntime)" }
 # --collect-submodules computer_use_mcp guarantees EVERY tool module ships
-# (tools_desktop/browser/widgets/todo/bg/phone/jarvis_ops); --collect-all mss/PIL
+# (tools_desktop/browser/widgets/todo/bg/phone/jarvis_ops/video); --collect-all mss/PIL
 # + the win32 hidden-imports cover the Windows backend's lazy imports.
+# Video understanding needs the heavy --collect-all trio: ctranslate2 and av ship
+# compiled .pyd/.dll payloads the default import scanner misses, and faster_whisper
+# carries data assets — same class of silent-drop as the jsonschema gotcha
+# (AGENTS.md "collect-data"): the frozen exe imports fine at build time and dies at
+# runtime without them. huggingface_hub/tokenizers dist-info feeds importlib.metadata
+# version probes inside faster_whisper.
 & (Join-Path $venv "Scripts\pyinstaller.exe") --noconfirm --name jarvis-engine `
   --distpath (Join-Path $payload "engine") --workpath (Join-Path $build "pyi") `
   --collect-submodules computer_use_mcp --collect-all mss --collect-all PIL `
   --collect-data jsonschema_specifications --collect-data jsonschema `
   --copy-metadata mcp `
+  --collect-all faster_whisper --collect-all ctranslate2 --collect-all av `
+  --collect-all onnxruntime `
+  --collect-data huggingface_hub --copy-metadata huggingface_hub `
+  --copy-metadata tokenizers `
+  --collect-submodules yt_dlp --collect-data yt_dlp `
   --hidden-import win32api --hidden-import win32gui --hidden-import win32con `
   --hidden-import win32process --hidden-import pywintypes `
   --paths (Join-Path $win "engine") (Join-Path $win "engine\server_windows.py")

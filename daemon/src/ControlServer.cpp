@@ -781,6 +781,32 @@ Response ControlServer::handleSettingsGet(const Request &req)
     s.insert(QStringLiteral("stt_providers"), VoiceProvider::sttProviders());
     s.insert(QStringLiteral("tts_providers"), VoiceProvider::ttsProviders());
 
+    // Video understanding prefs (flat video_* keys; the yt-dlp/ffmpeg/whisper
+    // pipeline runs in the Python engine — the daemon only stores preferences).
+    // video_backends carries availability so the Settings picker can grey out
+    // cloud backends until their API key is set; a LIVE dependency check
+    // (ffmpeg present? model downloaded?) is the engine's job — ask Jarvis to
+    // run video_setup in chat.
+    {
+        const QJsonObject video = m_settings.videoSettings();
+        for (auto it = video.begin(); it != video.end(); ++it)
+            s.insert(it.key(), it.value());
+        QJsonArray videoBackends;
+        const auto addBackend = [&](const char *id, const char *label, bool available) {
+            QJsonObject o;
+            o.insert(QStringLiteral("id"), QLatin1String(id));
+            o.insert(QStringLiteral("label"), QLatin1String(label));
+            o.insert(QStringLiteral("available"), available);
+            videoBackends.append(o);
+        };
+        addBackend("local", "Local whisper (offline)", true);
+        addBackend("gemini-api", "Gemini API (cloud)",
+                   m_settings.hasApiKey(QStringLiteral("gemini")));
+        addBackend("openai-api", "OpenAI Whisper API (cloud)",
+                   m_settings.hasApiKey(QStringLiteral("openai")));
+        s.insert(QStringLiteral("video_backends"), videoBackends);
+    }
+
     QJsonArray brains;
     brains << QStringLiteral("codex") << QStringLiteral("claude") << QStringLiteral("api");
     s.insert(QStringLiteral("brains"), brains);
@@ -989,6 +1015,14 @@ Response ControlServer::handleSettingsSet(const Request &req)
             patch.value(QStringLiteral("auto_update_interval_hours")).toInt());
         prefsTouched = true;
         autoUpdateChanged = true;
+    }
+    // Video understanding: one generic pass for every known video_* key —
+    // SettingsStore validates and normalizes; unknown video_ keys are ignored.
+    for (auto it = patch.begin(); it != patch.end(); ++it) {
+        if (!it.key().startsWith(QStringLiteral("video_")))
+            continue;
+        if (m_settings.setVideoSetting(it.key(), it.value()))
+            prefsTouched = true;
     }
     if (prefsTouched)
         m_settings.saveConfig();

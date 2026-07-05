@@ -50,6 +50,154 @@ QString SettingsStore::secretsFilePath()
     return Config::configDir() + QStringLiteral("/secrets.json");
 }
 
+// ---- video understanding (video_* keys) ------------------------------------
+// Typed defaults for every video setting. The Python engine keeps a mirrored
+// fallback table (computer_use_mcp/video/config.py DEFAULTS) for when the
+// daemon is unreachable — keep the two in sync when adding a knob.
+
+static const QStringList &videoKeyOrder()
+{
+    static const QStringList kOrder = {
+        QStringLiteral("video_backend"),
+        QStringLiteral("video_whisper_engine"),
+        QStringLiteral("video_whisper_model"),
+        QStringLiteral("video_whisper_device"),
+        QStringLiteral("video_frame_mode"),
+        QStringLiteral("video_frame_format"),
+        QStringLiteral("video_frame_resolution"),
+        QStringLiteral("video_default_fps"),
+        QStringLiteral("video_max_frames"),
+        QStringLiteral("video_frame_describer_model"),
+        QStringLiteral("video_frame_describer_timeout_sec"),
+        QStringLiteral("video_enable_index"),
+        QStringLiteral("video_session_max_age_days"),
+        QStringLiteral("video_downloads_max_age_days"),
+        QStringLiteral("video_audio_chunk_trigger_seconds"),
+        QStringLiteral("video_audio_chunk_size_seconds"),
+        QStringLiteral("video_audio_chunk_overlap_seconds"),
+        QStringLiteral("video_gemini_model"),
+        QStringLiteral("video_gemini_max_output_tokens"),
+    };
+    return kOrder;
+}
+
+static const QJsonObject &videoDefaults()
+{
+    static const QJsonObject kDefaults = [] {
+        QJsonObject d;
+        d.insert(QStringLiteral("video_backend"), QStringLiteral("local"));
+        d.insert(QStringLiteral("video_whisper_engine"), QStringLiteral("faster-whisper"));
+        d.insert(QStringLiteral("video_whisper_model"), QStringLiteral("large-v3"));
+        d.insert(QStringLiteral("video_whisper_device"), QStringLiteral("auto"));
+        d.insert(QStringLiteral("video_frame_mode"), QStringLiteral("images"));
+        d.insert(QStringLiteral("video_frame_format"), QStringLiteral("jpeg"));
+        d.insert(QStringLiteral("video_frame_resolution"), 512);
+        d.insert(QStringLiteral("video_default_fps"), QStringLiteral("auto"));
+        d.insert(QStringLiteral("video_max_frames"), 100);
+        d.insert(QStringLiteral("video_frame_describer_model"), QString());
+        d.insert(QStringLiteral("video_frame_describer_timeout_sec"), 180);
+        d.insert(QStringLiteral("video_enable_index"), false);
+        d.insert(QStringLiteral("video_session_max_age_days"), 7);
+        d.insert(QStringLiteral("video_downloads_max_age_days"), 7);
+        d.insert(QStringLiteral("video_audio_chunk_trigger_seconds"), 1200);
+        d.insert(QStringLiteral("video_audio_chunk_size_seconds"), 600);
+        d.insert(QStringLiteral("video_audio_chunk_overlap_seconds"), 0);
+        d.insert(QStringLiteral("video_gemini_model"),
+                 QStringLiteral("gemini-3-flash-preview"));
+        d.insert(QStringLiteral("video_gemini_max_output_tokens"), 65536);
+        return d;
+    }();
+    return kDefaults;
+}
+
+// Enum keys normalize unknown values back to the default; int keys clamp to a
+// sane range; bools accept true/false/"true"/"1". Free-text keys pass through.
+static QJsonValue normalizeVideoValue(const QString &key, const QJsonValue &value)
+{
+    const auto oneOf = [&](std::initializer_list<const char *> allowed) -> QJsonValue {
+        const QString v = value.toString().trimmed().toLower();
+        for (const char *a : allowed)
+            if (v == QLatin1String(a))
+                return v;
+        return videoDefaults().value(key);
+    };
+    const auto clamped = [&](int lo, int hi) -> QJsonValue {
+        bool ok = value.isDouble();
+        const int n = ok ? int(value.toDouble()) : value.toString().toInt(&ok);
+        if (!ok)
+            return videoDefaults().value(key);
+        return qBound(lo, n, hi);
+    };
+
+    if (key == QLatin1String("video_backend"))
+        return oneOf({"local", "gemini-api", "openai-api"});
+    if (key == QLatin1String("video_whisper_engine"))
+        return oneOf({"faster-whisper", "whisper-cpp", "openai-whisper"});
+    if (key == QLatin1String("video_whisper_model"))
+        return oneOf({"auto", "tiny", "base", "small", "medium",
+                      "large-v3-turbo", "large-v3"});
+    if (key == QLatin1String("video_whisper_device"))
+        return oneOf({"auto", "cpu", "cuda"});
+    if (key == QLatin1String("video_frame_mode"))
+        return oneOf({"images", "descriptions"});
+    if (key == QLatin1String("video_frame_format"))
+        return oneOf({"jpeg", "png", "webp"});
+    if (key == QLatin1String("video_frame_resolution"))
+        return clamped(128, 2048);
+    if (key == QLatin1String("video_default_fps")) {
+        // "auto" or a positive number kept as a string ("0.5", "2").
+        const QString v = value.isDouble() ? QString::number(value.toDouble())
+                                           : value.toString().trimmed().toLower();
+        if (v == QLatin1String("auto"))
+            return v;
+        bool ok = false;
+        const double fps = v.toDouble(&ok);
+        return (ok && fps > 0.0) ? QJsonValue(v) : videoDefaults().value(key);
+    }
+    if (key == QLatin1String("video_max_frames"))
+        return clamped(1, 1000);
+    if (key == QLatin1String("video_frame_describer_timeout_sec"))
+        return clamped(10, 3600);
+    if (key == QLatin1String("video_enable_index")) {
+        if (value.isBool())
+            return value;
+        const QString v = value.toString().trimmed().toLower();
+        return v == QLatin1String("true") || v == QLatin1String("1");
+    }
+    if (key == QLatin1String("video_session_max_age_days") ||
+        key == QLatin1String("video_downloads_max_age_days"))
+        return clamped(1, 365);
+    if (key == QLatin1String("video_audio_chunk_trigger_seconds") ||
+        key == QLatin1String("video_audio_chunk_size_seconds"))
+        return clamped(60, 24 * 3600);
+    if (key == QLatin1String("video_audio_chunk_overlap_seconds"))
+        return clamped(0, 60);
+    if (key == QLatin1String("video_gemini_max_output_tokens"))
+        return clamped(1024, 1000000);
+    // Free text: video_frame_describer_model, video_gemini_model.
+    return value.isString() ? value : QJsonValue(value.toVariant().toString());
+}
+
+QJsonObject SettingsStore::videoSettings() const
+{
+    QJsonObject out = videoDefaults();
+    for (auto it = m_videoOverrides.begin(); it != m_videoOverrides.end(); ++it)
+        out.insert(it.key(), it.value());
+    return out;
+}
+
+bool SettingsStore::setVideoSetting(const QString &key, const QJsonValue &value)
+{
+    if (!videoDefaults().contains(key))
+        return false; // unknown key: reject so typos never persist silently
+    const QJsonValue norm = normalizeVideoValue(key, value);
+    if (norm == videoDefaults().value(key))
+        m_videoOverrides.remove(key); // back to default: keep config.toml lean
+    else
+        m_videoOverrides.insert(key, norm);
+    return true;
+}
+
 QStringList SettingsStore::providerKeys()
 {
     return {QStringLiteral("codex"), QStringLiteral("claude"),
@@ -103,6 +251,7 @@ void SettingsStore::load()
     m_autoUpdateApply = false;        // auto-INSTALL stays opt-in
     m_autoUpdateIntervalHours = 6;
     m_theme = QJsonObject();
+    m_videoOverrides = QJsonObject(); // video_* keys re-read below
     {
         QFile f(Config::configFilePath());
         if (f.exists() && f.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -243,6 +392,32 @@ void SettingsStore::load()
                              (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
                             v = v.mid(1, v.size() - 2);
                         setSttProvider(v); // normalizes unknown -> voxtral
+                    }
+                    continue;
+                }
+                if (line.startsWith(QStringLiteral("video_"))) {
+                    // Generic video_* round-trip: one block for all 19 keys.
+                    // setVideoSetting() rejects unknown keys and normalizes
+                    // values, so a hand-edited config.toml can't poison prefs.
+                    const int eq = line.indexOf(QLatin1Char('='));
+                    if (eq > 0) {
+                        const QString key = line.left(eq).trimmed();
+                        QString v = line.mid(eq + 1).trimmed();
+                        QJsonValue jv;
+                        if (v.size() >= 2 &&
+                            ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
+                             (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"')))) {
+                            jv = v.mid(1, v.size() - 2);
+                        } else if (v.compare(QStringLiteral("true"), Qt::CaseInsensitive) == 0) {
+                            jv = true;
+                        } else if (v.compare(QStringLiteral("false"), Qt::CaseInsensitive) == 0) {
+                            jv = false;
+                        } else {
+                            bool okNum = false;
+                            const double num = v.toDouble(&okNum);
+                            jv = okNum ? QJsonValue(num) : QJsonValue(v);
+                        }
+                        setVideoSetting(key, jv);
                     }
                     continue;
                 }
@@ -437,6 +612,7 @@ bool SettingsStore::saveConfig()
                     t.startsWith(QStringLiteral("assistant_name")) ||
                     t.startsWith(QStringLiteral("user_name")) ||
                     t.startsWith(QStringLiteral("auto_update")) ||
+                    t.startsWith(QStringLiteral("video_")) ||
                     t.startsWith(QStringLiteral("theme_json")))
                     continue;
                 preserved << raw;
@@ -474,6 +650,19 @@ bool SettingsStore::saveConfig()
     if (!m_theme.isEmpty()) {
         const QByteArray tj = QJsonDocument(m_theme).toJson(QJsonDocument::Compact);
         ts << "theme_json = '" << QString::fromUtf8(tj) << "'\n";
+    }
+    // Video understanding prefs: only keys the user changed (defaults stay
+    // implicit, so new defaults in future builds apply without migration).
+    for (const QString &key : videoKeyOrder()) {
+        if (!m_videoOverrides.contains(key))
+            continue;
+        const QJsonValue v = m_videoOverrides.value(key);
+        if (v.isBool())
+            ts << key << " = " << (v.toBool() ? "true" : "false") << "\n";
+        else if (v.isDouble())
+            ts << key << " = " << qint64(v.toDouble()) << "\n";
+        else
+            ts << key << " = \"" << v.toString() << "\"\n";
     }
     bool seenContent = false;
     for (const QString &line : std::as_const(preserved)) {

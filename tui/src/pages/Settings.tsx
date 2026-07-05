@@ -33,6 +33,7 @@ const SECTIONS = [
   "DEFAULTS",
   "MODE & AUTONOMY",
   "VOICE",
+  "VIDEO",
   "API KEYS",
   "SECURITY",
   "TRUST POLICIES",
@@ -62,6 +63,25 @@ const KNOBS: Array<{ id: string; label: string; choices: string[] }> = [
   { id: "wake_notify", label: "Wake notify", choices: ["silent", "ping", "always"] },
   { id: "skill_archive_days", label: "Skill archive after (days)", choices: ["0", "14", "30", "90"] },
   { id: "api_context_max_tokens", label: "API context compression", choices: ["0", "50000", "100000"] },
+]
+
+// Video understanding (video_* daemon keys — verified against SettingsStore.cpp
+// videoDefaults()/normalizeVideoValue; the yt-dlp/ffmpeg/whisper pipeline runs in
+// the Python engine and reads these live). Advanced chunking knobs stay chat-only
+// via the video_configure tool.
+const VIDEO_KNOBS: Array<{ id: string; label: string; choices: string[] }> = [
+  { id: "video_backend", label: "Audio backend", choices: ["local", "gemini-api", "openai-api"] },
+  { id: "video_whisper_engine", label: "Local engine", choices: ["faster-whisper", "whisper-cpp", "openai-whisper"] },
+  { id: "video_whisper_model", label: "Whisper model", choices: ["auto", "tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"] },
+  { id: "video_whisper_device", label: "Device", choices: ["auto", "cpu", "cuda"] },
+  { id: "video_frame_mode", label: "Frame mode", choices: ["images", "descriptions"] },
+  { id: "video_frame_format", label: "Frame format", choices: ["jpeg", "png", "webp"] },
+  { id: "video_frame_resolution", label: "Frame resolution (px)", choices: ["256", "512", "768", "1024"] },
+  { id: "video_default_fps", label: "Default fps", choices: ["auto", "0.2", "0.5", "1", "2"] },
+  { id: "video_max_frames", label: "Max frames per call", choices: ["50", "100", "200"] },
+  { id: "video_enable_index", label: "Cache frames on disk", choices: ["off", "on"] },
+  { id: "video_session_max_age_days", label: "Cache expiry (days)", choices: ["3", "7", "30"] },
+  { id: "video_downloads_max_age_days", label: "Downloads expiry (days)", choices: ["3", "7", "30"] },
 ]
 
 /** qrencode -t ANSIUTF8 when available, else the raw pairing text. */
@@ -192,6 +212,42 @@ export function SettingsPage(props: { active: () => boolean }) {
           })),
         )
         return
+      case "VIDEO": {
+        // Availability from settings.get's video_backends [{id,label,available}]
+        // so cloud backends read as "needs API key" until one is set.
+        const backends = ((s().video_backends ?? []) as Array<Setting>).map((b) => ({
+          id: String(b.id ?? ""),
+          available: b.available === true,
+        }))
+        const availability = (id: string) => {
+          const b = backends.find((x) => x.id === id)
+          return b && !b.available ? " (needs API key)" : ""
+        }
+        setRows([
+          ...VIDEO_KNOBS.map((k) => ({
+            id: k.id, label: k.label, kind: "enum" as const,
+            value:
+              (str(k.id) || (s()[k.id] === true ? "on" : s()[k.id] === false ? "off" : "")) +
+              (k.id === "video_backend" ? availability(str(k.id)) : ""),
+            choices: k.choices,
+            run: async () => {
+              const raw = s()[k.id]
+              const cur =
+                typeof raw === "boolean" ? (raw ? "on" : "off") : String(raw ?? k.choices[0])
+              const next = k.choices[(k.choices.indexOf(cur) + 1) % k.choices.length]
+              const val =
+                next === "on" ? true : next === "off" ? false : /^\d+$/.test(next) ? Number(next) : next
+              await patch({ [k.id]: val }, `${k.label}: ${next}`)
+            },
+          })),
+          {
+            id: "video_hint", label: "  ↳ paste a YouTube URL in chat to use this", kind: "action",
+            hint: "Say “run video_setup” in chat for a live dependency + model check; “clear the video cache” clears cached frames.",
+            run: async () => "ask Jarvis: run video_setup",
+          },
+        ])
+        return
+      }
       case "VOICE": {
         const sttChoices = ((s().stt_providers ?? []) as unknown[]).map(String)
         const ttsChoices = ((s().tts_providers ?? []) as unknown[]).map(String)

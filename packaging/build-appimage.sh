@@ -63,10 +63,18 @@ if ( set -e
      # dist-info — a stale pyinstaller-hooks-contrib drops both and the frozen
      # engine then CRASHES AT IMPORT (the Windows "widgets never render" root
      # cause). Pass them explicitly so the freeze never regresses.
+     # Video understanding: ctranslate2/av/onnxruntime ship compiled payloads the
+     # default import scanner misses (same silent-drop class as jsonschema above);
+     # huggingface_hub/tokenizers dist-info feeds faster_whisper's version probes.
      env -u PYTHONPATH "$ENV_VENV/bin/pyinstaller" --noconfirm --name jarvis-engine \
         --distpath "$APPDIR/usr/bin/engine" --workpath "$BUILD/pyi-appimg" \
         --collect-data jsonschema_specifications --collect-data jsonschema \
         --copy-metadata mcp \
+        --collect-all faster_whisper --collect-all ctranslate2 --collect-all av \
+        --collect-all onnxruntime \
+        --collect-data huggingface_hub --copy-metadata huggingface_hub \
+        --copy-metadata tokenizers \
+        --collect-submodules yt_dlp --collect-data yt_dlp \
         --collect-submodules computer_use_mcp "$BUILD/engine_entry.py" >/dev/null
    ); then
   say "engine bundled."
