@@ -5,10 +5,16 @@
 
 import { TextAttributes } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
+import { writeFileSync } from "node:fs"
+import { join } from "node:path"
+
 import { createSignal, For, Match, onMount, Show, Switch } from "solid-js"
 
 import type { AppApi } from "./app-context"
 import { AppContext } from "./app-context"
+import type { Action } from "./commands/keybinds"
+import { Keybinds } from "./commands/keybinds"
+import { dataDir } from "./config"
 import { SessionController } from "./chat/session"
 import type { CommandRegistry } from "./commands/registry"
 import type { ControlClient } from "./control/client"
@@ -29,8 +35,11 @@ import { VoicePage } from "./pages/Voice"
 import { WidgetsPage } from "./pages/Widgets"
 import { CallOverlay } from "./phone/CallOverlay"
 import { PhonePage } from "./phone/PhonePage"
-import { theme } from "./theme"
+import { cycleTheme, theme } from "./theme"
+import { Palette } from "./ui/Palette"
+import { createToasts, ToastLayer } from "./ui/Toasts"
 import { Topbar } from "./ui/Topbar"
+import { WhichKey } from "./ui/WhichKey"
 import { CanvasStore } from "./widgets/store"
 
 // The 9 main-bar tabs (same set the Textual TUI ships; the 11 popup pages
@@ -86,7 +95,77 @@ export function App(props: AppProps) {
   const canvasStore = new CanvasStore(props.client)
   void manifest.refresh()
 
+  const keybinds = Keybinds.load()
+  const toasts = createToasts()
   const [showDiff, setShowDiff] = createSignal(false)
+  const [showPalette, setShowPalette] = createSignal(false)
+  const [leaderActive, setLeaderActive] = createSignal(false)
+  let leaderTimer: ReturnType<typeof setTimeout> | undefined
+
+  const runCommand = (name: string) => {
+    void api.registry
+      .execute(name, "", {
+        navigate,
+        sendChat,
+        call: (m, p) => props.client.call(m, p ?? {}),
+        notify: (msg, sev) => toasts.push(msg, sev ?? "info"),
+        openPicker: () => {},
+        openHelp: () => setShowPalette(true),
+      })
+      .then((found) => {
+        if (!found) toasts.push(`unknown command: /${name}`, "warn")
+      })
+  }
+
+  const exportTranscript = () => {
+    const lines = session.items.map((it) => {
+      if (it.kind === "user") return `> ${it.text}`
+      if (it.kind === "assistant") return it.text
+      if (it.kind === "tool") return `  [tool ${it.name} ${it.state}] ${it.output}`.trim()
+      if (it.kind === "error") return `! ${it.message}`
+      if (it.kind === "notice") return it.text
+      return ""
+    })
+    const md = `# Jarvis session ${session.sessionId() || "(new)"}\n\n${lines
+      .filter(Boolean)
+      .join("\n\n")}\n`
+    const path = join(dataDir(), `transcript-${session.sessionId() || "session"}.md`)
+    try {
+      writeFileSync(path, md)
+      toasts.push(`exported → ${path}`, "success")
+    } catch (e) {
+      toasts.push(`export failed: ${String(e)}`, "error")
+    }
+  }
+
+  const runLeader = (action: Action) => {
+    switch (action) {
+      case "palette":
+        setShowPalette(true)
+        break
+      case "voice":
+        navigate("voice")
+        break
+      case "help":
+        setShowPalette(true)
+        break
+      case "export":
+        exportTranscript()
+        break
+      case "theme":
+        toasts.push(`theme: ${cycleTheme()}`, "info")
+        break
+      case "sessions":
+        navigate("sessions")
+        break
+      case "new":
+        void session.newSession().catch((e) => toasts.push(String(e), "error"))
+        navigate("chat")
+        break
+      default:
+        break
+    }
+  }
 
   const sendChat = (text: string) => {
     navigate("chat")
@@ -137,7 +216,7 @@ export function App(props: AppProps) {
     registry: props.registry,
     page,
     navigate,
-    notify: (message) => setNotice(message),
+    notify: (message) => toasts.push(message, "info"),
     quit: props.onQuit,
   }
 
@@ -147,14 +226,38 @@ export function App(props: AppProps) {
       ctrl?: boolean
       meta?: boolean
       option?: boolean
+      shift?: boolean
       defaultPrevented?: boolean
     }) => {
-      if (key.ctrl && key.name === "q") {
+      // Leader chord: after the leader prefix, the next key resolves to a
+      // leader action (which-key overlay shows the menu meanwhile).
+      if (leaderActive()) {
+        setLeaderActive(false)
+        if (leaderTimer) clearTimeout(leaderTimer)
+        if (key.name === "escape") return
+        const hit = keybinds.leaderActions().find((e) => e.key === key.name)
+        if (hit) runLeader(hit.action)
+        return
+      }
+      if (keybinds.isLeader(key)) {
+        setLeaderActive(true)
+        leaderTimer = setTimeout(() => setLeaderActive(false), 2000)
+        return
+      }
+      if (keybinds.matches("palette", key)) {
+        setShowPalette(true)
+        return
+      }
+      if (keybinds.matches("quit", key)) {
         props.onQuit()
         return
       }
-      if (key.name === "f2") {
+      if (keybinds.matches("voice", key)) {
         navigate("voice")
+        return
+      }
+      if (key.name === "escape" && showPalette()) {
+        setShowPalette(false)
         return
       }
       // Escape closes an open overlay page — but only if nothing INSIDE the
@@ -329,6 +432,13 @@ export function App(props: AppProps) {
           </text>
         </box>
         <CallOverlay />
+        <ToastLayer toasts={toasts.toasts} />
+        <Show when={leaderActive()}>
+          <WhichKey entries={keybinds.leaderActions()} />
+        </Show>
+        <Show when={showPalette()}>
+          <Palette onClose={() => setShowPalette(false)} onRun={runCommand} />
+        </Show>
         <Show when={showDiff()}>
           <box
             position="absolute"

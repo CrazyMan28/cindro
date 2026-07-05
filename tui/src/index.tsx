@@ -7,6 +7,9 @@ import { render } from "@opentui/solid"
 import { App } from "./app"
 import { CommandRegistry } from "./commands/registry"
 import { ControlClient } from "./control/client"
+import { loadSavedAccent } from "./theme"
+
+loadSavedAccent()
 
 const renderer = await createCliRenderer({
   targetFps: 60,
