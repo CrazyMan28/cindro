@@ -112,11 +112,15 @@ const GLYPHS: Record<string, (ctx: CanvasRenderingContext2D) => void> = {
     ctx.beginPath(); ctx.arc(4, 13.5, 2, 0, Math.PI * 2); ctx.stroke()
     ctx.beginPath(); ctx.arc(14, 13.5, 2, 0, Math.PI * 2); ctx.stroke()
   },
-  ssh: (ctx) => {
-    ctx.strokeRect(2, 3, 14, 12)
-    ctx.beginPath()
-    ctx.moveTo(5, 7.5); ctx.lineTo(7.5, 9.5); ctx.lineTo(5, 11.5); ctx.stroke()
-    ctx.beginPath(); ctx.moveTo(9, 11.5); ctx.lineTo(12.5, 11.5); ctx.stroke()
+  outpost: (ctx) => {
+    // mast + base
+    ctx.beginPath(); ctx.moveTo(9, 6); ctx.lineTo(9, 15.5); ctx.stroke()
+    ctx.beginPath(); ctx.moveTo(6, 15.5); ctx.lineTo(12, 15.5); ctx.stroke()
+    // beacon node
+    ctx.beginPath(); ctx.arc(9, 5, 1.6, 0, Math.PI * 2); ctx.stroke()
+    // signal arcs
+    ctx.beginPath(); ctx.arc(9, 5, 3.8, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke()
+    ctx.beginPath(); ctx.arc(9, 5, 6.2, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke()
   },
   sessions: (ctx) => {
     ctx.strokeRect(2.5, 2.5, 13, 3.5)
