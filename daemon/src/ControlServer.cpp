@@ -6051,6 +6051,7 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("schedule.set_enabled")) return handleScheduleSetEnabled(req);
     if (m == QStringLiteral("schedule.remove"))      return handleScheduleRemove(req);
     if (m == QStringLiteral("schedule.run_now"))     return handleScheduleRunNow(req);
+    if (m == QStringLiteral("schedule.webhook_token")) return handleScheduleWebhookToken(req);
     if (m == QStringLiteral("tui.layout.list"))    return handleTuiLayoutList(req);
     if (m == QStringLiteral("tui.layout.add"))     return handleTuiLayoutAdd(req);
     if (m == QStringLiteral("tui.layout.edit"))    return handleTuiLayoutEdit(req);
@@ -6091,7 +6092,15 @@ QString ControlServer::fireScheduledJob(const ScheduleRow &row)
                  qPrintable(row.name), qPrintable(err));
         return QString();
     }
-    if (!sendToSession(sid, row.prompt, {}, &err))
+    QString prompt = row.prompt;
+    if (!row.reportThread.isEmpty()) {
+        prompt += QStringLiteral(
+            "\n\n[Workflow report] When you finish this task, post a concise "
+            "summary of the outcome to the user's Jarvis inbox by calling the "
+            "notify_user tool with title=\"%1\". Keep it to a few lines.")
+            .arg(row.reportThread);
+    }
+    if (!sendToSession(sid, prompt, {}, &err))
         qWarning("jarvisd: scheduled job '%s' send failed: %s",
                  qPrintable(row.name), qPrintable(err));
     // Push a notification to paired phones (incl. backgrounded ones) that a
@@ -6130,7 +6139,10 @@ Response ControlServer::handleScheduleCreate(const Request &req)
         p.value(QStringLiteral("brain")).toString(),
         p.value(QStringLiteral("model")).toString(),
         p.value(QStringLiteral("profile")).toString(),
-        p.value(QStringLiteral("enabled")).toBool(true));
+        p.value(QStringLiteral("enabled")).toBool(true),
+        p.value(QStringLiteral("target")).toString(),
+        p.value(QStringLiteral("report_thread")).toString(),
+        p.value(QStringLiteral("token")).toString());
     if (id.isEmpty())
         return Response::failure(req.id, QStringLiteral("schedule_error"),
                                  m_scheduler.lastError());
@@ -6192,6 +6204,19 @@ Response ControlServer::handleScheduleRunNow(const Request &req)
     QJsonObject result;
     result.insert(QStringLiteral("ok"), !sid->isEmpty());
     result.insert(QStringLiteral("session_id"), *sid);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleScheduleWebhookToken(const Request &req)
+{
+    // Returns the stored per-workflow webhook bearer for `id` (empty for an
+    // unknown id or a non-webhook workflow). Used ONLY by the webhook ingestion
+    // endpoint to hmac-compare the presented bearer — never surfaced in
+    // schedule.list / workflow_list output.
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const std::optional<ScheduleRow> row = m_scheduler.get(id);
+    QJsonObject result;
+    result.insert(QStringLiteral("token"), row ? row->webhookToken : QString());
     return Response::success(req.id, result);
 }
 
