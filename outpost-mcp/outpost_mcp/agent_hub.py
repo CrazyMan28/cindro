@@ -9,6 +9,8 @@ import asyncio
 import json
 from typing import Any
 
+from starlette.websockets import WebSocketDisconnect
+
 
 class AgentConnection:
     def __init__(self, machine_id: str, ws: Any):
@@ -26,7 +28,17 @@ class AgentConnection:
         payload["req_id"] = req_id
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
         self._pending[req_id] = fut
-        await self.ws.send_text(json.dumps(payload))
+        try:
+            await self.ws.send_text(json.dumps(payload))
+        except (WebSocketDisconnect, RuntimeError) as exc:
+            # A dying/dead socket raises WebSocketDisconnect (send hit an
+            # OSError) or RuntimeError ("Cannot call 'send' once a close
+            # message has been sent."/already-disconnected state). Normalize
+            # both into a ConnectionError sentinel so callers (AgentHub.exec /
+            # screenshot) can treat this exactly like machine_offline instead
+            # of letting a raw exception surface as an uncaught 500.
+            self._pending.pop(req_id, None)
+            raise ConnectionError(f"agent socket unusable: {exc}") from exc
         try:
             return await asyncio.wait_for(fut, timeout=timeout)
         finally:
@@ -81,6 +93,11 @@ class AgentHub:
             )
         except asyncio.TimeoutError:
             return {"ok": False, "exit_code": -1, "output": "", "error": "agent_timeout"}
+        except ConnectionError:
+            # The socket died mid-request (send_text failed). Tear down the
+            # now-useless connection so the next call doesn't retry it.
+            self.unregister(m["id"], conn)
+            return {"ok": False, "exit_code": -1, "output": "", "error": "machine_offline"}
         self._registry.set_status(m["id"], "online")
         return {
             "ok": bool(res.get("ok")),
@@ -108,6 +125,12 @@ class AgentHub:
             return {
                 "ok": False, "image_base64": "", "width": 0, "height": 0,
                 "captured_at": 0, "error": "agent_timeout",
+            }
+        except ConnectionError:
+            self.unregister(m["id"], conn)
+            return {
+                "ok": False, "image_base64": "", "width": 0, "height": 0,
+                "captured_at": 0, "error": "machine_offline",
             }
         self._registry.set_status(m["id"], "online")
         return {

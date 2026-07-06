@@ -6592,20 +6592,32 @@ Response ControlServer::handleCommandInvoke(const Request &req)
     return Response::success(req.id, result);
 }
 
+QString ControlServer::outpostPort()
+{
+    return qEnvironmentVariable("OUTPOST_MCP_PORT", QStringLiteral("8798"));
+}
+
 QJsonObject ControlServer::outpostHttp(const QString &httpMethod, const QString &path,
                                        const QJsonObject &body, bool *reachable)
 {
-    // outpost-mcp inbound bearer lives beside ours (~/.config/jarvis/outpost_mcp_token).
+    // outpost-mcp inbound bearer lives beside ours (~/.config/jarvis/outpost_mcp_token
+    // by default). OUTPOST_CONFIG_DIR / OUTPOST_MCP_PORT mirror outpost_mcp/config.py's
+    // own env overrides (used by its test suite) so a shared harness that sets them
+    // before starting BOTH the daemon and outpost-mcp keeps this proxy in sync with
+    // wherever outpost-mcp is actually listening / reading its token from.
+    QString configDir = qEnvironmentVariable("OUTPOST_CONFIG_DIR");
+    if (configDir.isEmpty())
+        configDir = QDir::homePath() + QStringLiteral("/.config/jarvis");
     QString token;
     {
-        QFile f(QDir::homePath() + QStringLiteral("/.config/jarvis/outpost_mcp_token"));
+        QFile f(configDir + QStringLiteral("/outpost_mcp_token"));
         if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
             token = QString::fromUtf8(f.readAll()).trimmed();
             f.close();
         }
     }
     QNetworkAccessManager nam;
-    QNetworkRequest rq(QUrl(QStringLiteral("http://127.0.0.1:8798%1").arg(path)));
+    QNetworkRequest rq(QUrl(QStringLiteral("http://127.0.0.1:%1%2").arg(outpostPort(), path)));
     rq.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
     if (!token.isEmpty())
         rq.setRawHeader("Authorization", QByteArray("Bearer ") + token.toUtf8());
@@ -6645,7 +6657,7 @@ Response ControlServer::handleOutpostList(const Request &req)
                    QStringLiteral("listed outpost machines"));
     if (!ok)
         return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
-                                 QStringLiteral("outpost-mcp (:8798) unreachable"));
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
     return Response::success(req.id, r);
 }
 
@@ -6661,7 +6673,7 @@ Response ControlServer::handleOutpostPairStart(const Request &req)
                    QStringLiteral("started outpost pairing"));
     if (!ok)
         return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
-                                 QStringLiteral("outpost-mcp (:8798) unreachable"));
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
     return Response::success(req.id, r);
 }
 
@@ -6675,7 +6687,7 @@ Response ControlServer::handleOutpostPairStatus(const Request &req)
                    QStringLiteral("polled outpost pairing"));
     if (!ok)
         return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
-                                 QStringLiteral("outpost-mcp (:8798) unreachable"));
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
     return Response::success(req.id, r);
 }
 
@@ -6702,7 +6714,7 @@ Response ControlServer::handleOutpostExec(const Request &req, bool remote)
                    QString(), remote);
     if (!ok)
         return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
-                                 QStringLiteral("outpost-mcp (:8798) unreachable"));
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
     return Response::success(req.id, r);
 }
 
@@ -6722,7 +6734,7 @@ Response ControlServer::handleOutpostScreenshot(const Request &req)
                    QStringLiteral("outpost screenshot %1").arg(machine));
     if (!ok)
         return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
-                                 QStringLiteral("outpost-mcp (:8798) unreachable"));
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
     return Response::success(req.id, r);
 }
 
@@ -6741,7 +6753,7 @@ Response ControlServer::handleOutpostRevoke(const Request &req)
                    QStringLiteral("revoked outpost machine %1").arg(machine));
     if (!ok)
         return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
-                                 QStringLiteral("outpost-mcp (:8798) unreachable"));
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
     return Response::success(req.id, r);
 }
 

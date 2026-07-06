@@ -164,7 +164,10 @@ def fire_webhook(workflow_id: str, presented_token: str):
         return 404, {"error": "no such webhook workflow"}
     if not hmac.compare_digest(presented_token, stored):
         return 401, {"error": "invalid token"}
-    if not info.get("enabled", True):
+    # Fail CLOSED: a missing or malformed `enabled` field must be treated the
+    # same as disabled, not the same as enabled. Only an explicit truthy
+    # `enabled` lets the webhook fire.
+    if not info.get("enabled", False):
         return 403, {"error": "workflow_disabled"}
     try:
         res = daemon_client.call("schedule.run_now", {"id": workflow_id})

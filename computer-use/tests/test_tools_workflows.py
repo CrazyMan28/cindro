@@ -130,7 +130,7 @@ def test_fire_webhook_valid_token_fires_run_now():
     def fake(method, params=None, timeout=15.0):
         calls.append((method, params))
         if method == "schedule.webhook_token":
-            return {"token": "secret"}
+            return {"token": "secret", "enabled": True}
         if method == "schedule.run_now":
             return {"ok": True, "session_id": "sess_9"}
         return {}
@@ -154,6 +154,27 @@ def test_fire_webhook_valid_token_but_enabled_true_still_fires():
         status, body = tools_workflows.fire_webhook("w1", "secret")
     assert status == 200
     assert body["fired"] is True
+
+
+def test_fire_webhook_missing_enabled_field_fails_closed_403():
+    # Bonus fix: a missing/malformed `enabled` field must fail CLOSED (treated
+    # as disabled), not fail open (treated as enabled). Guards against a
+    # daemon response that omits the field for any reason.
+    calls = []
+
+    def fake(method, params=None, timeout=15.0):
+        calls.append(method)
+        if method == "schedule.webhook_token":
+            return {"token": "secret"}  # no "enabled" key at all
+        if method == "schedule.run_now":
+            return {"ok": True, "session_id": "should-not-fire"}
+        return {}
+
+    with patch.object(tools_workflows.daemon_client, "call", side_effect=fake):
+        status, body = tools_workflows.fire_webhook("w1", "secret")
+    assert status == 403
+    assert body == {"error": "workflow_disabled"}
+    assert "schedule.run_now" not in calls
 
 
 def test_fire_webhook_disabled_workflow_403_even_with_valid_token():
@@ -217,7 +238,7 @@ def test_fire_webhook_wrong_token_401_does_not_leak_token():
 def test_fire_webhook_daemon_error_502_does_not_leak_token():
     def fake(method, params=None, timeout=15.0):
         if method == "schedule.webhook_token":
-            return {"token": _LEAK_TOKEN}
+            return {"token": _LEAK_TOKEN, "enabled": True}
         if method == "schedule.run_now":
             raise RuntimeError("daemon connection refused")
         return {}
@@ -231,7 +252,7 @@ def test_fire_webhook_daemon_error_502_does_not_leak_token():
 def test_fire_webhook_success_200_does_not_leak_token():
     def fake(method, params=None, timeout=15.0):
         if method == "schedule.webhook_token":
-            return {"token": _LEAK_TOKEN}
+            return {"token": _LEAK_TOKEN, "enabled": True}
         if method == "schedule.run_now":
             return {"ok": True, "session_id": "sess_leak_check"}
         return {}
@@ -253,7 +274,7 @@ def test_webhook_route_http_response_never_contains_stored_token():
 
     def fake(method, params=None, timeout=15.0):
         if method == "schedule.webhook_token":
-            return {"token": _LEAK_TOKEN}
+            return {"token": _LEAK_TOKEN, "enabled": True}
         if method == "schedule.run_now":
             return {"ok": True, "session_id": "sess_1"}
         return {}
@@ -275,7 +296,7 @@ def test_webhook_route_fires_on_valid_bearer():
 
     def fake(method, params=None, timeout=15.0):
         if method == "schedule.webhook_token":
-            return {"token": "secret"}
+            return {"token": "secret", "enabled": True}
         if method == "schedule.run_now":
             return {"ok": True, "session_id": "sess_1"}
         return {}

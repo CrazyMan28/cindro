@@ -50,7 +50,12 @@ function Outpost() {
 
   const [connected, setConnected] = createSignal(app.client.connected)
   const [machines, setMachines] = createSignal<Machine[]>([])
+  // Holds the selected machine's `id`, not its `name` — names aren't
+  // guaranteed unique across paired machines, and id is what the registry
+  // resolves unambiguously (mirrors how revoke already targets by id).
   const [selected, setSelected] = createSignal("")
+  const selectedMachine = () => machines().find((m) => m.id === selected())
+  const selectedName = () => selectedMachine()?.name ?? ""
   const [listError, setListError] = createSignal("")
   const [loaded, setLoaded] = createSignal(false)
   const [revoking, setRevoking] = createSignal("")
@@ -77,7 +82,7 @@ function Outpost() {
       if (!alive) return
       const list = (res.machines ?? []) as Machine[]
       setMachines(list)
-      if (!list.some((m) => m.name === selected())) setSelected(list[0]?.name ?? "")
+      if (!list.some((m) => m.id === selected())) setSelected(list[0]?.id ?? "")
       setListError("")
     } catch (e) {
       if (!alive) return
@@ -156,6 +161,9 @@ function Outpost() {
   const runCmd = async (e?: Event) => {
     e?.preventDefault()
     const machine = selected()
+    // Snapshot the display name at call time so console history stays
+    // stable even if the machine list refreshes/renames mid-flight.
+    const machineName = selectedName() || machine
     const cmd = cmdText().trim()
     if (!machine || !cmd || running()) return
     setRunning(true)
@@ -165,11 +173,11 @@ function Outpost() {
       if (!alive) return
       const ok = Boolean(res.ok)
       const out = String(res.output ?? "") || String(res.error ?? "") || (ok ? "(no output)" : "(failed)")
-      setEntries((prev) => [...prev, { id: ++entrySeq, machine, cmd, output: out, ok }])
+      setEntries((prev) => [...prev, { id: ++entrySeq, machine: machineName, cmd, output: out, ok }])
     } catch (e2) {
       if (!alive) return
       const msg = e2 instanceof ControlError ? `${e2.code}: ${e2.message}` : String(e2)
-      setEntries((prev) => [...prev, { id: ++entrySeq, machine, cmd, output: msg, ok: false }])
+      setEntries((prev) => [...prev, { id: ++entrySeq, machine: machineName, cmd, output: msg, ok: false }])
     } finally {
       if (alive) setRunning(false)
     }
@@ -317,7 +325,7 @@ function Outpost() {
         <div class="op-list">
           <For each={machines()}>
             {(m) => (
-              <div class="op-row" classList={{ selected: m.name === selected() }} onClick={() => setSelected(m.name)}>
+              <div class="op-row" classList={{ selected: m.id === selected() }} onClick={() => setSelected(m.id)}>
                 <span class="op-dot" classList={{ online: m.status === "online", offline: m.status !== "online" }} />
                 <div class="op-row-text">
                   <div class="op-row-name">{m.name}</div>
@@ -344,7 +352,7 @@ function Outpost() {
 
       <div class="card">
         <div class="op-title-line hud-label amber">
-          // EXEC {selected() ? `→ ${selected()}` : "(select a machine)"}
+          // EXEC {selected() ? `→ ${selectedName()}` : "(select a machine)"}
         </div>
         <div class="op-console">
           <Show when={entries().length > 0} fallback={<div class="op-console-empty">Command output appears here.</div>}>
@@ -361,7 +369,7 @@ function Outpost() {
         <form class="op-field-row" onSubmit={runCmd}>
           <input
             class="op-input"
-            placeholder={selected() ? `Command on ${selected()}…` : "Select a machine first…"}
+            placeholder={selected() ? `Command on ${selectedName()}…` : "Select a machine first…"}
             value={cmdText()}
             disabled={running() || !selected()}
             onInput={(e) => setCmdText(e.currentTarget.value)}

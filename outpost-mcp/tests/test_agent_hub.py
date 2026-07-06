@@ -2,6 +2,7 @@ import asyncio
 import json
 
 import pytest
+from starlette.websockets import WebSocketDisconnect
 
 from outpost_mcp.agent_hub import AgentConnection, AgentHub
 from outpost_mcp.registry import MachineRegistry
@@ -13,6 +14,17 @@ class FakeWs:
 
     async def send_text(self, text: str):
         self.sent.append(json.loads(text))
+
+
+class DeadWs:
+    """A socket that has already died: send_text raises, mimicking a
+    disconnected/closing Starlette WebSocket."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    async def send_text(self, text: str):
+        raise self._exc
 
 
 async def _drive(conn: AgentConnection, ws: FakeWs, reply: dict):
@@ -107,3 +119,46 @@ async def test_unregister_stale_conn_does_not_evict_newer_connection(tmp_path):
     hub.unregister(row["id"], conn2)
     assert hub.online(row["id"]) is False
     assert reg.list()[0]["status"] == "offline"
+
+
+# --- Finding 2: send_text failure must not raise a raw 500 -----------------
+
+@pytest.mark.parametrize("exc", [
+    WebSocketDisconnect(code=1006),
+    RuntimeError('Cannot call "send" once a close message has been sent.'),
+])
+async def test_exec_treats_dead_socket_send_as_machine_offline(tmp_path, exc):
+    reg = MachineRegistry(tmp_path / "m.json")
+    row = reg.add("box", "linux")["row"]
+    hub = AgentHub(reg)
+    conn = AgentConnection(row["id"], DeadWs(exc))
+    hub.register(conn)
+    assert hub.online(row["id"]) is True
+
+    res = await hub.exec("box", "echo hi")
+    assert res == {"ok": False, "exit_code": -1, "output": "", "error": "machine_offline"}
+    # The now-useless connection must be torn down, not left registered.
+    assert hub.online(row["id"]) is False
+    assert reg.list()[0]["status"] == "offline"
+
+
+async def test_screenshot_treats_dead_socket_send_as_machine_offline(tmp_path):
+    reg = MachineRegistry(tmp_path / "m.json")
+    row = reg.add("box", "linux")["row"]
+    hub = AgentHub(reg)
+    conn = AgentConnection(row["id"], DeadWs(WebSocketDisconnect(code=1006)))
+    hub.register(conn)
+
+    res = await hub.screenshot("box")
+    assert res["ok"] is False and res["error"] == "machine_offline"
+    assert hub.online(row["id"]) is False
+
+
+async def test_request_raises_connection_error_and_clears_pending(tmp_path):
+    """Unit-level check on AgentConnection itself: a send_text failure must
+    surface as ConnectionError (the sentinel AgentHub knows how to handle),
+    and must not leave a dangling future in _pending."""
+    conn = AgentConnection("m1", DeadWs(RuntimeError("socket closed")))
+    with pytest.raises(ConnectionError):
+        await conn.request({"type": "exec"}, timeout=5)
+    assert conn._pending == {}

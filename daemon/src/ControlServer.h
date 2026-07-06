@@ -464,6 +464,9 @@ private:
     // *reachable=false on transport failure.
     QJsonObject outpostHttp(const QString &httpMethod, const QString &path,
                             const QJsonObject &body, bool *reachable);
+    // outpost-mcp's listening port. OUTPOST_MCP_PORT env override (mirrors
+    // outpost_mcp/config.py's port()) wins; else the default 8798.
+    static QString outpostPort();
     QString diffWorkdirFor(const QString &sessionId) const;
     // Wave 8: audit log surface.
     Response handleAuditList(const Request &req);

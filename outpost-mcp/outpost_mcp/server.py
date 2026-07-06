@@ -139,9 +139,21 @@ async def api_machines():
     return {"machines": registry.list()}
 
 
+def _revoke_machine(machine: str) -> bool:
+    """Shared by both revoke routes: look the machine up (by id OR name),
+    drop its live socket via the hub, then delete it from the registry. A
+    revoke-by-id that skips hub.unregister would leave a stale AgentConnection
+    registered after the row is gone."""
+    m = registry.get(machine)
+    if not m:
+        return False
+    hub.unregister(m["id"])
+    return registry.revoke(m["id"])
+
+
 @app.post("/api/machines/{machine_id}/revoke")
 async def api_revoke_id(machine_id: str):
-    ok = registry.revoke(machine_id)
+    ok = _revoke_machine(machine_id)
     return {"ok": ok, "revoked": ok}
 
 
@@ -182,11 +194,7 @@ async def api_revoke(request: Request):
     if not body.get("machine"):
         return JSONResponse({"error": "bad_request", "message": "missing 'machine'"},
                              status_code=400)
-    m = registry.get(body["machine"])
-    if not m:
-        return {"ok": False, "revoked": False}
-    hub.unregister(m["id"])
-    ok = registry.revoke(m["id"])
+    ok = _revoke_machine(body["machine"])
     return {"ok": ok, "revoked": ok}
 
 
