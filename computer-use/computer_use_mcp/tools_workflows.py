@@ -1,0 +1,119 @@
+"""Workflows — first-class, nameable recurring / conditional / webhook jobs
+built on Jarvis's existing Scheduler (the schedule.* Contract-A verbs). A
+Workflow bundles a trigger (a 5-field cron / "every Nm" / "at HH:MM" / the
+literal "webhook"), a prompt, an optional brain+model, a free-text `target`
+reference (an agent name or paired-machine id), and an inbox `report_thread`
+(default "Workflows").
+
+Condition-polling ("check X, only report if it changed") needs NO new schema:
+author a tight-cadence Workflow whose prompt tells the fired session to
+recall(agent=<target>) for last-known state, compare, and only escalate on a
+change. See docs/WORKFLOWS.md.
+
+Tool functions are module-level (tools_tui_ops.py style) so they are directly
+importable/testable; register() wires them into FastMCP.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import secrets
+
+from mcp.server.fastmcp import FastMCP
+
+from computer_use_mcp import daemon_client
+from computer_use_mcp.config import load_config
+
+DEFAULT_REPORT_THREAD = "Workflows"
+_WEBHOOK_PREFIX = "/workflows/webhook/"
+
+
+def _err(exc: Exception) -> str:
+    return json.dumps({"error": str(exc)})
+
+
+def _webhook_base() -> str:
+    """Base URL the minted webhook_url is built on. JARVIS_WEBHOOK_BASE wins;
+    else the computer-use server's advertise_host:port (set advertise_host to a
+    tailnet-reachable name/IP for external callers)."""
+    cfg = load_config()
+    return os.environ.get("JARVIS_WEBHOOK_BASE") or \
+        f"http://{cfg['advertise_host']}:{cfg['port']}"
+
+
+def workflow_create(name: str, trigger: str, prompt: str, brain: str = "",
+                    model: str = "", target: str = "", report_thread: str = "") -> str:
+    """Create a nameable Workflow (a managed recurring / webhook job). `trigger`
+    is a cron ("0 2 * * *"), an interval ("every 30m"), a clock time ("at 09:00"),
+    OR the literal "webhook". `target` is a free-text agent name / paired-machine
+    id the prompt refers to (e.g. recall(agent=<target>) or outpost_exec on it).
+    `report_thread` is the in-app inbox thread the fired session posts its report
+    to (default "Workflows"). For trigger="webhook" this mints a per-workflow
+    bearer token and returns {id, webhook_url, token}; otherwise returns {id}."""
+    try:
+        if not name.strip():
+            return _err(ValueError("name is required"))
+        if not trigger.strip():
+            return _err(ValueError("trigger is required"))
+        if not prompt.strip():
+            return _err(ValueError("prompt is required"))
+        thread = report_thread or DEFAULT_REPORT_THREAD
+        is_webhook = trigger.strip().lower() == "webhook"
+        params: dict = {"name": name, "prompt": prompt, "brain": brain,
+                        "model": model, "target": target,
+                        "report_thread": thread, "enabled": True}
+        token = ""
+        if is_webhook:
+            token = secrets.token_urlsafe(32)
+            params["cron"] = "webhook"
+            params["token"] = token
+        else:
+            params["cron"] = trigger
+        res = daemon_client.call("schedule.create", params)
+        wid = res.get("id", "")
+        out: dict = {"id": wid}
+        if is_webhook and wid:
+            out["webhook_url"] = f"{_webhook_base()}{_WEBHOOK_PREFIX}{wid}"
+            out["token"] = token
+        return json.dumps(out)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def workflow_list() -> str:
+    """List all Workflows (id, name, trigger, target, report_thread, brain,
+    model, next_run, last_run, enabled)."""
+    try:
+        res = daemon_client.call("schedule.list")
+        workflows = [{
+            "id": r.get("id", ""),
+            "name": r.get("name", ""),
+            "trigger": r.get("cron", ""),
+            "target": r.get("target", ""),
+            "report_thread": r.get("report_thread", ""),
+            "brain": r.get("brain", ""),
+            "model": r.get("model", ""),
+            "next_run": r.get("next_run", 0),
+            "last_run": r.get("last_run", 0),
+            "enabled": r.get("enabled", True),
+        } for r in res.get("schedules", [])]
+        return json.dumps({"workflows": workflows})
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def workflow_delete(id: str) -> str:
+    """Delete a Workflow by id (from workflow_list). Returns {ok, deleted}."""
+    try:
+        res = daemon_client.call("schedule.remove", {"id": id})
+        ok = bool(res.get("ok", False))
+        return json.dumps({"ok": ok, "deleted": ok})
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def register(mcp: FastMCP) -> None:
+    mcp.tool()(workflow_create)
+    mcp.tool()(workflow_list)
+    mcp.tool()(workflow_delete)
