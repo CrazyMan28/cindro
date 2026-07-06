@@ -80,3 +80,85 @@ def test_workflow_delete_maps_ok_to_deleted():
         result = json.loads(tools_workflows.workflow_delete("sched_1"))
     m.assert_called_once_with("schedule.remove", {"id": "sched_1"})
     assert result == {"ok": True, "deleted": True}
+
+
+# --- webhook ingestion -------------------------------------------------------
+
+def test_is_webhook_path():
+    assert tools_workflows.is_webhook_path("/workflows/webhook/abc")
+    assert not tools_workflows.is_webhook_path("/health")
+    assert not tools_workflows.is_webhook_path("/mcp")
+
+
+def test_fire_webhook_missing_token_401():
+    status, body = tools_workflows.fire_webhook("w1", "")
+    assert status == 401
+
+
+def test_fire_webhook_unknown_workflow_404():
+    with patch.object(tools_workflows.daemon_client, "call",
+                      return_value={"token": ""}):
+        status, body = tools_workflows.fire_webhook("nope", "whatever")
+    assert status == 404
+
+
+def test_fire_webhook_wrong_token_401():
+    with patch.object(tools_workflows.daemon_client, "call",
+                      return_value={"token": "correct-secret"}):
+        status, body = tools_workflows.fire_webhook("w1", "wrong-secret")
+    assert status == 401
+
+
+def test_fire_webhook_valid_token_fires_run_now():
+    calls = []
+
+    def fake(method, params=None, timeout=15.0):
+        calls.append((method, params))
+        if method == "schedule.webhook_token":
+            return {"token": "secret"}
+        if method == "schedule.run_now":
+            return {"ok": True, "session_id": "sess_9"}
+        return {}
+
+    with patch.object(tools_workflows.daemon_client, "call", side_effect=fake):
+        status, body = tools_workflows.fire_webhook("w1", "secret")
+    assert status == 200
+    assert body["fired"] is True
+    assert body["session_id"] == "sess_9"
+    assert ("schedule.run_now", {"id": "w1"}) in calls
+
+
+def test_webhook_route_fires_on_valid_bearer():
+    from fastapi import FastAPI
+    from starlette.testclient import TestClient
+
+    app = FastAPI()
+    tools_workflows.register_webhook_route(app)
+
+    def fake(method, params=None, timeout=15.0):
+        if method == "schedule.webhook_token":
+            return {"token": "secret"}
+        if method == "schedule.run_now":
+            return {"ok": True, "session_id": "sess_1"}
+        return {}
+
+    with patch.object(tools_workflows.daemon_client, "call", side_effect=fake):
+        client = TestClient(app)
+        resp = client.post("/workflows/webhook/w1",
+                           headers={"Authorization": "Bearer secret"})
+    assert resp.status_code == 200
+    assert resp.json()["session_id"] == "sess_1"
+
+
+def test_webhook_route_rejects_bad_bearer():
+    from fastapi import FastAPI
+    from starlette.testclient import TestClient
+
+    app = FastAPI()
+    tools_workflows.register_webhook_route(app)
+    with patch.object(tools_workflows.daemon_client, "call",
+                      return_value={"token": "secret"}):
+        client = TestClient(app)
+        resp = client.post("/workflows/webhook/w1",
+                           headers={"Authorization": "Bearer nope"})
+    assert resp.status_code == 401

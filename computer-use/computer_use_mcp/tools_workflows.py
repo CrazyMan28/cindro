@@ -16,6 +16,8 @@ importable/testable; register() wires them into FastMCP.
 
 from __future__ import annotations
 
+import asyncio
+import hmac
 import json
 import os
 import secrets
@@ -24,6 +26,8 @@ from mcp.server.fastmcp import FastMCP
 
 from computer_use_mcp import daemon_client
 from computer_use_mcp.config import load_config
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 DEFAULT_REPORT_THREAD = "Workflows"
 _WEBHOOK_PREFIX = "/workflows/webhook/"
@@ -111,6 +115,52 @@ def workflow_delete(id: str) -> str:
         return json.dumps({"ok": ok, "deleted": ok})
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
+
+
+def is_webhook_path(path: str) -> bool:
+    """True for the webhook ingestion path — exempted from the bearer middleware
+    (it authenticates with the per-workflow token instead)."""
+    return path.startswith(_WEBHOOK_PREFIX)
+
+
+def fire_webhook(workflow_id: str, presented_token: str):
+    """Verify the presented bearer against the workflow's stored per-workflow
+    token (hmac-safe) and, on match, fire it through the SAME code path the cron
+    scheduler uses (schedule.run_now -> Scheduler::runNow -> fireScheduledJob).
+    Returns (http_status:int, body:dict)."""
+    if not presented_token:
+        return 401, {"error": "missing bearer token"}
+    try:
+        info = daemon_client.call("schedule.webhook_token", {"id": workflow_id})
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"error": str(exc)}
+    stored = str(info.get("token") or "")
+    if not stored:
+        return 404, {"error": "no such webhook workflow"}
+    if not hmac.compare_digest(presented_token, stored):
+        return 401, {"error": "invalid token"}
+    try:
+        res = daemon_client.call("schedule.run_now", {"id": workflow_id})
+    except Exception as exc:  # noqa: BLE001
+        return 502, {"error": str(exc)}
+    return 200, {"ok": bool(res.get("ok", True)), "fired": True,
+                 "session_id": res.get("session_id", "")}
+
+
+def register_webhook_route(app: FastAPI) -> None:
+    """Mount POST /workflows/webhook/<workflow_id> on the given FastAPI app."""
+
+    @app.post(_WEBHOOK_PREFIX + "{workflow_id}")
+    async def workflow_webhook(workflow_id: str, request: Request):  # noqa: ANN202
+        auth_header = request.headers.get("Authorization") or ""
+        token = ""
+        parts = auth_header.split()
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            token = parts[1]
+        if not token:
+            token = request.query_params.get("token", "")
+        status, body = await asyncio.to_thread(fire_webhook, workflow_id, token)
+        return JSONResponse(status_code=status, content=body)
 
 
 def register(mcp: FastMCP) -> None:

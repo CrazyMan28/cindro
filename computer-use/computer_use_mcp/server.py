@@ -78,10 +78,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Webhook ingestion for trigger="webhook" Workflows. Authenticates with the
+# per-workflow token (see is_webhook_path exemption above), NOT the global bearer.
+tools_workflows.register_webhook_route(app)
+
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    if request.url.path in ("/health", "/ready") or request.method == "OPTIONS":
+    if (request.url.path in ("/health", "/ready")
+            or tools_workflows.is_webhook_path(request.url.path)
+            or request.method == "OPTIONS"):
         return await call_next(request)
     if not auth.request_ok(request):
         return JSONResponse(
