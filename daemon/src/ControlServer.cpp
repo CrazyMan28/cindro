@@ -6210,13 +6210,19 @@ Response ControlServer::handleScheduleRunNow(const Request &req)
 Response ControlServer::handleScheduleWebhookToken(const Request &req)
 {
     // Returns the stored per-workflow webhook bearer for `id` (empty for an
-    // unknown id or a non-webhook workflow). Used ONLY by the webhook ingestion
-    // endpoint to hmac-compare the presented bearer — never surfaced in
-    // schedule.list / workflow_list output.
+    // unknown id or a non-webhook workflow), plus its current `enabled` state.
+    // Used ONLY by the webhook ingestion endpoint (fire_webhook() in
+    // tools_workflows.py) to hmac-compare the presented bearer AND refuse to
+    // fire a disabled webhook workflow even when the presented token is
+    // otherwise valid — never surfaced in schedule.list / workflow_list
+    // output. This method is also excluded from the phone/device channel (see
+    // DeviceServer::dispatchAuthed) since the token itself is a durable,
+    // portable credential that must never leave the daemon.
     const QString id = req.params.value(QStringLiteral("id")).toString();
     const std::optional<ScheduleRow> row = m_scheduler.get(id);
     QJsonObject result;
     result.insert(QStringLiteral("token"), row ? row->webhookToken : QString());
+    result.insert(QStringLiteral("enabled"), row ? row->enabled : false);
     return Response::success(req.id, result);
 }
 

@@ -143,6 +143,49 @@ def test_fire_webhook_valid_token_fires_run_now():
     assert ("schedule.run_now", {"id": "w1"}) in calls
 
 
+def test_fire_webhook_valid_token_but_enabled_true_still_fires():
+    # Explicit enabled:True must behave exactly like the (legacy) missing-field
+    # case above — no regression from adding the enabled gate.
+    with patch.object(tools_workflows.daemon_client, "call",
+                      side_effect=lambda method, params=None, timeout=15.0: (
+                          {"token": "secret", "enabled": True}
+                          if method == "schedule.webhook_token"
+                          else {"ok": True, "session_id": "sess_9"})):
+        status, body = tools_workflows.fire_webhook("w1", "secret")
+    assert status == 200
+    assert body["fired"] is True
+
+
+def test_fire_webhook_disabled_workflow_403_even_with_valid_token():
+    # Finding 2: disabling a webhook Workflow via schedule.set_enabled must
+    # actually stop it from firing on external POSTs, even though the
+    # presented token is otherwise correct.
+    calls = []
+
+    def fake(method, params=None, timeout=15.0):
+        calls.append(method)
+        if method == "schedule.webhook_token":
+            return {"token": "secret", "enabled": False}
+        if method == "schedule.run_now":
+            return {"ok": True, "session_id": "should-not-fire"}
+        return {}
+
+    with patch.object(tools_workflows.daemon_client, "call", side_effect=fake):
+        status, body = tools_workflows.fire_webhook("w1", "secret")
+    assert status == 403
+    assert body == {"error": "workflow_disabled"}
+    # Must short-circuit BEFORE ever calling schedule.run_now.
+    assert "schedule.run_now" not in calls
+
+
+def test_fire_webhook_disabled_workflow_403_does_not_leak_token():
+    with patch.object(tools_workflows.daemon_client, "call",
+                      return_value={"token": _LEAK_TOKEN, "enabled": False}):
+        status, body = tools_workflows.fire_webhook("w1", _LEAK_TOKEN)
+    assert status == 403
+    assert _LEAK_TOKEN not in json.dumps(body)
+
+
 # --- token-leak regression: the stored bearer token must NEVER show up in a
 # response body, on ANY outcome branch (missing/unknown/wrong/error/success).
 

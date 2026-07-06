@@ -143,9 +143,16 @@ def is_webhook_path(path: str) -> bool:
 
 def fire_webhook(workflow_id: str, presented_token: str):
     """Verify the presented bearer against the workflow's stored per-workflow
-    token (hmac-safe) and, on match, fire it through the SAME code path the cron
-    scheduler uses (schedule.run_now -> Scheduler::runNow -> fireScheduledJob).
-    Returns (http_status:int, body:dict)."""
+    token (hmac-safe), confirm the workflow is enabled, and on success fire it
+    through the SAME code path the cron scheduler uses (schedule.run_now ->
+    Scheduler::runNow -> fireScheduledJob).
+
+    Scheduler::runNow() intentionally fires regardless of `enabled` (it backs
+    the GUI/TUI's manual "Run Now" button, where pressing Run IS the
+    approval) — so the enabled-check for externally-triggered webhooks has to
+    live here, not in the scheduler. Without it, disabling a webhook workflow
+    via schedule.set_enabled would have zero effect on whether external POSTs
+    to its webhook URL keep firing it. Returns (http_status:int, body:dict)."""
     if not presented_token:
         return 401, {"error": "missing bearer token"}
     try:
@@ -157,6 +164,8 @@ def fire_webhook(workflow_id: str, presented_token: str):
         return 404, {"error": "no such webhook workflow"}
     if not hmac.compare_digest(presented_token, stored):
         return 401, {"error": "invalid token"}
+    if not info.get("enabled", True):
+        return 403, {"error": "workflow_disabled"}
     try:
         res = daemon_client.call("schedule.run_now", {"id": workflow_id})
     except Exception as exc:  # noqa: BLE001

@@ -690,6 +690,22 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
             resp = Response::failure(req.id, QStringLiteral("channel_not_allowed"),
                                      QStringLiteral("outpost.* is not available over "
                                                     "the phone/device channel"));
+        } else if (m == QStringLiteral("schedule.webhook_token")) {
+            // schedule.webhook_token returns the raw, cleartext per-workflow
+            // webhook bearer secret (see handleScheduleWebhookToken) — a
+            // durable, portable credential that isn't tied to the device
+            // session and isn't revoked by unpairing the phone. It exists
+            // solely for the daemon-local webhook ingestion path
+            // (fire_webhook() in tools_workflows.py) to hmac-compare the
+            // presented bearer; it must never be handed to a paired device.
+            // Every OTHER schedule.* method (list/create/remove/set_enabled/
+            // run_now) is legitimately used by the phone app's Bridge/UI to
+            // manage schedules, so this exclusion is scoped to this single
+            // token-disclosure method, not the whole schedule.* family.
+            resp = Response::failure(req.id, QStringLiteral("channel_not_allowed"),
+                                     QStringLiteral("schedule.webhook_token is not "
+                                                    "available over the phone/device "
+                                                    "channel"));
         } else {
             resp = m_control->dispatchOpsMethod(req, /*remote=*/true);
         }
