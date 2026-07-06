@@ -3,6 +3,7 @@ path (no live daemon/bun binary needed; subprocess calls are monkeypatched)."""
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -72,3 +73,16 @@ def test_cmd_web_build_failure_stops_before_serving(fake_web_dir, isolated_env, 
     out = capsys.readouterr().out
     assert rc == 1
     assert "build failed" in out
+
+
+def test_cmd_web_already_running_is_a_noop(fake_web_dir, isolated_env, capsys):
+    # Regression: running `jarvis web start` while a previous instance still
+    # holds the port used to crash with a confusing "exited immediately, run
+    # bun ... to see why" instead of a clear "already running" message.
+    pidfile = services._web_pidfile()
+    pidfile.parent.mkdir(parents=True, exist_ok=True)
+    pidfile.write_text(str(os.getpid()))  # our own pid is guaranteed alive
+    rc = services.cmd_web("start")
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "already running" in out

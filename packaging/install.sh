@@ -74,13 +74,23 @@ log "Installing the Chrome extension into ${EXT_DIR}..."
 mkdir -p "${EXT_DIR}"
 cp -r "${REPO_ROOT}/extension/." "${EXT_DIR}/"
 
-# --- 6c. Install the web console (static dashboard) -------------------------
-# A no-build browser dashboard. Stage it, then run it with:
-#   python3 ~/.local/share/jarvis/web/serve.py   (http://127.0.0.1:8799)
+# --- 6c. Install the web console (Bun+Vite+SolidJS dashboard) ---------------
+# Stage it, then run it with: jarvis web start   (http://127.0.0.1:8788)
+# rm -rf first (not just `cp -r` over the top): the dashboard was previously
+# plain static files (app.js/style.css/serve.py) — an old install left those
+# behind alongside the new src/ tree otherwise, which is confusing to debug.
 WEB_DIR="${HOME}/.local/share/jarvis/web"
 log "Installing the web console into ${WEB_DIR}..."
+rm -rf "${WEB_DIR}"
 mkdir -p "${WEB_DIR}"
 cp -r "${REPO_ROOT}/web/." "${WEB_DIR}/"
+# Never ship a dev checkout's build artifacts — `jarvis web start` does its
+# own `bun install`/`bun run build` fresh, and a stale/wrong-platform
+# node_modules copied in from the source machine could break that.
+rm -rf "${WEB_DIR}/node_modules" "${WEB_DIR}/dist"
+if ! command -v bun >/dev/null 2>&1; then
+  log "WARNING: bun not found on PATH — 'jarvis web start' needs it to build/serve the dashboard. Install from https://bun.sh"
+fi
 
 # --- 6d. Install the jarvis CLI (terminal agent + doctor/status) -------------
 # Own venv under the data dir (the engine venv stays untouched); `jarvis` goes
