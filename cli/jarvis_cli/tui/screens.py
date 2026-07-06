@@ -56,7 +56,7 @@ class TablePane(Vertical):
     """Shared skeleton: hint line + DataTable + optional input, async refresh.
 
     Every subclass — even the ones that fully override ``compose()`` to add
-    their own Input row (MemoryPane, QueuePane, SshPane, SchedulesPane, …) —
+    their own Input row (MemoryPane, QueuePane, OutpostPane, SchedulesPane, …) —
     gets a small hidden-by-default ArcReactorWidget spinner for free: it is
     mounted in ``on_mount()`` (right after the ``.pane-hint`` Static, wherever
     that landed) rather than yielded from ``compose()``, so it never depends

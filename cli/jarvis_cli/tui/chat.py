@@ -44,7 +44,7 @@ from jarvis_cli.tui.diff_render import render_diff_event
 from jarvis_cli.tui.misc_panes import MemoryGraphPane, SchedulesPane
 from jarvis_cli.tui.quick_view import QuickViewScreen
 from jarvis_cli.tui.screens import AgentsPane, MemoryPane, QueuePane, SessionsPane, SkillsPane
-from jarvis_cli.tui.system_panes import McpPane, PluginsPane, SshPane
+from jarvis_cli.tui.system_panes import McpPane, OutpostPane, PluginsPane
 
 # typewriter reveal tuning (see _start_typewriter): a bounded total duration
 # regardless of message length, so huge replies never make the user wait.
@@ -65,7 +65,7 @@ BUILTIN_COMMANDS = [
     ("computer", "open the Computer tab"), ("browser", "open the Browser tab"),
     ("activity", "peek at Activity"), ("replay", "open the Replay tab"),
     ("mcp", "peek at MCP"), ("plugins", "peek at Plugins"),
-    ("ssh", "peek at SSH"), ("memorygraph", "peek at the Memory Graph"),
+    ("outpost", "peek at Outpost"), ("memorygraph", "peek at the Memory Graph"),
     ("home", "open the Home tab"), ("schedules", "peek at Schedules"),
     ("tui", "ask Jarvis to add/edit/remove a TUI page"),
     ("model", "pick the active model"),
@@ -90,7 +90,7 @@ POPUP_PANE_FACTORIES = {
     "memorygraph": lambda: MemoryGraphPane(id="memorygraph-quick"),
     "mcp": lambda: McpPane(id="mcp-quick"),
     "plugins": lambda: PluginsPane(id="plugins-quick"),
-    "ssh": lambda: SshPane(id="ssh-quick"),
+    "outpost": lambda: OutpostPane(id="outpost-quick"),
     "schedules": lambda: SchedulesPane(id="schedules-quick"),
     "sessions": lambda: SessionsPane(id="sessions-quick"),
 }
@@ -441,8 +441,8 @@ class ChatPane(Vertical):
         elif name in POPUP_COMMANDS:
             factory = POPUP_PANE_FACTORIES[name]
             title = name.capitalize() if name != "mcp" else "MCP"
-            if name == "ssh":
-                title = "SSH"
+            if name == "outpost":
+                title = "Outpost"
             elif name == "memorygraph":
                 title = "Memory Graph"
             self.app.push_screen(QuickViewScreen(title, factory))

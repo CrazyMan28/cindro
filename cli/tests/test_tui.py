@@ -72,7 +72,7 @@ async def test_app_boots_and_tabs_mount(daemon):
 async def test_main_tab_bar_has_exactly_the_9_real_tabs(daemon):
     """After the 11 popup-only screens were pulled out (Fix 1), the
     persistent main tab bar must contain exactly the 9 real tabs — no
-    Sessions/Memory/Skills/Agents/Queue/Activity/Graph/MCP/Plugins/SSH/
+    Sessions/Memory/Skills/Agents/Queue/Activity/Graph/MCP/Plugins/Outpost/
     Schedules tab remains."""
     from textual.widgets import TabbedContent, TabPane
 
@@ -1146,17 +1146,17 @@ async def test_plugins_pane_lists_catalog(monkeypatch):
         assert rows[0]["name"] == "weather"
 
 
-async def test_ssh_pane_lists_allowed_hosts(monkeypatch):
+async def test_outpost_pane_lists_machines(monkeypatch):
     from jarvis_cli.tui.app import JarvisTui
-    from jarvis_cli.tui.system_panes import SshPane
+    from jarvis_cli.tui.system_panes import OutpostPane
     app = JarvisTui()
     async with app.run_test() as pilot:
         async def fake_call(method, params=None, timeout=60.0):
-            return {"hosts": ["deploy@k2-runner"]}
+            return {"machines": [{"name": "k2-runner", "os": "linux", "status": "online"}]}
         monkeypatch.setattr(app.client, "call", fake_call)
-        pane = await _open_popup_pane(app, pilot, "ssh", SshPane)
+        pane = await _open_popup_pane(app, pilot, "outpost", OutpostPane)
         rows = await pane.fetch()
-        assert rows[0]["host"] == "deploy@k2-runner"
+        assert rows[0]["name"] == "k2-runner"
 
 
 async def test_memory_graph_pane_builds_a_tree(monkeypatch):
@@ -1524,7 +1524,7 @@ async def test_tui_command_with_no_args_still_sends_a_prompt(monkeypatch):
 
 async def test_tab_jump_and_popup_commands_partition_correctly():
     """The 11 popup-only screens (memory/skills/agents/queue/activity/
-    memorygraph/mcp/plugins/ssh/schedules/sessions) were pulled out of the
+    memorygraph/mcp/plugins/outpost/schedules/sessions) were pulled out of the
     main tab bar entirely — POPUP_COMMANDS is now a FIXED set of 11 names
     that do NOT correspond to any real tab-* id anymore (a regression guard
     against ever accidentally re-adding one of them as a real tab), while
@@ -1748,28 +1748,28 @@ async def test_sessions_pane_spinner_shows_during_fetch_and_hides_after(monkeypa
         assert pane.rows and pane.rows[0]["id"] == "s1"
 
 
-async def test_ssh_pane_spinner_shows_and_hides_despite_overriding_compose(monkeypatch):
-    """SshPane fully overrides TablePane.compose() (to add its host-Input
-    row) WITHOUT yielding a spinner itself — the base class must still
-    inject one via on_mount(), proving the 'zero subclass changes' claim
-    holds even for compose()-overriding subclasses."""
+async def test_outpost_pane_spinner_shows_and_hides_despite_overriding_compose(monkeypatch):
+    """OutpostPane fully overrides TablePane.compose() (to add its
+    exec-command Input row) WITHOUT yielding a spinner itself — the base
+    class must still inject one via on_mount(), proving the 'zero subclass
+    changes' claim holds even for compose()-overriding subclasses."""
     import asyncio
     from jarvis_cli.tui.app import JarvisTui
     from jarvis_cli.tui.arc_reactor import ArcReactorWidget
-    from jarvis_cli.tui.system_panes import SshPane
+    from jarvis_cli.tui.system_panes import OutpostPane
 
     app = JarvisTui()
     async with app.run_test() as pilot:
-        pane = await _open_popup_pane(app, pilot, "ssh", SshPane)
+        pane = await _open_popup_pane(app, pilot, "outpost", OutpostPane)
         spinner = pane.query_one(f"#{pane.SPINNER_ID}", ArcReactorWidget)
         assert spinner.display is False
 
         gate = asyncio.Event()
 
         async def slow_call(method, params=None, timeout=60.0):
-            if method == "ssh.allow_list":
+            if method == "outpost.list":
                 await gate.wait()
-                return {"hosts": ["deploy@k2-runner"]}
+                return {"machines": [{"name": "k2-runner", "os": "linux", "status": "online"}]}
             return {}
         monkeypatch.setattr(app.client, "call", slow_call)
 
@@ -1780,7 +1780,7 @@ async def test_ssh_pane_spinner_shows_and_hides_despite_overriding_compose(monke
         gate.set()
         await pilot.pause(0.2)
         assert spinner.display is False
-        assert pane.rows and pane.rows[0]["host"] == "deploy@k2-runner"
+        assert pane.rows and pane.rows[0]["name"] == "k2-runner"
 
 
 async def test_home_pane_spinner_shows_during_fetch_and_hides_after(monkeypatch):

@@ -3,7 +3,7 @@
 One TabbedContent with the 9 persistent main tabs (Home, Chat, Canvas,
 Widgets, Phone, Computer, Browser, Replay, Settings) over ONE shared streaming
 ControlClient. The remaining screens (Memory, Skills, Agents, Queue, Activity,
-Memory Graph, MCP, Plugins, SSH, Schedules, Sessions) are popup-only now —
+Memory Graph, MCP, Plugins, Outpost, Schedules, Sessions) are popup-only now —
 reachable via their "/" slash command (see chat.py's POPUP_PANE_FACTORIES),
 never as a tab in this bar. The header line shows live daemon/brain state
 plus the current agent_mode (F3 cycles it); broadcast frames keep it fresh
@@ -39,7 +39,7 @@ from jarvis_cli.tui.setup_wizard import SetupWizardScreen
 from jarvis_cli.tui.voice_mode import VoiceModeScreen
 
 # NOTE: MemoryPane/SkillsPane/AgentsPane/QueuePane/ActivityPane/
-# MemoryGraphPane/McpPane/PluginsPane/SshPane/SchedulesPane/SessionsPane are
+# MemoryGraphPane/McpPane/PluginsPane/OutpostPane/SchedulesPane/SessionsPane are
 # deliberately NOT imported here anymore — those 11 screens live ONLY behind
 # their "/" popup command now (see chat.py's POPUP_PANE_FACTORIES, which
 # imports them itself to build fresh instances for QuickViewScreen). They are
@@ -181,7 +181,7 @@ class JarvisTui(App):
             yield Static(id="topbar")
         # Exactly 9 tabs live in the persistent main tab bar. The other 11
         # screens (memory/skills/agents/queue/activity/memorygraph/mcp/
-        # plugins/ssh/schedules/sessions) were pulled out of here — they're
+        # plugins/outpost/schedules/sessions) were pulled out of here — they're
         # reachable ONLY via their "/" slash command, which pushes a fresh
         # instance as a QuickViewScreen popup (see chat.py's
         # POPUP_PANE_FACTORIES / POPUP_COMMANDS).
