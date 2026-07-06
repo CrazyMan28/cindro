@@ -4548,8 +4548,9 @@ Response ControlServer::handleMemorySearch(const Request &req)
 {
     const QString q = req.params.value(QStringLiteral("q")).toString();
     const int limit = req.params.value(QStringLiteral("limit")).toInt(20);
+    const QString agent = req.params.value(QStringLiteral("agent")).toString();
     QJsonArray arr;
-    for (const MemoryRow &m : m_memory.search(q, limit))
+    for (const MemoryRow &m : m_memory.search(q, limit, agent))
         arr.append(m.toJson());
     QJsonObject result;
     result.insert(QStringLiteral("memories"), arr);
@@ -4575,7 +4576,10 @@ Response ControlServer::handleMemoryAdd(const Request &req)
             req.id, QStringLiteral("memory_too_large"),
             QStringLiteral("memory text too long (%1 chars, max %2) — store a concise "
                            "fact, not a document").arg(text.size()).arg(kMaxMemoryChars));
-    const QString id = m_memory.add(text, tags);
+    const QString agent = req.params.value(QStringLiteral("agent")).toString();
+    const QString id = agent.isEmpty()
+        ? m_memory.add(text, tags)
+        : m_memory.add(text, tags, QString(), QStringLiteral("agent"), agent);
     if (id.isEmpty())
         return Response::failure(req.id, QStringLiteral("store_error"), m_memory.lastError());
     QJsonObject result;
