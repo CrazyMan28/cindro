@@ -8,7 +8,6 @@ import (
 	"image/png"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 )
 
@@ -68,7 +67,12 @@ func captureToFile(path string) error {
 
 // captureScreen returns base64 PNG + dimensions.
 func captureScreen() (string, int, int, error) {
-	path := filepath.Join(os.TempDir(), "outpost-shot.png")
+	f, err := os.CreateTemp(os.TempDir(), "outpost-shot-*.png")
+	if err != nil {
+		return "", 0, 0, err
+	}
+	path := f.Name()
+	f.Close() // capture commands need a path, not an open handle
 	defer os.Remove(path)
 	if err := captureToFile(path); err != nil {
 		return "", 0, 0, err

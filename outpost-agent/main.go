@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -83,10 +84,12 @@ func main() {
 	for {
 		cfg, err := loadConfig()
 		if err != nil {
+			log.Printf("outpost-agent: failed to load config (%s): %v — retrying in 10s", configPath(), err)
 			time.Sleep(10 * time.Second)
 			continue
 		}
 		if err := connectOnce(cfg); err != nil {
+			log.Printf("outpost-agent: connection lost: %v — reconnecting in 5s", err)
 			time.Sleep(5 * time.Second) // reconnect with backoff
 		}
 	}
