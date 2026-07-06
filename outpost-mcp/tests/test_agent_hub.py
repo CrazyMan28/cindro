@@ -76,3 +76,34 @@ async def test_unregister_marks_offline(tmp_path):
     hub.unregister(row["id"])
     assert hub.online(row["id"]) is False
     assert reg.list()[0]["status"] == "offline"
+
+
+async def test_unregister_stale_conn_does_not_evict_newer_connection(tmp_path):
+    """Reconnect/roam race: WS1 drops, agent reconnects on WS2 before WS1's
+    server-side loop notices the dead socket. WS2's hub.register() replaces
+    the map entry; WS1's belated `finally: hub.unregister(machine_id, conn1)`
+    must be a no-op (conn2 is current), not evict the live connection."""
+    reg = MachineRegistry(tmp_path / "m.json")
+    row = reg.add("box", "linux")["row"]
+    hub = AgentHub(reg)
+
+    conn1 = AgentConnection(row["id"], FakeWs())
+    hub.register(conn1)
+    assert hub.online(row["id"]) is True
+
+    # Reconnect: a second WS for the same machine takes over before conn1's
+    # loop has noticed its socket is dead.
+    conn2 = AgentConnection(row["id"], FakeWs())
+    hub.register(conn2)
+    assert hub.online(row["id"]) is True
+
+    # conn1's server-side loop finally errors out and tears itself down —
+    # this must NOT touch conn2's registration.
+    hub.unregister(row["id"], conn1)
+    assert hub.online(row["id"]) is True
+    assert reg.list()[0]["status"] == "online"
+
+    # conn2 eventually really does disconnect — now it should go offline.
+    hub.unregister(row["id"], conn2)
+    assert hub.online(row["id"]) is False
+    assert reg.list()[0]["status"] == "offline"

@@ -47,7 +47,19 @@ class AgentHub:
         self._conns[conn.machine_id] = conn
         self._registry.set_status(conn.machine_id, "online")
 
-    def unregister(self, machine_id: str) -> None:
+    def unregister(self, machine_id: str, conn: "AgentConnection | None" = None) -> None:
+        """Tear down the registered connection for machine_id.
+
+        If `conn` is given, this is a best-effort teardown from a WS loop that
+        just exited (e.g. /agent/ws's `finally`) and may be stale: a newer
+        connection can already have replaced it in `_conns` (reconnect/roam
+        raced ahead of this one noticing its socket died). In that case we
+        must NOT touch the registry — only pop/mark-offline if `_conns[machine_id]`
+        is still THIS exact connection. If `conn` is None, the caller is an
+        intentional forced disconnect (e.g. revoke) and should always win.
+        """
+        if conn is not None and self._conns.get(machine_id) is not conn:
+            return
         self._conns.pop(machine_id, None)
         self._registry.set_status(machine_id, "offline", seen=False)
 

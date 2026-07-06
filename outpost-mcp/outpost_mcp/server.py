@@ -216,7 +216,7 @@ async def agent_ws(ws: WebSocket):
     except Exception as exc:
         print(f"outpost-mcp: agent ws error for machine {m['id']}: {exc}")
     finally:
-        hub.unregister(m["id"])
+        hub.unregister(m["id"], conn)
 
 
 # Mounted last so explicit routes win over the MCP catch-all.
