@@ -71,7 +71,7 @@ int main(int argc, char **argv)
     for (const char *want : {"home", "chat", "voice", "computer", "browser",
                              "canvas", "widgets", "phone", "sessions", "memory",
                              "memorygraph", "skills", "agents", "queue",
-                             "schedules", "activity", "mcp", "plugins", "ssh",
+                             "schedules", "activity", "mcp", "plugins", "outpost",
                              "replay", "settings"})
         check(ids.contains(QString::fromLatin1(want)), want);
 

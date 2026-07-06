@@ -169,17 +169,20 @@ constexpr const char *kBaseManifest = R"json({
        {"id": "remove",  "label": "Remove", "kind": "verb", "verb": "plugins.remove",
         "params": {"name": "$name"}, "confirm": true}]},
 
-    {"id": "ssh", "title": "SSH", "section": "system", "kind": "table",
-     "data": {"list": {"verb": "ssh.allow_list", "result_key": "hosts"}},
-     "columns": [{"key": "host", "label": "Allow-listed host"}],
+    {"id": "outpost", "title": "Outpost", "section": "system", "kind": "table",
+     "data": {"list": {"verb": "outpost.list", "result_key": "machines"}},
+     "columns": [
+       {"key": "name",      "label": "Machine"},
+       {"key": "os",        "label": "OS"},
+       {"key": "status",    "label": "Status"},
+       {"key": "last_seen", "label": "Last seen", "format": "reltime"}],
      "row_actions": [
-       {"id": "remove", "label": "Remove", "kind": "verb", "verb": "ssh.allow_remove",
-        "params": {"host": "$host"}, "confirm": true},
-       {"id": "exec",   "label": "Run command", "kind": "verb", "verb": "ssh.exec",
-        "params": {"host": "$host", "cmd": "$input"}, "input": "command"}],
-     "input_actions": [
-       {"id": "add", "placeholder": "Allow-list a host…", "kind": "verb",
-        "verb": "ssh.allow_add", "params": {"host": "$input"}}]},
+       {"id": "exec",       "label": "Run command", "kind": "verb", "verb": "outpost.exec",
+        "params": {"machine": "$name", "cmd": "$input"}, "input": "command", "show": "detail"},
+       {"id": "screenshot", "label": "Screenshot", "kind": "verb", "verb": "outpost.screenshot",
+        "params": {"machine": "$name"}, "show": "detail"},
+       {"id": "revoke",     "label": "Revoke", "kind": "verb", "verb": "outpost.revoke",
+        "params": {"machine": "$name"}, "confirm": true}]},
 
     {"id": "replay",   "title": "Replay",   "section": "system", "kind": "bespoke"},
     {"id": "settings", "title": "Settings", "section": "system", "kind": "bespoke"}
@@ -215,7 +218,9 @@ constexpr const char *kBaseManifest = R"json({
     {"name": "activity", "description": "audit trail", "kind": "page", "target": "activity"},
     {"name": "mcp",      "description": "MCP servers", "kind": "page", "target": "mcp"},
     {"name": "plugins",  "description": "plugin marketplace", "kind": "page", "target": "plugins"},
-    {"name": "ssh",      "description": "SSH allow-list", "kind": "page", "target": "ssh"},
+    {"name": "outpost",  "description": "remote machines", "kind": "page", "target": "outpost"},
+    {"name": "pair",     "description": "pair a new Outpost machine", "kind": "verb",
+     "verb": "outpost.pair_start"},
     {"name": "schedules","description": "scheduled jobs", "kind": "page", "target": "schedules"},
     {"name": "voice",    "description": "voice mode", "kind": "navigate", "target": "voice"},
     {"name": "model",    "description": "pick the default model", "kind": "picker",
