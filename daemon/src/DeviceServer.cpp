@@ -675,7 +675,24 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         // SQLite tables as the desktop. `remote=true` so the audit log records
         // that the action originated from a paired device, and schedule.create
         // was biometric-gated on the phone.
-        resp = m_control->dispatchOpsMethod(req, /*remote=*/true);
+        //
+        // outpost.* is explicitly OUT OF SCOPE for the phone/device channel
+        // (v1 design: desktop/web/TUI only, narrower blast radius for a
+        // feature that can pair with and execute on other machines).
+        // capabilityMap() above already doesn't advertise outpost.* to the
+        // phone UI, but that's advisory only — isOpsMethod() still matches
+        // outpost.* (it must, for the desktop control channel), so without
+        // this explicit reject a phone-paired device could dispatch
+        // outpost.exec/screenshot/pair_start/pair_status/list/revoke
+        // directly over this WebSocket. Reject it here, at the channel
+        // boundary, rather than narrowing isOpsMethod() itself.
+        if (m.startsWith(QStringLiteral("outpost."))) {
+            resp = Response::failure(req.id, QStringLiteral("channel_not_allowed"),
+                                     QStringLiteral("outpost.* is not available over "
+                                                    "the phone/device channel"));
+        } else {
+            resp = m_control->dispatchOpsMethod(req, /*remote=*/true);
+        }
     } else if (ControlServer::isConfigMethod(m)) {
         // FULL Contract-C exposure: settings/model/mcp/plugins/voice/devices/
         // take_over/file.* all mirror to the phone via the SAME ControlServer
