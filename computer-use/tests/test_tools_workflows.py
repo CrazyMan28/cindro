@@ -90,6 +90,21 @@ def test_is_webhook_path():
     assert not tools_workflows.is_webhook_path("/mcp")
 
 
+def test_is_webhook_path_rejects_path_confusion_traversal():
+    # A crafted path that raw-startswith()-matches the webhook prefix but is
+    # actually trying to escape to a different route (e.g. /mcp) via an
+    # embedded "../" segment must NOT be treated as a webhook path — it must
+    # fall through to the normal bearer-auth middleware.
+    assert not tools_workflows.is_webhook_path(
+        "/workflows/webhook/x/../../mcp/secret")
+
+
+def test_is_webhook_path_still_accepts_legit_workflow_id():
+    # The fix must not break the real, legitimate case: a single, slash-free
+    # workflow id segment.
+    assert tools_workflows.is_webhook_path("/workflows/webhook/legit-id-123")
+
+
 def test_fire_webhook_missing_token_401():
     status, body = tools_workflows.fire_webhook("w1", "")
     assert status == 401
@@ -126,6 +141,86 @@ def test_fire_webhook_valid_token_fires_run_now():
     assert body["fired"] is True
     assert body["session_id"] == "sess_9"
     assert ("schedule.run_now", {"id": "w1"}) in calls
+
+
+# --- token-leak regression: the stored bearer token must NEVER show up in a
+# response body, on ANY outcome branch (missing/unknown/wrong/error/success).
+
+_LEAK_TOKEN = "super-secret-token-xyz123"
+
+
+def test_fire_webhook_missing_token_401_does_not_leak_token():
+    status, body = tools_workflows.fire_webhook("w1", "")
+    assert status == 401
+    assert _LEAK_TOKEN not in json.dumps(body)
+
+
+def test_fire_webhook_unknown_workflow_404_does_not_leak_token():
+    with patch.object(tools_workflows.daemon_client, "call",
+                      return_value={"token": ""}):
+        status, body = tools_workflows.fire_webhook("nope", _LEAK_TOKEN)
+    assert status == 404
+    assert _LEAK_TOKEN not in json.dumps(body)
+
+
+def test_fire_webhook_wrong_token_401_does_not_leak_token():
+    with patch.object(tools_workflows.daemon_client, "call",
+                      return_value={"token": _LEAK_TOKEN}):
+        status, body = tools_workflows.fire_webhook("w1", "an-attackers-guess")
+    assert status == 401
+    assert _LEAK_TOKEN not in json.dumps(body)
+
+
+def test_fire_webhook_daemon_error_502_does_not_leak_token():
+    def fake(method, params=None, timeout=15.0):
+        if method == "schedule.webhook_token":
+            return {"token": _LEAK_TOKEN}
+        if method == "schedule.run_now":
+            raise RuntimeError("daemon connection refused")
+        return {}
+
+    with patch.object(tools_workflows.daemon_client, "call", side_effect=fake):
+        status, body = tools_workflows.fire_webhook("w1", _LEAK_TOKEN)
+    assert status == 502
+    assert _LEAK_TOKEN not in json.dumps(body)
+
+
+def test_fire_webhook_success_200_does_not_leak_token():
+    def fake(method, params=None, timeout=15.0):
+        if method == "schedule.webhook_token":
+            return {"token": _LEAK_TOKEN}
+        if method == "schedule.run_now":
+            return {"ok": True, "session_id": "sess_leak_check"}
+        return {}
+
+    with patch.object(tools_workflows.daemon_client, "call", side_effect=fake):
+        status, body = tools_workflows.fire_webhook("w1", _LEAK_TOKEN)
+    assert status == 200
+    assert _LEAK_TOKEN not in json.dumps(body)
+
+
+def test_webhook_route_http_response_never_contains_stored_token():
+    # Same check at the real HTTP-response-body layer (through JSONResponse
+    # serialization), not just the python dict fire_webhook() returns.
+    from fastapi import FastAPI
+    from starlette.testclient import TestClient
+
+    app = FastAPI()
+    tools_workflows.register_webhook_route(app)
+
+    def fake(method, params=None, timeout=15.0):
+        if method == "schedule.webhook_token":
+            return {"token": _LEAK_TOKEN}
+        if method == "schedule.run_now":
+            return {"ok": True, "session_id": "sess_1"}
+        return {}
+
+    with patch.object(tools_workflows.daemon_client, "call", side_effect=fake):
+        client = TestClient(app)
+        resp = client.post("/workflows/webhook/w1",
+                           headers={"Authorization": f"Bearer {_LEAK_TOKEN}"})
+    assert resp.status_code == 200
+    assert _LEAK_TOKEN not in resp.text
 
 
 def test_webhook_route_fires_on_valid_bearer():

@@ -20,6 +20,7 @@ import asyncio
 import hmac
 import json
 import os
+import re
 import secrets
 
 from mcp.server.fastmcp import FastMCP
@@ -31,6 +32,9 @@ from fastapi.responses import JSONResponse
 
 DEFAULT_REPORT_THREAD = "Workflows"
 _WEBHOOK_PREFIX = "/workflows/webhook/"
+# Exactly one non-empty, slash-free segment after the prefix — see
+# is_webhook_path() for why this must be a strict fullmatch.
+_WEBHOOK_ID_RE = re.compile(re.escape(_WEBHOOK_PREFIX) + r"([^/]+)")
 
 
 def _err(exc: Exception) -> str:
@@ -119,8 +123,22 @@ def workflow_delete(id: str) -> str:
 
 def is_webhook_path(path: str) -> bool:
     """True for the webhook ingestion path — exempted from the bearer middleware
-    (it authenticates with the per-workflow token instead)."""
-    return path.startswith(_WEBHOOK_PREFIX)
+    (it authenticates with the per-workflow token instead).
+
+    Strict, single-segment match: the ENTIRE remainder of the path after the
+    fixed prefix must be exactly one non-empty, slash-free workflow-id
+    segment. A naive `path.startswith(_WEBHOOK_PREFIX)` check on the
+    *unnormalized* request path would also exempt path-confusion payloads
+    like "/workflows/webhook/x/../../mcp/secret" from the bearer-auth
+    middleware (its raw string does start with the prefix) even though it is
+    not a genuine webhook call. `[^/]+` can never contain a "/", so
+    `fullmatch()` forces the entire remainder to collapse to exactly one
+    segment and rejects any embedded "/" — and therefore any "../"
+    traversal attempt — beyond the workflow id. A literal ".." id is also
+    rejected outright since it can never be a real workflow id (ids are
+    daemon-assigned / secrets.token_urlsafe-style tokens with no slashes)."""
+    m = _WEBHOOK_ID_RE.fullmatch(path)
+    return bool(m) and m.group(1) != ".."
 
 
 def fire_webhook(workflow_id: str, presented_token: str):
