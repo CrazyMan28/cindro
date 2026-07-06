@@ -13,6 +13,14 @@ paired-machine id, e.g. `ci-runner-104`).
 - `recall(agent="ci-runner-104")` (empty query) returns that agent's recent
   state — the basis of the condition-polling pattern below.
 - Omitting `agent` preserves the original global behavior exactly.
+- The automatic per-turn memory context (`prefetch()`, what the daemon
+  silently prepends to every ordinary chat turn) also respects agent
+  scoping **by default**: agent-scoped facts never surface as ambient
+  background context in an unrelated conversation. They only ever come
+  back through an explicit `recall(agent=...)` (or `search(entityRef=...)`)
+  call. This only affects the automatic background-context path — it
+  doesn't change what `recall`/`search` return when you call them
+  yourself.
 
 ## Workflows
 
@@ -58,6 +66,14 @@ workflow_create(
          "escalate if it changed from healthy; otherwise just log OK.",
   report_thread="Workflows")
 ```
+
+> **Prerequisite for `outpost_exec` in a Workflow's prompt:** the fired
+> session only sees the `outpost_exec` tool if outpost-mcp is registered as
+> an available MCP server for that session (`outpost-mcp/client-setup.sh`).
+> This is a separate, one-time setup step from creating the Workflow itself
+> — if it's skipped, the prompt above will fail because `outpost_exec`
+> doesn't exist for that session to call. See
+> [docs/OUTPOST.md](OUTPOST.md) for the full bring-up + registration steps.
 
 ### Webhook trigger
 
