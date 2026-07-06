@@ -71,8 +71,8 @@ async def test_pair_download_gate_and_exec_roundtrip(server):
         # the sh script is served open and embeds the bootstrap id
         sh = await hc.get(f"{base}/pair/{bid}/sh")
         assert sh.status_code == 200 and bid in sh.text
-        # no binary present in this tmp env -> 404 (gate passed, file missing)
-        dl = await hc.get(f"{base}/agent/download/{bid}/linux/amd64")
+        # no binary built for this target -> 404 (gate passed, file missing)
+        dl = await hc.get(f"{base}/agent/download/{bid}/windows/riscv64")
         assert dl.status_code == 404
         # complete the pairing (open, one-shot)
         done = (await hc.post(f"{base}/pair/{bid}/complete",
