@@ -30,6 +30,8 @@ struct MemoryRow {
     qint64 created = 0; // unix ms
     qint64 updated = 0; // unix ms
     double score = 0.0; // search relevance (0 outside of search())
+    QString scope = QStringLiteral("global"); // global|project|agent
+    QString entityRef;                        // set when scope=="project"/"agent" (project name / agent id)
 
     QJsonObject toJson() const;
 };
@@ -88,7 +90,9 @@ public:
     // Add a new memory; returns its generated id (empty on error). created/
     // updated stamped now. If `id` is provided it is used verbatim (upsert).
     QString add(const QString &text, const QStringList &tags = {},
-                const QString &id = QString());
+                const QString &id = QString(),
+                const QString &scope = QStringLiteral("global"),
+                const QString &entityRef = QString());
     // Replace the text/tags of an existing memory (updated re-stamped). False if
     // the id does not exist or on error.
     bool replace(const QString &id, const QString &text, const QStringList &tags);
@@ -101,7 +105,8 @@ public:
     // Full-text search over text+tags (FTS5). Falls back to a LIKE scan when the
     // query has no usable FTS tokens. Returns up to `limit` rows, best match
     // first, each with a populated `score` (higher = more relevant).
-    QVector<MemoryRow> search(const QString &query, int limit = 20);
+    QVector<MemoryRow> search(const QString &query, int limit = 20,
+                              const QString &entityRef = QString());
 
     // prefetch(query,k): the top-k relevant memories for a turn. Empty query =>
     // the k most-recent memories (so a fresh turn still gets context).
@@ -148,6 +153,7 @@ public:
 private:
     bool exec(const QString &sql, QString *err = nullptr);
     bool migrate();
+    bool hasColumn(const QString &table, const QString &column);
     void autoExtractEntities(const QString &memId, const QString &text, const QStringList &tags);
     void backfillEntityExtraction();
 

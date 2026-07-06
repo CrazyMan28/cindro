@@ -317,6 +317,82 @@ int main(int argc, char **argv)
         }
     }
 
+    // --- agent-scoped memory (per-agent-scoped recall) ---------------------
+    {
+        QTemporaryDir tmpA;
+        const QString dbPathA = tmpA.path() + QStringLiteral("/agent_scope.db");
+        MemoryStore s;
+        check(s.open(dbPathA, QStringLiteral("mem-agent-conn")), "agent-scope: store open");
+
+        // Two agent-scoped memories + one global memory.
+        const QString a1 = s.add(QStringLiteral("runner service is healthy"),
+                                 {QStringLiteral("status")}, QString(),
+                                 QStringLiteral("agent"), QStringLiteral("ci-runner-104"));
+        const QString a2 = s.add(QStringLiteral("disk at 40 percent"),
+                                 {QStringLiteral("status")}, QString(),
+                                 QStringLiteral("agent"), QStringLiteral("ci-runner-106"));
+        const QString g1 = s.add(QStringLiteral("the runner keychain lives in vault"),
+                                 {QStringLiteral("status")});
+        check(!a1.isEmpty() && !a2.isEmpty() && !g1.isEmpty(), "agent-scope: three memories added");
+
+        // recall filtered by agent returns ONLY that agent's rows.
+        {
+            const auto hits = s.search(QStringLiteral("runner"), 20, QStringLiteral("ci-runner-104"));
+            bool sawA1 = false, sawG1 = false, sawA2 = false;
+            for (const auto &r : hits) {
+                if (r.id == a1) sawA1 = true;
+                if (r.id == g1) sawG1 = true;
+                if (r.id == a2) sawA2 = true;
+            }
+            check(sawA1, "agent-scope: search(agent=104) returns the 104 memory");
+            check(!sawG1, "agent-scope: search(agent=104) excludes the global memory");
+            check(!sawA2, "agent-scope: search(agent=104) excludes the other agent's memory");
+        }
+
+        // Empty-query + agent returns that agent's rows (condition-polling pattern).
+        {
+            const auto hits = s.search(QString(), 20, QStringLiteral("ci-runner-104"));
+            bool sawA1 = false, sawA2 = false;
+            for (const auto &r : hits) {
+                if (r.id == a1) sawA1 = true;
+                if (r.id == a2) sawA2 = true;
+            }
+            check(sawA1, "agent-scope: empty-query search(agent=104) returns 104 rows");
+            check(!sawA2, "agent-scope: empty-query search(agent=104) excludes other agents");
+        }
+
+        // Regression: search with NO agent filter still returns everything.
+        {
+            const auto hits = s.search(QStringLiteral("runner"), 20);
+            bool sawA1 = false, sawG1 = false;
+            for (const auto &r : hits) {
+                if (r.id == a1) sawA1 = true;
+                if (r.id == g1) sawG1 = true;
+            }
+            check(sawA1 && sawG1, "agent-scope: unfiltered search still spans global + agent rows");
+        }
+
+        // The row carries its scope + entityRef; toJson surfaces them.
+        {
+            auto r = s.get(a1);
+            check(r && r->scope == QStringLiteral("agent"), "agent-scope: stored scope is 'agent'");
+            check(r && r->entityRef == QStringLiteral("ci-runner-104"), "agent-scope: entityRef stored");
+            const QJsonObject j = r->toJson();
+            check(j.value(QStringLiteral("scope")).toString() == QStringLiteral("agent"),
+                  "agent-scope: toJson emits scope for an agent row");
+            check(j.value(QStringLiteral("entityRef")).toString() == QStringLiteral("ci-runner-104"),
+                  "agent-scope: toJson emits entityRef for an agent row");
+        }
+
+        // Regression: a global row's JSON does NOT gain scope/entityRef keys.
+        {
+            auto r = s.get(g1);
+            const QJsonObject j = r->toJson();
+            check(!j.contains(QStringLiteral("scope")), "agent-scope: global row toJson omits scope");
+            check(!j.contains(QStringLiteral("entityRef")), "agent-scope: global row toJson omits entityRef");
+        }
+    }
+
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

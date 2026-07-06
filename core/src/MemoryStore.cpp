@@ -61,6 +61,10 @@ QJsonObject MemoryRow::toJson() const
     o.insert(QStringLiteral("tags"), t);
     o.insert(QStringLiteral("created"), created);
     o.insert(QStringLiteral("updated"), updated);
+    if (scope != QStringLiteral("global"))
+        o.insert(QStringLiteral("scope"), scope);
+    if (!entityRef.isEmpty())
+        o.insert(QStringLiteral("entityRef"), entityRef);
     if (score != 0.0)
         o.insert(QStringLiteral("score"), score);
     return o;
@@ -165,6 +169,17 @@ bool MemoryStore::exec(const QString &sql, QString *err)
     return true;
 }
 
+bool MemoryStore::hasColumn(const QString &table, const QString &column)
+{
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral("PRAGMA table_info(%1)").arg(table)))
+        return false;
+    while (q.next())
+        if (q.value(1).toString().compare(column, Qt::CaseInsensitive) == 0)
+            return true;
+    return false;
+}
+
 bool MemoryStore::migrate()
 {
     if (!exec(QStringLiteral(
@@ -175,6 +190,13 @@ bool MemoryStore::migrate()
             " created INTEGER,"
             " updated INTEGER)")))
         return false;
+
+    // Additive scope columns (agent-scoped memory). Existing rows default to
+    // scope='global', entity_ref='' — untouched and recalled exactly as before.
+    if (!hasColumn(QStringLiteral("memories"), QStringLiteral("scope")))
+        exec(QStringLiteral("ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'"));
+    if (!hasColumn(QStringLiteral("memories"), QStringLiteral("entity_ref")))
+        exec(QStringLiteral("ALTER TABLE memories ADD COLUMN entity_ref TEXT"));
 
     // FTS5 virtual table mirroring text+tags. We keep it in sync manually (no
     // external-content table) so the schema is robust across FTS5 builds.
@@ -224,7 +246,8 @@ bool MemoryStore::migrate()
     return true;
 }
 
-QString MemoryStore::add(const QString &text, const QStringList &tags, const QString &id)
+QString MemoryStore::add(const QString &text, const QStringList &tags, const QString &id,
+                         const QString &scope, const QString &entityRef)
 {
     if (text.trimmed().isEmpty()) {
         m_lastError = QStringLiteral("memory text is empty");
@@ -238,14 +261,17 @@ QString MemoryStore::add(const QString &text, const QStringList &tags, const QSt
     {
         QSqlQuery q(m_db);
         q.prepare(QStringLiteral(
-            "INSERT INTO memories (id,text,tags,created,updated) VALUES (?,?,?,?,?)"
+            "INSERT INTO memories (id,text,tags,created,updated,scope,entity_ref)"
+            " VALUES (?,?,?,?,?,?,?)"
             " ON CONFLICT(id) DO UPDATE SET text=excluded.text, tags=excluded.tags,"
-            " updated=excluded.updated"));
+            " updated=excluded.updated, scope=excluded.scope, entity_ref=excluded.entity_ref"));
         q.addBindValue(memId);
         q.addBindValue(text);
         q.addBindValue(tagStr);
         q.addBindValue(now);
         q.addBindValue(now);
+        q.addBindValue(scope.isEmpty() ? QStringLiteral("global") : scope);
+        q.addBindValue(entityRef);
         if (!q.exec()) {
             m_lastError = q.lastError().text();
             return QString();
@@ -302,7 +328,7 @@ std::optional<MemoryRow> MemoryStore::get(const QString &id)
 {
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "SELECT id,text,tags,created,updated FROM memories WHERE id=?"));
+        "SELECT id,text,tags,created,updated,scope,entity_ref FROM memories WHERE id=?"));
     q.addBindValue(id);
     if (!q.exec()) {
         m_lastError = q.lastError().text();
@@ -316,6 +342,8 @@ std::optional<MemoryRow> MemoryStore::get(const QString &id)
     r.tags = tagsFromStorage(q.value(2).toString());
     r.created = q.value(3).toLongLong();
     r.updated = q.value(4).toLongLong();
+    r.scope = q.value(5).toString();
+    r.entityRef = q.value(6).toString();
     return r;
 }
 
@@ -643,7 +671,7 @@ QVector<MemoryRow> MemoryStore::list(int limit)
     QVector<MemoryRow> out;
     QSqlQuery q(m_db);
     QString sql = QStringLiteral(
-        "SELECT id,text,tags,created,updated FROM memories ORDER BY updated DESC");
+        "SELECT id,text,tags,created,updated,scope,entity_ref FROM memories ORDER BY updated DESC");
     if (limit > 0)
         sql += QStringLiteral(" LIMIT ") + QString::number(limit);
     if (!q.exec(sql)) {
@@ -657,29 +685,35 @@ QVector<MemoryRow> MemoryStore::list(int limit)
         r.tags = tagsFromStorage(q.value(2).toString());
         r.created = q.value(3).toLongLong();
         r.updated = q.value(4).toLongLong();
+        r.scope = q.value(5).toString();
+        r.entityRef = q.value(6).toString();
         out.push_back(r);
     }
     return out;
 }
 
-QVector<MemoryRow> MemoryStore::search(const QString &query, int limit)
+QVector<MemoryRow> MemoryStore::search(const QString &query, int limit, const QString &entityRef)
 {
     QVector<MemoryRow> out;
     if (limit <= 0)
         limit = 20;
+    const bool scoped = !entityRef.isEmpty();
 
     const QString fts = toFtsQuery(query);
     if (!fts.isEmpty()) {
-        // FTS5 ranked match: bm25() returns a LOWER-is-better cost; we expose a
-        // positive score where higher = more relevant.
-        QSqlQuery q(m_db);
-        q.prepare(QStringLiteral(
-            "SELECT m.id,m.text,m.tags,m.created,m.updated,"
+        QString sql = QStringLiteral(
+            "SELECT m.id,m.text,m.tags,m.created,m.updated,m.scope,m.entity_ref,"
             "       bm25(memories_fts) AS rank"
             " FROM memories_fts f JOIN memories m ON m.id=f.id"
-            " WHERE memories_fts MATCH ?"
-            " ORDER BY rank ASC LIMIT ?"));
+            " WHERE memories_fts MATCH ?");
+        if (scoped)
+            sql += QStringLiteral(" AND m.entity_ref = ?");
+        sql += QStringLiteral(" ORDER BY rank ASC LIMIT ?");
+        QSqlQuery q(m_db);
+        q.prepare(sql);
         q.addBindValue(fts);
+        if (scoped)
+            q.addBindValue(entityRef);
         q.addBindValue(limit);
         if (q.exec()) {
             while (q.next()) {
@@ -689,7 +723,9 @@ QVector<MemoryRow> MemoryStore::search(const QString &query, int limit)
                 r.tags = tagsFromStorage(q.value(2).toString());
                 r.created = q.value(3).toLongLong();
                 r.updated = q.value(4).toLongLong();
-                const double rank = q.value(5).toDouble();
+                r.scope = q.value(5).toString();
+                r.entityRef = q.value(6).toString();
+                const double rank = q.value(7).toDouble();
                 r.score = 1.0 / (1.0 + (rank < 0 ? -rank : rank));
                 out.push_back(r);
             }
@@ -700,15 +736,21 @@ QVector<MemoryRow> MemoryStore::search(const QString &query, int limit)
         }
     }
 
-    // Fallback: LIKE scan over text+tags (covers FTS-tokenless queries and any
-    // FTS error). Recency-ordered.
+    // Fallback: LIKE scan over text+tags (covers FTS-tokenless queries, empty
+    // query, and any FTS error). Recency-ordered.
+    QString sql = QStringLiteral(
+        "SELECT id,text,tags,created,updated,scope,entity_ref FROM memories"
+        " WHERE (text LIKE ? OR tags LIKE ?)");
+    if (scoped)
+        sql += QStringLiteral(" AND entity_ref = ?");
+    sql += QStringLiteral(" ORDER BY updated DESC LIMIT ?");
     QSqlQuery q(m_db);
-    q.prepare(QStringLiteral(
-        "SELECT id,text,tags,created,updated FROM memories"
-        " WHERE text LIKE ? OR tags LIKE ? ORDER BY updated DESC LIMIT ?"));
+    q.prepare(sql);
     const QString like = QStringLiteral("%") + query.trimmed() + QStringLiteral("%");
     q.addBindValue(like);
     q.addBindValue(like);
+    if (scoped)
+        q.addBindValue(entityRef);
     q.addBindValue(limit);
     if (!q.exec()) {
         m_lastError = q.lastError().text();
@@ -721,6 +763,8 @@ QVector<MemoryRow> MemoryStore::search(const QString &query, int limit)
         r.tags = tagsFromStorage(q.value(2).toString());
         r.created = q.value(3).toLongLong();
         r.updated = q.value(4).toLongLong();
+        r.scope = q.value(5).toString();
+        r.entityRef = q.value(6).toString();
         r.score = 0.5; // unranked match
         out.push_back(r);
     }
