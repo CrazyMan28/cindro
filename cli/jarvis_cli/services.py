@@ -129,7 +129,7 @@ def cmd_stop() -> int:
 # --- web dashboard -------------------------------------------------------------
 
 def _web_dir() -> Path | None:
-    """Locate the no-build web dashboard (repo checkout or installed share)."""
+    """Locate the Bun+Vite web dashboard (repo checkout or installed share)."""
     override = os.environ.get("JARVIS_WEB_DIR")
     candidates = [Path(override)] if override else []
     candidates += [
@@ -142,7 +142,7 @@ def _web_dir() -> Path | None:
         if up:
             candidates.append(up / "web")
     for c in candidates:
-        if c and (c / "serve.py").is_file():
+        if c and (c / "server.ts").is_file():
             return c
     return None
 
@@ -176,21 +176,47 @@ def cmd_web(action: str) -> int:
         console.print("[red]web/ not found[/red] — run from a Jarvis checkout or "
                       "set JARVIS_WEB_DIR")
         return 1
-    # serve.py's own default (8799) collides with the legacy phone server on
-    # some installs — always pass an explicit port.
+    bun = shutil.which("bun")
+    if bun is None:
+        console.print("[red]bun not found on PATH[/red] — install it from https://bun.sh "
+                      "to run the web dashboard")
+        return 1
+
+    if not (web / "node_modules").is_dir():
+        console.print("[dim]installing web dashboard dependencies…[/dim]")
+        install = _run([bun, "install"], cwd=str(web))
+        if install.returncode != 0:
+            console.print(f"[red]bun install failed[/red]\n{install.stderr}")
+            return 1
+
+    console.print("[dim]building web dashboard…[/dim]")
+    build = _run([bun, "run", "build"], cwd=str(web))
+    if build.returncode != 0:
+        console.print(f"[red]web dashboard build failed[/red]\n{build.stderr}")
+        return 1
+
+    # server.ts's own default (8799 was serve.py's) collides with the legacy
+    # phone server on some installs — always pass an explicit port.
     port = os.environ.get("JARVIS_WEB_PORT", "8788")
     proc = subprocess.Popen(
-        [sys.executable, str(web / "serve.py"), "--port", port],
+        [bun, "server.ts", "--port", port],
         cwd=str(web), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         stdin=subprocess.DEVNULL, start_new_session=not IS_WIN,
     )
     time.sleep(0.8)
     if proc.poll() is not None:
         console.print("[red]web dashboard exited immediately[/red] — "
-                      f"run `python3 {web / 'serve.py'}` to see why")
+                      f"run `bun {web / 'server.ts'}` to see why")
         return 1
     pidfile.parent.mkdir(parents=True, exist_ok=True)
     pidfile.write_text(str(proc.pid))
     console.print(f"[green]✔[/green] web dashboard on http://127.0.0.1:{port} "
                   f"(pid {proc.pid}) — stop with: jarvis web stop")
+
+    token = config.control_token()
+    if token:
+        console.print(f"[cyan]control token:[/cyan] {token}")
+    else:
+        console.print("[yellow]no control token found[/yellow] — pair from the desktop app "
+                      "instead (Settings → Browser Extension → Generate pairing code)")
     return 0

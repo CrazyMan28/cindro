@@ -21,6 +21,13 @@ for the two genuinely new subsystems (self-edit layout, slash commands).
 cli/Textual), `rich`/`textual` for terminal UI, `qrcode` (pure-Python, new
 cli dependency) for ASCII QR.
 
+> **2026-07 update:** this plan predates the web dashboard's GUI-parity pass.
+> `web/` (Bun+Vite+SolidJS) now separately reaches the same 18-page+Browser
+> set described here — see `web/README.md`'s "Known differences from the
+> desktop GUI" section for its browser-specific trade-offs (no filesystem
+> access means the widget saved-library and host CPU/RAM/NET telemetry work
+> differently there than on TUI/GUI). This doc's scope remains the TUI.
+
 **Deviation from the approved spec (grounded during research, noted here
 per brainstorming's "follow existing patterns" guidance):** the spec said
 slash commands live in `~/.config/jarvis/commands/*.yaml`. Research found

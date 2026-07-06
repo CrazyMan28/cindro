@@ -20,6 +20,7 @@ jarvice_*.mp3
 
 # --- Node / web ---
 node_modules/
+web/dist/
 
 # --- Phone subsystem (vendored agent-phone server): build + runtime state ---
 phone/server/dist/
