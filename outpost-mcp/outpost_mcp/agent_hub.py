@@ -80,14 +80,23 @@ class AgentHub:
     async def screenshot(self, machine: str) -> dict[str, Any]:
         m = self._registry.get(machine)
         if not m:
-            return {"ok": False, "error": "unknown_machine"}
+            return {
+                "ok": False, "image_base64": "", "width": 0, "height": 0,
+                "captured_at": 0, "error": "unknown_machine",
+            }
         conn = self._conns.get(m["id"])
         if not conn:
-            return {"ok": False, "error": "machine_offline"}
+            return {
+                "ok": False, "image_base64": "", "width": 0, "height": 0,
+                "captured_at": 0, "error": "machine_offline",
+            }
         try:
             res = await conn.request({"type": "screenshot"}, timeout=45)
         except asyncio.TimeoutError:
-            return {"ok": False, "error": "agent_timeout"}
+            return {
+                "ok": False, "image_base64": "", "width": 0, "height": 0,
+                "captured_at": 0, "error": "agent_timeout",
+            }
         self._registry.set_status(m["id"], "online")
         return {
             "ok": bool(res.get("ok")),
