@@ -182,6 +182,67 @@ int main(int argc, char **argv)
               "create rejects an unparseable expression");
     }
 
+    // --- webhook trigger + workflow columns -------------------------------
+    {
+        const CronSpec w = CronSpec::parse(QStringLiteral("webhook"));
+        check(w.valid() && w.kind == CronSpec::Kind::Webhook, "'webhook' parses as Webhook kind");
+        check(!w.nextAfter(QDateTime::currentDateTime()).isValid(),
+              "webhook nextAfter is invalid (never timer-scheduled)");
+    }
+    {
+        QTemporaryDir tmp;
+        const QString dbPath = tmp.path() + QStringLiteral("/wf_test.db");
+        Scheduler sched;
+        check(sched.open(dbPath, QStringLiteral("wf-test-conn")), "workflow: scheduler open");
+
+        int fireCount = 0;
+        sched.setFireCallback([&](const ScheduleRow &) -> QString {
+            ++fireCount;
+            return QStringLiteral("sess_wf");
+        });
+
+        // A cron workflow carrying target + report thread.
+        const QString cid = sched.create(
+            QStringLiteral("nightly-runner-check"), QStringLiteral("0 2 * * *"),
+            QStringLiteral("check runner"), QStringLiteral("api"),
+            QStringLiteral("mistral-large-latest"), QString(), true,
+            QStringLiteral("ci-runner-104"), QStringLiteral("Workflows"), QString());
+        check(!cid.isEmpty(), "workflow: cron workflow created");
+        auto crow = sched.get(cid);
+        check(crow && crow->targetRef == QStringLiteral("ci-runner-104"), "workflow: target persisted");
+        check(crow && crow->reportThread == QStringLiteral("Workflows"), "workflow: report thread persisted");
+        check(crow && crow->nextRun > 0, "workflow: cron workflow has a next_run");
+        {
+            const QJsonObject j = crow->toJson();
+            check(j.value(QStringLiteral("target")).toString() == QStringLiteral("ci-runner-104"),
+                  "workflow: toJson emits target");
+            check(j.value(QStringLiteral("report_thread")).toString() == QStringLiteral("Workflows"),
+                  "workflow: toJson emits report_thread");
+            check(!j.contains(QStringLiteral("webhook_token")) && !j.contains(QStringLiteral("token")),
+                  "workflow: toJson NEVER emits the webhook token");
+        }
+
+        // A webhook workflow: valid, stored, but never fires on a tick.
+        const QString wid = sched.create(
+            QStringLiteral("deploy-hook"), QStringLiteral("webhook"),
+            QStringLiteral("handle deploy"), QString(), QString(), QString(), true,
+            QString(), QStringLiteral("Workflows"), QStringLiteral("secret-token-xyz"));
+        check(!wid.isEmpty(), "workflow: webhook workflow created (webhook is a valid trigger)");
+        auto wrow = sched.get(wid);
+        check(wrow && wrow->nextRun == 0, "workflow: webhook workflow is never timer-scheduled");
+        check(wrow && wrow->webhookToken == QStringLiteral("secret-token-xyz"),
+              "workflow: webhook token stored");
+
+        // A far-future tick fires neither (cron is 02:00; webhook never).
+        const QDateTime soon = QDateTime::currentDateTime().addSecs(120);
+        sched.tick(soon);
+        check(fireCount == 0, "workflow: neither the 02:00 cron nor the webhook fires on a near-term tick");
+
+        // runNow fires the webhook workflow through the normal fire path.
+        const auto sid = sched.runNow(wid);
+        check(sid.has_value() && fireCount == 1, "workflow: runNow fires the webhook workflow");
+    }
+
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;
