@@ -43,7 +43,7 @@ Item {
         { key: "replay",    label: "REPLAY",    section: "MIND" },
         { key: "mcp",       label: "MCP",       section: "SYSTEM" },
         { key: "plugins",   label: "PLUGINS",   section: "SYSTEM" },
-        { key: "ssh",       label: "SSH",       section: "SYSTEM" },
+        { key: "outpost",   label: "OUTPOST",   section: "SYSTEM" },
         { key: "phone",     label: "PHONE",     section: "SYSTEM" },
         { key: "settings",  label: "SETTINGS",  section: "SYSTEM" }
     ]
@@ -456,12 +456,15 @@ Item {
                     ctx.beginPath(); ctx.arc(4, 13.5, 2, 0, Math.PI*2); ctx.stroke()
                     ctx.beginPath(); ctx.arc(14, 13.5, 2, 0, Math.PI*2); ctx.stroke()
                     break
-                case "ssh":
-                    // terminal: window with a prompt chevron + cursor
-                    ctx.strokeRect(2, 3, 14, 12)
-                    ctx.beginPath()
-                    ctx.moveTo(5, 7.5); ctx.lineTo(7.5, 9.5); ctx.lineTo(5, 11.5); ctx.stroke()
-                    ctx.beginPath(); ctx.moveTo(9, 11.5); ctx.lineTo(12.5, 11.5); ctx.stroke()
+                case "outpost":
+                    // mast + base
+                    ctx.beginPath(); ctx.moveTo(9, 6); ctx.lineTo(9, 15.5); ctx.stroke()
+                    ctx.beginPath(); ctx.moveTo(6, 15.5); ctx.lineTo(12, 15.5); ctx.stroke()
+                    // beacon node
+                    ctx.beginPath(); ctx.arc(9, 5, 1.6, 0, Math.PI*2); ctx.stroke()
+                    // signal arcs
+                    ctx.beginPath(); ctx.arc(9, 5, 3.8, Math.PI*1.15, Math.PI*1.85); ctx.stroke()
+                    ctx.beginPath(); ctx.arc(9, 5, 6.2, Math.PI*1.15, Math.PI*1.85); ctx.stroke()
                     break
                 case "sessions":
                     ctx.strokeRect(2.5, 2.5, 13, 3.5)

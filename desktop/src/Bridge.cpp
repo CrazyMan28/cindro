@@ -1228,44 +1228,60 @@ void Bridge::scheduleRunNow(const QString &id)
     request(QStringLiteral("schedule.run_now"), params);
 }
 
-// ---- SSH allow-list + gated exec -------------------------------------------
+// ---- Outpost: paired remote machines + gated exec/screenshot ---------------
 
-void Bridge::sshAllowList()
+void Bridge::outpostList()
 {
-    request(QStringLiteral("ssh.allow_list"), {});
+    request(QStringLiteral("outpost.list"), {});
 }
 
-void Bridge::sshAllowAdd(const QString &host)
+void Bridge::outpostPairStart()
 {
-    const QString h = host.trimmed();
-    if (h.isEmpty())
+    request(QStringLiteral("outpost.pair_start"), {});
+}
+
+void Bridge::outpostPairStatus(const QString &bootstrapId)
+{
+    const QString id = bootstrapId.trimmed();
+    if (id.isEmpty())
         return;
     QVariantMap params;
-    params.insert(QStringLiteral("host"), h);
-    request(QStringLiteral("ssh.allow_add"), params);
+    params.insert(QStringLiteral("bootstrap_id"), id);
+    request(QStringLiteral("outpost.pair_status"), params);
 }
 
-void Bridge::sshAllowRemove(const QString &host)
+void Bridge::outpostExec(const QString &machine, const QString &cmd)
 {
-    const QString h = host.trimmed();
-    if (h.isEmpty())
-        return;
-    QVariantMap params;
-    params.insert(QStringLiteral("host"), h);
-    request(QStringLiteral("ssh.allow_remove"), params);
-}
-
-void Bridge::sshExec(const QString &host, const QString &cmd)
-{
-    const QString h = host.trimmed();
+    const QString m = machine.trimmed();
     const QString c = cmd.trimmed();
-    if (h.isEmpty() || c.isEmpty())
+    if (m.isEmpty() || c.isEmpty())
         return;
     QVariantMap params;
-    params.insert(QStringLiteral("host"), h);
+    params.insert(QStringLiteral("machine"), m);
     params.insert(QStringLiteral("cmd"), c);
-    // Tag the request with the host so the response can label the output line.
-    request(QStringLiteral("ssh.exec"), params, h);
+    // Tag the request with the machine so the response can label the output line.
+    request(QStringLiteral("outpost.exec"), params, m);
+}
+
+void Bridge::outpostScreenshot(const QString &machine)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    // Tag the request with the machine so the response can label the image.
+    request(QStringLiteral("outpost.screenshot"), params, m);
+}
+
+void Bridge::outpostRevoke(const QString &machine)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    request(QStringLiteral("outpost.revoke"), params, m);
 }
 
 // ---- Audit log -------------------------------------------------------------
@@ -3640,7 +3656,7 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                 emit todayDigest(QString());
             return;
         }
-        // Schedules / SSH / audit / diff-review land daemon-side later (these are
+        // Schedules / audit / diff-review land daemon-side later (these are
         // owned by other agents). Until then degrade to clean empty states /
         // best-effort results instead of an error toast.
         if (code == QStringLiteral("unknown_method")) {
@@ -3649,16 +3665,6 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                 return;
             }
             if (method.startsWith(QStringLiteral("schedule.")))
-                return;
-            if (method == QStringLiteral("ssh.allow_list")) {
-                emit sshHostsListed(QStringList());
-                return;
-            }
-            if (method == QStringLiteral("ssh.exec")) {
-                emit sshExecResult(ctx, false, QStringLiteral("ssh.exec is not available yet"));
-                return;
-            }
-            if (method.startsWith(QStringLiteral("ssh.")))
                 return;
             if (method == QStringLiteral("audit.list")) {
                 emit auditListed(QVariantList());
@@ -3684,10 +3690,16 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             emit phoneHttpResult(ctx, r);
             return;
         }
-        // SSH exec can also fail with the daemon's allow-list / tier errors; route
-        // those to the console rather than a toast so the user sees the reason.
-        if (method == QStringLiteral("ssh.exec")) {
-            emit sshExecResult(ctx, false, msg.isEmpty() ? code : (code + QStringLiteral(": ") + msg));
+        // Outpost exec/screenshot can fail with the daemon's pairing / gating
+        // tier errors; route those to the console/card rather than a toast so
+        // the user sees the reason.
+        if (method == QStringLiteral("outpost.exec")) {
+            emit outpostExecResult(ctx, false, msg.isEmpty() ? code : (code + QStringLiteral(": ") + msg));
+            return;
+        }
+        if (method == QStringLiteral("outpost.screenshot")) {
+            emit outpostScreenshotResult(ctx, false, QString(),
+                                         msg.isEmpty() ? code : (code + QStringLiteral(": ") + msg));
             return;
         }
         // Voice STT failed (no key / network): clear the indicator quietly-ish.
@@ -4023,19 +4035,28 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                || method == QStringLiteral("schedule.run_now")) {
         emit schedulesChanged();
         scheduleList();   // refresh after a mutation
-    } else if (method == QStringLiteral("ssh.allow_list")) {
-        QStringList hosts;
-        for (const QVariant &v : result.value(QStringLiteral("hosts")).toList())
-            hosts << v.toString();
-        emit sshHostsListed(hosts);
-    } else if (method == QStringLiteral("ssh.allow_add")
-               || method == QStringLiteral("ssh.allow_remove")) {
-        emit sshHostsChanged();
-        sshAllowList();   // refresh after a mutation
-    } else if (method == QStringLiteral("ssh.exec")) {
-        const bool sok = result.contains(QStringLiteral("ok"))
+    } else if (method == QStringLiteral("outpost.list")) {
+        emit outpostMachinesListed(result.value(QStringLiteral("machines")).toList());
+    } else if (method == QStringLiteral("outpost.pair_start")) {
+        emit outpostPairStarted(result);
+    } else if (method == QStringLiteral("outpost.pair_status")) {
+        emit outpostPairStatusResult(result);
+    } else if (method == QStringLiteral("outpost.exec")) {
+        const bool ook = result.contains(QStringLiteral("ok"))
                              ? result.value(QStringLiteral("ok")).toBool() : true;
-        emit sshExecResult(ctx, sok, result.value(QStringLiteral("output")).toString());
+        emit outpostExecResult(ctx, ook, result.value(QStringLiteral("output")).toString());
+    } else if (method == QStringLiteral("outpost.screenshot")) {
+        const bool ook = result.contains(QStringLiteral("ok"))
+                             ? result.value(QStringLiteral("ok")).toBool() : true;
+        emit outpostScreenshotResult(ctx, ook,
+                                     result.value(QStringLiteral("image_base64")).toString(),
+                                     result.value(QStringLiteral("error")).toString());
+    } else if (method == QStringLiteral("outpost.revoke")) {
+        const bool ook = result.contains(QStringLiteral("ok"))
+                             ? result.value(QStringLiteral("ok")).toBool() : true;
+        emit outpostRevoked(ctx, ook);
+        if (ook)
+            outpostList();   // refresh the list after a successful revoke
     } else if (method == QStringLiteral("audit.list")) {
         emit auditListed(result.value(QStringLiteral("entries")).toList());
     } else if (method == QStringLiteral("diff.stage")
