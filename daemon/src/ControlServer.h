@@ -458,6 +458,18 @@ private:
     Response handleDiffRevert(const Request &req);
     Response handleDiffCommit(const Request &req);
     Response handleDiffOpenPr(const Request &req);
+    // Outpost: remote-machine pairing + gated exec/screenshot proxied to the
+    // outpost-mcp REST surface (:8798) over loopback.
+    Response handleOutpostList(const Request &req);
+    Response handleOutpostPairStart(const Request &req);
+    Response handleOutpostPairStatus(const Request &req);
+    Response handleOutpostExec(const Request &req, bool remote);
+    Response handleOutpostScreenshot(const Request &req);
+    Response handleOutpostRevoke(const Request &req);
+    // Loopback call to outpost-mcp; returns its parsed JSON body. Sets
+    // *reachable=false on transport failure.
+    QJsonObject outpostHttp(const QString &httpMethod, const QString &path,
+                            const QJsonObject &body, bool *reachable);
     QString diffWorkdirFor(const QString &sessionId) const;
     // Wave 8: audit log surface.
     Response handleAuditList(const Request &req);

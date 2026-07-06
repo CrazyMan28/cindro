@@ -5880,6 +5880,7 @@ bool ControlServer::isOpsMethod(const QString &method)
            method.startsWith(QStringLiteral("tui.layout.")) ||
            method.startsWith(QStringLiteral("command.")) ||
            method.startsWith(QStringLiteral("ssh.")) ||
+           method.startsWith(QStringLiteral("outpost.")) ||
            method.startsWith(QStringLiteral("diff.")) ||
            method == QStringLiteral("audit.list");
 }
@@ -6066,6 +6067,12 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("ssh.allow_add"))        return handleSshAllowAdd(req);
     if (m == QStringLiteral("ssh.allow_remove"))     return handleSshAllowRemove(req);
     if (m == QStringLiteral("ssh.exec"))             return handleSshExec(req, remote);
+    if (m == QStringLiteral("outpost.list"))         return handleOutpostList(req);
+    if (m == QStringLiteral("outpost.pair_start"))   return handleOutpostPairStart(req);
+    if (m == QStringLiteral("outpost.pair_status"))  return handleOutpostPairStatus(req);
+    if (m == QStringLiteral("outpost.exec"))         return handleOutpostExec(req, remote);
+    if (m == QStringLiteral("outpost.screenshot"))   return handleOutpostScreenshot(req);
+    if (m == QStringLiteral("outpost.revoke"))       return handleOutpostRevoke(req);
     if (m == QStringLiteral("audit.list"))           return handleAuditList(req);
     return Response::failure(req.id, QStringLiteral("unknown_method"),
                              QStringLiteral("unknown ops method: ") + m);
@@ -6617,6 +6624,159 @@ Response ControlServer::handleSshExec(const Request &req, bool remote)
     if (!r.error.isEmpty())
         result.insert(QStringLiteral("error"), r.error);
     return Response::success(req.id, result);
+}
+
+QJsonObject ControlServer::outpostHttp(const QString &httpMethod, const QString &path,
+                                       const QJsonObject &body, bool *reachable)
+{
+    // outpost-mcp inbound bearer lives beside ours (~/.config/jarvis/outpost_mcp_token).
+    QString token;
+    {
+        QFile f(QDir::homePath() + QStringLiteral("/.config/jarvis/outpost_mcp_token"));
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            token = QString::fromUtf8(f.readAll()).trimmed();
+            f.close();
+        }
+    }
+    QNetworkAccessManager nam;
+    QNetworkRequest rq(QUrl(QStringLiteral("http://127.0.0.1:8798%1").arg(path)));
+    rq.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    if (!token.isEmpty())
+        rq.setRawHeader("Authorization", QByteArray("Bearer ") + token.toUtf8());
+    const QByteArray data = QJsonDocument(body).toJson(QJsonDocument::Compact);
+    QNetworkReply *reply = (httpMethod == QStringLiteral("GET"))
+        ? nam.get(rq) : nam.post(rq, data);
+
+    QEventLoop loop;
+    QTimer::singleShot(60000, &loop, &QEventLoop::quit);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    if (!reply->isFinished()) {
+        reply->abort();
+        reply->deleteLater();
+        if (reachable) *reachable = false;
+        return {};
+    }
+    const QNetworkReply::NetworkError nerr = reply->error();
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray resp = reply->readAll();
+    reply->deleteLater();
+    if (status == 0 && nerr != QNetworkReply::NoError) {
+        if (reachable) *reachable = false;
+        return {};
+    }
+    if (reachable) *reachable = true;
+    const QJsonDocument d = QJsonDocument::fromJson(resp);
+    return d.isObject() ? d.object() : QJsonObject();
+}
+
+Response ControlServer::handleOutpostList(const Request &req)
+{
+    bool ok = false;
+    const QJsonObject r = outpostHttp(QStringLiteral("GET"),
+                                      QStringLiteral("/api/machines"), {}, &ok);
+    m_audit.record(QStringLiteral("outpost.list"), ok, QStringLiteral("low"),
+                   QStringLiteral("listed outpost machines"));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:8798) unreachable"));
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleOutpostPairStart(const Request &req)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("name"), req.params.value(QStringLiteral("name")).toString());
+    body.insert(QStringLiteral("os_hint"), req.params.value(QStringLiteral("os_hint")).toString());
+    bool ok = false;
+    const QJsonObject r = outpostHttp(QStringLiteral("POST"),
+                                      QStringLiteral("/api/pair/start"), body, &ok);
+    m_audit.record(QStringLiteral("outpost.pair_start"), ok, QStringLiteral("medium"),
+                   QStringLiteral("started outpost pairing"));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:8798) unreachable"));
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleOutpostPairStatus(const Request &req)
+{
+    const QString bid = req.params.value(QStringLiteral("bootstrap_id")).toString();
+    bool ok = false;
+    const QJsonObject r = outpostHttp(QStringLiteral("GET"),
+                                      QStringLiteral("/api/pair/status/%1").arg(bid), {}, &ok);
+    m_audit.record(QStringLiteral("outpost.pair_status"), ok, QStringLiteral("low"),
+                   QStringLiteral("polled outpost pairing"));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:8798) unreachable"));
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleOutpostExec(const Request &req, bool remote)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    const QString cmd = req.params.value(QStringLiteral("cmd")).toString();
+    if (machine.trimmed().isEmpty() || cmd.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine and cmd are required"));
+    QJsonObject body;
+    body.insert(QStringLiteral("machine"), machine);
+    body.insert(QStringLiteral("cmd"), cmd);
+    if (req.params.contains(QStringLiteral("timeout")))
+        body.insert(QStringLiteral("timeout"), req.params.value(QStringLiteral("timeout")).toDouble());
+    if (req.params.contains(QStringLiteral("shell")))
+        body.insert(QStringLiteral("shell"), req.params.value(QStringLiteral("shell")).toString());
+    bool ok = false;
+    const QJsonObject r = outpostHttp(QStringLiteral("POST"),
+                                      QStringLiteral("/api/exec"), body, &ok);
+    m_audit.record(QStringLiteral("outpost.exec"), ok && r.value(QStringLiteral("ok")).toBool(),
+                   QStringLiteral("high"),
+                   QStringLiteral("outpost %1: %2").arg(machine, cmd.left(80)),
+                   QString(), remote);
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:8798) unreachable"));
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleOutpostScreenshot(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    if (machine.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine is required"));
+    QJsonObject body;
+    body.insert(QStringLiteral("machine"), machine);
+    bool ok = false;
+    const QJsonObject r = outpostHttp(QStringLiteral("POST"),
+                                      QStringLiteral("/api/screenshot"), body, &ok);
+    m_audit.record(QStringLiteral("outpost.screenshot"),
+                   ok && r.value(QStringLiteral("ok")).toBool(), QStringLiteral("medium"),
+                   QStringLiteral("outpost screenshot %1").arg(machine));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:8798) unreachable"));
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleOutpostRevoke(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    if (machine.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine is required"));
+    QJsonObject body;
+    body.insert(QStringLiteral("machine"), machine);
+    bool ok = false;
+    const QJsonObject r = outpostHttp(QStringLiteral("POST"),
+                                      QStringLiteral("/api/revoke"), body, &ok);
+    m_audit.record(QStringLiteral("outpost.revoke"), ok, QStringLiteral("low"),
+                   QStringLiteral("revoked outpost machine %1").arg(machine));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:8798) unreachable"));
+    return Response::success(req.id, r);
 }
 
 Response ControlServer::handleAuditList(const Request &req)
