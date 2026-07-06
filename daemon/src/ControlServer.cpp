@@ -160,8 +160,6 @@ bool ControlServer::start()
         connect(m_queueTimer, &QTimer::timeout, this, &ControlServer::tickWorkQueue);
         m_queueTimer->start();
     }
-    if (!m_sshAllow.load())
-        qWarning("jarvisd: ssh allow-list load: %s", qPrintable(m_sshAllow.lastError()));
     if (!m_scheduler.open()) {
         qWarning("jarvisd: scheduler unavailable: %s", qPrintable(m_scheduler.lastError()));
     } else {
@@ -4798,8 +4796,8 @@ void ControlServer::seedInternalDocsSkill()
         "**Permissions** — an ask-before-risky policy (cautious / balanced / autonomous) "
         "the user sets in Settings → Permissions; you call ask_user before actions "
         "above the chosen risk line.\n"
-        "**SSH** — gated remote command execution on allow-listed hosts (the user manages "
-        "the allow-list in the app).\n"
+        "**Outpost** — pair a remote Windows/Linux/macOS machine (one-line install) then run "
+        "gated shell commands + screenshots on it by name.\n"
         "**Connectors** — a Google connectors framework (Gmail / Calendar / Drive etc.) "
         "the user can enable. (docs/JARVIS_GOOGLE_CONNECTORS.md)\n"
         "**Security / unlock** — optional 2FA: open Jarvis by approving on the paired "
@@ -5879,7 +5877,6 @@ bool ControlServer::isOpsMethod(const QString &method)
     return method.startsWith(QStringLiteral("schedule.")) ||
            method.startsWith(QStringLiteral("tui.layout.")) ||
            method.startsWith(QStringLiteral("command.")) ||
-           method.startsWith(QStringLiteral("ssh.")) ||
            method.startsWith(QStringLiteral("outpost.")) ||
            method.startsWith(QStringLiteral("diff.")) ||
            method == QStringLiteral("audit.list");
@@ -6063,10 +6060,6 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("diff.revert"))          return handleDiffRevert(req);
     if (m == QStringLiteral("diff.commit"))          return handleDiffCommit(req);
     if (m == QStringLiteral("diff.open_pr"))         return handleDiffOpenPr(req);
-    if (m == QStringLiteral("ssh.allow_list"))       return handleSshAllowList(req);
-    if (m == QStringLiteral("ssh.allow_add"))        return handleSshAllowAdd(req);
-    if (m == QStringLiteral("ssh.allow_remove"))     return handleSshAllowRemove(req);
-    if (m == QStringLiteral("ssh.exec"))             return handleSshExec(req, remote);
     if (m == QStringLiteral("outpost.list"))         return handleOutpostList(req);
     if (m == QStringLiteral("outpost.pair_start"))   return handleOutpostPairStart(req);
     if (m == QStringLiteral("outpost.pair_status"))  return handleOutpostPairStatus(req);
@@ -6205,7 +6198,7 @@ Response ControlServer::handleScheduleRunNow(const Request &req)
 // quietly degraded. Git-level failures come back as success{ok:false,message}
 // (not Response::failure) so the clients render git's own text inline instead
 // of a generic error path. Blocking QProcess in the handler follows the
-// ssh.exec precedent (SshAllowList::exec).
+// same synchronous-subprocess precedent as the outpost.exec proxy.
 
 namespace {
 Response diffResult(const Request &req, const jarvis::GitResult &r,
@@ -6561,68 +6554,6 @@ Response ControlServer::handleCommandInvoke(const Request &req)
         result.insert(QStringLiteral("exit_code"), r.exitCode);
         result.insert(QStringLiteral("output"), r.output);
     }
-    return Response::success(req.id, result);
-}
-
-Response ControlServer::handleSshAllowList(const Request &req)
-{
-    return Response::success(req.id, m_sshAllow.toJson());
-}
-
-Response ControlServer::handleSshAllowAdd(const Request &req)
-{
-    const QString host = req.params.value(QStringLiteral("host")).toString();
-    if (host.trimmed().isEmpty())
-        return Response::failure(req.id, QStringLiteral("bad_request"),
-                                 QStringLiteral("host is required"));
-    const bool changed = m_sshAllow.add(host);
-    m_audit.record(QStringLiteral("ssh.allow_add"), true, QStringLiteral("medium"),
-                   QStringLiteral("allow-listed ssh host ") + host);
-    QJsonObject result = m_sshAllow.toJson();
-    result.insert(QStringLiteral("added"), changed);
-    return Response::success(req.id, result);
-}
-
-Response ControlServer::handleSshAllowRemove(const Request &req)
-{
-    const QString host = req.params.value(QStringLiteral("host")).toString();
-    const bool changed = m_sshAllow.remove(host);
-    if (changed)
-        m_audit.record(QStringLiteral("ssh.allow_remove"), true, QStringLiteral("low"),
-                       QStringLiteral("removed ssh host ") + host);
-    QJsonObject result = m_sshAllow.toJson();
-    result.insert(QStringLiteral("removed"), changed);
-    return Response::success(req.id, result);
-}
-
-Response ControlServer::handleSshExec(const Request &req, bool remote)
-{
-    const QString host = req.params.value(QStringLiteral("host")).toString();
-    const QString cmd = req.params.value(QStringLiteral("cmd")).toString();
-    if (host.trimmed().isEmpty() || cmd.trimmed().isEmpty())
-        return Response::failure(req.id, QStringLiteral("bad_request"),
-                                 QStringLiteral("host and cmd are required"));
-
-    // HARD GATE: ssh.exec only runs for allow-listed hosts; non-listed hosts
-    // never spawn ssh (SshAllowList::exec enforces this). Audited either way.
-    const SshAllowList::ExecResult r = m_sshAllow.exec(host, cmd);
-    if (!r.allowed) {
-        m_audit.record(QStringLiteral("ssh.exec"), false, QStringLiteral("high"),
-                       QStringLiteral("REJECTED ssh.exec to non-allow-listed host ") + host,
-                       QString(), remote);
-        return Response::failure(req.id, QStringLiteral("host_not_allowed"),
-                                 QStringLiteral("host is not in the ssh allow-list: ") + host);
-    }
-    m_audit.record(QStringLiteral("ssh.exec"), r.ok, QStringLiteral("high"),
-                   QStringLiteral("ssh %1: %2").arg(host, cmd.left(80)),
-                   QString(), remote);
-
-    QJsonObject result;
-    result.insert(QStringLiteral("ok"), r.ok);
-    result.insert(QStringLiteral("exit_code"), r.exitCode);
-    result.insert(QStringLiteral("output"), r.output);
-    if (!r.error.isEmpty())
-        result.insert(QStringLiteral("error"), r.error);
     return Response::success(req.id, result);
 }
 
