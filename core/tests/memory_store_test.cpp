@@ -393,6 +393,97 @@ int main(int argc, char **argv)
         }
     }
 
+    // --- regression: migrate() against a genuinely pre-existing, already-
+    // populated OLD-schema database (the real upgrade scenario: an existing
+    // user's jarvis.db, created by code that predates the scope/entity_ref
+    // columns, now opened by this build). Unlike the backfill test above
+    // (whose "legacy" row is inserted AFTER a MemoryStore has already run
+    // migrate() once), this builds the raw db file itself via bare Qt SQL
+    // first — with the true OLD 5-column schema and data already in it —
+    // before MemoryStore ever touches it, so migrate()'s hasColumn()-guarded
+    // ALTER TABLE runs against a real, populated old-schema table.
+    {
+        QTemporaryDir tmp3;
+        const QString dbPath3 = tmp3.path() + QStringLiteral("/legacy_schema.db");
+
+        // Build the OLD 5-column schema directly (no MemoryStore involved)
+        // and insert a row into it, mirroring a pre-upgrade jarvis.db.
+        {
+            QSqlDatabase raw = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                         QStringLiteral("mem-legacy-raw-conn"));
+            raw.setDatabaseName(dbPath3);
+            check(raw.open(), "legacy-migration: raw sqlite file opened");
+            {
+                QSqlQuery ddl(raw);
+                check(ddl.exec(QStringLiteral(
+                          "CREATE TABLE memories ("
+                          " id TEXT PRIMARY KEY,"
+                          " text TEXT NOT NULL,"
+                          " tags TEXT,"
+                          " created INTEGER,"
+                          " updated INTEGER)")),
+                      "legacy-migration: created OLD 5-column memories table (no scope/entity_ref)");
+            }
+            {
+                QSqlQuery ins(raw);
+                ins.prepare(QStringLiteral(
+                    "INSERT INTO memories (id,text,tags,created,updated) VALUES (?,?,?,?,?)"));
+                ins.addBindValue(QStringLiteral("legacy-pre-existing-1"));
+                ins.addBindValue(QStringLiteral("The vault PIN rotates every 90 days"));
+                ins.addBindValue(QStringLiteral("security vault"));
+                ins.addBindValue(qint64(1700000000000));
+                ins.addBindValue(qint64(1700000000000));
+                check(ins.exec(), "legacy-migration: raw-inserted a row into the old-schema table");
+            }
+            raw.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("mem-legacy-raw-conn"));
+
+        // Now open that SAME file through MemoryStore — this is what triggers
+        // migrate()'s ALTER TABLE ADD COLUMN against a genuinely pre-existing,
+        // already-populated old-schema table.
+        MemoryStore migrated;
+        check(migrated.open(dbPath3, QStringLiteral("mem-legacy-migrated-conn")),
+              "legacy-migration: MemoryStore.open() migrates the pre-existing populated db");
+
+        auto legacyRow = migrated.get(QStringLiteral("legacy-pre-existing-1"));
+        check(legacyRow.has_value(), "legacy-migration: pre-existing row still retrievable after migrate");
+        if (legacyRow) {
+            check(legacyRow->text == QStringLiteral("The vault PIN rotates every 90 days"),
+                  "legacy-migration: pre-existing row's text is untouched");
+            check(legacyRow->tags == (QStringList{QStringLiteral("security"), QStringLiteral("vault")}),
+                  "legacy-migration: pre-existing row's tags are untouched");
+            check(legacyRow->created == 1700000000000LL,
+                  "legacy-migration: pre-existing row's created is untouched");
+            check(legacyRow->updated == 1700000000000LL,
+                  "legacy-migration: pre-existing row's updated is untouched");
+            check(legacyRow->scope == QStringLiteral("global"),
+                  "legacy-migration: pre-existing row defaults scope='global'");
+            check(legacyRow->entityRef.isEmpty(),
+                  "legacy-migration: pre-existing row defaults entity_ref to empty");
+        }
+
+        // Search must still find the pre-existing row post-migration.
+        {
+            const auto hits = migrated.search(QStringLiteral("vault PIN"), 10);
+            check(anyTextContains(hits, QStringLiteral("vault PIN")),
+                  "legacy-migration: search finds the pre-existing row after migration");
+        }
+
+        // A brand-new row added post-migration must coexist correctly with
+        // the migrated legacy row (both old and new rows work after the
+        // ALTER TABLE has run against real data).
+        const QString freshId = migrated.add(
+            QStringLiteral("Freshly added memory after migrating the legacy db"),
+            {QStringLiteral("fresh")});
+        check(!freshId.isEmpty(), "legacy-migration: add() works on the freshly-migrated db");
+        auto freshRow = migrated.get(freshId);
+        check(freshRow.has_value() && freshRow->scope == QStringLiteral("global"),
+              "legacy-migration: freshly-added row defaults scope='global' too");
+        check(migrated.list().size() == 2,
+              "legacy-migration: both the legacy row and the fresh row coexist post-migration");
+    }
+
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;
