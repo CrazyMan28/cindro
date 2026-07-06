@@ -101,3 +101,23 @@ async def test_pair_download_gate_and_exec_roundtrip(server):
                              json={"machine": "box", "cmd": "echo pong"})).json()
         assert res == {"ok": True, "exit_code": 0, "output": "pong", "error": ""}
         await agent_task
+
+
+async def test_exec_rejects_malformed_json_body(server):
+    base, _, token = server
+    auth = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient() as hc:
+        r = await hc.post(f"{base}/api/exec",
+                          headers={**auth, "Content-Type": "application/json"},
+                          content=b"not json")
+        assert r.status_code == 400
+        assert r.json()["error"] == "bad_request"
+
+
+async def test_exec_rejects_missing_cmd(server):
+    base, _, token = server
+    auth = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient() as hc:
+        r = await hc.post(f"{base}/api/exec", headers=auth, json={"machine": "box"})
+        assert r.status_code == 400
+        assert r.json()["error"] == "bad_request"

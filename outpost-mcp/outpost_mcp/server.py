@@ -147,20 +147,41 @@ async def api_revoke_id(machine_id: str):
 
 @app.post("/api/exec")
 async def api_exec(request: Request):
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not body.get("machine"):
+        return JSONResponse({"error": "bad_request", "message": "missing 'machine'"},
+                             status_code=400)
+    if not body.get("cmd"):
+        return JSONResponse({"error": "bad_request", "message": "missing 'cmd'"},
+                             status_code=400)
     return await hub.exec(body["machine"], body["cmd"],
                           float(body.get("timeout", 30.0)), body.get("shell", "auto"))
 
 
 @app.post("/api/screenshot")
 async def api_screenshot(request: Request):
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not body.get("machine"):
+        return JSONResponse({"error": "bad_request", "message": "missing 'machine'"},
+                             status_code=400)
     return await hub.screenshot(body["machine"])
 
 
 @app.post("/api/revoke")
 async def api_revoke(request: Request):
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not body.get("machine"):
+        return JSONResponse({"error": "bad_request", "message": "missing 'machine'"},
+                             status_code=400)
     m = registry.get(body["machine"])
     if not m:
         return {"ok": False, "revoked": False}
@@ -192,8 +213,8 @@ async def agent_ws(ws: WebSocket):
                 await ws.send_text(json.dumps({"type": "pong"}))
     except WebSocketDisconnect:
         pass
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"outpost-mcp: agent ws error for machine {m['id']}: {exc}")
     finally:
         hub.unregister(m["id"])
 
