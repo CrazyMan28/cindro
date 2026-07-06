@@ -4044,7 +4044,11 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
     } else if (method == QStringLiteral("outpost.exec")) {
         const bool ook = result.contains(QStringLiteral("ok"))
                              ? result.value(QStringLiteral("ok")).toBool() : true;
-        emit outpostExecResult(ctx, ook, result.value(QStringLiteral("output")).toString());
+        QString outText = result.value(QStringLiteral("output")).toString();
+        if (!ook && outText.isEmpty()) {
+            outText = result.value(QStringLiteral("error")).toString();
+        }
+        emit outpostExecResult(ctx, ook, outText);
     } else if (method == QStringLiteral("outpost.screenshot")) {
         const bool ook = result.contains(QStringLiteral("ok"))
                              ? result.value(QStringLiteral("ok")).toBool() : true;
