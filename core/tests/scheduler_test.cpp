@@ -233,14 +233,34 @@ int main(int argc, char **argv)
         check(wrow && wrow->webhookToken == QStringLiteral("secret-token-xyz"),
               "workflow: webhook token stored");
 
-        // A far-future tick fires neither (cron is 02:00; webhook never).
+        // A near-term (+2min) tick fires neither: nothing is due yet at all
+        // (the 02:00 cron isn't due for hours; the webhook is never
+        // timer-scheduled). This does NOT by itself prove the webhook is
+        // discriminated against on a timer tick -- see the past-cron-fire-time
+        // tick below for that.
         const QDateTime soon = QDateTime::currentDateTime().addSecs(120);
         sched.tick(soon);
-        check(fireCount == 0, "workflow: neither the 02:00 cron nor the webhook fires on a near-term tick");
+        check(fireCount == 0, "workflow: near-term tick fires nothing (nothing is due yet)");
+
+        // Now tick genuinely PAST the cron workflow's actual computed next_run
+        // (read back from the row, not a hardcoded wall-clock time) and confirm
+        // the cron fires exactly once while the webhook workflow is completely
+        // untouched. This is what actually proves "webhook never fires on a
+        // timer tick" as opposed to "nothing happened to be due yet".
+        const QDateTime pastCronFire = QDateTime::fromMSecsSinceEpoch(crow->nextRun).addSecs(60);
+        const int firedPastCron = sched.tick(pastCronFire);
+        check(firedPastCron == 1 && fireCount == 1,
+              "workflow: a tick past the cron's next_run fires only the cron (fireCount==1)");
+        auto crowAfterFire = sched.get(cid);
+        check(crowAfterFire && crowAfterFire->lastRun > 0,
+              "workflow: cron row's last_run is stamped after firing");
+        auto wrowAfterFire = sched.get(wid);
+        check(wrowAfterFire && wrowAfterFire->lastRun == 0 && wrowAfterFire->nextRun == 0,
+              "workflow: webhook row is untouched (last_run/next_run still 0) by a tick past the cron's fire time");
 
         // runNow fires the webhook workflow through the normal fire path.
         const auto sid = sched.runNow(wid);
-        check(sid.has_value() && fireCount == 1, "workflow: runNow fires the webhook workflow");
+        check(sid.has_value() && fireCount == 2, "workflow: runNow fires the webhook workflow");
     }
 
     if (g_failures) {
