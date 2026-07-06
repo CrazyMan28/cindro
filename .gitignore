@@ -74,3 +74,6 @@ squashfs-root/
 jarvis-engine.spec
 /dist/
 cli/.venv/
+
+# subagent-driven-development scratch (progress ledger, task briefs/reports)
+/.superpowers/
