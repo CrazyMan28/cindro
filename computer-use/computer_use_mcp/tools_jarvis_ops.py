@@ -366,15 +366,23 @@ def register(mcp: FastMCP) -> None:
         `task` on its own and reports back (shows under this session in the
         sub-agent tree). Returns {session_id} — pass it to agent_stop to cancel.
 
-        `name` can be one of your DEFINED agents (see agent_list) OR any new label
-        for an AD-HOC subagent (you do NOT need to pre-create an agent to delegate).
-        You may choose the `brain` (codex|claude|api) and `model` it runs on, and
-        give it a one-off `system_prompt` (its role/instructions for the task).
-        A stored agent's def fills any of these you leave blank.
+        If the task is something YOU can do directly with a single tool call —
+        run a command on a paired machine (outpost_exec), take a screenshot
+        (outpost_screenshot), save or look up a fact (remember/recall), check a
+        schedule, etc. — just call that tool yourself. Do NOT spin up a subagent
+        for work you could do in one or two tool calls; that only adds latency
+        and an extra point of failure. Reserve agent_start for work that's
+        genuinely separable: a distinct kind of sub-task you'll repeat (see
+        agent_create), something you want running in parallel while you keep
+        working, or a long enough job that you don't want to block your own
+        turn on it.
 
-        Use this to actually OFFLOAD work — e.g. agent_start("file-writer", "write
-        /tmp/x.py as hello world", model="gpt-5.5"). Don't just narrate that you
-        delegated; call this tool."""
+        `name` can be one of your DEFINED agents (see agent_list) OR any new label
+        for an AD-HOC subagent (you do NOT need to pre-create an agent to delegate
+        genuinely separable work). You may choose the `brain` (codex|claude|api)
+        and `model` it runs on, and give it a one-off `system_prompt` (its
+        role/instructions for the task). A stored agent's def fills any of these
+        you leave blank."""
         try:
             params = {"agent": name, "task": task}
             if brain:
