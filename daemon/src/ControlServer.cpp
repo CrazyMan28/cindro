@@ -5870,7 +5870,7 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
                              QStringLiteral("unknown config method: ") + m);
 }
 
-// --- Wave 8: co-worker ops (scheduler / ssh allow-list / audit) -------------
+// --- Wave 8: co-worker ops (scheduler / outpost pairing+exec / audit) -------
 
 bool ControlServer::isOpsMethod(const QString &method)
 {
