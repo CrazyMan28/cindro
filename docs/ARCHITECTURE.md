@@ -168,9 +168,15 @@ KWin 6 and native Sway (wlroots).
   `session.subscribe` (scoping guard); `session/prompt` → `session.send` with
   the normalized event stream mapped to ACP `session/update` chunks;
   `kind=approval` → `session/request_permission` → `approval.respond`.
-- **`web/`** — a static, no-build SPA speaking the extension's exact Contract A
-  client dialect straight to `ws://127.0.0.1:8795` (pairing-code redemption on
-  `/control/pair`, both session-scoping layers, streamed chat + approvals).
-  `web/serve.py` (stdlib) only serves the files; the daemon stays
-  loopback-only — remote use means an SSH/tailscale port-forward, never a
-  daemon bind flag.
+- **`web/`** — a Bun+Vite+SolidJS SPA with full desktop-GUI page parity (Home/
+  Chat/Voice/Computer/Canvas/Widgets/Sessions/Memory/Skills/Agents/Schedules/
+  Activity/Graph/Replay/MCP/Plugins/SSH/Phone/Settings, plus Browser),
+  speaking the same Contract A client dialect straight to
+  `ws://127.0.0.1:8795` (pairing-code redemption on `/control/pair`, both
+  session-scoping layers, streamed chat + approvals). `web/server.ts` (Bun)
+  only serves the built static files; the daemon stays loopback-only —
+  remote use means an SSH/tailscale port-forward, never a daemon bind flag.
+  A browser tab has no filesystem access, so the widget saved-library
+  (`~/.local/share/jarvis/saved_widgets.json` on GUI/TUI) falls back to
+  `localStorage` there instead — see `web/README.md`'s "Known differences"
+  section for this and other browser-specific trade-offs.
