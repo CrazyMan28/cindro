@@ -16,9 +16,10 @@ const QStringList kBuiltins = {
     QStringLiteral("widgets"), QStringLiteral("phone"), QStringLiteral("memory"),
     QStringLiteral("skills"), QStringLiteral("agents"), QStringLiteral("queue"),
     QStringLiteral("settings"), QStringLiteral("schedules"), QStringLiteral("mcp"),
-    QStringLiteral("plugins"), QStringLiteral("ssh"), QStringLiteral("replay"),
+    QStringLiteral("plugins"), QStringLiteral("replay"),
     QStringLiteral("activity"), QStringLiteral("browser"), QStringLiteral("computer"),
-    QStringLiteral("home"), QStringLiteral("tui"),
+    QStringLiteral("home"), QStringLiteral("tui"), QStringLiteral("outpost"),
+    QStringLiteral("pair"),
 };
 const QStringList kKinds = {QStringLiteral("mcp_tool"), QStringLiteral("shell"),
                             QStringLiteral("prompt")};
