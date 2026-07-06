@@ -36,7 +36,7 @@ import {
 import { createStore, produce } from "solid-js/store"
 
 import { useApp } from "../core/app-context"
-import type { PageDef } from "../core/router"
+import { getPages, type PageDef } from "../core/router"
 import type { ControlClient } from "../core/control-client"
 import { ArcReactor } from "../components/ArcReactor"
 import { NavIcon } from "../components/NavIcon"
@@ -92,10 +92,26 @@ const mkId = () => nextId++
 const MAX_DIFF_LINES = 30
 const TOOL_PREVIEW_CHARS = 160
 
-const SLASH_COMMANDS: Array<{ name: string; description: string }> = [
-  { name: "new", description: "start a fresh session" },
-  { name: "goal", description: "set this session's goal" },
-  { name: "cancel", description: "cancel the current turn" },
+interface SlashCommand {
+  name: string
+  description: string
+  aliases?: string[]
+}
+
+// Full command set, matching tui/src/pages/Chat.tsx's registerLocal() list
+// (session verbs) + tui/src/app.tsx's manifest-driven page navigation.
+const SLASH_COMMANDS: SlashCommand[] = [
+  { name: "new", description: "start a fresh session", aliases: ["clear"] },
+  { name: "stop", description: "cancel the in-flight turn", aliases: ["cancel"] },
+  { name: "goal", description: "set a persistent session goal" },
+  { name: "y", description: "approve the pending action", aliases: ["yes"] },
+  { name: "n", description: "deny the pending action", aliases: ["no"] },
+  { name: "provider", description: "pick the default brain", aliases: ["brain"] },
+  { name: "model", description: "pick the default model" },
+  { name: "stage", description: "git add a reviewed file" },
+  { name: "commit", description: "commit staged changes" },
+  { name: "revert", description: "discard local changes to a file" },
+  { name: "openpr", description: "push + open a pull request" },
 ]
 
 // ---------------------------------------------------------------------------
@@ -850,6 +866,10 @@ function TranscriptItemView(props: {
       <Switch>
         <Match when={props.item.kind === "user"}>
           <div class="chat-msg chat-msg-user">
+            <div class="chat-msg-header">
+              <span class="chat-msg-dot user" />
+              <span class="chat-msg-name user">OPERATOR</span>
+            </div>
             <div class="chat-msg-text">{(props.item as Extract<ChatItem, { kind: "user" }>).text}</div>
           </div>
         </Match>
@@ -895,7 +915,10 @@ function TranscriptItemView(props: {
           />
         </Match>
         <Match when={props.item.kind === "error"}>
-          <div class="chat-error">✖ {(props.item as Extract<ChatItem, { kind: "error" }>).message}</div>
+          <div class="chat-error">
+            <span class="chat-error-icon">!</span>
+            <span>{(props.item as Extract<ChatItem, { kind: "error" }>).message}</span>
+          </div>
         </Match>
         <Match when={props.item.kind === "divider"}>
           <div class="chat-divider" />
@@ -923,11 +946,23 @@ function Composer(props: { busy: () => boolean; onSubmit: (text: string) => void
 
   onMount(() => inputRef?.focus())
 
+  // Every registered page also gets a /command (matches tui/src/app.tsx's
+  // manifest-driven page navigation) — "chat" is the composer's own page so
+  // it's excluded, and there's no separate command needed to reach it.
+  const navCommands = createMemo<SlashCommand[]>(() =>
+    getPages()
+      .filter((p) => p.id !== "chat")
+      .map((p) => ({ name: p.id, description: `open ${p.label}` })),
+  )
+  const allCommands = createMemo<SlashCommand[]>(() => [...SLASH_COMMANDS, ...navCommands()])
+
   const matches = createMemo(() => {
     const v = value()
     if (popupClosed() || !v.startsWith("/") || v.includes(" ")) return []
     const prefix = v.slice(1).toLowerCase()
-    return SLASH_COMMANDS.filter((c) => c.name.startsWith(prefix))
+    return allCommands().filter(
+      (c) => c.name.startsWith(prefix) || c.aliases?.some((a) => a.startsWith(prefix)),
+    )
   })
   const popupOpen = createMemo(() => matches().length > 0)
 
@@ -1141,15 +1176,82 @@ function SubagentModal(props: { sessionId: string; onClose: () => void }) {
 // main page
 // ---------------------------------------------------------------------------
 
+interface PickerState {
+  title: string
+  options: Array<{ label: string; description?: string; value: string }>
+  onPick: (v: string) => void
+}
+
 function ChatPage() {
   const app = useApp()
   const controller = new ChatController(app.client, (m) => app.notify(m, "error"))
   const [sessions, setSessions] = createSignal<SessionRow[]>([])
   const [connected, setConnected] = createSignal(app.client.connected)
   const [subagentId, setSubagentId] = createSignal("")
+  const [picker, setPicker] = createSignal<PickerState | null>(null)
   let alive = true
   let scrollRef: HTMLDivElement | undefined
   let stickBottom = true
+
+  // /provider and /model — ported from tui/src/pages/Chat.tsx's
+  // openBrainOrModelPicker: reads settings.get (brain list) or model.list,
+  // and on pick calls settings.set to change the GLOBAL default used for new
+  // sessions (not a per-session override).
+  const openBrainOrModelPicker = async (which: "brain" | "model") => {
+    try {
+      const s = await app.client.call("settings.get", {}, 8000)
+      const settings = (s.settings ?? s) as Record<string, unknown>
+      if (which === "brain") {
+        const brains = ((settings.brains ?? ["codex", "claude", "api"]) as unknown[]).map(String)
+        const avail = (settings.available_brains ?? {}) as Record<string, unknown>
+        setPicker({
+          title: "DEFAULT BRAIN",
+          options: brains.map((b) => ({
+            label: b,
+            description: avail[b] === false ? "(unavailable on this machine)" : "",
+            value: b,
+          })),
+          onPick: (v) => {
+            void app.client
+              .call("settings.set", { patch: { default_brain: v } })
+              .then(() => controller.notice(`✓ default brain: ${v}`, "success"))
+              .catch((e) => controller.notice(String(e), "error"))
+          },
+        })
+      } else {
+        const res = await app.client.call("model.list", {}, 8000)
+        const models = ((res.models ?? []) as unknown[]).map(String)
+        setPicker({
+          title: "DEFAULT MODEL",
+          options: models.map((m) => ({ label: m, value: m })),
+          onPick: (v) => {
+            void app.client
+              .call("settings.set", { patch: { default_model: v } })
+              .then(() => controller.notice(`✓ default model: ${v}`, "success"))
+              .catch((e) => controller.notice(String(e), "error"))
+          },
+        })
+      }
+    } catch (e) {
+      controller.notice(`picker unavailable: ${String(e)}`, "error")
+    }
+  }
+
+  // /stage /commit /revert /openpr — verified live against
+  // daemon/src/ControlServer.cpp's handleDiffStage/Revert/Commit/OpenPr.
+  const diffAction = async (verb: "stage" | "revert" | "commit" | "open_pr", args: string) => {
+    const params: Record<string, unknown> = { session_id: controller.sessionId() }
+    if (verb === "commit") params.message = args
+    else if (args) params.path = args
+    try {
+      const res = await app.client.call(`diff.${verb}`, params)
+      const ok = res.ok === undefined ? true : Boolean(res.ok)
+      const detail = String(res.message ?? res.url ?? "")
+      controller.notice(`${ok ? "✓" : "✕"} ${verb}${detail ? "  " + detail : ""}`, ok ? "success" : "error")
+    } catch (e) {
+      controller.notice(`${verb} failed: ${String(e)}`, "error")
+    }
+  }
 
   onCleanup(() => {
     alive = false
@@ -1192,22 +1294,60 @@ function ChatPage() {
   })
 
   const runSlash = async (name: string, args: string) => {
-    switch (name.toLowerCase()) {
+    const cmd = name.toLowerCase()
+    switch (cmd) {
       case "new":
+      case "clear":
         await controller.newSession()
         void loadSessions()
         return
       case "goal":
         await controller.setGoal(args)
         return
+      case "stop":
       case "cancel":
         await controller.stop()
         return
-      default:
-        // Unknown slash text falls through as a normal chat message — the
-        // brain itself may recognize its own conventions; we never invent
-        // client-side behavior for verbs we don't know.
+      case "y":
+      case "yes":
+        await controller.respondApproval("allow")
+        return
+      case "n":
+      case "no":
+        await controller.respondApproval("deny")
+        return
+      case "provider":
+      case "brain":
+        void openBrainOrModelPicker("brain")
+        return
+      case "model":
+        void openBrainOrModelPicker("model")
+        return
+      case "stage":
+        await diffAction("stage", args)
+        return
+      case "commit":
+        await diffAction("commit", args)
+        return
+      case "revert":
+        await diffAction("revert", args)
+        return
+      case "openpr":
+        await diffAction("open_pr", args)
+        return
+      default: {
+        // A registered page id navigates there (matches tui/src/app.tsx's
+        // manifest-driven "every page gets a /command" behavior).
+        const page = getPages().find((p) => p.id === cmd)
+        if (page) {
+          app.navigate(page.id)
+          return
+        }
+        // Otherwise fall through as a normal chat message — the brain itself
+        // may recognize its own conventions; we never invent client-side
+        // behavior for verbs we don't know.
         await controller.send(`/${name} ${args}`.trim())
+      }
     }
   }
 
@@ -1292,7 +1432,52 @@ function ChatPage() {
       <Show when={subagentId()}>
         <SubagentModal sessionId={subagentId()} onClose={() => setSubagentId("")} />
       </Show>
+      <Show when={picker()}>
+        {(p) => <PickerModal state={p()} onClose={() => setPicker(null)} />}
+      </Show>
       <style>{CHAT_CSS}</style>
+    </div>
+  )
+}
+
+function PickerModal(props: { state: PickerState; onClose: () => void }) {
+  return (
+    <div
+      class="chat-modal-backdrop"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) props.onClose()
+      }}
+    >
+      <div class="chat-modal chat-picker-modal">
+        <div class="chat-modal-header">
+          <span class="hud-label">{props.state.title}</span>
+          <button type="button" class="chat-modal-close" onClick={props.onClose}>
+            ✕
+          </button>
+        </div>
+        <div class="chat-picker-list">
+          <For each={props.state.options}>
+            {(opt) => (
+              <button
+                type="button"
+                class="chat-picker-item"
+                onClick={() => {
+                  props.state.onPick(opt.value)
+                  props.onClose()
+                }}
+              >
+                <span class="chat-picker-item-label">{opt.label}</span>
+                <Show when={opt.description}>
+                  <span class="chat-picker-item-desc">{opt.description}</span>
+                </Show>
+              </button>
+            )}
+          </For>
+          <Show when={props.state.options.length === 0}>
+            <div class="chat-picker-empty">nothing to pick from</div>
+          </Show>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1400,39 +1585,71 @@ const CHAT_CSS = `
 .chat-item { animation: chat-item-in var(--dur-slow) ease-out backwards; }
 @keyframes chat-item-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
 
-.chat-msg { display: flex; flex-direction: column; gap: 4px; max-width: 720px; }
-.chat-msg-header { display: flex; align-items: center; gap: 6px; }
-.chat-msg-name { font-family: var(--font-display); font-size: 11px; letter-spacing: var(--track-mid); color: var(--accent); }
-.chat-msg-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-dim); border: 1px solid var(--accent-dim); flex-shrink: 0; }
-.chat-msg-text { font-size: 13px; line-height: 1.5; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+/* Message bubbles — ported from desktop/qml/ChatDelegate.qml's messageComp:
+   role tag above the bubble, an accent-colored edge bar (cyan=assistant,
+   amber=user), amber-tinted bg for user vs surfaceStrong for assistant. */
+.chat-msg { display: flex; flex-direction: column; gap: 5px; max-width: 90%; }
+.chat-msg-header { display: flex; align-items: center; gap: 5px; }
+.chat-msg-name {
+  font-family: var(--font-display); font-size: 9px; letter-spacing: var(--track-mid);
+  color: var(--accent); opacity: 0.8; font-weight: 600;
+}
+.chat-msg-name.user { color: var(--amber); }
+.chat-msg-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.chat-msg-dot.user { background: var(--amber); }
+.chat-msg-text { font-size: 14px; line-height: 1.4; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.chat-msg {
+  position: relative;
+  background: var(--surface-strong);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-sm);
+  padding: 11px 15px 11px 17px;
+}
+.chat-msg::before {
+  content: ""; position: absolute; left: 1px; top: 4px; bottom: 4px; width: 2.5px;
+  border-radius: 1.5px; background: var(--accent);
+}
 .chat-msg-user {
   align-self: flex-end;
-  background: var(--surface-strong);
-  border: 1px solid var(--hairline-soft);
-  border-radius: var(--radius-sm);
-  padding: 9px 13px;
+  background: rgba(255, 180, 84, 0.10);
+  border-color: var(--amber-dim);
+  padding: 11px 17px 11px 15px;
 }
+.chat-msg-user::before { left: auto; right: 1px; background: var(--amber); }
+.chat-msg-user .chat-msg-header { justify-content: flex-end; }
 .chat-msg-user .chat-msg-text { color: var(--text); font-weight: 500; }
 
+/* Tool "MODULE" card — ported from ChatDelegate.qml's unifiedToolComp: a
+   HUD module chip with a left accent tab, spinner/check/x, expand-to-see
+   input/output. */
 .chat-tool-card {
+  position: relative;
   cursor: pointer;
-  border-left: 2px solid var(--hairline-soft);
-  padding: 6px 0 6px 10px;
-  max-width: 720px;
+  background: var(--surface-deep);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-xs);
+  padding: 8px 12px 8px 16px;
+  max-width: 90%;
+  transition: border-color var(--dur-fast) ease;
 }
-.chat-tool-header { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.chat-tool-glyph { font-family: var(--font-mono); }
-.chat-tool-glyph.running { color: var(--amber); }
+.chat-tool-card::before {
+  content: ""; position: absolute; left: 1px; top: 1px; bottom: 1px; width: 3px;
+  border-radius: 1px; background: var(--accent);
+}
+.chat-tool-card:hover { border-color: var(--accent); }
+.chat-tool-header { display: flex; align-items: center; gap: 9px; font-size: 12px; }
+.chat-tool-glyph { font-family: var(--font-mono); font-weight: 700; }
+.chat-tool-glyph.running { color: var(--accent); animation: stat-pulse 900ms ease-in-out infinite; }
 .chat-tool-glyph.ok { color: var(--success); }
 .chat-tool-glyph.failed { color: var(--danger); }
-.chat-tool-name { color: var(--amber); font-family: var(--font-mono); }
+.chat-tool-name { color: var(--accent-bright); font-family: var(--font-mono); font-weight: 500; }
 .chat-tool-args { color: var(--text-faint); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .chat-tool-fold { color: var(--text-faint); }
 .chat-tool-output {
-  margin-top: 4px;
+  margin-top: 6px;
   padding: 8px 10px;
-  border-left: 1px solid var(--hairline-soft);
-  background: var(--surface-deep);
+  border-radius: var(--radius-xs);
+  background: rgba(0, 0, 0, 0.18);
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-muted);
@@ -1441,8 +1658,8 @@ const CHAT_CSS = `
   max-height: 320px;
   overflow-y: auto;
 }
-.chat-tool-output.failed { color: var(--danger); border-left-color: var(--danger); }
-.chat-tool-preview { font-size: 11px; color: var(--text-faint); font-family: var(--font-mono); }
+.chat-tool-output.failed { color: var(--danger); }
+.chat-tool-preview { font-size: 11px; color: var(--text-faint); font-family: var(--font-mono); margin-top: 2px; }
 
 .chat-diff-card { display: flex; flex-direction: column; gap: 8px; max-width: 760px; }
 .chat-diff-file {
@@ -1505,38 +1722,63 @@ const CHAT_CSS = `
 .chat-diff-status.ok { color: var(--success); }
 .chat-diff-status.fail { color: var(--danger); }
 
+/* AUTHORIZE card — ported from ChatDelegate.qml's approvalComp: amber wash,
+   a pulsing top edge that demands attention, pill-shaped action buttons
+   (Authorize = filled amber, Always = outline, Deny = red-outline). */
 .chat-approval-card {
+  position: relative;
   border: 1px solid var(--amber-dim);
-  border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  max-width: 620px;
+  border-radius: var(--radius);
+  background: rgba(255, 180, 84, 0.06);
+  padding: 14px 14px 12px;
+  max-width: 90%;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 11px;
+  overflow: hidden;
 }
-.chat-approval-card.risk-high { border-color: var(--danger-dim); }
-.chat-approval-card.risk-low { border-color: rgba(57, 230, 160, 0.3); }
-.chat-approval-title { font-size: 12px; font-weight: 600; color: var(--amber); }
+.chat-approval-card::before {
+  content: ""; position: absolute; top: 1px; left: 14px; right: 14px; height: 2px;
+  border-radius: 1px; background: var(--amber);
+  animation: approval-pulse 900ms ease-in-out infinite;
+}
+.chat-approval-card.risk-high { border-color: var(--danger-dim); background: var(--danger-dim); }
+.chat-approval-card.risk-high::before { background: var(--danger); }
+.chat-approval-card.risk-low { border-color: rgba(57, 230, 160, 0.3); background: rgba(57, 230, 160, 0.06); }
+.chat-approval-card.risk-low::before { background: var(--success); }
+@keyframes approval-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.chat-approval-title {
+  font-size: 11px; font-weight: 600; color: var(--amber);
+  font-family: var(--font-display); letter-spacing: var(--track-mid); text-transform: uppercase;
+}
 .risk-high .chat-approval-title { color: var(--danger); }
 .risk-low .chat-approval-title { color: var(--success); }
-.chat-approval-risk { color: var(--text-faint); font-weight: 400; }
+.chat-approval-risk {
+  color: var(--amber); font-weight: 500; font-family: var(--font-sans); text-transform: none;
+  border: 1px solid var(--amber-dim); border-radius: 6px; padding: 1px 7px; margin-left: 6px; font-size: 10px;
+}
 .chat-approval-actions { display: flex; gap: 8px; }
 .chat-approval-actions button {
   all: unset;
   cursor: pointer;
-  padding: 5px 12px;
+  flex: 1;
+  text-align: center;
+  padding: 9px 12px;
   border-radius: var(--radius-xs);
   font-size: 11px;
   font-family: var(--font-display);
+  font-weight: 600;
   letter-spacing: var(--track-tight);
   border: 1px solid var(--hairline-soft);
+  transition: transform var(--dur-fast) ease, background var(--dur-fast) ease;
 }
-.chat-approval-allow { color: var(--success); }
-.chat-approval-allow:hover { border-color: var(--success); }
-.chat-approval-always { color: var(--accent-bright); }
-.chat-approval-always:hover { border-color: var(--accent); }
-.chat-approval-deny { color: var(--danger); }
-.chat-approval-deny:hover { border-color: var(--danger); }
+.chat-approval-actions button:active { transform: scale(0.97); }
+.chat-approval-allow { background: var(--amber); color: var(--ink-on-accent); border-color: var(--amber); }
+.chat-approval-allow:hover { background: var(--amber); filter: brightness(1.1); }
+.chat-approval-always { color: var(--text-muted); }
+.chat-approval-always:hover { background: var(--surface-strong); }
+.chat-approval-deny { color: var(--danger); border-color: rgba(255, 107, 107, 0.45); }
+.chat-approval-deny:hover { background: var(--danger-dim); }
 .chat-approval-resolved { font-size: 11px; }
 .chat-approval-resolved.ok { color: var(--success); }
 .chat-approval-resolved.deny { color: var(--danger); }
@@ -1579,14 +1821,29 @@ const CHAT_CSS = `
 .chat-subagent-hint { font-size: 10px; color: var(--text-faint); }
 
 .chat-widget-card {
-  border: 1px solid var(--hairline-soft);
+  position: relative;
+  background: var(--surface-deep);
+  border: 1px solid var(--accent-dim);
   border-radius: var(--radius-sm);
-  padding: 10px 12px;
-  max-width: 640px;
+  padding: 10px 12px 10px 16px;
+  max-width: 90%;
 }
-.chat-widget-header { font-size: 11px; color: var(--accent); font-weight: 600; margin-bottom: 8px; }
+.chat-widget-card::before {
+  content: ""; position: absolute; left: 1px; top: 1px; bottom: 1px; width: 3px;
+  border-radius: 1px; background: var(--accent); opacity: 0.7;
+}
+.chat-widget-header {
+  font-size: 8px; color: var(--accent); opacity: 0.75; font-weight: 600; margin-bottom: 8px;
+  font-family: var(--font-display); letter-spacing: var(--track-mid); text-transform: uppercase;
+}
 
-.chat-error { color: var(--danger); font-size: 12px; font-weight: 600; max-width: 640px; }
+.chat-error {
+  display: flex; align-items: flex-start; gap: 9px;
+  background: var(--danger-dim); border: 1px solid rgba(255, 107, 107, 0.30);
+  border-radius: var(--radius-xs); padding: 11px; max-width: 90%;
+  color: var(--danger); font-size: 12px; font-family: var(--font-mono);
+}
+.chat-error-icon { font-weight: 700; font-size: 14px; font-family: var(--font-sans); }
 .chat-divider { height: 1px; background: linear-gradient(90deg, transparent, var(--hairline), transparent); margin: 4px 0; }
 .chat-notice { font-size: 11px; color: var(--text-muted); }
 .chat-notice.warn { color: var(--amber); }
@@ -1681,6 +1938,17 @@ const CHAT_CSS = `
 .chat-modal-close { all: unset; cursor: pointer; color: var(--text-faint); padding: 2px 6px; }
 .chat-modal-close:hover { color: var(--text); }
 .chat-modal-transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+
+.chat-picker-modal { width: 380px; }
+.chat-picker-list { max-height: 340px; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.chat-picker-item {
+  all: unset; cursor: pointer; display: flex; flex-direction: column; gap: 2px;
+  padding: 9px 10px; border-radius: var(--radius-xs); color: var(--text);
+}
+.chat-picker-item:hover { background: var(--nav-active); }
+.chat-picker-item-label { font-family: var(--font-mono); font-size: 13px; }
+.chat-picker-item-desc { font-size: 11px; color: var(--text-faint); }
+.chat-picker-empty { padding: 16px; color: var(--text-faint); font-size: 12px; text-align: center; }
 `
 
 const page: PageDef = { id: "chat", label: "CHAT", section: "WORKSPACE", order: 1, component: ChatPage }

@@ -151,6 +151,17 @@ def _web_pidfile() -> Path:
     return config.config_dir() / "web-dashboard.pid"
 
 
+def _pid_alive(pid: int) -> bool:
+    if IS_WIN:
+        r = _run(["tasklist", "/FI", f"PID eq {pid}"])
+        return str(pid) in r.stdout
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def cmd_web(action: str) -> int:
     pidfile = _web_pidfile()
     if action == "stop":
@@ -169,6 +180,17 @@ def cmd_web(action: str) -> int:
         except OSError as exc:
             console.print(f"[yellow]•[/yellow] pid {pid}: {exc}")
         pidfile.unlink(missing_ok=True)
+        return 0
+
+    try:
+        existing_pid = int(pidfile.read_text().strip())
+    except (OSError, ValueError):
+        existing_pid = None
+    if existing_pid and _pid_alive(existing_pid):
+        port = os.environ.get("JARVIS_WEB_PORT", "8788")
+        console.print(f"[yellow]•[/yellow] web dashboard already running (pid {existing_pid}) "
+                      f"at http://127.0.0.1:{port} — stop it first with `jarvis web stop` "
+                      "if you want to restart it")
         return 0
 
     web = _web_dir()
