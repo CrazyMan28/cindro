@@ -1,0 +1,77 @@
+# Workflows & Agent-Scoped Memory
+
+Two thin extensions to Jarvis's existing memory + scheduler.
+
+## Agent-scoped memory
+
+`remember`/`recall` gained an optional `agent` argument (an agent name or a
+paired-machine id, e.g. `ci-runner-104`).
+
+- `remember(text, tags=[], agent="ci-runner-104")` stores the fact scoped to
+  that agent (SQLite `scope="agent"`, `entity_ref="ci-runner-104"`).
+- `recall(query, agent="ci-runner-104")` returns ONLY that agent's memories.
+- `recall(agent="ci-runner-104")` (empty query) returns that agent's recent
+  state — the basis of the condition-polling pattern below.
+- Omitting `agent` preserves the original global behavior exactly.
+
+## Workflows
+
+A **Workflow** is a nameable, managed job = trigger + prompt + (optional
+brain+model) + a free-text `target` + an inbox `report_thread`. Workflows are
+persisted in the same `schedules` table the scheduler already uses.
+
+### Tools
+
+- `workflow_create(name, trigger, prompt, brain="", model="", target="", report_thread="")`
+  - `trigger`: a 5-field cron (`"0 2 * * *"`), an interval (`"every 30m"`), a
+    clock time (`"at 09:00"`), or the literal `"webhook"`.
+  - `target`: free-text agent/machine reference the prompt refers to (e.g.
+    `recall(agent=<target>)`, or run `outpost_exec` on it).
+  - `report_thread`: the in-app inbox thread the fired session posts its report
+    to (default `"Workflows"`, auto-created on first `notify_user`). In-app inbox
+    only — no push/SMS.
+  - Returns `{id}`, or `{id, webhook_url, token}` for `trigger="webhook"`.
+- `workflow_list()` → `{workflows:[{id,name,trigger,target,report_thread,brain,model,next_run,last_run,enabled}]}`.
+- `workflow_delete(id)` → `{ok, deleted}`.
+
+### Reporting to the inbox
+
+When a Workflow fires, the daemon appends an instruction to the fired session's
+prompt: *post a concise summary to the inbox via `notify_user(title="<report_thread>")`.*
+The phone/inbox server creates the named thread on first use.
+
+### Condition-polling ("check X, only report if it changed")
+
+No new schema — it's a prompt pattern. Author a tight-cadence Workflow whose
+prompt tells the fired session to `recall(agent=<target>)` for the last-known
+state, compare, escalate only on a change, then `remember(..., agent=<target>)`
+the new state.
+
+### Worked example
+
+```
+workflow_create(
+  name="nightly-runner-check", trigger="0 2 * * *", target="ci-runner-104",
+  brain="api", model="mistral-large-latest",
+  prompt="Run outpost_exec on ci-runner-104 checking the GitHub Actions runner "
+         "service status; recall(agent='ci-runner-104') for last-known state; only "
+         "escalate if it changed from healthy; otherwise just log OK.",
+  report_thread="Workflows")
+```
+
+### Webhook trigger
+
+`workflow_create(name, trigger="webhook", prompt=...)` mints a per-workflow
+bearer token and returns `{id, webhook_url, token}`. POST to that URL with the
+token to fire the workflow immediately through the same path the cron scheduler
+uses:
+
+```
+curl -X POST "$WEBHOOK_URL" -H "Authorization: Bearer $TOKEN"
+```
+
+The endpoint (`POST /workflows/webhook/<id>` on the computer-use MCP server,
+default `:8794`) is exempt from the global bearer and authenticates ONLY with
+the per-workflow token (hmac-safe compare). Set `advertise_host` in
+`~/.computer-use/config.yaml` (or `JARVIS_WEBHOOK_BASE`) to a tailnet-reachable
+name so `webhook_url` is callable from off-box.
