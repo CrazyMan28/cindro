@@ -391,6 +391,34 @@ int main(int argc, char **argv)
             check(!j.contains(QStringLiteral("scope")), "agent-scope: global row toJson omits scope");
             check(!j.contains(QStringLiteral("entityRef")), "agent-scope: global row toJson omits entityRef");
         }
+
+        // prefetch() is the AUTOMATIC per-turn context injection (jarvisd
+        // prepends it to every ordinary chat turn); ordinary turns aren't
+        // scoped to any particular agent/machine, so an agent-scoped fact
+        // must never ride along unprompted. Both a1 and g1 share the word
+        // "runner", so an unfiltered query would match both.
+        {
+            const auto pf = s.prefetch(QStringLiteral("runner"), 20);
+            bool sawA1 = false, sawG1 = false;
+            for (const auto &r : pf) {
+                if (r.id == a1) sawA1 = true;
+                if (r.id == g1) sawG1 = true;
+            }
+            check(!sawA1, "agent-scope: prefetch() excludes the agent-scoped memory");
+            check(sawG1, "agent-scope: prefetch() still includes the global memory");
+
+            // Non-regression: explicit search()/recall() with no agent filter
+            // must be completely unaffected by the prefetch() fix above — it
+            // still spans global + agent rows exactly as before.
+            const auto hits = s.search(QStringLiteral("runner"), 20);
+            bool searchSawA1 = false, searchSawG1 = false;
+            for (const auto &r : hits) {
+                if (r.id == a1) searchSawA1 = true;
+                if (r.id == g1) searchSawG1 = true;
+            }
+            check(searchSawA1 && searchSawG1,
+                  "agent-scope: unfiltered search() is unaffected by the prefetch() fix");
+        }
     }
 
     // --- regression: migrate() against a genuinely pre-existing, already-

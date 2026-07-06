@@ -108,8 +108,17 @@ public:
     QVector<MemoryRow> search(const QString &query, int limit = 20,
                               const QString &entityRef = QString());
 
-    // prefetch(query,k): the top-k relevant memories for a turn. Empty query =>
-    // the k most-recent memories (so a fresh turn still gets context).
+    // prefetch(query,k): the top-k relevant memories for a turn, used as the
+    // AUTOMATIC per-turn context injection (see ControlServer::
+    // prefetchMemoryBlock / memorySystemBlock — invoked on every ordinary chat
+    // turn, which has no notion of "which agent/machine" it belongs to). Empty
+    // query => the k most-recent memories (so a fresh turn still gets
+    // context). Unlike search()/list(), this ALWAYS excludes scope=="agent"
+    // rows (including ones pulled in via graph expansion): agent-scoped facts
+    // are meant to be recalled deliberately (recall(agent=...) / search with
+    // an explicit entityRef), not surfaced as ambient context in an unrelated
+    // conversation. search()/list() themselves are unaffected — an explicit,
+    // unscoped search()/recall() still spans global+agent rows.
     QVector<MemoryRow> prefetch(const QString &query, int k = 6);
 
     // Render a prefetch result as a system-prompt block to inject before a turn.

@@ -48,6 +48,28 @@ QStringList tagsFromStorage(const QString &s)
     return out;
 }
 
+// prefetch() is the AUTOMATIC per-turn context injection (jarvisd prepends it
+// to every ordinary chat turn — see ControlServer::prefetchMemoryBlock/
+// memorySystemBlock). Ordinary turns have no notion of "which agent/machine"
+// they belong to, so scope=="agent" rows (stored via remember(text=...,
+// agent="some-id")) must never surface here unprompted — they're meant to be
+// pulled deliberately via recall(agent=...)/search(entityRef=...), not as
+// ambient context in an unrelated conversation. This is intentionally NOT
+// applied to search()/list() themselves: callers of the explicit-query path
+// (e.g. recall() with no agent) must keep seeing global+agent rows together,
+// per the regression-safety constraint in
+// docs/superpowers/plans/2026-07-06-agent-memory-workflows.md.
+QVector<MemoryRow> excludeAgentScoped(const QVector<MemoryRow> &rows)
+{
+    QVector<MemoryRow> out;
+    out.reserve(rows.size());
+    for (const MemoryRow &r : rows) {
+        if (r.scope != QStringLiteral("agent"))
+            out.push_back(r);
+    }
+    return out;
+}
+
 } // namespace
 
 QJsonObject MemoryRow::toJson() const
@@ -776,8 +798,9 @@ QVector<MemoryRow> MemoryStore::prefetch(const QString &query, int k)
     if (k <= 0)
         k = 6;
     QVector<MemoryRow> hits = query.trimmed().isEmpty() ? list(k) : search(query, k);
+    hits = excludeAgentScoped(hits);
     if (hits.isEmpty())
-        hits = list(k); // no relevant match — still give recent context
+        hits = excludeAgentScoped(list(k)); // no relevant match — still give recent context
 
     // Graph-aware expansion: a memory sharing an entity (tag/topic/project)
     // with a top hit is relevant context even if its own text doesn't match
@@ -800,8 +823,13 @@ QVector<MemoryRow> MemoryStore::prefetch(const QString &query, int k)
                 continue;
             if (auto r = get(nid)) {
                 have.insert(nid);
-                hits.push_back(*r);
-                ++added;
+                // Same ambient-context rule applies to graph-expanded siblings:
+                // an agent-scoped row must not ride in via a shared entity link
+                // either, or the whole point of the filter above is defeated.
+                if (r->scope != QStringLiteral("agent")) {
+                    hits.push_back(*r);
+                    ++added;
+                }
             }
         }
     }
