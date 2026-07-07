@@ -381,7 +381,8 @@ def register(mcp: FastMCP) -> None:
         for an AD-HOC subagent (you do NOT need to pre-create an agent to delegate
         genuinely separable work). You may choose the `brain` (codex|claude|api)
         and `model` it runs on, and give it a one-off `system_prompt` (its
-        role/instructions for the task). A stored agent's def fills any of these
+        role/instructions for the task). Don't just narrate that you delegated;
+        call this tool. A stored agent's def fills any of these
         you leave blank."""
         try:
             params = {"agent": name, "task": task}
