@@ -493,6 +493,116 @@ int main(int argc, char **argv)
         }
     }
 
+    // --- code-review finding 1 regression: fair round-robin injection across
+    // MULTIPLE mentioned agents sharing the same kMaxAgentInject budget -----
+    // Before the fix, agentRefsMentionedIn() had no ORDER BY and the
+    // injection loop fully drained one agent's own search() results before
+    // moving to the next, so an agent mentioned in the same sentence as
+    // another (with more stored rows) could get ZERO injected memories. Both
+    // agents below have MORE stored rows (3) than half of kMaxAgentInject
+    // (5), so both must get at least one row injected, not just the first.
+    {
+        QTemporaryDir tmpFair;
+        const QString dbPathFair = tmpFair.path() + QStringLiteral("/agent_fair.db");
+        MemoryStore s;
+        check(s.open(dbPathFair, QStringLiteral("mem-agent-fair-conn")), "agent-fair: store open");
+
+        QStringList hostARows, hostBRows;
+        for (int i = 0; i < 3; ++i) {
+            const QString id = s.add(QStringLiteral("hostA status line %1").arg(i),
+                                     {QStringLiteral("status")}, QString(),
+                                     QStringLiteral("agent"), QStringLiteral("hostA"));
+            check(!id.isEmpty(), "agent-fair: hostA memory added");
+            hostARows << id;
+        }
+        for (int i = 0; i < 3; ++i) {
+            const QString id = s.add(QStringLiteral("hostB status line %1").arg(i),
+                                     {QStringLiteral("status")}, QString(),
+                                     QStringLiteral("agent"), QStringLiteral("hostB"));
+            check(!id.isEmpty(), "agent-fair: hostB memory added");
+            hostBRows << id;
+        }
+
+        const auto pf = s.prefetch(QStringLiteral("let's check on hostA and hostB together"), 20);
+        int sawA = 0, sawB = 0;
+        for (const auto &r : pf) {
+            if (hostARows.contains(r.id)) ++sawA;
+            if (hostBRows.contains(r.id)) ++sawB;
+        }
+        check(sawA >= 1, "agent-fair: mentioning two agents still injects at least one hostA row");
+        check(sawB >= 1, "agent-fair: mentioning two agents still injects at least one hostB row");
+    }
+
+    // --- code-review finding 2 regression: prefetch() enforces its
+    // documented final ceiling (k + kMaxAgentInject + kMaxExpand) even in a
+    // worst case where every additive stage has candidates available at
+    // once: THREE mentioned agents (6 stored rows between them, more than
+    // kMaxAgentInject=5) AND graph-expansion siblings via a shared tag/topic
+    // entity (4 candidates, more than kMaxExpand=3). ------------------------
+    {
+        QTemporaryDir tmpCap;
+        const QString dbPathCap = tmpCap.path() + QStringLiteral("/agent_cap.db");
+        MemoryStore s;
+        check(s.open(dbPathCap, QStringLiteral("mem-agent-cap-conn")), "hard-cap: store open");
+
+        // Two base hits sharing a tag, so graph expansion has 4 sibling
+        // candidates to pull from (more than kMaxExpand=3).
+        const QString base1 = s.add(QStringLiteral("urgent rollout update for the team"),
+                                    {QStringLiteral("opsupdate")});
+        const QString base2 = s.add(QStringLiteral("another urgent rollout update today"),
+                                    {QStringLiteral("opsupdate")});
+        check(!base1.isEmpty() && !base2.isEmpty(), "hard-cap: two base memories added");
+        for (int i = 0; i < 4; ++i)
+            check(!s.add(QStringLiteral("sibling ops note %1").arg(i),
+                        {QStringLiteral("opsupdate")}).isEmpty(),
+                  "hard-cap: sibling ops memory added");
+
+        // Three mentioned agents, each with 2 rows (6 total > kMaxAgentInject=5).
+        for (const QString &host : {QStringLiteral("hostX"), QStringLiteral("hostY"), QStringLiteral("hostZ")}) {
+            for (int i = 0; i < 2; ++i)
+                check(!s.add(QStringLiteral("%1 status line %2").arg(host).arg(i),
+                            {QStringLiteral("status")}, QString(),
+                            QStringLiteral("agent"), host).isEmpty(),
+                      "hard-cap: agent memory added");
+        }
+
+        const auto pf = s.prefetch(
+            QStringLiteral("urgent rollout update -- check on hostX hostY hostZ"), 2);
+        // Documented ceiling: k(2) + kMaxAgentInject(5) + kMaxExpand(3) = 10.
+        check(pf.size() <= 10, "hard-cap: prefetch() never exceeds its documented k+8 ceiling");
+        check(pf.size() == 10,
+              "hard-cap: worst case actually reaches the ceiling (sanity: not silently under it)");
+    }
+
+    // --- code-review finding 3 regression: a hyphen-suffixed continuation
+    // must not satisfy the mention-boundary check for the shorter, unrelated
+    // agent name. Both "pve" and "pve-backup" are distinct registered agents;
+    // a message naming only "pve-backup" must inject ONLY pve-backup's
+    // memories. -------------------------------------------------------------
+    {
+        QTemporaryDir tmpHyphen;
+        const QString dbPathHyphen = tmpHyphen.path() + QStringLiteral("/agent_hyphen.db");
+        MemoryStore s;
+        check(s.open(dbPathHyphen, QStringLiteral("mem-agent-hyphen-conn")), "hyphen: store open");
+
+        const QString pveId = s.add(QStringLiteral("pve cpu load nominal"),
+                                    {QStringLiteral("status")}, QString(),
+                                    QStringLiteral("agent"), QStringLiteral("pve"));
+        const QString pveBackupId = s.add(QStringLiteral("pve-backup disk usage at 70 percent"),
+                                          {QStringLiteral("status")}, QString(),
+                                          QStringLiteral("agent"), QStringLiteral("pve-backup"));
+        check(!pveId.isEmpty() && !pveBackupId.isEmpty(), "hyphen: pve and pve-backup memories added");
+
+        const auto pf = s.prefetch(QStringLiteral("what's the disk usage on pve-backup"), 20);
+        bool sawPve = false, sawPveBackup = false;
+        for (const auto &r : pf) {
+            if (r.id == pveId) sawPve = true;
+            if (r.id == pveBackupId) sawPveBackup = true;
+        }
+        check(sawPveBackup, "hyphen: mentioning 'pve-backup' injects its own memory");
+        check(!sawPve, "hyphen: mentioning 'pve-backup' does NOT also match the unrelated 'pve' agent");
+    }
+
     // --- regression: migrate() against a genuinely pre-existing, already-
     // populated OLD-schema database (the real upgrade scenario: an existing
     // user's jarvis.db, created by code that predates the scope/entity_ref

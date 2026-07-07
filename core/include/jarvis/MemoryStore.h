@@ -113,21 +113,31 @@ public:
     QVector<MemoryRow> search(const QString &query, int limit = 20,
                               const QString &entityRef = QString());
 
-    // prefetch(query,k): the top-k relevant memories for a turn, used as the
-    // AUTOMATIC per-turn context injection (see ControlServer::
-    // prefetchMemoryBlock / memorySystemBlock — invoked on every ordinary chat
-    // turn, which usually has no notion of "which agent/machine" it belongs
-    // to). Empty query => the k most-recent memories (so a fresh turn still
-    // gets context). The baseline result set ALWAYS excludes scope=="agent"
-    // rows (including ones pulled in via graph expansion), so an unrelated
-    // turn gets zero agent-scoped noise. HOWEVER, if `query` names a known
-    // agent (its entity_ref appears as a whole word, case-insensitively —
-    // e.g. "let's check on pve") that agent's own scoped memories are merged
-    // back in too, bounded to a small additive cap (kMaxAgentInject in the
-    // .cpp) — so a conversation that's clearly about that machine recalls its
-    // facts automatically, without an explicit recall(agent=...)/
-    // search(entityRef=...) every time. list() is unaffected and always
-    // returns every row (raw/debug listing).
+    // prefetch(query,k): context for a turn, used as the AUTOMATIC per-turn
+    // context injection (see ControlServer::prefetchMemoryBlock /
+    // memorySystemBlock — invoked on every ordinary chat turn, which usually
+    // has no notion of "which agent/machine" it belongs to). Empty query =>
+    // the k most-recent memories (so a fresh turn still gets context). The
+    // baseline result set ALWAYS excludes scope=="agent" rows (including ones
+    // pulled in via graph expansion), so an unrelated turn gets zero
+    // agent-scoped noise. HOWEVER, if `query` names one or more known agents
+    // (an entity_ref appearing as its own token, hyphen-boundary aware, so
+    // e.g. "pve" does not also match "pve-backup" — see agentRefsMentionedIn()
+    // in the .cpp) those agents' own scoped memories are merged back in too,
+    // bounded to a small additive cap (kMaxAgentInject in the .cpp) that is
+    // shared and distributed FAIRLY (round-robin) across every mentioned
+    // agent, not first-come-first-served — so a conversation that's clearly
+    // about a machine recalls its facts automatically, without an explicit
+    // recall(agent=...)/search(entityRef=...) every time, and naming two
+    // agents in the same turn doesn't starve one of them of its share.
+    // Graph expansion (kMaxExpand in the .cpp) additionally folds in a
+    // bounded number of memories that share an entity with a top hit.
+    // CONTRACT / documented maximum: the returned vector is at most
+    // k (base) + kMaxAgentInject (agent-mention injection) + kMaxExpand
+    // (graph expansion) rows total — an explicit, enforced ceiling (truncated
+    // at the end of prefetch() if the additive stages ever combine to more),
+    // NOT a bare `k`. list() is unaffected and always returns every row
+    // (raw/debug listing).
     QVector<MemoryRow> prefetch(const QString &query, int k = 6);
 
     // Render a prefetch result as a system-prompt block to inject before a turn.
@@ -175,14 +185,27 @@ private:
     void autoExtractEntities(const QString &memId, const QString &text, const QStringList &tags);
     void backfillEntityExtraction();
     // Known agent entity_refs (i.e. every distinct entity_ref with at least
-    // one scope=="agent" memory row) that appear as a whole word,
-    // case-insensitively, in `query` — used by prefetch()'s mention-based
-    // auto-recall (see prefetch() doc comment above).
+    // one scope=="agent" memory row) that appear as their own token,
+    // case-insensitively and hyphen-boundary aware (so "pve" does not match
+    // inside "pve-backup"), in `query` — used by prefetch()'s mention-based
+    // auto-recall (see prefetch() doc comment above). Returned sorted
+    // (alphabetically) for deterministic, fair round-robin injection when
+    // multiple agents are mentioned in the same call. Short-circuits to an
+    // empty list, with NO query and NO regex work, when
+    // m_hasAgentScopedRows is false (the common case: no agent-scoped memory
+    // has ever been stored), so a chat turn never pays for a full table scan
+    // it can't possibly need.
     QStringList agentRefsMentionedIn(const QString &query);
 
     QSqlDatabase m_db;
     QString m_connectionName;
     QString m_lastError;
+    // Cheap short-circuit for agentRefsMentionedIn(): true once ANY
+    // scope=="agent" memory has ever been written via add() (monotonic —
+    // never flipped back to false on removal, which only costs an
+    // occasional redundant-but-harmless query, never a correctness bug).
+    // Initialized once at open() time via a single SELECT EXISTS(...) check.
+    bool m_hasAgentScopedRows = false;
 };
 
 } // namespace jarvis
