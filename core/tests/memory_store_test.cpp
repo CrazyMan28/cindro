@@ -498,9 +498,14 @@ int main(int argc, char **argv)
     // Before the fix, agentRefsMentionedIn() had no ORDER BY and the
     // injection loop fully drained one agent's own search() results before
     // moving to the next, so an agent mentioned in the same sentence as
-    // another (with more stored rows) could get ZERO injected memories. Both
-    // agents below have MORE stored rows (3) than half of kMaxAgentInject
-    // (5), so both must get at least one row injected, not just the first.
+    // another could get ZERO injected memories under a first-come-first-
+    // served scheme. hostA below has 6 stored rows — MORE than the entire
+    // kMaxAgentInject (5) budget — so a greedy "drain agent 1 fully, then
+    // move to agent 2" implementation would consume the whole cap on hostA
+    // alone if it's processed first, leaving hostB with 0. hostB has only 2
+    // rows, well under half the cap. Only genuine round-robin injection
+    // guarantees hostB still gets at least one row despite hostA alone being
+    // able to exhaust the entire budget.
     {
         QTemporaryDir tmpFair;
         const QString dbPathFair = tmpFair.path() + QStringLiteral("/agent_fair.db");
@@ -508,14 +513,14 @@ int main(int argc, char **argv)
         check(s.open(dbPathFair, QStringLiteral("mem-agent-fair-conn")), "agent-fair: store open");
 
         QStringList hostARows, hostBRows;
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 6; ++i) {
             const QString id = s.add(QStringLiteral("hostA status line %1").arg(i),
                                      {QStringLiteral("status")}, QString(),
                                      QStringLiteral("agent"), QStringLiteral("hostA"));
             check(!id.isEmpty(), "agent-fair: hostA memory added");
             hostARows << id;
         }
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 2; ++i) {
             const QString id = s.add(QStringLiteral("hostB status line %1").arg(i),
                                      {QStringLiteral("status")}, QString(),
                                      QStringLiteral("agent"), QStringLiteral("hostB"));
@@ -530,7 +535,7 @@ int main(int argc, char **argv)
             if (hostBRows.contains(r.id)) ++sawB;
         }
         check(sawA >= 1, "agent-fair: mentioning two agents still injects at least one hostA row");
-        check(sawB >= 1, "agent-fair: mentioning two agents still injects at least one hostB row");
+        check(sawB >= 1, "agent-fair: hostA alone can exhaust the cap, but hostB still gets injected");
     }
 
     // --- code-review finding 2 regression: prefetch() enforces its
