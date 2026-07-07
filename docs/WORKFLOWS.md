@@ -5,22 +5,31 @@ Two thin extensions to Jarvis's existing memory + scheduler.
 ## Agent-scoped memory
 
 `remember`/`recall` gained an optional `agent` argument (an agent name or a
-paired-machine id, e.g. `ci-runner-104`).
+paired-machine id, e.g. `ci-runner-104`). Agent memory is isolated by
+default — think of it as its own file per agent, not a tag on the global
+pool — with one deliberate exception for conversations that are clearly
+*about* that agent:
 
 - `remember(text, tags=[], agent="ci-runner-104")` stores the fact scoped to
   that agent (SQLite `scope="agent"`, `entity_ref="ci-runner-104"`).
 - `recall(query, agent="ci-runner-104")` returns ONLY that agent's memories.
 - `recall(agent="ci-runner-104")` (empty query) returns that agent's recent
   state — the basis of the condition-polling pattern below.
-- Omitting `agent` preserves the original global behavior exactly.
-- The automatic per-turn memory context (`prefetch()`, what the daemon
-  silently prepends to every ordinary chat turn) also respects agent
-  scoping **by default**: agent-scoped facts never surface as ambient
-  background context in an unrelated conversation. They only ever come
-  back through an explicit `recall(agent=...)` (or `search(entityRef=...)`)
-  call. This only affects the automatic background-context path — it
-  doesn't change what `recall`/`search` return when you call them
-  yourself.
+- **Omitting `agent` excludes agent-scoped facts entirely.** `recall(query)`
+  and `search(query)` with no `agent`/`entityRef` never return agent-scoped
+  rows — an unrelated chat has no way to see them. This applies to both the
+  explicit `recall`/`search` tools and the automatic per-turn memory context
+  (`prefetch()`, what the daemon silently prepends to every ordinary chat
+  turn).
+- **Exception — mention-based auto-recall.** If the current turn's text
+  mentions a known agent by name (whole-word match against any `entity_ref`
+  that has at least one stored agent-scoped memory), `prefetch()`
+  automatically pulls that agent's own memories into context too, on top of
+  the normal global ones — so a chat that says "check on `ci-runner-104`"
+  sees its scoped history without an explicit `recall(agent=...)` call. This
+  only affects the automatic background-context path; it's bounded to a
+  small number of extra rows and only kicks in for names that already have
+  stored agent memory.
 
 ## Workflows
 
