@@ -263,6 +263,148 @@ int main(int argc, char **argv)
         check(sid.has_value() && fireCount == 2, "workflow: runNow fires the webhook workflow");
     }
 
+    // --- schedule.update: partial-update semantics -------------------------
+    {
+        QTemporaryDir tmp;
+        const QString dbPath = tmp.path() + QStringLiteral("/update_test.db");
+        Scheduler sched;
+        check(sched.open(dbPath, QStringLiteral("update-test-conn")),
+              "update: scheduler open");
+
+        const QString id = sched.create(
+            QStringLiteral("orig-name"), QStringLiteral("every 5m"),
+            QStringLiteral("orig prompt"), QStringLiteral("codex"),
+            QStringLiteral("orig-model"), QStringLiteral("coder"), true,
+            QStringLiteral("orig-target"), QStringLiteral("orig-thread"));
+        check(!id.isEmpty(), "update: schedule created");
+
+        // Update ONLY the prompt: cron/model/name/etc must be unchanged.
+        check(sched.update(id, std::nullopt, std::nullopt,
+                          QString(QStringLiteral("new prompt"))),
+              "update: prompt-only update succeeds");
+        {
+            auto row = sched.get(id);
+            check(row && row->prompt == QStringLiteral("new prompt"),
+                  "update: prompt changed");
+            check(row && row->cron == QStringLiteral("every 5m"),
+                  "update: prompt-only update leaves cron unchanged");
+            check(row && row->model == QStringLiteral("orig-model"),
+                  "update: prompt-only update leaves model unchanged");
+            check(row && row->name == QStringLiteral("orig-name"),
+                  "update: prompt-only update leaves name unchanged");
+            check(row && row->targetRef == QStringLiteral("orig-target"),
+                  "update: prompt-only update leaves target unchanged");
+        }
+
+        // Update ONLY the model: prompt/cron must stay exactly as set above.
+        check(sched.update(id, std::nullopt, std::nullopt, std::nullopt,
+                          std::nullopt, QString(QStringLiteral("new-model"))),
+              "update: model-only update succeeds");
+        {
+            auto row = sched.get(id);
+            check(row && row->model == QStringLiteral("new-model"),
+                  "update: model changed");
+            check(row && row->prompt == QStringLiteral("new prompt"),
+                  "update: model-only update leaves prompt (from prior update) unchanged");
+            check(row && row->cron == QStringLiteral("every 5m"),
+                  "update: model-only update leaves cron unchanged");
+        }
+
+        // Update the cron: next_run must be recomputed from the new expression.
+        {
+            auto before = sched.get(id);
+            check(sched.update(id, std::nullopt,
+                              QString(QStringLiteral("every 1m"))),
+                  "update: cron update succeeds");
+            auto after = sched.get(id);
+            check(after && after->cron == QStringLiteral("every 1m"),
+                  "update: cron changed");
+            check(after && before && after->nextRun != before->nextRun,
+                  "update: changing cron recomputes next_run");
+        }
+
+        // webhook_token is never touched by update (no parameter accepts it).
+        check(sched.get(id) && sched.get(id)->webhookToken.isEmpty(),
+              "update: webhook_token stays empty/untouched (no such param exists)");
+
+        // Unknown id fails.
+        check(!sched.update(QStringLiteral("sched_nope"), std::nullopt, std::nullopt,
+                           QString(QStringLiteral("x"))),
+              "update: unknown id returns false");
+
+        // An unparseable new cron is rejected and leaves the row untouched.
+        {
+            auto before = sched.get(id);
+            check(!sched.update(id, std::nullopt, QString(QStringLiteral("whenever"))),
+                  "update: unparseable cron rejected");
+            auto after = sched.get(id);
+            check(after && before && after->cron == before->cron,
+                  "update: rejected cron leaves the row's cron unchanged");
+        }
+
+        // A blank name falls back to the row's (current) cron, mirroring
+        // create()'s "name.isEmpty() ? cronExpr : name" convention — a
+        // schedule row's name must never end up blank.
+        {
+            check(sched.update(id, QString()), "update: blank-name update succeeds");
+            auto row = sched.get(id);
+            check(row && !row->name.isEmpty() && row->name == row->cron,
+                  "update: blank name falls back to the row's cron, never stored blank");
+        }
+
+        // Changing cron AND blanking name in the SAME call: the fallback must
+        // use the NEW cron, not the stale pre-update one.
+        {
+            check(sched.update(id, QString(), QString(QStringLiteral("every 7m"))),
+                  "update: simultaneous cron-change + blank-name update succeeds");
+            auto row = sched.get(id);
+            check(row && row->cron == QStringLiteral("every 7m"),
+                  "update: cron changed in the combined call");
+            check(row && row->name == QStringLiteral("every 7m"),
+                  "update: blank-name fallback reflects the NEW cron, not the stale one");
+        }
+    }
+
+    // --- schedule.update: cannot convert a token-less row to webhook --------
+    {
+        QTemporaryDir tmp;
+        const QString dbPath = tmp.path() + QStringLiteral("/update_webhook_test.db");
+        Scheduler sched;
+        check(sched.open(dbPath, QStringLiteral("update-webhook-test-conn")),
+              "update-webhook: scheduler open");
+
+        // A plain cron schedule with NO webhook token.
+        const QString id = sched.create(QStringLiteral("plain"), QStringLiteral("every 5m"),
+                                        QStringLiteral("do thing"));
+        check(!id.isEmpty(), "update-webhook: plain schedule created");
+
+        // Attempting to flip its trigger to "webhook" via update must be
+        // rejected — there is no way to mint a token through update() (it
+        // takes no webhookToken parameter at all), so silently allowing this
+        // would produce a permanently unfireable webhook workflow.
+        check(!sched.update(id, std::nullopt, QString(QStringLiteral("webhook"))),
+              "update-webhook: converting a token-less row to webhook is rejected");
+        auto row = sched.get(id);
+        check(row && row->cron == QStringLiteral("every 5m"),
+              "update-webhook: rejected conversion leaves the row's cron unchanged");
+
+        // A row created WITH a webhook token can still have its cron updated
+        // to something else (moving away from webhook is fine — the token
+        // just goes dormant, no security or correctness issue).
+        const QString wid = sched.create(QStringLiteral("hook"), QStringLiteral("webhook"),
+                                         QStringLiteral("handle it"), QString(), QString(),
+                                         QString(), true, QString(), QString(),
+                                         QStringLiteral("tok-abc"));
+        check(!wid.isEmpty(), "update-webhook: webhook schedule created");
+        check(sched.update(wid, std::nullopt, QString(QStringLiteral("every 10m"))),
+              "update-webhook: moving an existing webhook row AWAY from webhook is allowed");
+        auto wrow = sched.get(wid);
+        check(wrow && wrow->cron == QStringLiteral("every 10m"),
+              "update-webhook: cron changed away from webhook");
+        check(wrow && wrow->webhookToken == QStringLiteral("tok-abc"),
+              "update-webhook: the now-dormant token is left untouched (still stored, just unused)");
+    }
+
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

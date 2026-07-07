@@ -96,6 +96,27 @@ const GLYPHS: Record<string, (ctx: CanvasRenderingContext2D) => void> = {
     ctx.moveTo(9, 9); ctx.lineTo(9, 4.5)
     ctx.moveTo(9, 9); ctx.lineTo(12.5, 10.5); ctx.stroke()
   },
+  workflows: (ctx) => {
+    // Three linked nodes with a directional arrow-chain between them — a
+    // managed pipeline of triggered jobs, distinct from schedules' single
+    // clock-face glyph.
+    ctx.beginPath(); ctx.arc(3.2, 9, 2, 0, Math.PI * 2); ctx.stroke()
+    ctx.beginPath(); ctx.arc(9, 5, 2, 0, Math.PI * 2); ctx.stroke()
+    ctx.beginPath(); ctx.arc(14.8, 9, 2, 0, Math.PI * 2); ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(5.1, 8.1); ctx.lineTo(7.1, 6)
+    ctx.moveTo(10.9, 6); ctx.lineTo(12.9, 8.1)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(6.1, 6.9); ctx.lineTo(7.1, 6); ctx.lineTo(7.5, 7.3)
+    ctx.moveTo(11.9, 6.9); ctx.lineTo(12.9, 8.1); ctx.lineTo(11.6, 8.0)
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(5.2, 11.5); ctx.quadraticCurveTo(9, 15.5, 12.8, 11.5); ctx.stroke()
+    ctx.beginPath()
+    ctx.moveTo(11.5, 12.6); ctx.lineTo(12.8, 11.5); ctx.lineTo(12.9, 13.2)
+    ctx.stroke()
+  },
   activity: (ctx) => {
     ctx.beginPath()
     ctx.moveTo(1.5, 9); ctx.lineTo(5, 9); ctx.lineTo(7, 3.5)

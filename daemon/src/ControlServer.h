@@ -431,6 +431,7 @@ private:
     Response handleScheduleCreate(const Request &req);
     Response handleScheduleList(const Request &req);
     Response handleScheduleSetEnabled(const Request &req);
+    Response handleScheduleUpdate(const Request &req);
     Response handleScheduleRemove(const Request &req);
     Response handleScheduleRunNow(const Request &req);
     Response handleScheduleWebhookToken(const Request &req);

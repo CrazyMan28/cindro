@@ -7,6 +7,9 @@
 //   schedule.list   -> {schedules:[{id,name,cron,next_run,last_run,enabled}]}
 //   schedule.set_enabled{id,enabled}
 //   schedule.remove{id}
+//   schedule.update{id,name?,cron?,prompt?,brain?,model?,profile?,target?,report_thread?}
+//                   -> {ok} (a PARTIAL update: omitted fields are left unchanged;
+//                   webhook_token is never editable here)
 //
 // Supported `when`/`cron` syntaxes (CronSpec):
 //   - "every Nm" / "every N minutes" / "every Nh" / "every Ns"  (interval)
@@ -123,6 +126,23 @@ public:
     std::optional<ScheduleRow> get(const QString &id);
     bool setEnabled(const QString &id, bool enabled);
     bool remove(const QString &id);
+
+    // Partial update: only fields whose optional is engaged (has_value())
+    // are changed; everything else (including webhookToken, which is never
+    // updatable here — it stays immutable once minted) is left as-is. A
+    // changed `cron` re-parses and recomputes next_run the same way create()
+    // does (respecting the row's current enabled state); an unset cron
+    // leaves next_run untouched. Returns false for an unknown id or an
+    // unparseable new cron expression (see lastError()).
+    bool update(const QString &id,
+                const std::optional<QString> &name = std::nullopt,
+                const std::optional<QString> &cronExpr = std::nullopt,
+                const std::optional<QString> &prompt = std::nullopt,
+                const std::optional<QString> &brain = std::nullopt,
+                const std::optional<QString> &model = std::nullopt,
+                const std::optional<QString> &profile = std::nullopt,
+                const std::optional<QString> &targetRef = std::nullopt,
+                const std::optional<QString> &reportThread = std::nullopt);
 
     // Run one scheduling pass now (also called by the tick). Fires every enabled
     // job whose next_run <= now, updates last_run/next_run. Returns the number of

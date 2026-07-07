@@ -89,6 +89,39 @@ def workflow_create(name: str, trigger: str, prompt: str, brain: str = "",
         return _err(exc)
 
 
+def workflow_update(id: str, name: str = "", trigger: str = "", prompt: str = "",
+                    brain: str = "", model: str = "", target: str = "",
+                    report_thread: str = "") -> str:
+    """Edit an existing Workflow (from workflow_list) IN PLACE. Every argument
+    besides `id` is OPTIONAL and defaults to "" meaning "don't change this
+    field" — only pass the fields you actually want to change. `trigger`
+    follows the same syntax as workflow_create (a cron / "every Nm" / "at
+    HH:MM" / the literal "webhook"). The workflow's webhook token (if any) is
+    never editable here — it stays fixed once minted. Returns {ok}."""
+    try:
+        if not id.strip():
+            return _err(ValueError("id is required"))
+        params: dict = {"id": id}
+        if name:
+            params["name"] = name
+        if trigger:
+            params["cron"] = trigger
+        if prompt:
+            params["prompt"] = prompt
+        if brain:
+            params["brain"] = brain
+        if model:
+            params["model"] = model
+        if target:
+            params["target"] = target
+        if report_thread:
+            params["report_thread"] = report_thread
+        res = daemon_client.call("schedule.update", params)
+        return json.dumps({"ok": bool(res.get("ok", False))})
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 def workflow_list() -> str:
     """List all Workflows (id, name, trigger, target, report_thread, brain,
     model, next_run, last_run, enabled)."""
@@ -196,4 +229,5 @@ def register_webhook_route(app: FastAPI) -> None:
 def register(mcp: FastMCP) -> None:
     mcp.tool()(workflow_create)
     mcp.tool()(workflow_list)
+    mcp.tool()(workflow_update)
     mcp.tool()(workflow_delete)
