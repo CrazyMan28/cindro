@@ -389,8 +389,13 @@ int main(int argc, char **argv)
               "update-webhook: rejected conversion leaves the row's cron unchanged");
 
         // A row created WITH a webhook token can still have its cron updated
-        // to something else (moving away from webhook is fine — the token
-        // just goes dormant, no security or correctness issue).
+        // to something else (moving away from webhook is fine) — but the
+        // stored token MUST be invalidated in the same update. Nothing
+        // downstream (fire_webhook() in tools_workflows.py) ever re-checks
+        // the row's current trigger kind before honoring a stored token — it
+        // only checks token-match + enabled — so leaving the token live
+        // would let a holder of the old webhook URL keep firing the
+        // "converted" row forever.
         const QString wid = sched.create(QStringLiteral("hook"), QStringLiteral("webhook"),
                                          QStringLiteral("handle it"), QString(), QString(),
                                          QString(), true, QString(), QString(),
@@ -401,8 +406,37 @@ int main(int argc, char **argv)
         auto wrow = sched.get(wid);
         check(wrow && wrow->cron == QStringLiteral("every 10m"),
               "update-webhook: cron changed away from webhook");
-        check(wrow && wrow->webhookToken == QStringLiteral("tok-abc"),
-              "update-webhook: the now-dormant token is left untouched (still stored, just unused)");
+        check(wrow && wrow->webhookToken.isEmpty(),
+              "update-webhook: converting away from webhook clears the now-dead token");
+
+        // Converting BACK to webhook via update() alone must still be
+        // rejected — the token is now empty (cleared above), so the
+        // existing token-less guard applies exactly as it would for any
+        // other never-had-a-token row. Minting a fresh token requires
+        // workflow_create, not update().
+        check(!sched.update(wid, std::nullopt, QString(QStringLiteral("webhook"))),
+              "update-webhook: converting back to webhook after the token was cleared is rejected");
+        auto wrow2 = sched.get(wid);
+        check(wrow2 && wrow2->cron == QStringLiteral("every 10m"),
+              "update-webhook: rejected re-conversion leaves cron unchanged");
+        check(wrow2 && wrow2->webhookToken.isEmpty(),
+              "update-webhook: rejected re-conversion leaves the token empty (not resurrected)");
+
+        // A non-cron update (e.g. a rename) on a row that is STILL a webhook
+        // trigger must NOT clear its token — only a cron change that actually
+        // converts the trigger away from webhook does.
+        const QString wid2 = sched.create(QStringLiteral("hook2"), QStringLiteral("webhook"),
+                                          QStringLiteral("handle it 2"), QString(), QString(),
+                                          QString(), true, QString(), QString(),
+                                          QStringLiteral("tok-def"));
+        check(!wid2.isEmpty(), "update-webhook: second webhook schedule created");
+        check(sched.update(wid2, QString(QStringLiteral("renamed hook"))),
+              "update-webhook: name-only update on a still-webhook row succeeds");
+        auto wrow3 = sched.get(wid2);
+        check(wrow3 && wrow3->cron == QStringLiteral("webhook"),
+              "update-webhook: name-only update leaves the trigger as webhook");
+        check(wrow3 && wrow3->webhookToken == QStringLiteral("tok-def"),
+              "update-webhook: name-only update leaves the still-live token intact");
     }
 
     if (g_failures) {

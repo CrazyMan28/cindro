@@ -128,12 +128,17 @@ public:
     bool remove(const QString &id);
 
     // Partial update: only fields whose optional is engaged (has_value())
-    // are changed; everything else (including webhookToken, which is never
-    // updatable here — it stays immutable once minted) is left as-is. A
-    // changed `cron` re-parses and recomputes next_run the same way create()
-    // does (respecting the row's current enabled state); an unset cron
-    // leaves next_run untouched. Returns false for an unknown id or an
-    // unparseable new cron expression (see lastError()).
+    // are changed; everything else is left as-is. A changed `cron`
+    // re-parses and recomputes next_run the same way create() does
+    // (respecting the row's current enabled state); an unset cron leaves
+    // next_run untouched. webhookToken can never be SET/minted through this
+    // call (there is no such parameter — only create() mints one, and
+    // converting a token-less row's trigger to "webhook" is rejected
+    // outright); but if the row's CURRENT trigger is "webhook" and the new
+    // `cronExpr` converts it away from "webhook", the stored token IS
+    // cleared as a side effect, so a stale webhook URL/token can never keep
+    // firing a row that is no longer webhook-triggered. Returns false for an
+    // unknown id or an unparseable new cron expression (see lastError()).
     bool update(const QString &id,
                 const std::optional<QString> &name = std::nullopt,
                 const std::optional<QString> &cronExpr = std::nullopt,

@@ -144,6 +144,14 @@ function Workflows() {
   const [edit, setEdit] = createSignal<EditState | null>(null)
   const [savingEdit, setSavingEdit] = createSignal(false)
   const [editError, setEditError] = createSignal("")
+  // The trigger text as it was WHEN THE EDIT PANEL OPENED (not re-derived from
+  // `edit()`, which mutates as the user types). saveEdit() only sends `cron`
+  // to schedule.update when the current trigger text differs from this — see
+  // saveEdit's comment for why: unconditionally resending an unchanged
+  // trigger makes handleScheduleUpdate/Scheduler::update() re-parse + recompute
+  // next_run from now(), silently delaying an interval workflow's next fire by
+  // up to a full interval on every unrelated edit (e.g. a rename).
+  const [editOriginalTrigger, setEditOriginalTrigger] = createSignal("")
 
   // --- create composer -------------------------------------------------------
   const [composing, setComposing] = createSignal(false)
@@ -302,12 +310,14 @@ function Workflows() {
     setEditError("")
     setEditingId(row.id)
     setEdit(toEditState(row))
+    setEditOriginalTrigger((row.cron ?? "").trim())
   }
 
   const cancelEdit = () => {
     setEditingId("")
     setEdit(null)
     setEditError("")
+    setEditOriginalTrigger("")
   }
 
   const saveEdit = (id: string) =>
@@ -321,27 +331,35 @@ function Workflows() {
       setSavingEdit(true)
       setEditError("")
       try {
-        await app.client.call(
-          "schedule.update",
-          {
-            id,
-            name: e.name.trim(),
-            cron: e.triggerText.trim(),
-            prompt: e.prompt.trim(),
-            brain: e.brain,
-            model: e.model.trim(),
-            target: e.target.trim(),
-            // Unlike the CREATE composer (which forces the "Workflows"
-            // default on a blank field, matching workflow_create's own
-            // behavior for a brand new row), an explicit blank here is sent
-            // AS-IS: ControlServer::fireScheduledJob treats an empty
-            // reportThread as "post no completion report", and this is the
-            // only UI path that can deliberately turn that off once a report
-            // thread has ever been set.
-            report_thread: e.reportThread.trim(),
-          },
-          15000,
-        )
+        const params: Record<string, unknown> = {
+          id,
+          name: e.name.trim(),
+          prompt: e.prompt.trim(),
+          brain: e.brain,
+          model: e.model.trim(),
+          target: e.target.trim(),
+          // Unlike the CREATE composer (which forces the "Workflows"
+          // default on a blank field, matching workflow_create's own
+          // behavior for a brand new row), an explicit blank here is sent
+          // AS-IS: ControlServer::fireScheduledJob treats an empty
+          // reportThread as "post no completion report", and this is the
+          // only UI path that can deliberately turn that off once a report
+          // thread has ever been set.
+          report_thread: e.reportThread.trim(),
+        }
+        // Only send `cron` when the trigger text actually changed from what
+        // it was when the edit panel opened. handleScheduleUpdate treats ANY
+        // non-empty cron/when as "the caller wants to change this" and
+        // Scheduler::update() then re-parses it and recomputes next_run from
+        // now() — for an interval trigger (the default and what the "Monitor
+        // a condition" preset uses) that discards whatever time was actually
+        // left until the next fire. Omitting the key entirely (matching
+        // handleScheduleUpdate's "omitted key = don't touch this field"
+        // convention already used for the other optional fields here) leaves
+        // next_run untouched when the user only edited something else.
+        const trigger = e.triggerText.trim()
+        if (trigger !== editOriginalTrigger()) params.cron = trigger
+        await app.client.call("schedule.update", params, 15000)
         app.notify("Workflow updated.", "info")
         cancelEdit()
         await load()
@@ -503,6 +521,7 @@ function Workflows() {
         .wf-webhook-hint code { font-family: var(--font-mono); color: var(--text-muted); }
 
         .setup-error { color: var(--danger); font-size: 12px; border: 1px solid var(--danger-dim); background: rgba(255,107,107,0.06); border-radius: var(--radius-xs); padding: 8px 10px; }
+        .wf-convert-warning { color: var(--amber, var(--accent-bright)); font-size: 12px; line-height: 1.4; border: 1px solid var(--amber-dim, var(--accent-dim)); background: rgba(255,193,7,0.08); border-radius: var(--radius-xs); padding: 8px 10px; }
       `}</style>
 
       <div class="card wf-hero">
@@ -775,6 +794,17 @@ function Workflows() {
                             <input type="text" value={e().triggerText} onInput={(ev) => setEdit({ ...e(), triggerText: ev.currentTarget.value })} />
                           </div>
                         </div>
+                        {/* This row's ORIGINAL trigger (row.cron, not the in-progress edit
+                            text) is webhook, and the pending edit would move it to something
+                            else — saving invalidates its stored token server-side (see
+                            Scheduler::update()'s conversion-away-from-webhook clearing), so
+                            warn before that happens instead of the token silently going dead. */}
+                        <Show when={isWebhook() && !isWebhookCron(e().triggerText)}>
+                          <div class="wf-convert-warning">
+                            ⚠ Changing this workflow's trigger away from webhook will invalidate its
+                            existing webhook token — anything using the old URL will stop working.
+                          </div>
+                        </Show>
                         <div class="wf-field">
                           <label>PROMPT</label>
                           <textarea value={e().prompt} onInput={(ev) => setEdit({ ...e(), prompt: ev.currentTarget.value })} />

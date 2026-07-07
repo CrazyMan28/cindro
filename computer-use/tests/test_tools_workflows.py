@@ -235,6 +235,20 @@ def test_fire_webhook_disabled_workflow_403_even_with_valid_token():
     assert "schedule.run_now" not in calls
 
 
+def test_fire_webhook_rejects_stale_token_after_trigger_converted_away_from_webhook():
+    # Regression for the bug where converting a workflow's trigger away from
+    # "webhook" via Scheduler::update() left webhookToken untouched in the DB,
+    # so a presenter of the old URL/token could keep firing the "converted"
+    # row forever. Scheduler::update() now clears webhook_token in the same
+    # update, so schedule.webhook_token subsequently returns token:"" for
+    # that (now non-webhook) row — fire_webhook must treat a still-presented
+    # old token exactly like "no such webhook workflow" (404), not honor it.
+    with patch.object(tools_workflows.daemon_client, "call",
+                      return_value={"token": "", "enabled": True}):
+        status, body = tools_workflows.fire_webhook("w1", "old-stale-token-from-before-conversion")
+    assert status == 404
+
+
 def test_fire_webhook_disabled_workflow_403_does_not_leak_token():
     with patch.object(tools_workflows.daemon_client, "call",
                       return_value={"token": _LEAK_TOKEN, "enabled": False}):

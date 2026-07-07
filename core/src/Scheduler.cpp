@@ -529,20 +529,37 @@ bool Scheduler::update(const QString &id, const std::optional<QString> &name,
             m_lastError = QStringLiteral("unrecognized schedule expression: ") + *cronExpr;
             return false;
         }
-        // webhook_token is immutable and only ever minted by create() (see the
-        // class comment / the constructor param list above, which has no
-        // webhookToken parameter at all). A row with no stored token can never
-        // legitimately become a webhook trigger via update — doing so would
-        // silently produce an unfireable webhook (fire_webhook() in
-        // tools_workflows.py always 404s with no stored token to compare
-        // against), with no way to mint one after the fact short of deleting
-        // and recreating the row. Reject the conversion outright instead.
+        // webhook_token is only ever MINTED by create() (see the class comment
+        // / the constructor param list above, which has no webhookToken
+        // parameter at all). A row with no stored token can never legitimately
+        // become a webhook trigger via update — doing so would silently
+        // produce an unfireable webhook (fire_webhook() in tools_workflows.py
+        // always 404s with no stored token to compare against), with no way
+        // to mint one after the fact short of deleting and recreating the
+        // row. Reject the conversion outright instead.
         if (spec.kind == CronSpec::Kind::Webhook && r.webhookToken.isEmpty()) {
             m_lastError = QStringLiteral(
                 "cannot change trigger to webhook via update — webhook tokens "
                 "are minted only at creation (use workflow_create instead)");
             return false;
         }
+        // The REVERSE direction: converting a row's trigger AWAY from webhook
+        // must invalidate its stored token in the SAME update. Nothing
+        // downstream (fire_webhook() in tools_workflows.py, via
+        // schedule.webhook_token) ever re-checks the row's current trigger
+        // kind before honoring a stored token — it only checks token-match +
+        // enabled. Left untouched, the old token/URL would keep firing this
+        // row indefinitely even after it's no longer "a webhook workflow", and
+        // if the row also has no target/report_thread it silently vanishes
+        // from the Workflows web page's isWorkflowShaped filter, leaving the
+        // owner with no UI surface to even discover/revoke it. Compare against
+        // the row's CURRENT (pre-update) cron, not the new `spec`, and clear
+        // (not merely leave stored) the token so the existing token-less
+        // guard above correctly rejects a later webhook -> other -> webhook
+        // round trip via update() alone (re-minting requires workflow_create).
+        const CronSpec currentSpec = CronSpec::parse(row->cron);
+        if (currentSpec.kind == CronSpec::Kind::Webhook && spec.kind != CronSpec::Kind::Webhook)
+            r.webhookToken.clear();
         r.cron = spec.raw;
         const QDateTime next = spec.nextAfter(QDateTime::currentDateTime());
         r.nextRun = (r.enabled && next.isValid()) ? next.toMSecsSinceEpoch() : 0;
@@ -569,7 +586,7 @@ bool Scheduler::update(const QString &id, const std::optional<QString> &name,
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
         "UPDATE schedules SET name=?, cron=?, prompt=?, brain=?, model=?, profile=?,"
-        " next_run=?, target_ref=?, report_thread=? WHERE id=?"));
+        " next_run=?, target_ref=?, report_thread=?, webhook_token=? WHERE id=?"));
     q.addBindValue(r.name);
     q.addBindValue(r.cron);
     q.addBindValue(r.prompt);
@@ -579,6 +596,7 @@ bool Scheduler::update(const QString &id, const std::optional<QString> &name,
     q.addBindValue(r.nextRun);
     q.addBindValue(r.targetRef);
     q.addBindValue(r.reportThread);
+    q.addBindValue(r.webhookToken);
     q.addBindValue(id);
     if (!q.exec()) {
         m_lastError = q.lastError().text();

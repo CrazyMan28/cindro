@@ -94,10 +94,22 @@ def workflow_update(id: str, name: str = "", trigger: str = "", prompt: str = ""
                     report_thread: str = "") -> str:
     """Edit an existing Workflow (from workflow_list) IN PLACE. Every argument
     besides `id` is OPTIONAL and defaults to "" meaning "don't change this
-    field" — only pass the fields you actually want to change. `trigger`
+    field" — only pass the fields you actually want to change. This is an
+    intentional design choice mirroring workflow_create's own "empty =
+    default" convention, NOT a bug: an empty `brain`/`model`/`target`/
+    `report_thread` NEVER clears that field, and there is currently no way to
+    clear any of these four fields back to blank through this tool at all
+    (delete and recreate the workflow if you genuinely need that). `trigger`
     follows the same syntax as workflow_create (a cron / "every Nm" / "at
-    HH:MM" / the literal "webhook"). The workflow's webhook token (if any) is
-    never editable here — it stays fixed once minted. Returns {ok}."""
+    HH:MM" / the literal "webhook") — EXCEPT passing trigger="webhook" for an
+    existing NON-webhook workflow is rejected server-side: webhook tokens are
+    minted only by workflow_create, so converting a row's trigger to
+    "webhook" here always fails; call workflow_create for a fresh webhook
+    workflow instead. The workflow's existing webhook token (if any) is never
+    editable here — it stays fixed once minted, EXCEPT that converting the
+    trigger AWAY from "webhook" invalidates (clears) it server-side, since a
+    row that is no longer webhook-triggered must not leave a still-live
+    token/URL behind. Returns {ok}."""
     try:
         if not id.strip():
             return _err(ValueError("id is required"))
