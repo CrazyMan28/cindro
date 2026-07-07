@@ -4745,7 +4745,7 @@ void ControlServer::seedInternalDocsSkill()
     // installs pick up new capabilities — but never clobber a user's own skills.
     // If internal_docs exists and already carries the current marker, skip;
     // otherwise (absent OR stale) refresh it.
-    const QString kMarker = QStringLiteral("[catalog v3]");
+    const QString kMarker = QStringLiteral("[catalog v4]");
     if (auto existing = m_skills.get(QStringLiteral("internal_docs"))) {
         QFile f(existing->path);
         if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -4757,7 +4757,7 @@ void ControlServer::seedInternalDocsSkill()
         m_skills.remove(QStringLiteral("internal_docs")); // stale builtin -> refresh
     }
     const QString body = QStringLiteral(
-        "[catalog v3] When the user asks what you can do, your features, how to do "
+        "[catalog v4] When the user asks what you can do, your features, how to do "
         "something with you, or you're unsure you're capable of something, use THIS as "
         "the source of truth for Jarvis's capabilities. Tell them what fits + offer to "
         "do it.\n\n"
@@ -4783,9 +4783,16 @@ void ControlServer::seedInternalDocsSkill()
         "**Agents / subagents** — define specialists (agent_create) and delegate sub-tasks "
         "(agent_start) that run as their own child sessions; agent_wait blocks for the "
         "result, agent_result/agent_status check them. (docs/AGENTS_AND_COMMANDS.md)\n"
-        "**Memory** — long-term memory: remember/recall/list_memories/edit_memory/forget.\n"
+        "**Memory** — long-term memory: remember/recall/list_memories/edit_memory/forget. "
+        "Pass `agent` (a paired machine or agent name) to remember/recall to scope a fact "
+        "to that agent — it stays isolated from unrelated chats, but auto-surfaces when a "
+        "conversation mentions that agent by name.\n"
         "**Schedules** — run tasks later or on a cadence: schedule_task / list_schedules / "
         "cancel_schedule (cron or natural language). (docs/SCHEDULES.md)\n"
+        "**Workflows** — named, manageable jobs combining a trigger (cron, polling, or "
+        "webhook), a target agent/machine, a model, and an inbox report thread: "
+        "workflow_create / workflow_list / workflow_delete. A webhook-triggered workflow "
+        "gets its own callback URL + bearer token. (docs/WORKFLOWS.md)\n"
         "**Files** — send any file to the user's phone/desktop with send_file.\n"
         "**MCP & plugins** — extra MCP tool servers + a plugin marketplace, managed in the "
         "app.\n"
