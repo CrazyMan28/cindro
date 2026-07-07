@@ -4549,8 +4549,14 @@ Response ControlServer::handleMemorySearch(const Request &req)
     const QString q = req.params.value(QStringLiteral("q")).toString();
     const int limit = req.params.value(QStringLiteral("limit")).toInt(20);
     const QString agent = req.params.value(QStringLiteral("agent")).toString();
+    // Opt-in for human-facing memory-browser UIs (web/desktop/TUI/phone
+    // "search my memory" boxes) only — see MemoryStore::search()'s doc
+    // comment. Defaults to false so the model's own recall()/prefetch path is
+    // unaffected; only pass true from an explicit human browse/search action.
+    const bool includeAgentScoped =
+        req.params.value(QStringLiteral("include_agent_scoped")).toBool(false);
     QJsonArray arr;
-    for (const MemoryRow &m : m_memory.search(q, limit, agent))
+    for (const MemoryRow &m : m_memory.search(q, limit, agent, includeAgentScoped))
         arr.append(m.toJson());
     QJsonObject result;
     result.insert(QStringLiteral("memories"), arr);

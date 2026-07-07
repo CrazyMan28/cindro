@@ -200,7 +200,12 @@ class MemoryPane(TablePane):
         except Exception:
             pass
         if q:
-            res = await self.client.call("memory.search", {"q": q, "limit": 50})
+            # A human deliberately searching their own memory in the browser
+            # UI (not automatic LLM-context injection) — opt in to seeing
+            # agent-scoped facts too, matching empty-query list() browsing.
+            res = await self.client.call(
+                "memory.search", {"q": q, "limit": 50, "include_agent_scoped": True}
+            )
         else:
             res = await self.client.call("memory.list", {"limit": 50})
         return list(res.get("memories", res.get("results", [])))

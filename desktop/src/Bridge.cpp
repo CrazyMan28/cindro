@@ -973,6 +973,10 @@ void Bridge::memorySearch(const QString &q)
     }
     QVariantMap params;
     params.insert(QStringLiteral("q"), query);
+    // This is the memory-browser page's own search box — a human deliberately
+    // searching their memory, not automatic LLM-context injection — so opt
+    // in to seeing agent-scoped facts too (matches empty-query memoryList()).
+    params.insert(QStringLiteral("include_agent_scoped"), true);
     request(QStringLiteral("memory.search"), params);
 }
 

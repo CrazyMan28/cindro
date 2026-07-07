@@ -379,6 +379,50 @@ int main(int argc, char **argv)
             check(sawG1, "agent-scope: unscoped search still includes the global memory");
         }
 
+        // Human-facing memory-browser opt-in (includeAgentScoped=true): a
+        // person deliberately searching their own memory (web/desktop/TUI/
+        // phone browse UIs) should see agent-scoped rows too, unlike the
+        // automatic LLM-context paths (recall()/prefetch()) exercised above.
+        // The default (omitted / false) must remain unchanged.
+        {
+            const auto hitsDefault = s.search(QStringLiteral("runner"), 20, QString());
+            bool sawA1Default = false;
+            for (const auto &r : hitsDefault)
+                if (r.id == a1) sawA1Default = true;
+            check(!sawA1Default,
+                  "agent-scope: search() with includeAgentScoped omitted still excludes agent rows");
+
+            const auto hitsExplicitFalse =
+                s.search(QStringLiteral("runner"), 20, QString(), /*includeAgentScoped=*/false);
+            bool sawA1False = false;
+            for (const auto &r : hitsExplicitFalse)
+                if (r.id == a1) sawA1False = true;
+            check(!sawA1False,
+                  "agent-scope: search(includeAgentScoped=false) excludes agent-scoped rows");
+
+            const auto hitsIncluded =
+                s.search(QStringLiteral("runner"), 20, QString(), /*includeAgentScoped=*/true);
+            bool sawA1Included = false, sawG1Included = false;
+            for (const auto &r : hitsIncluded) {
+                if (r.id == a1) sawA1Included = true;
+                if (r.id == g1) sawG1Included = true;
+            }
+            check(sawA1Included,
+                  "agent-scope: search(includeAgentScoped=true) returns the agent-scoped memory");
+            check(sawG1Included,
+                  "agent-scope: search(includeAgentScoped=true) still returns the global memory");
+
+            // A scoped call (entityRef set) is unaffected either way — it
+            // already returns only that agent's own rows.
+            const auto hitsScopedIgnoreFlag = s.search(QStringLiteral("runner"), 20,
+                                                       QStringLiteral("ci-runner-104"), true);
+            bool sawA2WithScopedFlag = false;
+            for (const auto &r : hitsScopedIgnoreFlag)
+                if (r.id == a2) sawA2WithScopedFlag = true;
+            check(!sawA2WithScopedFlag,
+                  "agent-scope: scoped search() + includeAgentScoped=true still excludes other agents");
+        }
+
         // The row carries its scope + entityRef; toJson surfaces them.
         {
             auto r = s.get(a1);

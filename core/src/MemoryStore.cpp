@@ -734,7 +734,8 @@ QVector<MemoryRow> MemoryStore::list(int limit)
     return out;
 }
 
-QVector<MemoryRow> MemoryStore::search(const QString &query, int limit, const QString &entityRef)
+QVector<MemoryRow> MemoryStore::search(const QString &query, int limit, const QString &entityRef,
+                                       bool includeAgentScoped)
 {
     QVector<MemoryRow> out;
     if (limit <= 0)
@@ -750,10 +751,11 @@ QVector<MemoryRow> MemoryStore::search(const QString &query, int limit, const QS
             " WHERE memories_fts MATCH ?");
         if (scoped)
             sql += QStringLiteral(" AND m.entity_ref = ?");
-        else
+        else if (!includeAgentScoped)
             // Unscoped call: per-agent memories are only visible to a caller
             // that names the agent (entityRef set) — see search()'s doc
-            // comment / the 2026-07-06 per-agent-memory redesign.
+            // comment / the 2026-07-06 per-agent-memory redesign — UNLESS the
+            // caller is a human-browse UI that opted in via includeAgentScoped.
             sql += QStringLiteral(" AND m.scope != 'agent'");
         sql += QStringLiteral(" ORDER BY rank ASC LIMIT ?");
         QSqlQuery q(m_db);
@@ -790,8 +792,8 @@ QVector<MemoryRow> MemoryStore::search(const QString &query, int limit, const QS
         " WHERE (text LIKE ? OR tags LIKE ?)");
     if (scoped)
         sql += QStringLiteral(" AND entity_ref = ?");
-    else
-        // Same unscoped exclusion as the FTS branch above.
+    else if (!includeAgentScoped)
+        // Same unscoped exclusion (and human-browse opt-out) as the FTS branch above.
         sql += QStringLiteral(" AND scope != 'agent'");
     sql += QStringLiteral(" ORDER BY updated DESC LIMIT ?");
     QSqlQuery q(m_db);

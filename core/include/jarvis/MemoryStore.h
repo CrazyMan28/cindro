@@ -110,8 +110,18 @@ public:
     // agent (pass its id as `entityRef`); an explicitly-scoped call is
     // completely unaffected and returns only that agent's rows, as before.
     // list() is unaffected by any of this and always returns every row.
+    //
+    // `includeAgentScoped` is a narrow opt-in for HUMAN-facing memory-browser
+    // UIs only (web/desktop/TUI/phone "search my memory" boxes): when true AND
+    // the call is unscoped (entityRef empty), the scope=="agent" exclusion
+    // above is skipped, so a person deliberately searching their own memory
+    // sees everything they've stored — matching what empty-query browsing via
+    // list() already shows. Defaults to false so every existing/automatic
+    // caller (recall(), prefetchMemoryBlock()) is completely unaffected; this
+    // parameter must never be set to true from an automatic LLM-context path.
     QVector<MemoryRow> search(const QString &query, int limit = 20,
-                              const QString &entityRef = QString());
+                              const QString &entityRef = QString(),
+                              bool includeAgentScoped = false);
 
     // prefetch(query,k): context for a turn, used as the AUTOMATIC per-turn
     // context injection (see ControlServer::prefetchMemoryBlock /

@@ -126,7 +126,15 @@ function Memory() {
     try {
       const res =
         q.length > 0
-          ? await app.client.call("memory.search", { q, limit: 50 }, 15000)
+          ? await app.client.call(
+              "memory.search",
+              // include_agent_scoped: this is a human deliberately searching
+              // their OWN memory (not automatic LLM-context injection), so it
+              // should see agent-scoped facts too — same as empty-query
+              // browsing via memory.list already does.
+              { q, limit: 50, include_agent_scoped: true },
+              15000,
+            )
           : await app.client.call("memory.list", { limit: 50 }, 15000)
       if (!alive) return
       const rows = ((res.memories ?? []) as unknown[]).map(toMemoryItem)
