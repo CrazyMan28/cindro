@@ -131,6 +131,10 @@ ApiBrain::~ApiBrain()
         m_reply->abort();
         m_reply->deleteLater();
     }
+    if (m_backoffTimer) {
+        m_backoffTimer->stop();
+        m_backoffTimer->deleteLater();
+    }
 }
 
 bool ApiBrain::isBusy() const
@@ -288,6 +292,26 @@ QString ApiBrain::finishReasonFromChunk(const QJsonObject &chunk)
     return QString();
 }
 
+qint64 ApiBrain::backoffDelayMs(int attempt, int baseMs, int maxMs)
+{
+    if (baseMs < 1)
+        baseMs = 1;
+    if (maxMs < baseMs)
+        maxMs = baseMs;
+    const int safeAttempt = qMax(0, attempt);
+    // base * 2^attempt, capped BEFORE jitter (loop instead of pow() to dodge
+    // overflow on a runaway attempt count — a few iterations past the cap and
+    // it stops mattering since we clamp each step).
+    double exp = double(baseMs);
+    for (int i = 0; i < safeAttempt && exp < double(maxMs); ++i)
+        exp *= 2.0;
+    exp = qMin(exp, double(maxMs));
+    // Full jitter in [0.5, 1.0] so several rotating/backing-off agents don't
+    // all retry in lockstep.
+    const double jitter = 0.5 + QRandomGenerator::global()->generateDouble() * 0.5;
+    return qint64(exp * jitter);
+}
+
 QJsonValue ApiBrain::userContent(const QString &text, const QStringList &images) const
 {
     // Keep readable image files only; the daemon already decoded the phone's
@@ -361,6 +385,9 @@ void ApiBrain::send(const QString &text, const QStringList &images)
     // A fresh turn gets the full credential pool again (the cursor itself is
     // sticky — a key that just 429'd stays skipped until the pool wraps).
     m_keyRotations = 0;
+    m_backoffRetries = 0;
+    if (m_backoffTimer)
+        m_backoffTimer->stop();
 
     // Synthetic thread id on the first turn so the UI/history has a thread.
     if (m_history.isEmpty())
@@ -718,6 +745,54 @@ void ApiBrain::onFinished()
                     startOpenAi(QString());
                 return;
             }
+            // Backoff retry (jarvis-proxmox-agent): the credential pool is
+            // exhausted (or has <=1 key) but the caller opted into resilience
+            // via maxBackoffRetries — e.g. a scheduled headless agent that must
+            // not just die on a transient rate limit. Wait with exponential
+            // backoff + jitter, then give the whole pool another shot (a key
+            // that just 429'd may well work again by the time we retry).
+            if (httpStatus == 429 && !m_cancelled &&
+                m_opts.maxBackoffRetries > 0 &&
+                m_backoffRetries < m_opts.maxBackoffRetries) {
+                ++m_backoffRetries;
+                const qint64 delay = backoffDelayMs(m_backoffRetries - 1,
+                                                     m_opts.backoffBaseMs,
+                                                     m_opts.backoffMaxMs);
+                qWarning("ApiBrain: 429 rate-limited — pool exhausted, backing off "
+                         "%lld ms (retry %d/%d)",
+                         static_cast<long long>(delay), m_backoffRetries,
+                         m_opts.maxBackoffRetries);
+                m_reply->deleteLater();
+                m_reply = nullptr;
+                m_buf.clear();
+                m_toolAccum.clear();
+                m_finishReason.clear();
+                // Only reset the rotation counter, NOT m_keyIndex — the cursor
+                // is deliberately sticky (see send()'s comment); the backoff
+                // wait is the "give it time to recover" part, not a reason to
+                // re-favor the key that just 429'd first on the retry.
+                m_keyRotations = 0;
+                if (!m_backoffTimer) {
+                    // Connected exactly ONCE, here, for the timer's whole
+                    // lifetime — connecting again on every retry (as an
+                    // earlier version of this code did) would leave a stale,
+                    // never-fired connection alive whenever a wait is cut
+                    // short by cancel()/a fresh send(), so a LATER retry's
+                    // fire would run two connections at once (double request).
+                    m_backoffTimer = new QTimer(this);
+                    m_backoffTimer->setSingleShot(true);
+                    connect(m_backoffTimer, &QTimer::timeout, this, [this]() {
+                        if (m_cancelled)
+                            return;
+                        if (m_provider == QStringLiteral("anthropic"))
+                            startAnthropic(QString());
+                        else
+                            startOpenAi(QString());
+                    });
+                }
+                m_backoffTimer->start(int(delay));
+                return;
+            }
             const QByteArray body = m_reply->readAll();
             QString msg = m_reply->errorString();
             // Surface an API error body if present (e.g. invalid key / model).
@@ -727,9 +802,14 @@ void ApiBrain::onFinished()
                 if (!e.isEmpty())
                     msg = e.value(QStringLiteral("message")).toString(msg);
             }
-            if (httpStatus == 429)
-                msg += QStringLiteral(" (rate-limited; all %1 configured key(s) exhausted)")
+            if (httpStatus == 429) {
+                msg += QStringLiteral(" (rate-limited; all %1 configured key(s) exhausted")
                            .arg(qMax(1, int(m_opts.apiKeyPool.size())));
+                if (m_opts.maxBackoffRetries > 0)
+                    msg += QStringLiteral(", %1 backoff retries also exhausted")
+                               .arg(m_backoffRetries);
+                msg += QStringLiteral(")");
+            }
             emitEvent(NormalizedBrainEvent::error(
                 QStringLiteral("api request failed: ") + msg));
             hadError = true;
@@ -1002,6 +1082,8 @@ bool ApiBrain::callMcpTool(const QString &name, const QJsonObject &args, QString
 void ApiBrain::cancel()
 {
     m_cancelled = true;
+    if (m_backoffTimer)
+        m_backoffTimer->stop();
     if (m_reply) {
         m_reply->disconnect(this);
         m_reply->abort();

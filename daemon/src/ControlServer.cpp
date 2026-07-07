@@ -33,6 +33,7 @@
 #include <QProcess>
 #include <QRandomGenerator>
 #include <QSaveFile>
+#include <QSet>
 #include <QTextStream>
 #include <QTimer>
 #include <QUrl>
@@ -52,6 +53,35 @@ constexpr int kMaxMemoryChars = 2000;
 // short, deliberate fact, not the tail of a long paste that happened to contain a cue.
 constexpr int kMaxAutoMemoryChars = 280;
 constexpr int kMaxAutoMemorySource = 600;   // skip auto-save for messages longer than this
+
+// Read a flat `key: value` line out of a small YAML-ish config file (mirrors
+// McpRegistry::computerUseBearer's approach for a DIFFERENT file/key —
+// project-tracker's config.yaml rather than computer-use's — but anchors the
+// match on "key:" rather than a bare startsWith(key), so a later key sharing
+// the same prefix (e.g. "bearer_token_expiry") can't be misread as this one,
+// and only strips a genuinely matched leading+trailing quote pair rather than
+// every quote character anywhere in the value.
+QString readYamlFlatKey(const QString &path, const QString &key)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString();
+    const QString text = QString::fromUtf8(f.readAll());
+    f.close();
+    const QString prefix = key + QLatin1Char(':');
+    for (const QString &raw : text.split(QLatin1Char('\n'))) {
+        const QString line = raw.trimmed();
+        if (!line.startsWith(prefix))
+            continue;
+        QString v = line.mid(prefix.size()).trimmed();
+        if (v.size() >= 2 &&
+            ((v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"')) ||
+             (v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\''))))
+            v = v.mid(1, v.size() - 2);
+        return v;
+    }
+    return QString();
+}
 
 QString genSessionId()
 {
@@ -1678,7 +1708,19 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         // Anthropic uses a different tool format and stays chat-only. We detect the
         // nested engine via the live AgentDesktopInfo so this also works on the
         // resume path (where agentMcpOverrides is empty but the desktop is up).
-        if (provider != QStringLiteral("anthropic")) {
+        // Proxmox workload manager: a session fired by the
+        // "proxmox-<hostname>" schedule never touches the desktop/coworker
+        // engine at all — it drives the co-located proxmox-mcp tool server
+        // instead, and gets a generous 429 backoff since it's an unattended
+        // agent that must not just die on a transient Mistral rate limit.
+        if (row.targetRef.startsWith(QStringLiteral("proxmox-")) &&
+            provider != QStringLiteral("anthropic")) {
+            opts.mcpEndpoint = McpRegistry::proxmoxAgentEndpoint();
+            opts.mcpBearer = McpRegistry::proxmoxAgentBearer();
+            opts.maxBackoffRetries = 6;
+            opts.backoffBaseMs = 3000;
+            opts.backoffMaxMs = 120000;
+        } else if (provider != QStringLiteral("anthropic")) {
             const AgentDesktopInfo desk = m_agentDesktops.info(row.id);
             if (desk.up) {
                 opts.mcpEndpoint = desk.mcpUrl;
@@ -2083,7 +2125,8 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
                                      const QString &model, const QString &cwd,
                                      const QString &title, QString *err,
                                      const QString &target, const QString &parentSessionId,
-                                     const QString &agent, const QString &agentPromptOverride)
+                                     const QString &agent, const QString &agentPromptOverride,
+                                     const QString &scheduleTargetRef)
 {
     // Custom-agent (subagent) resolution: when this session runs AS an agent,
     // a DEFINED agent supplies its brain/model/profile + system prompt; but an
@@ -2161,6 +2204,7 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     }
     row.title = title.isEmpty() ? QStringLiteral("Untitled session") : title;
     row.state = QStringLiteral("idle");
+    row.targetRef = scheduleTargetRef;
     row.created = QDateTime::currentMSecsSinceEpoch();
     row.updated = row.created;
 
@@ -5900,6 +5944,7 @@ bool ControlServer::isOpsMethod(const QString &method)
            method.startsWith(QStringLiteral("tui.layout.")) ||
            method.startsWith(QStringLiteral("command.")) ||
            method.startsWith(QStringLiteral("outpost.")) ||
+           method.startsWith(QStringLiteral("proxmox.")) ||
            method.startsWith(QStringLiteral("diff.")) ||
            method == QStringLiteral("audit.list");
 }
@@ -6090,6 +6135,12 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("outpost.exec"))         return handleOutpostExec(req, remote);
     if (m == QStringLiteral("outpost.screenshot"))   return handleOutpostScreenshot(req);
     if (m == QStringLiteral("outpost.revoke"))       return handleOutpostRevoke(req);
+    if (m == QStringLiteral("outpost.install_workload")) return handleOutpostInstallWorkload(req);
+    if (m == QStringLiteral("proxmox.status"))       return handleProxmoxStatus(req);
+    if (m == QStringLiteral("proxmox.report"))       return handleProxmoxReport(req);
+    if (m == QStringLiteral("proxmox.restart_vm"))   return handleProxmoxRestartVm(req);
+    if (m == QStringLiteral("proxmox.set_blocklist")) return handleProxmoxSetBlocklist(req);
+    if (m == QStringLiteral("proxmox.send_directive")) return handleProxmoxSendDirective(req);
     if (m == QStringLiteral("audit.list"))           return handleAuditList(req);
     return Response::failure(req.id, QStringLiteral("unknown_method"),
                              QStringLiteral("unknown ops method: ") + m);
@@ -6105,7 +6156,10 @@ QString ControlServer::fireScheduledJob(const ScheduleRow &row)
                                       /*cwd=*/QString(),
                                       row.name.isEmpty() ? QStringLiteral("Scheduled job")
                                                          : row.name,
-                                      &err);
+                                      &err,
+                                      /*target=*/QString(), /*parentSessionId=*/QString(),
+                                      /*agent=*/QString(), /*agentPromptOverride=*/QString(),
+                                      /*scheduleTargetRef=*/row.targetRef);
     if (sid.isEmpty()) {
         qWarning("jarvisd: scheduled job '%s' failed to create session: %s",
                  qPrintable(row.name), qPrintable(err));
@@ -6820,6 +6874,486 @@ Response ControlServer::handleOutpostRevoke(const Request &req)
         return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
                                  QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
     return Response::success(req.id, r);
+}
+
+// --- Proxmox workload manager: install + status/report/restart/blocklist ---
+// Everything here proxies to a paired machine through outpost.exec — the same
+// primitive outpost.* itself uses (no new transport). handleProxmoxRestartVm
+// is the ONLY code path in this whole feature that runs `qm reboot`; it is
+// reachable only from a UI-triggered RPC call, never from the scheduled
+// agent's own tool catalog (which never registers a restart tool at all —
+// see proxmox-mcp/tools_proxmox.py).
+
+QJsonObject ControlServer::execOnMachine(const QString &machine, const QString &cmd,
+                                         double timeoutSec, bool *reachable)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("machine"), machine);
+    body.insert(QStringLiteral("cmd"), cmd);
+    body.insert(QStringLiteral("timeout"), timeoutSec);
+    return outpostHttp(QStringLiteral("POST"), QStringLiteral("/api/exec"), body, reachable);
+}
+
+QJsonObject ControlServer::writeRemoteFile(const QString &machine, const QString &path,
+                                           const QByteArray &content, const QString &mode,
+                                           bool *reachable)
+{
+    const QString dir = QFileInfo(path).path();
+    const QString b64 = QString::fromLatin1(content.toBase64());
+    const QString cmd = QStringLiteral(
+        "install -d -m700 '%1' && printf '%2' | base64 -d > '%3' && chmod %4 '%3'")
+        .arg(dir, b64, path, mode);
+    return execOnMachine(machine, cmd, 20.0, reachable);
+}
+
+Response ControlServer::handleOutpostInstallWorkload(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    if (machine.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine is required"));
+
+    // Preflight: refuse to install onto anything that isn't actually a
+    // Proxmox host, with a clear error instead of a half-deployed mess.
+    bool ok = false;
+    QJsonObject r = execOnMachine(machine, QStringLiteral("command -v qm && command -v pvesh"),
+                                  15.0, &ok);
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!r.value(QStringLiteral("ok")).toBool())
+        return Response::failure(req.id, QStringLiteral("not_a_proxmox_host"),
+                                 QStringLiteral("'%1' has no qm/pvesh on PATH — is this a "
+                                               "Proxmox host?").arg(machine));
+
+    // Seed config.toml, an empty blocklist (all VMs in scope by default —
+    // the user explicitly chose include-all + a configurable blocklist over
+    // an allowlist), and the two secrets this install flow is the first-ever
+    // place in the codebase to push to a remote machine.
+    const QString mistralKey = m_settings.apiKey(QStringLiteral("mistral"));
+    const QString trackerToken = readYamlFlatKey(
+        QDir::homePath() + QStringLiteral("/.project-tracker/config.yaml"),
+        QStringLiteral("bearer_token"));
+    if (mistralKey.isEmpty())
+        return Response::failure(req.id, QStringLiteral("no_mistral_key"),
+                                 QStringLiteral("no Mistral API key configured locally — the "
+                                               "always-on agent needs one to keep running "
+                                               "when your laptop is off"));
+
+    QJsonObject jarvisSecrets;
+    jarvisSecrets.insert(QStringLiteral("mistral"), mistralKey);
+    QByteArray tokenBytes(32, '\0');
+    for (char &b : tokenBytes)
+        b = static_cast<char>(QRandomGenerator::system()->bounded(256));
+    const QString mcpToken = QString::fromLatin1(tokenBytes.toHex());
+    const QByteArray configToml = QStringLiteral(
+        "node = \"pve\"\ncheck_interval_minutes = 5\ncooldown_minutes = 15\n"
+        "reserve_cores = 2\nreserve_mem_mb = 4096\nbump_step_cores = 2\n"
+        "bump_step_mem_mb = 2048\nmax_cores_per_vm = 16\nmax_mem_mb_per_vm = 32768\n"
+        "cpu_congested_pct = 85.0\nmem_congested_pct = 90.0\n"
+        "project_tracker_agent_name = \"proxmox-%1\"\n"
+        "project_tracker_project_id = \"proj-jarvis\"\n"
+        "project_tracker_url = \"http://100.114.201.41:8790/mcp\"\n").arg(machine).toUtf8();
+
+    // Each write is checked for BOTH transport reachability AND exec-level
+    // success (r["ok"]) — a base64-decode/chmod failure on the remote host
+    // must not be reported as a successful install. Stops at the first
+    // failure instead of firing all five writes regardless.
+    struct { QString path, mode; QByteArray content; } files[] = {
+        {QStringLiteral("/etc/jarvis-proxmox-agent/jarvisd/secrets.json"), QStringLiteral("600"),
+         QJsonDocument(jarvisSecrets).toJson(QJsonDocument::Compact)},
+        {QStringLiteral("/etc/jarvis-proxmox-agent/project_tracker_token"), QStringLiteral("600"),
+         trackerToken.toUtf8()},
+        // proxmox-mcp's own inbound bearer + config/blocklist (world-
+        // unreadable dir, 0600/0644 files) — same writer, plain text here.
+        {QStringLiteral("/etc/jarvis-proxmox-agent/mcp_token"), QStringLiteral("600"),
+         mcpToken.toUtf8()},
+        {QStringLiteral("/etc/jarvis-proxmox-agent/config.toml"), QStringLiteral("644"), configToml},
+        {QStringLiteral("/etc/jarvis-proxmox-agent/blocklist.json"), QStringLiteral("644"),
+         QByteArrayLiteral("{\"vmids\":[]}")},
+    };
+    for (const auto &f : files) {
+        bool wok = false;
+        const QJsonObject wr = writeRemoteFile(machine, f.path, f.content, f.mode, &wok);
+        const bool wsuccess = wok && wr.value(QStringLiteral("ok")).toBool();
+        if (!wsuccess) {
+            m_audit.record(QStringLiteral("outpost.install_workload"), false, QStringLiteral("high"),
+                           QStringLiteral("installing proxmox workload manager onto %1 failed "
+                                         "writing %2").arg(machine, f.path));
+            if (!wok)
+                return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                         QStringLiteral("outpost-mcp (:%1) unreachable")
+                                             .arg(outpostPort()));
+            return Response::failure(req.id, QStringLiteral("install_failed"),
+                                     QStringLiteral("failed writing %1 to %2: %3")
+                                         .arg(f.path, machine,
+                                              wr.value(QStringLiteral("error")).toString()));
+        }
+    }
+
+    // From here on, every step is a plain outpost.exec shell command (small
+    // text/commands — no size problem like a binary transfer would be). A
+    // shared helper avoids repeating the ok/r["ok"] double-check + audit +
+    // failure-Response boilerplate for each one.
+    auto runStep = [&](const QString &label, const QString &cmd,
+                       double timeoutSec) -> std::optional<Response> {
+        bool sok = false;
+        const QJsonObject sr = execOnMachine(machine, cmd, timeoutSec, &sok);
+        const bool ssuccess = sok && sr.value(QStringLiteral("ok")).toBool();
+        m_audit.record(QStringLiteral("outpost.install_workload"), ssuccess, QStringLiteral("high"),
+                       QStringLiteral("installing proxmox workload manager onto %1: %2")
+                           .arg(machine, label));
+        if (!sok)
+            return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                     QStringLiteral("outpost-mcp (:%1) unreachable")
+                                         .arg(outpostPort()));
+        if (!ssuccess)
+            return Response::failure(req.id, QStringLiteral("install_failed"),
+                                     QStringLiteral("%1 failed on %2: %3")
+                                         .arg(label, machine,
+                                              sr.value(QStringLiteral("error")).toString()));
+        return std::nullopt;
+    };
+
+    // 1. Deploy proxmox-mcp: a shallow, sparse clone (just this one directory,
+    // not the whole monorepo) + its own venv. Idempotent — re-running the
+    // install just re-syncs the checkout and re-installs into the same venv.
+    if (auto fail = runStep(QStringLiteral("deploy proxmox-mcp"), QStringLiteral(
+            "set -e; "
+            "install -d -m755 /opt/jarvis-proxmox-agent; "
+            "cd /opt/jarvis-proxmox-agent; "
+            "if [ ! -d src/.git ]; then "
+            "  git clone --filter=blob:none --sparse --depth 1 --branch main "
+            "    https://github.com/CrazyMan28/jarvis.git src; "
+            "  git -C src sparse-checkout set proxmox-mcp; "
+            "else "
+            "  git -C src fetch --depth 1 origin main && git -C src reset --hard origin/main; "
+            "fi; "
+            "python3 -m venv /opt/jarvis-proxmox-agent/proxmox-mcp/.venv; "
+            "/opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/pip install -q "
+            "  /opt/jarvis-proxmox-agent/src/proxmox-mcp"), 180.0))
+        return *fail;
+
+    // 2. Fetch the latest release AppImage (the CI-pinned build environment's
+    // glibc baseline is what makes this portable to an arbitrary paired
+    // machine — see docs/PROXMOX_WORKLOAD_MANAGER.md) and extract it. A bare
+    // binary transfer through writeRemoteFile's base64-over-exec would blow
+    // past reasonable single-command payload sizes for a ~300MB AppImage;
+    // having the REMOTE host pull it directly sidesteps that entirely.
+    if (auto fail = runStep(QStringLiteral("fetch+extract jarvisd release"), QStringLiteral(
+            "set -e; "
+            "install -d -m755 /opt/jarvis-proxmox-agent/appimage; "
+            "cd /opt/jarvis-proxmox-agent/appimage; "
+            "URL=$(curl -fsSL https://api.github.com/repos/CrazyMan28/jarvis/releases/latest "
+            "  | grep -o '\"browser_download_url\": *\"[^\"]*AppImage\"' "
+            "  | head -1 | cut -d'\"' -f4); "
+            "[ -n \"$URL\" ]; "
+            "curl -fsSL \"$URL\" -o Jarvis.AppImage; "
+            "chmod +x Jarvis.AppImage; "
+            "rm -rf squashfs-root; "
+            "./Jarvis.AppImage --appimage-extract >/dev/null"), 300.0))
+        return *fail;
+
+    // 3. systemd units (embedded verbatim from proxmox-mcp/packaging/*.service
+    // — keep these two in sync if you edit either file).
+    const QByteArray proxmoxMcpUnit = QByteArrayLiteral(
+        "[Unit]\n"
+        "Description=Proxmox-MCP (tool server for the co-located Proxmox workload-manager agent)\n"
+        "After=network.target\n\n"
+        "[Service]\n"
+        "User=root\n"
+        "WorkingDirectory=/opt/jarvis-proxmox-agent/proxmox-mcp\n"
+        "Environment=PYTHONPATH=\n"
+        "ExecStart=/usr/bin/env -u PYTHONPATH /opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/proxmox-mcp\n"
+        "Restart=on-failure\n"
+        "RestartSec=2\n\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n");
+    const QByteArray jarvisdUnit = QByteArrayLiteral(
+        "[Unit]\n"
+        "Description=Jarvis daemon \xE2\x80\x94 Proxmox workload-manager profile (headless, Mistral/ApiBrain)\n"
+        "After=network.target proxmox-mcp.service\n"
+        "Requires=proxmox-mcp.service\n\n"
+        "[Service]\n"
+        "User=root\n"
+        "Environment=QT_QPA_PLATFORM=offscreen\n"
+        "Environment=JARVIS_CONFIG_DIR=/etc/jarvis-proxmox-agent/jarvisd\n"
+        "Environment=JARVIS_DATA_DIR=/var/lib/jarvis-proxmox-agent/jarvisd\n"
+        "Environment=LD_LIBRARY_PATH=/opt/jarvis-proxmox-agent/appimage/squashfs-root/usr/lib\n"
+        "Environment=PATH=/usr/local/bin:/usr/bin:/bin\n"
+        "ExecStart=/opt/jarvis-proxmox-agent/appimage/squashfs-root/usr/bin/jarvisd\n"
+        "Restart=on-failure\n"
+        "RestartSec=2\n\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n");
+    bool unit1ok = false, unit2ok = false;
+    const QJsonObject u1 = writeRemoteFile(machine,
+        QStringLiteral("/etc/systemd/system/proxmox-mcp.service"), proxmoxMcpUnit,
+        QStringLiteral("644"), &unit1ok);
+    const QJsonObject u2 = writeRemoteFile(machine,
+        QStringLiteral("/etc/systemd/system/jarvisd-proxmox-agent.service"), jarvisdUnit,
+        QStringLiteral("644"), &unit2ok);
+    const bool unitsOk = unit1ok && u1.value(QStringLiteral("ok")).toBool() &&
+                        unit2ok && u2.value(QStringLiteral("ok")).toBool();
+    m_audit.record(QStringLiteral("outpost.install_workload"), unitsOk, QStringLiteral("high"),
+                   QStringLiteral("installing proxmox workload manager onto %1: systemd units")
+                       .arg(machine));
+    if (!unitsOk)
+        return Response::failure(req.id, QStringLiteral("install_failed"),
+                                 QStringLiteral("failed writing systemd units to %1").arg(machine));
+
+    // 4. Enable + start both. jarvisd-proxmox-agent's own first boot still
+    // needs one more manual step today: seeding the schedule.create row for
+    // the periodic tick (loopback-only control API — see docs).
+    if (auto fail = runStep(QStringLiteral("enable+start services"), QStringLiteral(
+            "systemctl daemon-reload && "
+            "systemctl enable --now proxmox-mcp.service jarvisd-proxmox-agent.service"), 30.0))
+        return *fail;
+
+    m_audit.record(QStringLiteral("outpost.install_workload"), true, QStringLiteral("high"),
+                   QStringLiteral("installed proxmox workload manager onto %1").arg(machine));
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("machine"), machine);
+    result.insert(QStringLiteral("note"),
+                 QStringLiteral("proxmox-mcp + jarvisd-proxmox-agent installed and running. One "
+                               "manual step remains: seed the periodic schedule (see "
+                               "docs/PROXMOX_WORKLOAD_MANAGER.md — loopback-only control API)."));
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleProxmoxStatus(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    if (machine.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine is required"));
+    // A single python3 one-liner merges all three sources into ONE JSON
+    // object, parsed with one QJsonDocument::fromJson below — no text-marker
+    // splitting. An earlier version glued three outputs together with
+    // "---STATE---"/"---BLOCKLIST---" sentinel lines and QString::split(),
+    // which would misparse if a VM/node name ever contained one of those
+    // literal substrings (attacker-influenced or just an odd admin naming
+    // choice) — a single JSON blob has no such ambiguity.
+    const QString cmd = QStringLiteral(
+        "python3 -c '\n"
+        "import json, subprocess\n"
+        "def safe(fn, default):\n"
+        "    try:\n"
+        "        return fn()\n"
+        "    except Exception:\n"
+        "        return default\n"
+        "resources = safe(lambda: json.loads(subprocess.check_output([\"pvesh\",\"get\","
+        "\"/cluster/resources\",\"--output-format\",\"json\"])), [])\n"
+        "state = safe(lambda: json.load(open(\"/var/lib/jarvis-proxmox-agent/state.json\")), {})\n"
+        "blocklist = safe(lambda: json.load(open(\"/etc/jarvis-proxmox-agent/blocklist.json\")), {})\n"
+        "print(json.dumps({\"resources\": resources, \"state\": state, \"blocklist\": blocklist}))\n"
+        "'");
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, cmd, 20.0, &ok);
+    m_audit.record(QStringLiteral("proxmox.status"), ok && r.value(QStringLiteral("ok")).toBool(),
+                   QStringLiteral("low"), QStringLiteral("proxmox status %1").arg(machine));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!r.value(QStringLiteral("ok")).toBool())
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+
+    const QJsonObject combined =
+        QJsonDocument::fromJson(r.value(QStringLiteral("output")).toString().trimmed().toUtf8())
+            .object();
+    const QJsonArray resourcesArr = combined.value(QStringLiteral("resources")).toArray();
+    const QJsonObject stateVms =
+        combined.value(QStringLiteral("state")).toObject().value(QStringLiteral("vms")).toObject();
+    const QJsonObject blocklistObj = combined.value(QStringLiteral("blocklist")).toObject();
+    QSet<qint64> blocklist;
+    for (const QJsonValue &v : blocklistObj.value(QStringLiteral("vmids")).toArray())
+        blocklist.insert(v.toVariant().toLongLong());
+
+    QJsonArray vms;
+    for (const QJsonValue &rv : resourcesArr) {
+        const QJsonObject o = rv.toObject();
+        if (o.value(QStringLiteral("type")).toString() != QStringLiteral("qemu"))
+            continue;
+        const qint64 vmid = o.value(QStringLiteral("vmid")).toVariant().toLongLong();
+        const QJsonObject stEntry = stateVms.value(QString::number(vmid)).toObject();
+        const double maxmem = o.value(QStringLiteral("maxmem")).toDouble();
+        const double mem = o.value(QStringLiteral("mem")).toDouble();
+        QJsonObject vm;
+        vm.insert(QStringLiteral("vmid"), vmid);
+        vm.insert(QStringLiteral("name"), o.value(QStringLiteral("name")));
+        vm.insert(QStringLiteral("status"), o.value(QStringLiteral("status")));
+        vm.insert(QStringLiteral("cores"), o.value(QStringLiteral("maxcpu")));
+        vm.insert(QStringLiteral("memory_mb"), maxmem > 0 ? qint64(maxmem / (1024.0 * 1024.0)) : 0);
+        vm.insert(QStringLiteral("cpu_pct"), o.value(QStringLiteral("cpu")).toDouble() * 100.0);
+        vm.insert(QStringLiteral("mem_pct"), maxmem > 0 ? (mem / maxmem * 100.0) : 0.0);
+        vm.insert(QStringLiteral("blocklisted"), blocklist.contains(vmid));
+        vm.insert(QStringLiteral("pending_restart"),
+                 stEntry.value(QStringLiteral("pending_restart")).toBool());
+        vm.insert(QStringLiteral("last_action"), stEntry.value(QStringLiteral("last_action")));
+        vm.insert(QStringLiteral("last_action_at"), stEntry.value(QStringLiteral("last_action_at")));
+        vms.append(vm);
+    }
+    QJsonObject result;
+    result.insert(QStringLiteral("vms"), vms);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleProxmoxReport(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    if (machine.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine is required"));
+    const QString agentName = QStringLiteral("proxmox-") + machine;
+
+    // Watermark: the newest `created` we already have locally for this agent
+    // — only pull remote rows added since then. Self-describing (no separate
+    // watermark file); correct as long as a remote decision is always synced
+    // strictly after it was made (always true — we can't read it earlier).
+    // NOTE: sinceMs is a LOCAL insert timestamp (MemoryStore::add always
+    // stamps QDateTime::currentMSecsSinceEpoch(), never a caller-supplied
+    // value), not the remote row's own `created` — so two remote decisions
+    // landing in the very same millisecond on pve's clock do NOT collide
+    // with this watermark's granularity the way comparing remote-to-remote
+    // timestamps would; the boundary this compares against is always safely
+    // between "already synced" and "not yet decided" by causality.
+    qint64 sinceMs = 0;
+    {
+        const auto latest = m_memory.search(QString(), 1, agentName, true);
+        if (!latest.isEmpty())
+            sinceMs = latest.first().created;
+    }
+
+    const QString cmd = QStringLiteral(
+        "sqlite3 -json /var/lib/jarvis-proxmox-agent/memory.db "
+        "\"SELECT text,tags,created FROM memories WHERE created > %1 ORDER BY created ASC\"")
+        .arg(sinceMs);
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, cmd, 20.0, &ok);
+    m_audit.record(QStringLiteral("proxmox.report"), ok && r.value(QStringLiteral("ok")).toBool(),
+                   QStringLiteral("low"), QStringLiteral("synced+read proxmox report %1").arg(machine));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!r.value(QStringLiteral("ok")).toBool())
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+
+    const QByteArray out = r.value(QStringLiteral("output")).toString().trimmed().toUtf8();
+    const QJsonDocument doc = QJsonDocument::fromJson(out.isEmpty() ? QByteArrayLiteral("[]") : out);
+    for (const QJsonValue &rowVal : doc.array()) {
+        const QJsonObject row = rowVal.toObject();
+        const QString text = row.value(QStringLiteral("text")).toString();
+        if (text.trimmed().isEmpty())
+            continue;
+        QStringList tags;
+        const QString tagsRaw = row.value(QStringLiteral("tags")).toString();
+        if (!tagsRaw.isEmpty())
+            tags << tagsRaw;
+        m_memory.add(text, tags, QString(), QStringLiteral("agent"), agentName);
+    }
+
+    QJsonArray arr;
+    for (const MemoryRow &m : m_memory.search(QString(), 50, agentName, true))
+        arr.append(m.toJson());
+    QJsonObject result;
+    result.insert(QStringLiteral("memories"), arr);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleProxmoxRestartVm(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    const qint64 vmid = req.params.value(QStringLiteral("vmid")).toVariant().toLongLong();
+    if (machine.trimmed().isEmpty() || vmid <= 0)
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine and a positive vmid are required"));
+    const QString cmd = QStringLiteral("qm reboot %1").arg(vmid);
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, cmd, 60.0, &ok);
+    const bool success = ok && r.value(QStringLiteral("ok")).toBool();
+    m_audit.record(QStringLiteral("proxmox.restart_vm"), success, QStringLiteral("high"),
+                   QStringLiteral("restarted VM %1 on %2").arg(vmid).arg(machine));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!success)
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+    // pending_restart in state.json self-clears on the agent's next tick
+    // (proxmox_tune re-derives it fresh whenever it next touches this VM);
+    // not worth a second remote round-trip just to flip it a few minutes early.
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("vmid"), vmid);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleProxmoxSetBlocklist(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    if (machine.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine is required"));
+    const QJsonArray vmids = req.params.value(QStringLiteral("vmids")).toArray();
+    QJsonObject payload;
+    payload.insert(QStringLiteral("vmids"), vmids);
+    const QByteArray json = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    bool ok = false;
+    const QJsonObject r = writeRemoteFile(machine,
+                                          QStringLiteral("/etc/jarvis-proxmox-agent/blocklist.json"),
+                                          json, QStringLiteral("644"), &ok);
+    const bool success = ok && r.value(QStringLiteral("ok")).toBool();
+    m_audit.record(QStringLiteral("proxmox.set_blocklist"), success, QStringLiteral("medium"),
+                   QStringLiteral("set blocklist on %1: %2")
+                       .arg(machine, QString::fromUtf8(json)));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!success)
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("vmids"), vmids);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleProxmoxSendDirective(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    const QString text = req.params.value(QStringLiteral("text")).toString();
+    if (machine.trimmed().isEmpty() || text.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine and text are required"));
+
+    QJsonObject directive;
+    directive.insert(QStringLiteral("text"), text);
+    directive.insert(QStringLiteral("at"), QDateTime::currentMSecsSinceEpoch());
+    const QByteArray line = QJsonDocument(directive).toJson(QJsonDocument::Compact) + "\n";
+    const QString b64 = QString::fromLatin1(line.toBase64());
+    // Append (not writeRemoteFile — that overwrites), same base64-over-exec
+    // approach to sidestep shell-quoting the free-text directive entirely.
+    const QString cmd = QStringLiteral(
+        "install -d -m700 /var/lib/jarvis-proxmox-agent && "
+        "printf '%1' | base64 -d >> /var/lib/jarvis-proxmox-agent/directives.jsonl")
+        .arg(b64);
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, cmd, 15.0, &ok);
+    const bool success = ok && r.value(QStringLiteral("ok")).toBool();
+    m_audit.record(QStringLiteral("proxmox.send_directive"), success, QStringLiteral("medium"),
+                   QStringLiteral("queued directive on %1: %2").arg(machine, text.left(120)));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!success)
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, result);
 }
 
 Response ControlServer::handleAuditList(const Request &req)

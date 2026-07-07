@@ -8,6 +8,14 @@ is told. Implemented in `Scheduler` (fires) + `ControlServer::fireScheduledJob`
 - `schedule.create {name, cron|when, prompt, brain?, model?, profile?}` (or the
   `schedule_task` MCP tool / the phone Schedules screen / desktop Schedules page).
 - `when` accepts a 5-field cron, `every 30m`, or `at 14:30`. Stored in `schedules`.
+- `ScheduleRow::targetRef` (`target` param) is a free-text ref, no FK — its
+  first real consumer is the Proxmox workload manager
+  (`docs/PROXMOX_WORKLOAD_MANAGER.md`): a targetRef of `"proxmox-<hostname>"`
+  is threaded through `fireScheduledJob` → `createSession`'s
+  `scheduleTargetRef` param → `SessionRow::targetRef`, and
+  `ControlServer::makeBrain`'s api-brain branch checks it to route the
+  session's MCP endpoint at that agent's own tool server instead of the
+  desktop engine. Any future per-target routing can follow the same pattern.
 
 ## Fire (when the cadence ticks)
 `Scheduler` ticks → `ControlServer::fireScheduledJob(row)`:

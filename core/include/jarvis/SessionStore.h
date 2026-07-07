@@ -33,6 +33,11 @@ struct SessionRow {
     // real user turn so the cap bounds unattended runs, not conversations.
     QString goals;
     int continuationCount = 0;
+    // Inherited from ScheduleRow::targetRef when this session was fired by a
+    // schedule (empty otherwise). A free-text ref; a well-known prefix like
+    // "proxmox-<hostname>" tells makeBrain() to route the api brain's MCP
+    // endpoint at that agent's own tool server instead of the desktop engine.
+    QString targetRef;
     qint64 created = 0; // unix ms
     qint64 updated = 0; // unix ms
 

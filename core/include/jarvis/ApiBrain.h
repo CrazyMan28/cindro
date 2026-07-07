@@ -36,6 +36,7 @@ QT_BEGIN_NAMESPACE
 class QNetworkAccessManager;
 class QNetworkReply;
 class QEventLoop;
+class QTimer;
 QT_END_NAMESPACE
 
 namespace jarvis {
@@ -54,6 +55,17 @@ public:
         // pool[m_keyIndex] and an HTTP 429 rotates to the next key before the
         // turn fails. apiKey is the single-key fallback.
         QStringList apiKeyPool;
+        // Exponential-backoff retry (jarvis-proxmox-agent): once the credential
+        // pool is exhausted (or has <=1 key) a 429 still fails the turn today
+        // UNLESS maxBackoffRetries > 0, in which case the brain waits and
+        // re-issues the SAME request up to that many times before giving up.
+        // Default 0 preserves today's fail-fast behavior for interactive
+        // desktop sessions; long-running unattended sessions (e.g. a scheduled
+        // headless agent) should set this so a transient rate limit doesn't
+        // just kill the turn.
+        int maxBackoffRetries = 0;
+        int backoffBaseMs = 2000;   // first retry delay, before jitter
+        int backoffMaxMs = 60000;   // delay cap, before jitter
         QString baseUrl;     // override; else a sensible per-provider default
         QString systemPrompt; // base system prompt (memory is appended by daemon)
         int maxTokens = 2048;
@@ -115,6 +127,11 @@ public:
     // The first non-empty `choices[].finish_reason` of a streamed chunk ("" if none).
     static QString finishReasonFromChunk(const QJsonObject &chunk);
 
+    // Exponential backoff with full jitter for retrying a 429 once the
+    // credential pool is exhausted: base*2^attempt capped at maxMs, then
+    // scaled by a uniform random factor in [0.5, 1.0] (attempt is 0-based).
+    static qint64 backoffDelayMs(int attempt, int baseMs, int maxMs);
+
     // --- context compression helpers (pure; unit-tested) -------------------
     // Rough prompt-size estimate: total content bytes / 4 (chars-per-token
     // heuristic — deliberately cheap, this only gates compression).
@@ -173,6 +190,8 @@ private:
     bool m_toolsEnabled = false; // mcpEndpoint set && provider != anthropic
     int m_keyIndex = 0;          // credential-pool cursor (sticky across turns)
     int m_keyRotations = 0;      // 429 rotations this turn (reset per send())
+    int m_backoffRetries = 0;    // 429 backoff attempts this turn (reset per send())
+    QTimer *m_backoffTimer = nullptr; // pending backoff retry (cancel()/dtor stop it)
     QNetworkAccessManager *m_nam = nullptr;
     QNetworkReply *m_reply = nullptr;
     QByteArray m_buf;            // SSE line-assembly buffer

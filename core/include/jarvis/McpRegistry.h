@@ -59,6 +59,17 @@ public:
     // ~/.computer-use/config.yaml -> bearer_token (best-effort; empty if absent).
     static QString computerUseBearer();
 
+    // Proxmox workload manager: the local proxmox-mcp tool server a jarvisd
+    // instance talks to when it fires a schedule whose targetRef starts with
+    // "proxmox-". Only ever meaningful on a jarvisd deployed BY the Outpost
+    // install flow onto the Proxmox host itself — proxmox-mcp and the jarvisd
+    // that drives it are always co-located, so this is a fixed localhost port,
+    // exactly like builtinEndpoint() is for the desktop computer-use engine.
+    static QString proxmoxAgentEndpoint() { return QStringLiteral("http://127.0.0.1:8799/mcp"); }
+    // /etc/jarvis-proxmox-agent/mcp_token -> bearer (written by the installer;
+    // best-effort, empty if absent).
+    static QString proxmoxAgentBearer();
+
     // --- CRUD (delegates to SessionStore) ---------------------------------
     QVector<McpServerRow> list() { return m_store.listMcpServers(); }
     std::optional<McpServerRow> get(const QString &id) { return m_store.getMcpServer(id); }

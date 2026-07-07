@@ -377,6 +377,29 @@ public:
     // outpost.revoke{machine} -> outpostRevoked(machine,ok); refreshes the list
     // on success.
     Q_INVOKABLE void outpostRevoke(const QString &machine);
+    // outpost.install_workload{machine} -> outpostWorkloadInstalled(machine,ok,
+    // note,code). Installs the Proxmox Workload Manager on `machine`; failure
+    // codes include bad_request, outpost_unreachable, not_a_proxmox_host,
+    // no_mistral_key, install_failed (each paired with a human message).
+    Q_INVOKABLE void outpostInstallWorkload(const QString &machine);
+
+    // ---- Proxmox Workload Manager (per-machine, once installed) ------------
+    // proxmox.status{machine} -> proxmoxStatusResult(machine,ok,vms,error). Rows:
+    //   {vmid,name,status,cores,memory_mb,cpu_pct,mem_pct,blocklisted,
+    //    pending_restart,last_action,last_action_at}.
+    Q_INVOKABLE void proxmoxStatus(const QString &machine);
+    // proxmox.report{machine} -> proxmoxReportResult(machine,ok,memories,error).
+    // Rows: {id,text,tags,created,updated,scope?,entityRef?,score?}, most
+    // relevant/recent first — the decision-history log for that machine.
+    Q_INVOKABLE void proxmoxReport(const QString &machine);
+    // proxmox.restart_vm{machine,vmid} -> proxmoxVmRestarted(machine,vmid,ok,error).
+    // The ONLY call that restarts a VM — QML must always confirm with the user
+    // before invoking this; never call it as a side effect of viewing status.
+    Q_INVOKABLE void proxmoxRestartVm(const QString &machine, int vmid);
+    // proxmox.set_blocklist{machine,vmids} -> proxmoxBlocklistSet(machine,ok,
+    // vmids,error). REPLACES the whole blocklist — callers must send the full
+    // desired vmid list, not a delta.
+    Q_INVOKABLE void proxmoxSetBlocklist(const QString &machine, const QVariantList &vmids);
 
     // ---- Audit log (HERMES_FEATURES risk gate) -----------------------------
     // audit.list{limit?} -> auditListed(QVariantList). Rows:
@@ -744,6 +767,18 @@ signals:
     void outpostScreenshotResult(const QString &machine, bool ok,
                                   const QString &imageBase64, const QString &error);
     void outpostRevoked(const QString &machine, bool ok);
+    void outpostWorkloadInstalled(const QString &machine, bool ok,
+                                  const QString &note, const QString &code);
+
+    // ---- Proxmox Workload Manager results ------------------------------------
+    void proxmoxStatusResult(const QString &machine, bool ok,
+                             const QVariantList &vms, const QString &error);
+    void proxmoxReportResult(const QString &machine, bool ok,
+                             const QVariantList &memories, const QString &error);
+    void proxmoxVmRestarted(const QString &machine, int vmid, bool ok,
+                            const QString &error);
+    void proxmoxBlocklistSet(const QString &machine, bool ok,
+                             const QVariantList &vmids, const QString &error);
 
     // ---- Audit results ------------------------------------------------------
     void auditListed(const QVariantList &entries);

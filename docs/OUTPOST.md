@@ -101,6 +101,18 @@ Once paired, the machine appears in `outpost_list_machines`, and exec /
 screenshot can target it by name or id from any surface — web, TUI, or an
 MCP-calling agent session.
 
+## Installing capabilities onto a paired machine
+
+`outpost.install_workload` is the first instance of a general pattern:
+deploying a whole capability (config, secrets, binaries, a systemd service)
+onto a paired machine rather than just running one-off commands on it. It's
+built entirely FROM `outpost.exec` — no new agent-side protocol, no new
+message type on the WebSocket relay; `ControlServer::writeRemoteFile` writes
+files via base64-over-exec (sidesteps shell-quoting the payload entirely,
+whatever it is) and the install flow is just a sequence of those plus a
+`systemctl enable --now`. See `docs/PROXMOX_WORKLOAD_MANAGER.md` for the
+first (and so far only) consumer of this pattern.
+
 ## MCP tools
 
 | Tool | Signature | Notes |

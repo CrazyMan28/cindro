@@ -168,13 +168,18 @@ public:
     // *err. `cwd` empty => default. `target` ∈ ""(=real for coder) | "agent" |
     // "real"; coworker+agent spins up an isolated nested desktop + per-session
     // engine and points the brain's computer-use MCP at it.
+    // `scheduleTargetRef`: when this session is fired by a schedule, its
+    // ScheduleRow::targetRef (e.g. "proxmox-<hostname>") — stored on the
+    // session and read by makeBrain() to route the api brain at that agent's
+    // own MCP endpoint. Empty for every other caller.
     QString createSession(const QString &profile, const QString &brain,
                           const QString &model, const QString &cwd,
                           const QString &title, QString *err,
                           const QString &target = QString(),
                           const QString &parentSessionId = QString(),
                           const QString &agent = QString(),
-                          const QString &agentPromptOverride = QString());
+                          const QString &agentPromptOverride = QString(),
+                          const QString &scheduleTargetRef = QString());
 
     // target="real" take-over: after a biometric approval the agent drives the
     // user's ACTIVE real session via the global :8794 engine. requestTakeOver
@@ -465,6 +470,41 @@ private:
     // *reachable=false on transport failure.
     QJsonObject outpostHttp(const QString &httpMethod, const QString &path,
                             const QJsonObject &body, bool *reachable);
+    // Proxmox workload manager: installs the always-on jarvisd-proxmox-agent +
+    // proxmox-mcp onto a paired machine, and the status/report/restart_vm/
+    // set_blocklist ops against it — every one of them is an outpost.exec
+    // proxy (see execOnMachine), same as outpost.* above. handleProxmoxRestartVm
+    // is the ONLY code path anywhere in this feature that runs `qm reboot` —
+    // it is desktop/TUI/Web-triggered only, never called by the scheduled agent.
+    Response handleOutpostInstallWorkload(const Request &req);
+    Response handleProxmoxStatus(const Request &req);
+    Response handleProxmoxReport(const Request &req);
+    Response handleProxmoxRestartVm(const Request &req);
+    Response handleProxmoxSetBlocklist(const Request &req);
+    // Lets a plain chat session ("tell the proxmox agent to...") queue a
+    // free-text instruction the scheduled agent picks up and acts on next
+    // tick via its own proxmox_get_directives tool — never executed here,
+    // never bypasses the agent's own safety rails (blocklist/cooldown/
+    // headroom/hotplug/no-restart still apply on the remote side).
+    Response handleProxmoxSendDirective(const Request &req);
+    // Shell out `cmd` on `machine` via outpost.exec; returns {ok,exit_code,
+    // output,error} (outpost-mcp's shape). *reachable mirrors outpostHttp.
+    // POSIX-shell ONLY (outpost-agent runs `cmd` under sh -c on Linux/macOS,
+    // PowerShell on Windows — this helper's callers write bare sh syntax with
+    // no Windows branch). Fine today: every caller (the Proxmox workload
+    // manager) targets Linux-only Proxmox hosts, but don't reuse this
+    // verbatim against a Windows-paired outpost machine without adding one.
+    QJsonObject execOnMachine(const QString &machine, const QString &cmd,
+                             double timeoutSec, bool *reachable);
+    // Write `content` to `path` on `machine` (dir created 0700, file chmod'd
+    // to `mode`) via base64-over-exec — sidesteps shell-quoting entirely
+    // regardless of content, unlike an inline heredoc/printf. Used by
+    // outpost.install_workload for config/secrets/systemd units. Same
+    // POSIX-only caveat as execOnMachine (`install`/`chmod`/`base64 -d` have
+    // no Windows equivalents wired up here).
+    QJsonObject writeRemoteFile(const QString &machine, const QString &path,
+                               const QByteArray &content, const QString &mode,
+                               bool *reachable);
     // outpost-mcp's listening port. OUTPOST_MCP_PORT env override (mirrors
     // outpost_mcp/config.py's port()) wins; else the default 8798.
     static QString outpostPort();

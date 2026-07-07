@@ -43,6 +43,17 @@ models via the api brain remain chat-only for now — Anthropic uses a different
 - No key at all → you get a clear "add a Mistral key" prompt instead of a cryptic
   "codex failed to start".
 
+## 429 backoff for unattended sessions
+
+`ApiBrain::Options` has `maxBackoffRetries`/`backoffBaseMs`/`backoffMaxMs`
+(default 0 = today's behavior: rotate the credential pool on 429, then fail
+the turn once it's exhausted). A long-running unattended session — the
+Proxmox workload manager's scheduled tick is the first example
+(`docs/PROXMOX_WORKLOAD_MANAGER.md`) — should set these non-zero so a
+transient rate limit doesn't just kill the turn: it backs off with
+exponential + full jitter (`ApiBrain::backoffDelayMs`) and retries the whole
+pool again, up to that many times, before genuinely failing.
+
 ## Models offered (api brain)
 
 `mistral-large-latest` (default), `mistral-small-latest`, then `gpt-5.5`, `o4-mini`,
