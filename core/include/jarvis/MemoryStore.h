@@ -104,21 +104,30 @@ public:
 
     // Full-text search over text+tags (FTS5). Falls back to a LIKE scan when the
     // query has no usable FTS tokens. Returns up to `limit` rows, best match
-    // first, each with a populated `score` (higher = more relevant).
+    // first, each with a populated `score` (higher = more relevant). When
+    // `entityRef` is empty (an unscoped call) this EXCLUDES scope=="agent"
+    // rows — per-agent memories are only visible to a caller that names that
+    // agent (pass its id as `entityRef`); an explicitly-scoped call is
+    // completely unaffected and returns only that agent's rows, as before.
+    // list() is unaffected by any of this and always returns every row.
     QVector<MemoryRow> search(const QString &query, int limit = 20,
                               const QString &entityRef = QString());
 
     // prefetch(query,k): the top-k relevant memories for a turn, used as the
     // AUTOMATIC per-turn context injection (see ControlServer::
     // prefetchMemoryBlock / memorySystemBlock — invoked on every ordinary chat
-    // turn, which has no notion of "which agent/machine" it belongs to). Empty
-    // query => the k most-recent memories (so a fresh turn still gets
-    // context). Unlike search()/list(), this ALWAYS excludes scope=="agent"
-    // rows (including ones pulled in via graph expansion): agent-scoped facts
-    // are meant to be recalled deliberately (recall(agent=...) / search with
-    // an explicit entityRef), not surfaced as ambient context in an unrelated
-    // conversation. search()/list() themselves are unaffected — an explicit,
-    // unscoped search()/recall() still spans global+agent rows.
+    // turn, which usually has no notion of "which agent/machine" it belongs
+    // to). Empty query => the k most-recent memories (so a fresh turn still
+    // gets context). The baseline result set ALWAYS excludes scope=="agent"
+    // rows (including ones pulled in via graph expansion), so an unrelated
+    // turn gets zero agent-scoped noise. HOWEVER, if `query` names a known
+    // agent (its entity_ref appears as a whole word, case-insensitively —
+    // e.g. "let's check on pve") that agent's own scoped memories are merged
+    // back in too, bounded to a small additive cap (kMaxAgentInject in the
+    // .cpp) — so a conversation that's clearly about that machine recalls its
+    // facts automatically, without an explicit recall(agent=...)/
+    // search(entityRef=...) every time. list() is unaffected and always
+    // returns every row (raw/debug listing).
     QVector<MemoryRow> prefetch(const QString &query, int k = 6);
 
     // Render a prefetch result as a system-prompt block to inject before a turn.
@@ -165,6 +174,11 @@ private:
     bool hasColumn(const QString &table, const QString &column);
     void autoExtractEntities(const QString &memId, const QString &text, const QStringList &tags);
     void backfillEntityExtraction();
+    // Known agent entity_refs (i.e. every distinct entity_ref with at least
+    // one scope=="agent" memory row) that appear as a whole word,
+    // case-insensitively, in `query` — used by prefetch()'s mention-based
+    // auto-recall (see prefetch() doc comment above).
+    QStringList agentRefsMentionedIn(const QString &query);
 
     QSqlDatabase m_db;
     QString m_connectionName;

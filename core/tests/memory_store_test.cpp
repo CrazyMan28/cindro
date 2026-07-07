@@ -361,7 +361,13 @@ int main(int argc, char **argv)
             check(!sawA2, "agent-scope: empty-query search(agent=104) excludes other agents");
         }
 
-        // Regression: search with NO agent filter still returns everything.
+        // Reversed regression (2026-07-06 per-agent-memory redesign): this
+        // used to assert that an unfiltered search() spans global+agent rows
+        // together (deliberate original design). New explicit user direction
+        // supersedes that: agents get dedicated PER-AGENT memory, not global
+        // memory, so an unscoped search() must now EXCLUDE agent-scoped rows
+        // — only an explicitly agent-scoped call (entityRef set, exercised
+        // above) still returns them.
         {
             const auto hits = s.search(QStringLiteral("runner"), 20);
             bool sawA1 = false, sawG1 = false;
@@ -369,7 +375,8 @@ int main(int argc, char **argv)
                 if (r.id == a1) sawA1 = true;
                 if (r.id == g1) sawG1 = true;
             }
-            check(sawA1 && sawG1, "agent-scope: unfiltered search still spans global + agent rows");
+            check(!sawA1, "agent-scope: unscoped search excludes the agent-scoped memory");
+            check(sawG1, "agent-scope: unscoped search still includes the global memory");
         }
 
         // The row carries its scope + entityRef; toJson surfaces them.
@@ -407,17 +414,82 @@ int main(int argc, char **argv)
             check(!sawA1, "agent-scope: prefetch() excludes the agent-scoped memory");
             check(sawG1, "agent-scope: prefetch() still includes the global memory");
 
-            // Non-regression: explicit search()/recall() with no agent filter
-            // must be completely unaffected by the prefetch() fix above — it
-            // still spans global + agent rows exactly as before.
+            // Reversed regression (2026-07-06 per-agent-memory redesign):
+            // this used to assert unfiltered search() was UNAFFECTED by the
+            // prefetch() fix (i.e. still spanned global+agent rows). Per the
+            // redesign, Change 1 closes that leak everywhere the entityRef
+            // arg is omitted, not just in prefetch() — so an unscoped
+            // search() must now ALSO exclude the agent-scoped row.
             const auto hits = s.search(QStringLiteral("runner"), 20);
             bool searchSawA1 = false, searchSawG1 = false;
             for (const auto &r : hits) {
                 if (r.id == a1) searchSawA1 = true;
                 if (r.id == g1) searchSawG1 = true;
             }
-            check(searchSawA1 && searchSawG1,
-                  "agent-scope: unfiltered search() is unaffected by the prefetch() fix");
+            check(!searchSawA1 && searchSawG1,
+                  "agent-scope: unfiltered search() also excludes agent-scoped rows now");
+        }
+    }
+
+    // --- per-agent memory redesign (2026-07-06): mention-based auto-recall
+    // in prefetch() ------------------------------------------------------
+    // New explicit user direction: a brand-new/unrelated chat must have NO
+    // idea about agent-specific facts (closing the leak from Change 1 above,
+    // reasserted here against this test's own fixture), but a chat that's
+    // clearly working on a specific agent/VM should automatically recall
+    // that agent's memories without the user/model naming them explicitly
+    // every time (prefetch()'s new mention-based auto-recall, Change 2).
+    {
+        QTemporaryDir tmpMention;
+        const QString dbPathMention = tmpMention.path() + QStringLiteral("/agent_mention.db");
+        MemoryStore s;
+        check(s.open(dbPathMention, QStringLiteral("mem-agent-mention-conn")),
+              "agent-mention: store open");
+
+        const QString globalId = s.add(QStringLiteral("the shared database lives in vault"));
+        const QString pveId = s.add(QStringLiteral("cpu load has been steady on pve"),
+                                    {QStringLiteral("status")}, QString(),
+                                    QStringLiteral("agent"), QStringLiteral("pve"));
+        check(!globalId.isEmpty() && !pveId.isEmpty(), "agent-mention: two memories added");
+
+        // A query that does NOT mention "pve" gets no agent-scoped rows at
+        // all (closing the leak, matching the existing prefetch() exclusion
+        // reasserted here for this fixture).
+        {
+            const auto pf = s.prefetch(QStringLiteral("what's new today"), 20);
+            bool sawPve = false;
+            for (const auto &r : pf)
+                if (r.id == pveId) sawPve = true;
+            check(!sawPve, "agent-mention: prefetch() with no agent mention excludes the pve row");
+        }
+
+        // A query that DOES mention "pve" (as a whole word) auto-recalls that
+        // agent's scoped memories too, in addition to the normal global hits.
+        {
+            const auto pf = s.prefetch(QStringLiteral("let's check on pve"), 20);
+            bool sawPve = false;
+            for (const auto &r : pf)
+                if (r.id == pveId) sawPve = true;
+            check(sawPve, "agent-mention: prefetch() mentioning 'pve' auto-recalls its scoped memory");
+        }
+
+        // Change 1's leak-closing behavior, from this same fixture: an
+        // unscoped search() must not include the pve-scoped row...
+        {
+            const auto hits = s.search(QStringLiteral("cpu load"), 20);
+            bool sawPve = false;
+            for (const auto &r : hits)
+                if (r.id == pveId) sawPve = true;
+            check(!sawPve, "agent-mention: unscoped search() excludes the pve-scoped row");
+        }
+
+        // ...while an explicitly agent-scoped search() still returns it.
+        {
+            const auto hits = s.search(QStringLiteral("cpu load"), 20, QStringLiteral("pve"));
+            bool sawPve = false;
+            for (const auto &r : hits)
+                if (r.id == pveId) sawPve = true;
+            check(sawPve, "agent-mention: search(entityRef='pve') still returns the pve-scoped row");
         }
     }
 

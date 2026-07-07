@@ -52,13 +52,15 @@ QStringList tagsFromStorage(const QString &s)
 // to every ordinary chat turn — see ControlServer::prefetchMemoryBlock/
 // memorySystemBlock). Ordinary turns have no notion of "which agent/machine"
 // they belong to, so scope=="agent" rows (stored via remember(text=...,
-// agent="some-id")) must never surface here unprompted — they're meant to be
-// pulled deliberately via recall(agent=...)/search(entityRef=...), not as
-// ambient context in an unrelated conversation. This is intentionally NOT
-// applied to search()/list() themselves: callers of the explicit-query path
-// (e.g. recall() with no agent) must keep seeing global+agent rows together,
-// per the regression-safety constraint in
-// docs/superpowers/plans/2026-07-06-agent-memory-workflows.md.
+// agent="some-id")) must never surface here as ambient baseline context.
+// prefetch() strips them with this helper first, then deliberately
+// re-injects a bounded set of them ONLY when the query itself names a known
+// agent (see MemoryStore::agentRefsMentionedIn() and kMaxAgentInject in
+// prefetch()) — per-agent memory, not global memory, per the 2026-07-06
+// redesign. As of that redesign, search()/recall() with an empty entityRef
+// ALSO excludes scope=="agent" rows (see search()): only list() (raw/debug
+// "show me everything") and an explicitly-scoped search()/recall(agent=...)
+// still see them.
 QVector<MemoryRow> excludeAgentScoped(const QVector<MemoryRow> &rows)
 {
     QVector<MemoryRow> out;
@@ -730,6 +732,11 @@ QVector<MemoryRow> MemoryStore::search(const QString &query, int limit, const QS
             " WHERE memories_fts MATCH ?");
         if (scoped)
             sql += QStringLiteral(" AND m.entity_ref = ?");
+        else
+            // Unscoped call: per-agent memories are only visible to a caller
+            // that names the agent (entityRef set) — see search()'s doc
+            // comment / the 2026-07-06 per-agent-memory redesign.
+            sql += QStringLiteral(" AND m.scope != 'agent'");
         sql += QStringLiteral(" ORDER BY rank ASC LIMIT ?");
         QSqlQuery q(m_db);
         q.prepare(sql);
@@ -765,6 +772,9 @@ QVector<MemoryRow> MemoryStore::search(const QString &query, int limit, const QS
         " WHERE (text LIKE ? OR tags LIKE ?)");
     if (scoped)
         sql += QStringLiteral(" AND entity_ref = ?");
+    else
+        // Same unscoped exclusion as the FTS branch above.
+        sql += QStringLiteral(" AND scope != 'agent'");
     sql += QStringLiteral(" ORDER BY updated DESC LIMIT ?");
     QSqlQuery q(m_db);
     q.prepare(sql);
@@ -793,6 +803,32 @@ QVector<MemoryRow> MemoryStore::search(const QString &query, int limit, const QS
     return out;
 }
 
+QStringList MemoryStore::agentRefsMentionedIn(const QString &query)
+{
+    QStringList out;
+    if (query.trimmed().isEmpty())
+        return out;
+
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral(
+            "SELECT DISTINCT entity_ref FROM memories WHERE scope='agent' AND entity_ref != ''")))
+        return out;
+
+    while (q.next()) {
+        const QString ref = q.value(0).toString();
+        if (ref.isEmpty())
+            continue;
+        // Whole-word, case-insensitive match so e.g. "pve" doesn't spuriously
+        // match inside an unrelated word like "improve".
+        const QRegularExpression wordRe(
+            QStringLiteral("\\b") + QRegularExpression::escape(ref) + QStringLiteral("\\b"),
+            QRegularExpression::CaseInsensitiveOption);
+        if (wordRe.match(query).hasMatch())
+            out << ref;
+    }
+    return out;
+}
+
 QVector<MemoryRow> MemoryStore::prefetch(const QString &query, int k)
 {
     if (k <= 0)
@@ -802,14 +838,42 @@ QVector<MemoryRow> MemoryStore::prefetch(const QString &query, int k)
     if (hits.isEmpty())
         hits = excludeAgentScoped(list(k)); // no relevant match — still give recent context
 
+    QSet<QString> have;
+    for (const MemoryRow &r : hits)
+        have.insert(r.id);
+
+    // Mention-based auto-recall: if the query clearly names a known agent/
+    // paired-machine (its entity_ref appears as a whole word — e.g. "let's
+    // check on pve"), pull that agent's own scoped memories in too, IN
+    // ADDITION to the global-only hits above (never instead of them). This is
+    // the one place scope=="agent" rows surface without an explicit
+    // recall(agent=...)/search(entityRef=...) ask: a conversation that's
+    // obviously about that machine shouldn't require re-naming it every turn
+    // to see what's already known about it. A query naming no agent (or an
+    // unrecognized one) injects nothing here, leaving the plain global-only
+    // prefetch above untouched. Bounded to a small additive cap shared across
+    // every agent mentioned (not per-agent), same spirit as kMaxExpand below.
+    constexpr int kMaxAgentInject = 5;
+    int injected = 0;
+    for (const QString &ref : agentRefsMentionedIn(query)) {
+        if (injected >= kMaxAgentInject)
+            break;
+        for (const MemoryRow &r : search(QString(), kMaxAgentInject, ref)) {
+            if (injected >= kMaxAgentInject)
+                break;
+            if (have.contains(r.id))
+                continue;
+            have.insert(r.id);
+            hits.push_back(r);
+            ++injected;
+        }
+    }
+
     // Graph-aware expansion: a memory sharing an entity (tag/topic/project)
     // with a top hit is relevant context even if its own text doesn't match
     // the query. Walk 2 hops (memory -> entity -> sibling memory) from each
     // of the top hits and fold in a bounded number of newly-discovered
     // memories so recall isn't limited to literal text matches.
-    QSet<QString> have;
-    for (const MemoryRow &r : hits)
-        have.insert(r.id);
     constexpr int kMaxExpand = 3;
     int added = 0;
     for (int i = 0; i < hits.size() && added < kMaxExpand; ++i) {
