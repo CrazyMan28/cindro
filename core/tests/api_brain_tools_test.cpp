@@ -398,6 +398,34 @@ int main(int argc, char **argv)
         check(ApiBrain::compressHistory(h4, 8) == 0, "small history untouched");
     }
 
+    // --- backoffDelayMs (429 retry-after-pool-exhaustion helper) ------------
+    {
+        // attempt 0 at base=2000/max=60000 is in [1000,2000] (jitter [0.5,1.0]).
+        const qint64 d0 = ApiBrain::backoffDelayMs(0, 2000, 60000);
+        check(d0 >= 1000 && d0 <= 2000, "attempt 0 delay within jittered base range");
+
+        // attempt 3 (2000*2^3=16000) is in [8000,16000], still under the cap.
+        const qint64 d3 = ApiBrain::backoffDelayMs(3, 2000, 60000);
+        check(d3 >= 8000 && d3 <= 16000, "attempt 3 delay exponentially scaled pre-cap");
+
+        // A huge attempt count saturates at maxMs (times jitter), never exceeds it.
+        const qint64 dHuge = ApiBrain::backoffDelayMs(50, 2000, 60000);
+        check(dHuge <= 60000, "delay never exceeds maxMs even for a large attempt count");
+        check(dHuge >= 30000, "capped delay still respects the jitter floor (0.5x maxMs)");
+
+        // Monotonic non-decreasing upper bound as attempt grows (pre-cap).
+        const qint64 lo1 = ApiBrain::backoffDelayMs(1, 2000, 60000);
+        const qint64 lo2 = ApiBrain::backoffDelayMs(2, 2000, 60000);
+        check(lo1 <= 4000 && lo2 <= 8000, "successive attempts' upper bounds grow");
+
+        // Degenerate inputs don't crash or invert (maxMs < baseMs; negative attempt).
+        check(ApiBrain::backoffDelayMs(-1, 2000, 60000) >= 1000,
+              "negative attempt clamped to attempt 0");
+        const qint64 dDegenerate = ApiBrain::backoffDelayMs(0, 5000, 1000);
+        check(dDegenerate >= 500 && dDegenerate <= 5000,
+              "maxMs < baseMs is clamped up to baseMs rather than inverting");
+    }
+
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

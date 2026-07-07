@@ -2,7 +2,7 @@
 // screenshot on them by name. Replaces the old SSH page. Pairing-card + poll
 // pattern mirrors settings/devices.tsx; the exec console mirrors the old
 // ssh.tsx. All verbs proxy through the daemon to outpost-mcp (:8798).
-import { createSignal, For, onCleanup, onMount, Show } from "solid-js"
+import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js"
 
 import { useApp } from "../core/app-context"
 import { ControlError } from "../core/control-client"
@@ -34,6 +34,31 @@ interface ExecEntry {
   ok: boolean
 }
 
+interface ProxmoxVm {
+  vmid: number
+  name: string
+  status: string
+  cores: number
+  memory_mb: number
+  cpu_pct: number
+  mem_pct: number
+  blocklisted: boolean
+  pending_restart: boolean
+  last_action: string
+  last_action_at: number | null
+}
+
+interface ProxmoxMemory {
+  id: string
+  text: string
+  tags: string[]
+  created: number
+  updated: number
+  scope?: string
+  entityRef?: string
+  score?: number
+}
+
 let entrySeq = 0
 
 function fmtTime(ms?: number): string {
@@ -43,6 +68,20 @@ function fmtTime(ms?: number): string {
   } catch {
     return ""
   }
+}
+
+function timeAgo(ms: number): string {
+  if (!ms) return "never"
+  const diff = Date.now() - ms
+  if (diff < 0) return "just now"
+  const s = Math.floor(diff / 1000)
+  if (s < 60) return `${s}s ago`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ago`
+  const d = Math.floor(h / 24)
+  return `${d}d ago`
 }
 
 function Outpost() {
@@ -71,6 +110,19 @@ function Outpost() {
   const [shot, setShot] = createSignal("")
   const [shotBusy, setShotBusy] = createSignal(false)
 
+  const [vms, setVms] = createSignal<ProxmoxVm[]>([])
+  const [vmsError, setVmsError] = createSignal("")
+  const [vmsLoaded, setVmsLoaded] = createSignal(false)
+  const [installing, setInstalling] = createSignal(false)
+  const [installOk, setInstallOk] = createSignal(false)
+  const [installMsg, setInstallMsg] = createSignal("")
+  const [restartingVmid, setRestartingVmid] = createSignal<number | null>(null)
+  const [blocklistBusyVmid, setBlocklistBusyVmid] = createSignal<number | null>(null)
+  const [report, setReport] = createSignal<ProxmoxMemory[]>([])
+  const [reportLoading, setReportLoading] = createSignal(false)
+  const [reportError, setReportError] = createSignal("")
+  const [reportLoaded, setReportLoaded] = createSignal(false)
+
   let alive = true
   onCleanup(() => {
     alive = false
@@ -92,16 +144,54 @@ function Outpost() {
     }
   }
 
+  // proxmox.status for the currently selected machine — piggybacks on the
+  // same 15s cadence as the machines-list poll (below) rather than running
+  // its own timer.
+  const loadVms = async () => {
+    const machine = selected()
+    if (!machine) {
+      setVms([])
+      setVmsLoaded(false)
+      return
+    }
+    try {
+      const res = await app.client.call("proxmox.status", { machine }, 15000)
+      if (!alive || selected() !== machine) return
+      setVms((res.vms ?? []) as ProxmoxVm[])
+      setVmsError("")
+    } catch (e) {
+      if (!alive || selected() !== machine) return
+      setVmsError(String(e))
+    } finally {
+      if (alive && selected() === machine) setVmsLoaded(true)
+    }
+  }
+
   onMount(() => {
     void load()
     const conn = setInterval(() => setConnected(app.client.connected), 500)
-    const timer = setInterval(() => void load(), 15000)
+    const timer = setInterval(() => {
+      void load()
+      void loadVms()
+    }, 15000)
     const tick = setInterval(() => setNow(Date.now()), 1000)
     onCleanup(() => {
       clearInterval(conn)
       clearInterval(timer)
       clearInterval(tick)
     })
+  })
+
+  // Selecting a different machine: drop stale VM/install/report state from
+  // the previous one and fetch this one's VM status right away instead of
+  // waiting for the next 15s tick.
+  createEffect(() => {
+    selected()
+    setInstallMsg("")
+    setReport([])
+    setReportLoaded(false)
+    setReportError("")
+    void loadVms()
   })
 
   const remaining = () => {
@@ -200,6 +290,81 @@ function Outpost() {
     }
   }
 
+  const installWorkload = async () => {
+    const machine = selected()
+    if (!machine || installing()) return
+    setInstalling(true)
+    setInstallMsg("")
+    try {
+      const res = await app.client.call("outpost.install_workload", { machine }, 60000)
+      if (!alive) return
+      setInstallOk(true)
+      setInstallMsg(String(res.note ?? "Installed."))
+      await loadVms()
+    } catch (e) {
+      if (!alive) return
+      setInstallOk(false)
+      setInstallMsg(e instanceof ControlError ? `${e.code}: ${e.message}` : String(e))
+    } finally {
+      if (alive) setInstalling(false)
+    }
+  }
+
+  const restartVm = async (vm: ProxmoxVm) => {
+    const machine = selected()
+    if (!machine || restartingVmid() !== null) return
+    if (!window.confirm(`Restart VM ${vm.vmid} (${vm.name}) on ${selectedName()}? This will interrupt anything running on it.`)) return
+    setRestartingVmid(vm.vmid)
+    try {
+      await app.client.call("proxmox.restart_vm", { machine, vmid: vm.vmid }, 30000)
+      app.notify(`Restart triggered for VM ${vm.vmid}.`)
+      await loadVms()
+    } catch (e) {
+      app.notify(`Restart failed: ${e instanceof ControlError ? e.message : String(e)}`, "error")
+    } finally {
+      if (alive) setRestartingVmid(null)
+    }
+  }
+
+  // proxmox.set_blocklist replaces the whole list, so we read the last-fetched
+  // status array, flip membership for just this vmid, and send the full
+  // resulting array back — never a delta.
+  const toggleBlocklist = async (vm: ProxmoxVm) => {
+    const machine = selected()
+    if (!machine || blocklistBusyVmid() !== null) return
+    const nextBlocklisted = vms()
+      .map((v) => (v.vmid === vm.vmid ? { ...v, blocklisted: !v.blocklisted } : v))
+      .filter((v) => v.blocklisted)
+      .map((v) => v.vmid)
+    setBlocklistBusyVmid(vm.vmid)
+    try {
+      await app.client.call("proxmox.set_blocklist", { machine, vmids: nextBlocklisted }, 15000)
+      await loadVms()
+    } catch (e) {
+      app.notify(`Blocklist update failed: ${String(e)}`, "error")
+    } finally {
+      if (alive) setBlocklistBusyVmid(null)
+    }
+  }
+
+  const loadReport = async () => {
+    const machine = selected()
+    if (!machine || reportLoading()) return
+    setReportLoading(true)
+    setReportError("")
+    try {
+      const res = await app.client.call("proxmox.report", { machine }, 20000)
+      if (!alive) return
+      setReport((res.memories ?? []) as ProxmoxMemory[])
+      setReportLoaded(true)
+    } catch (e) {
+      if (!alive) return
+      setReportError(String(e))
+    } finally {
+      if (alive) setReportLoading(false)
+    }
+  }
+
   return (
     <div class="op-page">
       <style>{`
@@ -269,6 +434,41 @@ function Outpost() {
           border: 1px solid var(--danger-dim); background: rgba(255,107,107,0.06);
           border-radius: var(--radius-xs); padding: 8px 10px; }
         .op-empty { color: var(--text-faint); font-size: 12px; margin-top: 10px; }
+        .op-install-row { display: flex; align-items: center; gap: 12px; }
+        .op-install-msg { margin-top: 10px; font-size: 12px; color: var(--success); }
+        .op-install-msg.fail { color: var(--danger); }
+        .op-vm-table-wrap { overflow-x: auto; margin-top: 10px; }
+        .op-vm-table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 640px; }
+        .op-vm-table thead th { text-align: left; padding: 8px 10px; color: var(--text-faint);
+          font-family: var(--font-display); font-size: 9px; letter-spacing: var(--track-wide);
+          border-bottom: 1px solid var(--hairline-soft); white-space: nowrap; }
+        .op-vm-table tbody td { padding: 8px 10px; border-bottom: 1px solid var(--hairline-faint);
+          color: var(--text); vertical-align: middle; }
+        .op-vm-table tbody tr:last-child td { border-bottom: none; }
+        .op-vm-table tbody tr:hover { background: rgba(255,255,255,0.025); }
+        .op-vm-name { color: var(--text); font-weight: 500; }
+        .op-vm-mono { font-family: var(--font-mono); color: var(--text-faint); white-space: nowrap; }
+        .op-vm-status { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; }
+        .op-vm-status.running { color: var(--success); }
+        .op-vm-status.stopped { color: var(--text-faint); }
+        .op-vm-pending { display: inline-flex; align-items: center; gap: 4px; margin-top: 2px;
+          font-size: 9px; color: var(--amber); font-family: var(--font-display); letter-spacing: var(--track-tight); }
+        .op-vm-pending::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); flex-shrink: 0; }
+        .op-vm-restart { all: unset; cursor: pointer; white-space: nowrap; padding: 5px 12px;
+          border-radius: var(--radius-xs); background: transparent; color: var(--amber);
+          border: 1px solid var(--amber-dim, var(--accent-dim)); font-family: var(--font-display);
+          letter-spacing: var(--track-mid); font-size: 10px; }
+        .op-vm-restart:hover:not(:disabled) { background: var(--amber-dim, var(--accent-dim)); }
+        .op-vm-restart:disabled { opacity: 0.5; cursor: default; }
+        .op-report-btn { margin-top: 12px; }
+        .op-report-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+        .op-report-row { border-radius: var(--radius-sm); background: var(--panel-soft);
+          border: 1px solid var(--hairline-soft); padding: 10px 14px; }
+        .op-report-text { color: var(--text); font-size: 13px; line-height: 1.4; }
+        .op-report-meta { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; margin-top: 6px; }
+        .op-report-tag { display: inline-block; margin-right: 6px; padding: 1px 6px; border-radius: 4px;
+          background: var(--accent-faint); color: var(--accent); font-size: 9px;
+          font-family: var(--font-display); letter-spacing: var(--track-tight); }
       `}</style>
 
       <div class="op-header">
@@ -385,6 +585,132 @@ function Outpost() {
           <img class="op-shot" src={shot()} alt="remote screenshot" />
         </Show>
       </div>
+
+      <Show when={selected()}>
+        <div class="card">
+          <div class="op-title-line hud-label accent">// PROXMOX WORKLOAD MANAGER → {selectedName()}</div>
+
+          <div class="op-install-row">
+            <div class="op-pair-text">
+              <div class="op-pair-label">Install the workload manager</div>
+              <div class="op-pair-sub">Provisions the Proxmox agent on this host. Can take up to a minute.</div>
+            </div>
+            <button
+              type="button"
+              class="op-btn"
+              disabled={installing() || !connected()}
+              onClick={() => void installWorkload()}
+            >
+              {installing() ? "Installing…" : "Install"}
+            </button>
+          </div>
+          <Show when={installMsg()}>
+            <div class="op-install-msg" classList={{ fail: !installOk() }}>
+              {installOk() ? "✓ " : "⚠ "}{installMsg()}
+            </div>
+          </Show>
+
+          <div class="op-cmd-label">VIRTUAL MACHINES</div>
+          <Show when={vmsError()}>
+            <div class="op-banner-error">⚠ {vmsError()}</div>
+          </Show>
+          <Show when={vmsLoaded() && vms().length === 0 && !vmsError()}>
+            <div class="op-empty">No VMs reported yet. Install the workload manager above, then wait for the next refresh.</div>
+          </Show>
+          <Show when={vms().length > 0}>
+            <div class="op-vm-table-wrap">
+              <table class="op-vm-table">
+                <thead>
+                  <tr>
+                    <th>VMID</th>
+                    <th>Name</th>
+                    <th>Status</th>
+                    <th>Cores</th>
+                    <th>Mem (MB)</th>
+                    <th>CPU %</th>
+                    <th>Mem %</th>
+                    <th>Blocklist</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <For each={vms()}>
+                    {(vm) => (
+                      <tr>
+                        <td class="op-vm-mono">{vm.vmid}</td>
+                        <td>
+                          <div class="op-vm-name">{vm.name}</div>
+                          <Show when={vm.pending_restart}>
+                            <div class="op-vm-pending">restart pending</div>
+                          </Show>
+                        </td>
+                        <td>
+                          <span class="op-vm-status" classList={{ running: vm.status === "running", stopped: vm.status !== "running" }}>
+                            {vm.status}
+                          </span>
+                        </td>
+                        <td class="op-vm-mono">{vm.cores}</td>
+                        <td class="op-vm-mono">{vm.memory_mb}</td>
+                        <td class="op-vm-mono">{vm.cpu_pct.toFixed(1)}</td>
+                        <td class="op-vm-mono">{vm.mem_pct.toFixed(1)}</td>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={vm.blocklisted}
+                            disabled={blocklistBusyVmid() === vm.vmid}
+                            onChange={() => void toggleBlocklist(vm)}
+                          />
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            class="op-vm-restart"
+                            disabled={restartingVmid() === vm.vmid}
+                            onClick={() => void restartVm(vm)}
+                          >
+                            {restartingVmid() === vm.vmid ? "Restarting…" : "Restart"}
+                          </button>
+                        </td>
+                      </tr>
+                    )}
+                  </For>
+                </tbody>
+              </table>
+            </div>
+          </Show>
+
+          <div class="op-pair-row op-report-btn">
+            <div class="op-pair-text">
+              <div class="op-pair-label">Decision report</div>
+              <div class="op-pair-sub">Pull the workload manager's decision-history log for this host.</div>
+            </div>
+            <button type="button" class="op-btn" disabled={reportLoading() || !connected()} onClick={() => void loadReport()}>
+              {reportLoading() ? "Loading…" : "Get report"}
+            </button>
+          </div>
+          <Show when={reportError()}>
+            <div class="op-banner-error">⚠ {reportError()}</div>
+          </Show>
+          <Show when={reportLoaded() && report().length === 0 && !reportError()}>
+            <div class="op-empty">No decisions logged yet.</div>
+          </Show>
+          <Show when={report().length > 0}>
+            <div class="op-report-list">
+              <For each={report()}>
+                {(m) => (
+                  <div class="op-report-row">
+                    <div class="op-report-text">{m.text}</div>
+                    <div class="op-report-meta">
+                      <For each={m.tags}>{(t) => <span class="op-report-tag">{t}</span>}</For>
+                      {timeAgo(m.created)} · {fmtTime(m.created)}
+                    </div>
+                  </div>
+                )}
+              </For>
+            </div>
+          </Show>
+        </div>
+      </Show>
     </div>
   )
 }

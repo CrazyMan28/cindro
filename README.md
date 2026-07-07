@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🤖 Jarvis
+<img src="docs/media/logo.png" alt="Jarvis" width="420">
 
 ### One AI co-worker for your **Linux desktop**, **Android phone**, and **Chrome** — that actually *uses* your computer.
 
@@ -234,6 +234,7 @@ Honest about the rough edges (full status in [`docs/STATUS.md`](docs/STATUS.md))
 - [`docs/WIDGETS_CANVAS.md`](docs/WIDGETS_CANVAS.md) — canvases, widgets, `pager`, Home pins, home-screen widgets
 - [`docs/JARVIS_VOICE_AND_RENDERER.md`](docs/JARVIS_VOICE_AND_RENDERER.md) / [`docs/VOICE.md`](docs/VOICE.md) — voice + generative renderer
 - [`docs/SCHEDULES.md`](docs/SCHEDULES.md) · [`docs/HERMES_FEATURES.md`](docs/HERMES_FEATURES.md) · [`docs/JARVIS_GOOGLE_CONNECTORS.md`](docs/JARVIS_GOOGLE_CONNECTORS.md) · [`docs/TAKEOVER_UX.md`](docs/TAKEOVER_UX.md) · [`docs/KWIN_MULTISEAT_FORK.md`](docs/KWIN_MULTISEAT_FORK.md)
+- [`docs/OUTPOST.md`](docs/OUTPOST.md) — pair a remote machine and run gated exec/screenshot on it by name · [`docs/PROXMOX_WORKLOAD_MANAGER.md`](docs/PROXMOX_WORKLOAD_MANAGER.md) — an always-on Jarvis agent that lives ON a Proxmox host, auto-tunes congested VMs' CPU/RAM (never restarts on its own), installed as an Outpost capability
 - [`docs/WINDOWS.md`](docs/WINDOWS.md) — the **Windows edition** (parity matrix, what's not portable, install/build) · [`docs/MISTRAL_SETUP.md`](docs/MISTRAL_SETUP.md) — **Jarvis without Codex/Claude** (chat + drive with Mistral)
 - [`AGENTS.md`](AGENTS.md) — **read this first if you're an AI working on the repo**
 

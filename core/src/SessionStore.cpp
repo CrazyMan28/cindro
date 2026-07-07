@@ -59,6 +59,7 @@ QJsonObject SessionRow::toJson() const
     obj.insert(QStringLiteral("agent"), agent);
     obj.insert(QStringLiteral("goals"), goals);
     obj.insert(QStringLiteral("continuation_count"), continuationCount);
+    obj.insert(QStringLiteral("target_ref"), targetRef);
     obj.insert(QStringLiteral("created"), created);
     obj.insert(QStringLiteral("updated"), updated);
     return obj;
@@ -157,6 +158,11 @@ bool SessionStore::migrate()
     // ignore-duplicate-column pattern as above.
     exec(QStringLiteral("ALTER TABLE sessions ADD COLUMN goals TEXT DEFAULT ''"));
     exec(QStringLiteral("ALTER TABLE sessions ADD COLUMN continuation_count INTEGER DEFAULT 0"));
+    // Proxmox workload manager: a session fired by a schedule inherits that
+    // schedule's targetRef (e.g. "proxmox-<hostname>") so makeBrain() can route
+    // the api brain at the right remote MCP endpoint. Same ignore-duplicate-
+    // column pattern as the migrations above.
+    exec(QStringLiteral("ALTER TABLE sessions ADD COLUMN target_ref TEXT DEFAULT ''"));
 
     if (!exec(QStringLiteral(
             "CREATE TABLE IF NOT EXISTS events ("
@@ -271,8 +277,8 @@ bool SessionStore::create(const SessionRow &row)
     q.prepare(QStringLiteral(
         "INSERT INTO sessions"
         " (id,title,profile,brain,model,thread_id,state,parent_session_id,agent,"
-        "  goals,continuation_count,created,updated)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"));
+        "  goals,continuation_count,target_ref,created,updated)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"));
     q.addBindValue(row.id);
     q.addBindValue(row.title);
     q.addBindValue(row.profile);
@@ -284,6 +290,7 @@ bool SessionStore::create(const SessionRow &row)
     q.addBindValue(row.agent);
     q.addBindValue(row.goals);
     q.addBindValue(row.continuationCount);
+    q.addBindValue(row.targetRef);
     q.addBindValue(row.created != 0 ? row.created : now);
     q.addBindValue(row.updated != 0 ? row.updated : now);
     if (!q.exec()) {
@@ -296,7 +303,7 @@ bool SessionStore::create(const SessionRow &row)
 namespace {
 constexpr const char *kSessionCols =
     "id,title,profile,brain,model,thread_id,state,parent_session_id,agent,"
-    "goals,continuation_count,created,updated";
+    "goals,continuation_count,target_ref,created,updated";
 
 SessionRow sessionRowFromQuery(const QSqlQuery &q)
 {
@@ -312,8 +319,9 @@ SessionRow sessionRowFromQuery(const QSqlQuery &q)
     row.agent = q.value(8).toString();
     row.goals = q.value(9).toString();
     row.continuationCount = q.value(10).toInt();
-    row.created = q.value(11).toLongLong();
-    row.updated = q.value(12).toLongLong();
+    row.targetRef = q.value(11).toString();
+    row.created = q.value(12).toLongLong();
+    row.updated = q.value(13).toLongLong();
     return row;
 }
 } // namespace

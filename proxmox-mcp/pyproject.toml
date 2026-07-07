@@ -1,0 +1,33 @@
+[project]
+name = "proxmox-mcp"
+version = "0.1.0"
+description = "Proxmox-MCP: the tool server the always-on Proxmox workload-manager agent (jarvisd + ApiBrain/Mistral) calls to check VM congestion, tune cores/RAM, and log its own decisions. Runs co-located with jarvisd ON the Proxmox host."
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.26.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+proxmox-mcp = "proxmox_mcp.server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["proxmox_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+asyncio_mode = "auto"

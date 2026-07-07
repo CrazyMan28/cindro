@@ -1,0 +1,18 @@
+# /etc/jarvis-proxmox-agent/config.toml — rendered by outpost.install_workload
+# with `node` set to the actual Proxmox node name (from `pvesh get /nodes`);
+# every other value is a safe default the user can hand-edit afterward.
+
+node = "pve"
+check_interval_minutes = 5
+cooldown_minutes = 15
+reserve_cores = 2
+reserve_mem_mb = 4096
+bump_step_cores = 2
+bump_step_mem_mb = 2048
+max_cores_per_vm = 16
+max_mem_mb_per_vm = 32768
+cpu_congested_pct = 85.0
+mem_congested_pct = 90.0
+project_tracker_agent_name = "proxmox-pve"
+project_tracker_project_id = "proj-jarvis"
+project_tracker_url = "http://100.114.201.41:8790/mcp"

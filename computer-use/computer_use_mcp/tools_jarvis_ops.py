@@ -12,9 +12,28 @@ from __future__ import annotations
 import json
 import os
 
+from pathlib import Path
+
 from mcp.server.fastmcp import FastMCP
 
-from computer_use_mcp import daemon_client
+from computer_use_mcp import daemon_client, project_tracker_client
+
+_PROJECT_TRACKER_URL = "http://100.114.201.41:8790/mcp"
+
+
+def _project_tracker_bearer() -> str:
+    """~/.project-tracker/config.yaml -> bearer_token (best-effort)."""
+    try:
+        text = (Path.home() / ".project-tracker" / "config.yaml").read_text()
+    except OSError:
+        return ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith("bearer_token"):
+            continue
+        _, _, val = line.partition(":")
+        return val.strip().strip("'\"")
+    return ""
 
 
 def _err(exc: Exception) -> str:
@@ -46,6 +65,59 @@ def recall(query: str = "", agent: str = "", limit: int = 20) -> str:
         if agent:
             params["agent"] = agent
         return json.dumps(daemon_client.call("memory.search", params))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def proxmox_check_status(machine: str) -> str:
+    """VM inventory + congestion for an enrolled Proxmox workload-manager
+    agent (host/vm cpu/mem, cores, pending_restart, blocklisted). Use this
+    when the user asks something like "check up on proxmox" — pair with
+    proxmox_get_report for what the agent has actually DONE recently.
+    `machine` is the paired Outpost machine name/id running the agent."""
+    try:
+        return json.dumps(daemon_client.call("proxmox.status", {"machine": machine}))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def proxmox_get_report(machine: str) -> str:
+    """Recent decision history from an enrolled Proxmox workload-manager
+    agent — what it tuned, what it skipped and why, sourced from its own
+    durable memory (survives the agent's host being checked while your
+    laptop was off). Pair with proxmox_check_status for current state."""
+    try:
+        return json.dumps(daemon_client.call("proxmox.report", {"machine": machine}))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def proxmox_give_direction(machine: str, text: str) -> str:
+    """Queue a free-text instruction for an enrolled Proxmox workload-manager
+    agent to read and act on at the START of its next tick (e.g. "prioritize
+    the CI runners today", "go easy on VM 106 this week"). This is guidance,
+    NOT a bypass: the agent still enforces its own blocklist/cooldown/
+    headroom/hotplug rules and still has no tool that can restart a VM,
+    regardless of what the directive asks for."""
+    try:
+        return json.dumps(daemon_client.call(
+            "proxmox.send_directive", {"machine": machine, "text": text}))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def proxmox_agent_checkin() -> str:
+    """Check whether an enrolled Proxmox workload-manager agent is alive, via
+    Project Tracker's agent_list_active (the same directory any other active
+    Jarvis agent shows up in) — filtered to agent names starting with
+    "proxmox-". Returns {agents:[{name,status,last_seen,...}]} or
+    {"error":...} if Project Tracker is unreachable or no token is configured."""
+    try:
+        result = project_tracker_client.agent_list_active(
+            _PROJECT_TRACKER_URL, _project_tracker_bearer())
+        agents = [a for a in result.get("agents", [])
+                 if str(a.get("name", "")).startswith("proxmox-")]
+        return json.dumps({"agents": agents})
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -119,6 +191,10 @@ def register(mcp: FastMCP) -> None:
     # ---- MEMORY -------------------------------------------------------------
     mcp.tool()(remember)
     mcp.tool()(recall)
+    mcp.tool()(proxmox_agent_checkin)
+    mcp.tool()(proxmox_check_status)
+    mcp.tool()(proxmox_get_report)
+    mcp.tool()(proxmox_give_direction)
 
     @mcp.tool()
     def session_search(query: str, limit: int = 20, context_window: int = 2,

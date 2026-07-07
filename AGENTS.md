@@ -401,6 +401,45 @@ Design pillars:
   inline message (`supportsVision` predicates in Bridge.cpp / sidepanel.js) —
   never a silent drop. Keep the desktop/extension predicates in sync.
 
+## New subsystems (2026-07-06) — Proxmox workload manager gotchas
+
+- **ApiBrain 429 no longer means instant fail.** Credential-pool rotation
+  (item 5 above) still happens first; ONCE THAT'S EXHAUSTED, a session with
+  `Options::maxBackoffRetries > 0` now backs off (exponential + full jitter,
+  `ApiBrain::backoffDelayMs`) and retries the whole pool again, up to that
+  many times, before genuinely erroring the turn. Default 0 preserves
+  today's interactive-session behavior; only the Proxmox agent's scheduled
+  session opts in (see `docs/PROXMOX_WORKLOAD_MANAGER.md`).
+- **`proxmox.*` is desktop/TUI/web only, same rationale as `outpost.*`.**
+  It IS an `outpost.exec` proxy under the hood (no new transport), so it's
+  rejected at the phone/device channel boundary in `DeviceServer.cpp`
+  identically to `outpost.*` — don't remove that check if you touch either.
+- **`proxmox.restart_vm` is the ONLY code path that runs `qm reboot`,
+  anywhere in this feature.** The scheduled agent's own tool catalog
+  (`proxmox-mcp/tools_proxmox.py`) never registers a restart tool at all —
+  this is enforced structurally, not by prompting. Preserve this invariant
+  if you touch `proxmox_tune` or `handleProxmoxRestartVm`.
+- **`proxmox.report` is sync-then-recall, not a blind recall.** The remote
+  agent's memory lives in ITS OWN sqlite db on the Proxmox host (durable
+  independent of the laptop); the RPC pulls rows newer than the newest
+  `created` already present locally for that agent (self-describing
+  watermark — no separate watermark file) into the laptop's own
+  agent-scoped memory, THEN searches. Calling `handleMemorySearch` directly
+  for a `proxmox-*` agent without syncing first will look empty/stale.
+- **`SessionRow::targetRef` is new plumbing, not decorative.** It didn't
+  reach `makeBrain` at all before this — `fireScheduledJob` dropped
+  `ScheduleRow::targetRef` on the floor. If you add another schedule-fired,
+  non-default-engine session type, reuse this field/column rather than
+  inventing a second one.
+- **`outpost.install_workload` fetches jarvisd from a GitHub Release, not a
+  transferred binary.** A plain AppImage is ~300MB — far past what
+  `writeRemoteFile`'s base64-over-exec is for. The remote host `curl`s the
+  latest release via the GitHub API and `--appimage-extract`s it itself; only
+  small text (config/secrets/systemd units) goes through writeRemoteFile.
+  Verified end-to-end against a real paired host (config/secrets seeding),
+  but the fetch-from-release step needs an actual release to exist — it
+  can't be exercised until this ships to `main` and a release is cut.
+
 ## Branches & flow
 
 Three long-lived branches; **`main` is protected** (PR-only, no direct pushes, no

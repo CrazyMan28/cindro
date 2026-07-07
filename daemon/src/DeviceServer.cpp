@@ -692,9 +692,12 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         // outpost.exec/screenshot/pair_start/pair_status/list/revoke
         // directly over this WebSocket. Reject it here, at the channel
         // boundary, rather than narrowing isOpsMethod() itself.
-        if (m.startsWith(QStringLiteral("outpost."))) {
+        if (m.startsWith(QStringLiteral("outpost.")) || m.startsWith(QStringLiteral("proxmox."))) {
+            // proxmox.* shares outpost.*'s rationale exactly (it IS an
+            // outpost.exec proxy under the hood) — same narrower blast
+            // radius, desktop/TUI/web only.
             resp = Response::failure(req.id, QStringLiteral("channel_not_allowed"),
-                                     QStringLiteral("outpost.* is not available over "
+                                     QStringLiteral("outpost.*/proxmox.* is not available over "
                                                     "the phone/device channel"));
         } else if (m == QStringLiteral("schedule.webhook_token")) {
             // schedule.webhook_token returns the raw, cleartext per-workflow

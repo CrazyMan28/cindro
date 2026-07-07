@@ -1,0 +1,30 @@
+[Unit]
+Description=Jarvis daemon — Proxmox workload-manager profile (headless, Mistral/ApiBrain)
+After=network.target proxmox-mcp.service
+Requires=proxmox-mcp.service
+
+[Service]
+# Root: qm/pvesh require it. An isolated profile (JARVIS_CONFIG_DIR/JARVIS_DATA_DIR,
+# per AGENTS.md item 15) so this never collides with any human-facing jarvisd on
+# the same box. Its own secrets.json ({"mistral": "<key>"}) and config.toml
+# (with the "proxmox-<hostname>" schedule row) are seeded by the Outpost
+# install flow (outpost.install_workload) before this unit is first started.
+#
+# ExecStart runs jarvisd straight out of the release AppImage's extracted tree
+# (--appimage-extract'd by the install flow into
+# /opt/jarvis-proxmox-agent/appimage/squashfs-root) rather than a bare binary —
+# this is what makes glibc/Qt-version portability a non-issue: the AppImage
+# bundles its own Qt6/libssh/etc, only relying on the host's glibc/kernel ABI
+# (matches the CI-pinned build baseline, see docs/PROXMOX_WORKLOAD_MANAGER.md).
+User=root
+Environment=QT_QPA_PLATFORM=offscreen
+Environment=JARVIS_CONFIG_DIR=/etc/jarvis-proxmox-agent/jarvisd
+Environment=JARVIS_DATA_DIR=/var/lib/jarvis-proxmox-agent/jarvisd
+Environment=LD_LIBRARY_PATH=/opt/jarvis-proxmox-agent/appimage/squashfs-root/usr/lib
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/jarvis-proxmox-agent/appimage/squashfs-root/usr/bin/jarvisd
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

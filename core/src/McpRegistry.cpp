@@ -468,6 +468,16 @@ QString McpRegistry::computerUseBearer()
     return QString();
 }
 
+QString McpRegistry::proxmoxAgentBearer()
+{
+    // Plain single-line token file (no YAML parsing needed — the installer
+    // writes exactly this format, see outpost.install_workload).
+    QFile f(QStringLiteral("/etc/jarvis-proxmox-agent/mcp_token"));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString();
+    return QString::fromUtf8(f.readAll()).trimmed();
+}
+
 QString McpRegistry::add(const QString &name, const QString &transport,
                          const QString &endpoint, const QString &token, bool enabled,
                          const QString &risk, const QJsonObject &env, bool builtin,

@@ -1288,6 +1288,63 @@ void Bridge::outpostRevoke(const QString &machine)
     request(QStringLiteral("outpost.revoke"), params, m);
 }
 
+void Bridge::outpostInstallWorkload(const QString &machine)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    request(QStringLiteral("outpost.install_workload"), params, m);
+}
+
+// ---- Proxmox Workload Manager (per-machine, once installed) ---------------
+
+void Bridge::proxmoxStatus(const QString &machine)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    request(QStringLiteral("proxmox.status"), params, m);
+}
+
+void Bridge::proxmoxReport(const QString &machine)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    request(QStringLiteral("proxmox.report"), params, m);
+}
+
+void Bridge::proxmoxRestartVm(const QString &machine, int vmid)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    params.insert(QStringLiteral("vmid"), vmid);
+    // ctx packs both machine + vmid ("machine:vmid") so the response can
+    // address the right row without a second round-trip.
+    request(QStringLiteral("proxmox.restart_vm"), params,
+            m + QStringLiteral(":") + QString::number(vmid));
+}
+
+void Bridge::proxmoxSetBlocklist(const QString &machine, const QVariantList &vmids)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    params.insert(QStringLiteral("vmids"), vmids);
+    request(QStringLiteral("proxmox.set_blocklist"), params, m);
+}
+
 // ---- Audit log -------------------------------------------------------------
 
 void Bridge::auditList(int limit)
@@ -3706,6 +3763,33 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                                          msg.isEmpty() ? code : (code + QStringLiteral(": ") + msg));
             return;
         }
+        // Proxmox Workload Manager install/status/report/restart/blocklist errors
+        // (not_a_proxmox_host, no_mistral_key, outpost_unreachable, ...) route to
+        // their own result signals so the page can show the human message inline
+        // instead of a generic toast.
+        if (method == QStringLiteral("outpost.install_workload")) {
+            emit outpostWorkloadInstalled(ctx, false, msg, code);
+            return;
+        }
+        if (method == QStringLiteral("proxmox.status")) {
+            emit proxmoxStatusResult(ctx, false, QVariantList(), msg.isEmpty() ? code : msg);
+            return;
+        }
+        if (method == QStringLiteral("proxmox.report")) {
+            emit proxmoxReportResult(ctx, false, QVariantList(), msg.isEmpty() ? code : msg);
+            return;
+        }
+        if (method == QStringLiteral("proxmox.restart_vm")) {
+            const int sep = ctx.lastIndexOf(QLatin1Char(':'));
+            const QString machine = sep >= 0 ? ctx.left(sep) : ctx;
+            const int vmid = sep >= 0 ? ctx.mid(sep + 1).toInt() : 0;
+            emit proxmoxVmRestarted(machine, vmid, false, msg.isEmpty() ? code : msg);
+            return;
+        }
+        if (method == QStringLiteral("proxmox.set_blocklist")) {
+            emit proxmoxBlocklistSet(ctx, false, QVariantList(), msg.isEmpty() ? code : msg);
+            return;
+        }
         // Voice STT failed (no key / network): clear the indicator quietly-ish.
         if (method == QStringLiteral("voice.stt")) {
             setRecordingState(QStringLiteral("idle"));
@@ -4065,6 +4149,22 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         emit outpostRevoked(ctx, ook);
         if (ook)
             outpostList();   // refresh the list after a successful revoke
+    } else if (method == QStringLiteral("outpost.install_workload")) {
+        emit outpostWorkloadInstalled(ctx, true, result.value(QStringLiteral("note")).toString(),
+                                      QString());
+    } else if (method == QStringLiteral("proxmox.status")) {
+        emit proxmoxStatusResult(ctx, true, result.value(QStringLiteral("vms")).toList(), QString());
+    } else if (method == QStringLiteral("proxmox.report")) {
+        emit proxmoxReportResult(ctx, true, result.value(QStringLiteral("memories")).toList(),
+                                 QString());
+    } else if (method == QStringLiteral("proxmox.restart_vm")) {
+        const int sep = ctx.lastIndexOf(QLatin1Char(':'));
+        const QString machine = sep >= 0 ? ctx.left(sep) : ctx;
+        const int vmid = sep >= 0 ? ctx.mid(sep + 1).toInt()
+                                   : result.value(QStringLiteral("vmid")).toInt();
+        emit proxmoxVmRestarted(machine, vmid, true, QString());
+    } else if (method == QStringLiteral("proxmox.set_blocklist")) {
+        emit proxmoxBlocklistSet(ctx, true, result.value(QStringLiteral("vmids")).toList(), QString());
     } else if (method == QStringLiteral("audit.list")) {
         emit auditListed(result.value(QStringLiteral("entries")).toList());
     } else if (method == QStringLiteral("diff.stage")

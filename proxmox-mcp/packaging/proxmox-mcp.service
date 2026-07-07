@@ -1,0 +1,18 @@
+[Unit]
+Description=Proxmox-MCP (tool server for the co-located Proxmox workload-manager agent)
+After=network.target
+
+[Service]
+# Root: reads /etc/jarvis-proxmox-agent/{config.toml,blocklist.json,mcp_token,
+# project_tracker_token} and /var/lib/jarvis-proxmox-agent/{state.json,memory.db}.
+# Localhost-only (127.0.0.1:8799) — only the co-located jarvisd-proxmox-agent
+# service ever calls it.
+User=root
+WorkingDirectory=/opt/jarvis-proxmox-agent/proxmox-mcp
+Environment=PYTHONPATH=
+ExecStart=/usr/bin/env -u PYTHONPATH /opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/proxmox-mcp
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
