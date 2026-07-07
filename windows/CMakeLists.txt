@@ -119,7 +119,6 @@ add_library(jarvis-core STATIC
     ${CORE_DIR}/src/Updater.cpp
     ${CORE_DIR}/src/VoiceLibrary.cpp
     ${CORE_DIR}/src/Scheduler.cpp
-    ${CORE_DIR}/src/SshAllowList.cpp
     ${CORE_DIR}/src/AuditLog.cpp
     ${CORE_DIR}/src/InjectionGuard.cpp
     ${CORE_DIR}/src/ToolLoopGuard.cpp
@@ -170,7 +169,6 @@ add_library(jarvis-core STATIC
     ${CORE_DIR}/include/jarvis/Updater.h
     ${CORE_DIR}/include/jarvis/VoiceLibrary.h
     ${CORE_DIR}/include/jarvis/Scheduler.h
-    ${CORE_DIR}/include/jarvis/SshAllowList.h
     ${CORE_DIR}/include/jarvis/AuditLog.h
     ${CORE_DIR}/include/jarvis/InjectionGuard.h
     ${CORE_DIR}/include/jarvis/NotifyService.h

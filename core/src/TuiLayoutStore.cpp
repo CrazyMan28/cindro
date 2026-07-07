@@ -18,7 +18,7 @@ const QStringList kReserved = {
     QStringLiteral("settings"), QStringLiteral("canvas"), QStringLiteral("widgets"),
     QStringLiteral("phone"), QStringLiteral("computer"), QStringLiteral("browser"),
     QStringLiteral("activity"), QStringLiteral("replay"), QStringLiteral("mcp"),
-    QStringLiteral("plugins"), QStringLiteral("ssh"), QStringLiteral("memorygraph"),
+    QStringLiteral("plugins"), QStringLiteral("outpost"), QStringLiteral("memorygraph"),
     QStringLiteral("home"), QStringLiteral("schedules"),
 };
 const QStringList kKinds = {

@@ -55,10 +55,9 @@ add_library(jarvis-core STATIC
     # Named cloned-voice library (record/upload, name, set-default) — the manifest
     # + reference clips under ~/.config/jarvis/voices/.
     src/VoiceLibrary.cpp
-    # Wave 8 co-worker ops backend: scheduler (cron/at), SSH allow-list, audit
-    # log + prompt-injection gate, desktop notifications.
+    # Wave 8 co-worker ops backend: scheduler (cron/at), audit log +
+    # prompt-injection gate, desktop notifications.
     src/Scheduler.cpp
-    src/SshAllowList.cpp
     src/AuditLog.cpp
     src/InjectionGuard.cpp
     src/ToolLoopGuard.cpp
@@ -111,7 +110,6 @@ add_library(jarvis-core STATIC
     include/jarvis/Updater.h
     include/jarvis/VoiceLibrary.h
     include/jarvis/Scheduler.h
-    include/jarvis/SshAllowList.h
     include/jarvis/AuditLog.h
     include/jarvis/InjectionGuard.h
     include/jarvis/NotifyService.h
@@ -323,12 +321,6 @@ add_test(NAME scheduler_test COMMAND scheduler_test)
 add_executable(connectors_test tests/connectors_test.cpp)
 target_link_libraries(connectors_test PRIVATE jarvis-core Qt6::Core Qt6::Sql)
 add_test(NAME connectors_test COMMAND connectors_test)
-
-# SshAllowList: a non-allow-listed host is rejected with host_not_allowed and
-# ssh is never spawned; allow_add/remove persistence roundtrip.
-add_executable(ssh_allowlist_test tests/ssh_allowlist_test.cpp)
-target_link_libraries(ssh_allowlist_test PRIVATE jarvis-core Qt6::Core)
-add_test(NAME ssh_allowlist_test COMMAND ssh_allowlist_test)
 
 # InjectionGuard: a known-bad injection string flags risky; benign text does not.
 add_executable(injection_guard_test tests/injection_guard_test.cpp)

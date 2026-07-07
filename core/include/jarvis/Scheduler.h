@@ -37,7 +37,7 @@ namespace jarvis {
 // A parsed schedule expression. `valid` is false when the text could not be
 // parsed; `kind` selects how nextAfter() advances.
 struct CronSpec {
-    enum class Kind { Invalid, Interval, DailyAt, Cron };
+    enum class Kind { Invalid, Interval, DailyAt, Cron, Webhook };
 
     Kind kind = Kind::Invalid;
     QString raw;            // the original expression (stored verbatim)
@@ -78,6 +78,10 @@ struct ScheduleRow {
     qint64 lastRun = 0; // unix ms (0 => never run)
     qint64 created = 0;
 
+    QString targetRef;    // agent name / paired-machine id (free-text ref, no FK)
+    QString reportThread; // inbox thread for the fired session's report ("" => none)
+    QString webhookToken; // per-workflow bearer for trigger=="webhook" (never serialized)
+
     QJsonObject toJson() const;
 };
 
@@ -111,7 +115,10 @@ public:
     // id (empty + lastError set on a bad expression or store error).
     QString create(const QString &name, const QString &cronExpr, const QString &prompt,
                    const QString &brain = QString(), const QString &model = QString(),
-                   const QString &profile = QString(), bool enabled = true);
+                   const QString &profile = QString(), bool enabled = true,
+                   const QString &targetRef = QString(),
+                   const QString &reportThread = QString(),
+                   const QString &webhookToken = QString());
     QVector<ScheduleRow> list();
     std::optional<ScheduleRow> get(const QString &id);
     bool setEnabled(const QString &id, bool enabled);
@@ -141,6 +148,7 @@ private slots:
 private:
     bool exec(const QString &sql, QString *err = nullptr);
     bool migrate();
+    bool hasColumn(const QString &table, const QString &column);
     bool persistRunTimes(const QString &id, qint64 lastRun, qint64 nextRun);
     static QString genId();
 

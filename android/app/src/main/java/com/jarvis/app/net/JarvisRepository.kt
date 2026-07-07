@@ -384,7 +384,13 @@ class JarvisRepository(
     }
 
     suspend fun searchMemory(query: String): List<MemoryEntry> {
-        val r = client.request("memory.search", Params.of("q" to query)).orThrow()
+        // include_agent_scoped: the phone's memory screen is a human deliberately
+        // searching their own memory (not automatic LLM-context injection), so
+        // it should see agent-scoped facts too — same as empty-query listMemory().
+        val r = client.request(
+            "memory.search",
+            Params.of("q" to query, "include_agent_scoped" to true),
+        ).orThrow()
         return r.getAsJsonArray("memories")?.toObjects()?.map(MemoryEntry::from) ?: emptyList()
     }
 

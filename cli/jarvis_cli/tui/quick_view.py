@@ -2,7 +2,7 @@
 without leaving the tab you're on.
 
 MemoryPane, SkillsPane, AgentsPane, QueuePane, ActivityPane, MemoryGraphPane,
-SchedulesPane, McpPane, PluginsPane, SshPane, and SessionsPane have NO tab-*
+SchedulesPane, McpPane, PluginsPane, OutpostPane, and SessionsPane have NO tab-*
 TabPane in app.py's main TabbedContent at all — they live ONLY as a popup,
 pushed as a floating overlay on top of whatever screen is active (e.g. Chat)
 via:

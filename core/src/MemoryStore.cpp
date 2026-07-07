@@ -48,6 +48,30 @@ QStringList tagsFromStorage(const QString &s)
     return out;
 }
 
+// prefetch() is the AUTOMATIC per-turn context injection (jarvisd prepends it
+// to every ordinary chat turn — see ControlServer::prefetchMemoryBlock/
+// memorySystemBlock). Ordinary turns have no notion of "which agent/machine"
+// they belong to, so scope=="agent" rows (stored via remember(text=...,
+// agent="some-id")) must never surface here as ambient baseline context.
+// prefetch() strips them with this helper first, then deliberately
+// re-injects a bounded set of them ONLY when the query itself names a known
+// agent (see MemoryStore::agentRefsMentionedIn() and kMaxAgentInject in
+// prefetch()) — per-agent memory, not global memory, per the 2026-07-06
+// redesign. As of that redesign, search()/recall() with an empty entityRef
+// ALSO excludes scope=="agent" rows (see search()): only list() (raw/debug
+// "show me everything") and an explicitly-scoped search()/recall(agent=...)
+// still see them.
+QVector<MemoryRow> excludeAgentScoped(const QVector<MemoryRow> &rows)
+{
+    QVector<MemoryRow> out;
+    out.reserve(rows.size());
+    for (const MemoryRow &r : rows) {
+        if (r.scope != QStringLiteral("agent"))
+            out.push_back(r);
+    }
+    return out;
+}
+
 } // namespace
 
 QJsonObject MemoryRow::toJson() const
@@ -61,6 +85,10 @@ QJsonObject MemoryRow::toJson() const
     o.insert(QStringLiteral("tags"), t);
     o.insert(QStringLiteral("created"), created);
     o.insert(QStringLiteral("updated"), updated);
+    if (scope != QStringLiteral("global"))
+        o.insert(QStringLiteral("scope"), scope);
+    if (!entityRef.isEmpty())
+        o.insert(QStringLiteral("entityRef"), entityRef);
     if (score != 0.0)
         o.insert(QStringLiteral("score"), score);
     return o;
@@ -133,6 +161,18 @@ bool MemoryStore::open(const QString &dbPath, const QString &connectionName)
     // auto-extraction. Best-effort — a store that opens but can't backfill
     // still functions as a plain memory store.
     backfillEntityExtraction();
+
+    // One-time check (not once-per-prefetch-call): seed the agent-scoped-rows
+    // flag so agentRefsMentionedIn() can skip its table scan entirely on
+    // every ordinary chat turn when this store has no agent-scoped memory at
+    // all (the common case).
+    {
+        QSqlQuery q(m_db);
+        if (q.exec(QStringLiteral(
+                "SELECT EXISTS(SELECT 1 FROM memories WHERE scope='agent' LIMIT 1)")) &&
+            q.next())
+            m_hasAgentScopedRows = q.value(0).toBool();
+    }
     return true;
 }
 
@@ -165,6 +205,17 @@ bool MemoryStore::exec(const QString &sql, QString *err)
     return true;
 }
 
+bool MemoryStore::hasColumn(const QString &table, const QString &column)
+{
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral("PRAGMA table_info(%1)").arg(table)))
+        return false;
+    while (q.next())
+        if (q.value(1).toString().compare(column, Qt::CaseInsensitive) == 0)
+            return true;
+    return false;
+}
+
 bool MemoryStore::migrate()
 {
     if (!exec(QStringLiteral(
@@ -175,6 +226,13 @@ bool MemoryStore::migrate()
             " created INTEGER,"
             " updated INTEGER)")))
         return false;
+
+    // Additive scope columns (agent-scoped memory). Existing rows default to
+    // scope='global', entity_ref='' — untouched and recalled exactly as before.
+    if (!hasColumn(QStringLiteral("memories"), QStringLiteral("scope")))
+        exec(QStringLiteral("ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'"));
+    if (!hasColumn(QStringLiteral("memories"), QStringLiteral("entity_ref")))
+        exec(QStringLiteral("ALTER TABLE memories ADD COLUMN entity_ref TEXT"));
 
     // FTS5 virtual table mirroring text+tags. We keep it in sync manually (no
     // external-content table) so the schema is robust across FTS5 builds.
@@ -224,7 +282,8 @@ bool MemoryStore::migrate()
     return true;
 }
 
-QString MemoryStore::add(const QString &text, const QStringList &tags, const QString &id)
+QString MemoryStore::add(const QString &text, const QStringList &tags, const QString &id,
+                         const QString &scope, const QString &entityRef)
 {
     if (text.trimmed().isEmpty()) {
         m_lastError = QStringLiteral("memory text is empty");
@@ -238,18 +297,27 @@ QString MemoryStore::add(const QString &text, const QStringList &tags, const QSt
     {
         QSqlQuery q(m_db);
         q.prepare(QStringLiteral(
-            "INSERT INTO memories (id,text,tags,created,updated) VALUES (?,?,?,?,?)"
+            "INSERT INTO memories (id,text,tags,created,updated,scope,entity_ref)"
+            " VALUES (?,?,?,?,?,?,?)"
             " ON CONFLICT(id) DO UPDATE SET text=excluded.text, tags=excluded.tags,"
-            " updated=excluded.updated"));
+            " updated=excluded.updated, scope=excluded.scope, entity_ref=excluded.entity_ref"));
         q.addBindValue(memId);
         q.addBindValue(text);
         q.addBindValue(tagStr);
         q.addBindValue(now);
         q.addBindValue(now);
+        const QString effectiveScope = scope.isEmpty() ? QStringLiteral("global") : scope;
+        q.addBindValue(effectiveScope);
+        q.addBindValue(entityRef);
         if (!q.exec()) {
             m_lastError = q.lastError().text();
             return QString();
         }
+        // Write-time flag flip only (no read-time query): keeps
+        // agentRefsMentionedIn()'s short-circuit correct without adding a
+        // query to every write. Monotonic — see the flag's doc comment.
+        if (effectiveScope == QStringLiteral("agent"))
+            m_hasAgentScopedRows = true;
     }
     // Keep FTS in sync: delete any prior row then insert fresh.
     {
@@ -302,7 +370,7 @@ std::optional<MemoryRow> MemoryStore::get(const QString &id)
 {
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "SELECT id,text,tags,created,updated FROM memories WHERE id=?"));
+        "SELECT id,text,tags,created,updated,scope,entity_ref FROM memories WHERE id=?"));
     q.addBindValue(id);
     if (!q.exec()) {
         m_lastError = q.lastError().text();
@@ -316,6 +384,8 @@ std::optional<MemoryRow> MemoryStore::get(const QString &id)
     r.tags = tagsFromStorage(q.value(2).toString());
     r.created = q.value(3).toLongLong();
     r.updated = q.value(4).toLongLong();
+    r.scope = q.value(5).toString();
+    r.entityRef = q.value(6).toString();
     return r;
 }
 
@@ -643,7 +713,7 @@ QVector<MemoryRow> MemoryStore::list(int limit)
     QVector<MemoryRow> out;
     QSqlQuery q(m_db);
     QString sql = QStringLiteral(
-        "SELECT id,text,tags,created,updated FROM memories ORDER BY updated DESC");
+        "SELECT id,text,tags,created,updated,scope,entity_ref FROM memories ORDER BY updated DESC");
     if (limit > 0)
         sql += QStringLiteral(" LIMIT ") + QString::number(limit);
     if (!q.exec(sql)) {
@@ -657,29 +727,42 @@ QVector<MemoryRow> MemoryStore::list(int limit)
         r.tags = tagsFromStorage(q.value(2).toString());
         r.created = q.value(3).toLongLong();
         r.updated = q.value(4).toLongLong();
+        r.scope = q.value(5).toString();
+        r.entityRef = q.value(6).toString();
         out.push_back(r);
     }
     return out;
 }
 
-QVector<MemoryRow> MemoryStore::search(const QString &query, int limit)
+QVector<MemoryRow> MemoryStore::search(const QString &query, int limit, const QString &entityRef,
+                                       bool includeAgentScoped)
 {
     QVector<MemoryRow> out;
     if (limit <= 0)
         limit = 20;
+    const bool scoped = !entityRef.isEmpty();
 
     const QString fts = toFtsQuery(query);
     if (!fts.isEmpty()) {
-        // FTS5 ranked match: bm25() returns a LOWER-is-better cost; we expose a
-        // positive score where higher = more relevant.
-        QSqlQuery q(m_db);
-        q.prepare(QStringLiteral(
-            "SELECT m.id,m.text,m.tags,m.created,m.updated,"
+        QString sql = QStringLiteral(
+            "SELECT m.id,m.text,m.tags,m.created,m.updated,m.scope,m.entity_ref,"
             "       bm25(memories_fts) AS rank"
             " FROM memories_fts f JOIN memories m ON m.id=f.id"
-            " WHERE memories_fts MATCH ?"
-            " ORDER BY rank ASC LIMIT ?"));
+            " WHERE memories_fts MATCH ?");
+        if (scoped)
+            sql += QStringLiteral(" AND m.entity_ref = ?");
+        else if (!includeAgentScoped)
+            // Unscoped call: per-agent memories are only visible to a caller
+            // that names the agent (entityRef set) — see search()'s doc
+            // comment / the 2026-07-06 per-agent-memory redesign — UNLESS the
+            // caller is a human-browse UI that opted in via includeAgentScoped.
+            sql += QStringLiteral(" AND m.scope != 'agent'");
+        sql += QStringLiteral(" ORDER BY rank ASC LIMIT ?");
+        QSqlQuery q(m_db);
+        q.prepare(sql);
         q.addBindValue(fts);
+        if (scoped)
+            q.addBindValue(entityRef);
         q.addBindValue(limit);
         if (q.exec()) {
             while (q.next()) {
@@ -689,7 +772,9 @@ QVector<MemoryRow> MemoryStore::search(const QString &query, int limit)
                 r.tags = tagsFromStorage(q.value(2).toString());
                 r.created = q.value(3).toLongLong();
                 r.updated = q.value(4).toLongLong();
-                const double rank = q.value(5).toDouble();
+                r.scope = q.value(5).toString();
+                r.entityRef = q.value(6).toString();
+                const double rank = q.value(7).toDouble();
                 r.score = 1.0 / (1.0 + (rank < 0 ? -rank : rank));
                 out.push_back(r);
             }
@@ -700,15 +785,24 @@ QVector<MemoryRow> MemoryStore::search(const QString &query, int limit)
         }
     }
 
-    // Fallback: LIKE scan over text+tags (covers FTS-tokenless queries and any
-    // FTS error). Recency-ordered.
+    // Fallback: LIKE scan over text+tags (covers FTS-tokenless queries, empty
+    // query, and any FTS error). Recency-ordered.
+    QString sql = QStringLiteral(
+        "SELECT id,text,tags,created,updated,scope,entity_ref FROM memories"
+        " WHERE (text LIKE ? OR tags LIKE ?)");
+    if (scoped)
+        sql += QStringLiteral(" AND entity_ref = ?");
+    else if (!includeAgentScoped)
+        // Same unscoped exclusion (and human-browse opt-out) as the FTS branch above.
+        sql += QStringLiteral(" AND scope != 'agent'");
+    sql += QStringLiteral(" ORDER BY updated DESC LIMIT ?");
     QSqlQuery q(m_db);
-    q.prepare(QStringLiteral(
-        "SELECT id,text,tags,created,updated FROM memories"
-        " WHERE text LIKE ? OR tags LIKE ? ORDER BY updated DESC LIMIT ?"));
+    q.prepare(sql);
     const QString like = QStringLiteral("%") + query.trimmed() + QStringLiteral("%");
     q.addBindValue(like);
     q.addBindValue(like);
+    if (scoped)
+        q.addBindValue(entityRef);
     q.addBindValue(limit);
     if (!q.exec()) {
         m_lastError = q.lastError().text();
@@ -721,9 +815,56 @@ QVector<MemoryRow> MemoryStore::search(const QString &query, int limit)
         r.tags = tagsFromStorage(q.value(2).toString());
         r.created = q.value(3).toLongLong();
         r.updated = q.value(4).toLongLong();
+        r.scope = q.value(5).toString();
+        r.entityRef = q.value(6).toString();
         r.score = 0.5; // unranked match
         out.push_back(r);
     }
+    return out;
+}
+
+QStringList MemoryStore::agentRefsMentionedIn(const QString &query)
+{
+    QStringList out;
+    if (query.trimmed().isEmpty())
+        return out;
+    // Cheap short-circuit: skip the full-table-scan DISTINCT query (and every
+    // regex compile below) entirely when this store has never had a single
+    // scope=="agent" memory written to it — the overwhelmingly common case,
+    // and the hottest per-turn path in the daemon (prefetch() runs on every
+    // ordinary chat turn).
+    if (!m_hasAgentScopedRows)
+        return out;
+
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral(
+            "SELECT DISTINCT entity_ref FROM memories WHERE scope='agent' AND entity_ref != ''")))
+        return out;
+
+    while (q.next()) {
+        const QString ref = q.value(0).toString();
+        if (ref.isEmpty())
+            continue;
+        // Own-token, case-insensitive match: \b alone treats '-' as a
+        // non-word character, so "\bpve\b" would ALSO match inside the
+        // unrelated, distinctly-registered agent "pve-backup" (the boundary
+        // falls exactly on the hyphen). Require the char immediately before/
+        // after the match (if any) to be neither a word char NOR '-', via
+        // lookaround instead of \b, so a hyphen-prefixed/suffixed
+        // continuation never counts as a boundary.
+        const QRegularExpression wordRe(
+            QStringLiteral("(?<![\\w-])") + QRegularExpression::escape(ref) +
+                QStringLiteral("(?![\\w-])"),
+            QRegularExpression::CaseInsensitiveOption);
+        if (wordRe.match(query).hasMatch())
+            out << ref;
+    }
+    // Deterministic order (SQL's DISTINCT gives none) so that when MULTIPLE
+    // agents are mentioned in the same prefetch() call, the shared
+    // kMaxAgentInject budget is distributed the same way every time — a
+    // prerequisite for prefetch()'s fair round-robin injection, not just a
+    // cosmetic nicety.
+    out.sort();
     return out;
 }
 
@@ -731,18 +872,85 @@ QVector<MemoryRow> MemoryStore::prefetch(const QString &query, int k)
 {
     if (k <= 0)
         k = 6;
-    QVector<MemoryRow> hits = query.trimmed().isEmpty() ? list(k) : search(query, k);
-    if (hits.isEmpty())
-        hits = list(k); // no relevant match — still give recent context
+
+    // list() sees EVERY row (including scope=="agent" ones) by design — it's
+    // the raw/debug listing and is deliberately left unfiltered (see its doc
+    // comment) — so both places below that fall back to it must scrub
+    // scope=="agent" rows themselves. search() with an empty entityRef
+    // ALREADY excludes them at the SQL level (see search()'s doc comment /
+    // the 2026-07-06 per-agent-memory redesign), so the query-driven branch
+    // must NOT re-filter its result — doing so would be a no-op pass over
+    // rows that are already filtered.
+    QVector<MemoryRow> hits;
+    if (query.trimmed().isEmpty()) {
+        hits = excludeAgentScoped(list(k));
+    } else {
+        hits = search(query, k);
+        if (hits.isEmpty())
+            hits = excludeAgentScoped(list(k)); // no relevant match — still give recent context
+    }
+
+    QSet<QString> have;
+    for (const MemoryRow &r : hits)
+        have.insert(r.id);
+
+    // Mention-based auto-recall: if the query clearly names one or more known
+    // agents/paired-machines (each entity_ref appearing as its own token —
+    // e.g. "let's check on pve"), pull those agents' own scoped memories in
+    // too, IN ADDITION to the global-only hits above (never instead of them).
+    // This is the one place scope=="agent" rows surface without an explicit
+    // recall(agent=...)/search(entityRef=...) ask: a conversation that's
+    // obviously about that machine shouldn't require re-naming it every turn
+    // to see what's already known about it. A query naming no agent (or an
+    // unrecognized one) injects nothing here, leaving the plain global-only
+    // prefetch above untouched. Bounded to a small additive cap shared across
+    // every agent mentioned (not per-agent), same spirit as kMaxExpand below
+    // — but shared does NOT mean first-come-first-served: agentRefsMentionedIn()
+    // returns its matches in a deterministic (alphabetical) order, and the
+    // budget is distributed round-robin, one memory at a time, across every
+    // mentioned agent. Without this, a turn naming two agents in the same
+    // sentence could let whichever ref happens to iterate first (e.g. the one
+    // with more stored rows) fully drain the shared cap, starving the other
+    // mentioned agent of any injected memories at all.
+    constexpr int kMaxAgentInject = 5;
+    {
+        const QStringList mentioned = agentRefsMentionedIn(query);
+        if (!mentioned.isEmpty()) {
+            QVector<QVector<MemoryRow>> perAgent;
+            perAgent.reserve(mentioned.size());
+            for (const QString &ref : mentioned)
+                perAgent.push_back(search(QString(), kMaxAgentInject, ref));
+
+            QVector<int> idx(perAgent.size(), 0);
+            int injected = 0;
+            bool progressed = true;
+            while (injected < kMaxAgentInject && progressed) {
+                progressed = false;
+                for (int a = 0; a < perAgent.size() && injected < kMaxAgentInject; ++a) {
+                    // Advance past any rows already present (dedup) so each
+                    // agent still contributes its next NEW row this round,
+                    // rather than being skipped for the round entirely.
+                    while (idx[a] < perAgent[a].size()) {
+                        const MemoryRow &r = perAgent[a][idx[a]];
+                        ++idx[a];
+                        if (have.contains(r.id))
+                            continue;
+                        have.insert(r.id);
+                        hits.push_back(r);
+                        ++injected;
+                        progressed = true;
+                        break; // one row per agent per round; move to the next agent
+                    }
+                }
+            }
+        }
+    }
 
     // Graph-aware expansion: a memory sharing an entity (tag/topic/project)
     // with a top hit is relevant context even if its own text doesn't match
     // the query. Walk 2 hops (memory -> entity -> sibling memory) from each
     // of the top hits and fold in a bounded number of newly-discovered
     // memories so recall isn't limited to literal text matches.
-    QSet<QString> have;
-    for (const MemoryRow &r : hits)
-        have.insert(r.id);
     constexpr int kMaxExpand = 3;
     int added = 0;
     for (int i = 0; i < hits.size() && added < kMaxExpand; ++i) {
@@ -756,11 +964,28 @@ QVector<MemoryRow> MemoryStore::prefetch(const QString &query, int k)
                 continue;
             if (auto r = get(nid)) {
                 have.insert(nid);
-                hits.push_back(*r);
-                ++added;
+                // Same ambient-context rule applies to graph-expanded siblings:
+                // an agent-scoped row must not ride in via a shared entity link
+                // either, or the whole point of the filter above is defeated.
+                if (r->scope != QStringLiteral("agent")) {
+                    hits.push_back(*r);
+                    ++added;
+                }
             }
         }
     }
+
+    // Documented, enforced ceiling (see prefetch()'s header doc comment):
+    // base k + up to kMaxAgentInject (mention injection) + up to kMaxExpand
+    // (graph expansion). Each additive stage above already bounds itself, but
+    // truncate here too so the contract is an explicit invariant of the
+    // FINAL return value, not just an emergent property of today's stage
+    // caps — a future change to either stage can never silently blow past
+    // this without also touching this line.
+    const int maxTotal = k + kMaxAgentInject + kMaxExpand;
+    if (hits.size() > maxTotal)
+        hits.resize(maxTotal);
+
     return hits;
 }
 

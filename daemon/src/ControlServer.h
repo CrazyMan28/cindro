@@ -30,7 +30,6 @@
 #include "jarvis/SkillStore.h"
 #include "jarvis/HookStore.h"
 #include "jarvis/ToolLoopGuard.h"
-#include "jarvis/SshAllowList.h"
 #include "jarvis/TrustPolicyStore.h"
 #include "jarvis/Updater.h"
 #include "jarvis/VoiceProvider.h"
@@ -89,7 +88,6 @@ public:
     SkillStore &skills() { return m_skills; }
     AgentStore &agents() { return m_agents; }
     Scheduler &scheduler() { return m_scheduler; }
-    SshAllowList &sshAllow() { return m_sshAllow; }
     AuditLog &audit() { return m_audit; }
     // Live-widget viewer leases (battery gating). The DeviceServer writes phone
     // leases here too, so a live widget runs only while a desktop/phone viewer or
@@ -133,8 +131,8 @@ public:
     void propagateDefaultVoiceToPhone();
 
     // Wave 8 co-worker ops, mirrored over the device channel (schedule.* +
-    // ssh.allow_list/add/remove + ssh.exec + audit.list). ssh.exec and
-    // schedule.create are biometric-tier on the device side.
+    // outpost.list/pair_start/pair_status/exec/screenshot/revoke + audit.list).
+    // outpost.exec and schedule.create are biometric-tier on the device side.
     Response dispatchOpsMethod(const Request &req, bool remote = false);
     static bool isOpsMethod(const QString &method);
 
@@ -435,6 +433,7 @@ private:
     Response handleScheduleSetEnabled(const Request &req);
     Response handleScheduleRemove(const Request &req);
     Response handleScheduleRunNow(const Request &req);
+    Response handleScheduleWebhookToken(const Request &req);
     // TUI self-edit layout — tui.layout.list/add/edit/remove/reorder.
     Response handleTuiLayoutList(const Request &req);
     Response handleTuiLayoutAdd(const Request &req);
@@ -447,17 +446,27 @@ private:
     Response handleCommandCreate(const Request &req);
     Response handleCommandRemove(const Request &req);
     Response handleCommandInvoke(const Request &req);
-    // Wave 8: SSH allow-list + gated exec.
-    Response handleSshAllowList(const Request &req);
-    Response handleSshAllowAdd(const Request &req);
-    Response handleSshAllowRemove(const Request &req);
-    Response handleSshExec(const Request &req, bool remote);
     // diff review actions (diff.stage/revert/commit/open_pr) — git in the
     // session's workdir via jarvis::GitOps.
     Response handleDiffStage(const Request &req);
     Response handleDiffRevert(const Request &req);
     Response handleDiffCommit(const Request &req);
     Response handleDiffOpenPr(const Request &req);
+    // Outpost: remote-machine pairing + gated exec/screenshot proxied to the
+    // outpost-mcp REST surface (:8798) over loopback.
+    Response handleOutpostList(const Request &req);
+    Response handleOutpostPairStart(const Request &req);
+    Response handleOutpostPairStatus(const Request &req);
+    Response handleOutpostExec(const Request &req, bool remote);
+    Response handleOutpostScreenshot(const Request &req);
+    Response handleOutpostRevoke(const Request &req);
+    // Loopback call to outpost-mcp; returns its parsed JSON body. Sets
+    // *reachable=false on transport failure.
+    QJsonObject outpostHttp(const QString &httpMethod, const QString &path,
+                            const QJsonObject &body, bool *reachable);
+    // outpost-mcp's listening port. OUTPOST_MCP_PORT env override (mirrors
+    // outpost_mcp/config.py's port()) wins; else the default 8798.
+    static QString outpostPort();
     QString diffWorkdirFor(const QString &sessionId) const;
     // Wave 8: audit log surface.
     Response handleAuditList(const Request &req);
@@ -614,11 +623,10 @@ private:
     void seedPhoneMcp();
 
     // Wave 8 co-worker ops backend: cron/at scheduler (fires session.create+send
-    // via a QTimer tick), the SSH allow-list (gated ssh.exec), the audit log
-    // (every tool/action with risk), the injection gate's notifier. All share
-    // the same jarvis.db file via distinct connection names.
+    // via a QTimer tick), the audit log (every tool/action with risk), the
+    // injection gate's notifier. All share the same jarvis.db file via
+    // distinct connection names.
     Scheduler m_scheduler;
-    SshAllowList m_sshAllow;
     AuditLog m_audit;
     // Durable kanban work queue (jarvis#76 item 7): store + dispatcher loop.
     // Worker sessions are tracked so turn-end resolves their item, tick

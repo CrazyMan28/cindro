@@ -317,6 +317,432 @@ int main(int argc, char **argv)
         }
     }
 
+    // --- agent-scoped memory (per-agent-scoped recall) ---------------------
+    {
+        QTemporaryDir tmpA;
+        const QString dbPathA = tmpA.path() + QStringLiteral("/agent_scope.db");
+        MemoryStore s;
+        check(s.open(dbPathA, QStringLiteral("mem-agent-conn")), "agent-scope: store open");
+
+        // Two agent-scoped memories + one global memory.
+        const QString a1 = s.add(QStringLiteral("runner service is healthy"),
+                                 {QStringLiteral("status")}, QString(),
+                                 QStringLiteral("agent"), QStringLiteral("ci-runner-104"));
+        const QString a2 = s.add(QStringLiteral("disk at 40 percent"),
+                                 {QStringLiteral("status")}, QString(),
+                                 QStringLiteral("agent"), QStringLiteral("ci-runner-106"));
+        const QString g1 = s.add(QStringLiteral("the runner keychain lives in vault"),
+                                 {QStringLiteral("status")});
+        check(!a1.isEmpty() && !a2.isEmpty() && !g1.isEmpty(), "agent-scope: three memories added");
+
+        // recall filtered by agent returns ONLY that agent's rows.
+        {
+            const auto hits = s.search(QStringLiteral("runner"), 20, QStringLiteral("ci-runner-104"));
+            bool sawA1 = false, sawG1 = false, sawA2 = false;
+            for (const auto &r : hits) {
+                if (r.id == a1) sawA1 = true;
+                if (r.id == g1) sawG1 = true;
+                if (r.id == a2) sawA2 = true;
+            }
+            check(sawA1, "agent-scope: search(agent=104) returns the 104 memory");
+            check(!sawG1, "agent-scope: search(agent=104) excludes the global memory");
+            check(!sawA2, "agent-scope: search(agent=104) excludes the other agent's memory");
+        }
+
+        // Empty-query + agent returns that agent's rows (condition-polling pattern).
+        {
+            const auto hits = s.search(QString(), 20, QStringLiteral("ci-runner-104"));
+            bool sawA1 = false, sawA2 = false;
+            for (const auto &r : hits) {
+                if (r.id == a1) sawA1 = true;
+                if (r.id == a2) sawA2 = true;
+            }
+            check(sawA1, "agent-scope: empty-query search(agent=104) returns 104 rows");
+            check(!sawA2, "agent-scope: empty-query search(agent=104) excludes other agents");
+        }
+
+        // Reversed regression (2026-07-06 per-agent-memory redesign): this
+        // used to assert that an unfiltered search() spans global+agent rows
+        // together (deliberate original design). New explicit user direction
+        // supersedes that: agents get dedicated PER-AGENT memory, not global
+        // memory, so an unscoped search() must now EXCLUDE agent-scoped rows
+        // — only an explicitly agent-scoped call (entityRef set, exercised
+        // above) still returns them.
+        {
+            const auto hits = s.search(QStringLiteral("runner"), 20);
+            bool sawA1 = false, sawG1 = false;
+            for (const auto &r : hits) {
+                if (r.id == a1) sawA1 = true;
+                if (r.id == g1) sawG1 = true;
+            }
+            check(!sawA1, "agent-scope: unscoped search excludes the agent-scoped memory");
+            check(sawG1, "agent-scope: unscoped search still includes the global memory");
+        }
+
+        // Human-facing memory-browser opt-in (includeAgentScoped=true): a
+        // person deliberately searching their own memory (web/desktop/TUI/
+        // phone browse UIs) should see agent-scoped rows too, unlike the
+        // automatic LLM-context paths (recall()/prefetch()) exercised above.
+        // The default (omitted / false) must remain unchanged.
+        {
+            const auto hitsDefault = s.search(QStringLiteral("runner"), 20, QString());
+            bool sawA1Default = false;
+            for (const auto &r : hitsDefault)
+                if (r.id == a1) sawA1Default = true;
+            check(!sawA1Default,
+                  "agent-scope: search() with includeAgentScoped omitted still excludes agent rows");
+
+            const auto hitsExplicitFalse =
+                s.search(QStringLiteral("runner"), 20, QString(), /*includeAgentScoped=*/false);
+            bool sawA1False = false;
+            for (const auto &r : hitsExplicitFalse)
+                if (r.id == a1) sawA1False = true;
+            check(!sawA1False,
+                  "agent-scope: search(includeAgentScoped=false) excludes agent-scoped rows");
+
+            const auto hitsIncluded =
+                s.search(QStringLiteral("runner"), 20, QString(), /*includeAgentScoped=*/true);
+            bool sawA1Included = false, sawG1Included = false;
+            for (const auto &r : hitsIncluded) {
+                if (r.id == a1) sawA1Included = true;
+                if (r.id == g1) sawG1Included = true;
+            }
+            check(sawA1Included,
+                  "agent-scope: search(includeAgentScoped=true) returns the agent-scoped memory");
+            check(sawG1Included,
+                  "agent-scope: search(includeAgentScoped=true) still returns the global memory");
+
+            // A scoped call (entityRef set) is unaffected either way — it
+            // already returns only that agent's own rows.
+            const auto hitsScopedIgnoreFlag = s.search(QStringLiteral("runner"), 20,
+                                                       QStringLiteral("ci-runner-104"), true);
+            bool sawA2WithScopedFlag = false;
+            for (const auto &r : hitsScopedIgnoreFlag)
+                if (r.id == a2) sawA2WithScopedFlag = true;
+            check(!sawA2WithScopedFlag,
+                  "agent-scope: scoped search() + includeAgentScoped=true still excludes other agents");
+        }
+
+        // The row carries its scope + entityRef; toJson surfaces them.
+        {
+            auto r = s.get(a1);
+            check(r && r->scope == QStringLiteral("agent"), "agent-scope: stored scope is 'agent'");
+            check(r && r->entityRef == QStringLiteral("ci-runner-104"), "agent-scope: entityRef stored");
+            const QJsonObject j = r->toJson();
+            check(j.value(QStringLiteral("scope")).toString() == QStringLiteral("agent"),
+                  "agent-scope: toJson emits scope for an agent row");
+            check(j.value(QStringLiteral("entityRef")).toString() == QStringLiteral("ci-runner-104"),
+                  "agent-scope: toJson emits entityRef for an agent row");
+        }
+
+        // Regression: a global row's JSON does NOT gain scope/entityRef keys.
+        {
+            auto r = s.get(g1);
+            const QJsonObject j = r->toJson();
+            check(!j.contains(QStringLiteral("scope")), "agent-scope: global row toJson omits scope");
+            check(!j.contains(QStringLiteral("entityRef")), "agent-scope: global row toJson omits entityRef");
+        }
+
+        // prefetch() is the AUTOMATIC per-turn context injection (jarvisd
+        // prepends it to every ordinary chat turn); ordinary turns aren't
+        // scoped to any particular agent/machine, so an agent-scoped fact
+        // must never ride along unprompted. Both a1 and g1 share the word
+        // "runner", so an unfiltered query would match both.
+        {
+            const auto pf = s.prefetch(QStringLiteral("runner"), 20);
+            bool sawA1 = false, sawG1 = false;
+            for (const auto &r : pf) {
+                if (r.id == a1) sawA1 = true;
+                if (r.id == g1) sawG1 = true;
+            }
+            check(!sawA1, "agent-scope: prefetch() excludes the agent-scoped memory");
+            check(sawG1, "agent-scope: prefetch() still includes the global memory");
+
+            // Reversed regression (2026-07-06 per-agent-memory redesign):
+            // this used to assert unfiltered search() was UNAFFECTED by the
+            // prefetch() fix (i.e. still spanned global+agent rows). Per the
+            // redesign, Change 1 closes that leak everywhere the entityRef
+            // arg is omitted, not just in prefetch() — so an unscoped
+            // search() must now ALSO exclude the agent-scoped row.
+            const auto hits = s.search(QStringLiteral("runner"), 20);
+            bool searchSawA1 = false, searchSawG1 = false;
+            for (const auto &r : hits) {
+                if (r.id == a1) searchSawA1 = true;
+                if (r.id == g1) searchSawG1 = true;
+            }
+            check(!searchSawA1 && searchSawG1,
+                  "agent-scope: unfiltered search() also excludes agent-scoped rows now");
+        }
+    }
+
+    // --- per-agent memory redesign (2026-07-06): mention-based auto-recall
+    // in prefetch() ------------------------------------------------------
+    // New explicit user direction: a brand-new/unrelated chat must have NO
+    // idea about agent-specific facts (closing the leak from Change 1 above,
+    // reasserted here against this test's own fixture), but a chat that's
+    // clearly working on a specific agent/VM should automatically recall
+    // that agent's memories without the user/model naming them explicitly
+    // every time (prefetch()'s new mention-based auto-recall, Change 2).
+    {
+        QTemporaryDir tmpMention;
+        const QString dbPathMention = tmpMention.path() + QStringLiteral("/agent_mention.db");
+        MemoryStore s;
+        check(s.open(dbPathMention, QStringLiteral("mem-agent-mention-conn")),
+              "agent-mention: store open");
+
+        const QString globalId = s.add(QStringLiteral("the shared database lives in vault"));
+        const QString pveId = s.add(QStringLiteral("cpu load has been steady on pve"),
+                                    {QStringLiteral("status")}, QString(),
+                                    QStringLiteral("agent"), QStringLiteral("pve"));
+        check(!globalId.isEmpty() && !pveId.isEmpty(), "agent-mention: two memories added");
+
+        // A query that does NOT mention "pve" gets no agent-scoped rows at
+        // all (closing the leak, matching the existing prefetch() exclusion
+        // reasserted here for this fixture).
+        {
+            const auto pf = s.prefetch(QStringLiteral("what's new today"), 20);
+            bool sawPve = false;
+            for (const auto &r : pf)
+                if (r.id == pveId) sawPve = true;
+            check(!sawPve, "agent-mention: prefetch() with no agent mention excludes the pve row");
+        }
+
+        // A query that DOES mention "pve" (as a whole word) auto-recalls that
+        // agent's scoped memories too, in addition to the normal global hits.
+        {
+            const auto pf = s.prefetch(QStringLiteral("let's check on pve"), 20);
+            bool sawPve = false;
+            for (const auto &r : pf)
+                if (r.id == pveId) sawPve = true;
+            check(sawPve, "agent-mention: prefetch() mentioning 'pve' auto-recalls its scoped memory");
+        }
+
+        // Change 1's leak-closing behavior, from this same fixture: an
+        // unscoped search() must not include the pve-scoped row...
+        {
+            const auto hits = s.search(QStringLiteral("cpu load"), 20);
+            bool sawPve = false;
+            for (const auto &r : hits)
+                if (r.id == pveId) sawPve = true;
+            check(!sawPve, "agent-mention: unscoped search() excludes the pve-scoped row");
+        }
+
+        // ...while an explicitly agent-scoped search() still returns it.
+        {
+            const auto hits = s.search(QStringLiteral("cpu load"), 20, QStringLiteral("pve"));
+            bool sawPve = false;
+            for (const auto &r : hits)
+                if (r.id == pveId) sawPve = true;
+            check(sawPve, "agent-mention: search(entityRef='pve') still returns the pve-scoped row");
+        }
+    }
+
+    // --- code-review finding 1 regression: fair round-robin injection across
+    // MULTIPLE mentioned agents sharing the same kMaxAgentInject budget -----
+    // Before the fix, agentRefsMentionedIn() had no ORDER BY and the
+    // injection loop fully drained one agent's own search() results before
+    // moving to the next, so an agent mentioned in the same sentence as
+    // another could get ZERO injected memories under a first-come-first-
+    // served scheme. hostA below has 6 stored rows — MORE than the entire
+    // kMaxAgentInject (5) budget — so a greedy "drain agent 1 fully, then
+    // move to agent 2" implementation would consume the whole cap on hostA
+    // alone if it's processed first, leaving hostB with 0. hostB has only 2
+    // rows, well under half the cap. Only genuine round-robin injection
+    // guarantees hostB still gets at least one row despite hostA alone being
+    // able to exhaust the entire budget.
+    {
+        QTemporaryDir tmpFair;
+        const QString dbPathFair = tmpFair.path() + QStringLiteral("/agent_fair.db");
+        MemoryStore s;
+        check(s.open(dbPathFair, QStringLiteral("mem-agent-fair-conn")), "agent-fair: store open");
+
+        QStringList hostARows, hostBRows;
+        for (int i = 0; i < 6; ++i) {
+            const QString id = s.add(QStringLiteral("hostA status line %1").arg(i),
+                                     {QStringLiteral("status")}, QString(),
+                                     QStringLiteral("agent"), QStringLiteral("hostA"));
+            check(!id.isEmpty(), "agent-fair: hostA memory added");
+            hostARows << id;
+        }
+        for (int i = 0; i < 2; ++i) {
+            const QString id = s.add(QStringLiteral("hostB status line %1").arg(i),
+                                     {QStringLiteral("status")}, QString(),
+                                     QStringLiteral("agent"), QStringLiteral("hostB"));
+            check(!id.isEmpty(), "agent-fair: hostB memory added");
+            hostBRows << id;
+        }
+
+        const auto pf = s.prefetch(QStringLiteral("let's check on hostA and hostB together"), 20);
+        int sawA = 0, sawB = 0;
+        for (const auto &r : pf) {
+            if (hostARows.contains(r.id)) ++sawA;
+            if (hostBRows.contains(r.id)) ++sawB;
+        }
+        check(sawA >= 1, "agent-fair: mentioning two agents still injects at least one hostA row");
+        check(sawB >= 1, "agent-fair: hostA alone can exhaust the cap, but hostB still gets injected");
+    }
+
+    // --- code-review finding 2 regression: prefetch() enforces its
+    // documented final ceiling (k + kMaxAgentInject + kMaxExpand) even in a
+    // worst case where every additive stage has candidates available at
+    // once: THREE mentioned agents (6 stored rows between them, more than
+    // kMaxAgentInject=5) AND graph-expansion siblings via a shared tag/topic
+    // entity (4 candidates, more than kMaxExpand=3). ------------------------
+    {
+        QTemporaryDir tmpCap;
+        const QString dbPathCap = tmpCap.path() + QStringLiteral("/agent_cap.db");
+        MemoryStore s;
+        check(s.open(dbPathCap, QStringLiteral("mem-agent-cap-conn")), "hard-cap: store open");
+
+        // Two base hits sharing a tag, so graph expansion has 4 sibling
+        // candidates to pull from (more than kMaxExpand=3).
+        const QString base1 = s.add(QStringLiteral("urgent rollout update for the team"),
+                                    {QStringLiteral("opsupdate")});
+        const QString base2 = s.add(QStringLiteral("another urgent rollout update today"),
+                                    {QStringLiteral("opsupdate")});
+        check(!base1.isEmpty() && !base2.isEmpty(), "hard-cap: two base memories added");
+        for (int i = 0; i < 4; ++i)
+            check(!s.add(QStringLiteral("sibling ops note %1").arg(i),
+                        {QStringLiteral("opsupdate")}).isEmpty(),
+                  "hard-cap: sibling ops memory added");
+
+        // Three mentioned agents, each with 2 rows (6 total > kMaxAgentInject=5).
+        for (const QString &host : {QStringLiteral("hostX"), QStringLiteral("hostY"), QStringLiteral("hostZ")}) {
+            for (int i = 0; i < 2; ++i)
+                check(!s.add(QStringLiteral("%1 status line %2").arg(host).arg(i),
+                            {QStringLiteral("status")}, QString(),
+                            QStringLiteral("agent"), host).isEmpty(),
+                      "hard-cap: agent memory added");
+        }
+
+        const auto pf = s.prefetch(
+            QStringLiteral("urgent rollout update -- check on hostX hostY hostZ"), 2);
+        // Documented ceiling: k(2) + kMaxAgentInject(5) + kMaxExpand(3) = 10.
+        check(pf.size() <= 10, "hard-cap: prefetch() never exceeds its documented k+8 ceiling");
+        check(pf.size() == 10,
+              "hard-cap: worst case actually reaches the ceiling (sanity: not silently under it)");
+    }
+
+    // --- code-review finding 3 regression: a hyphen-suffixed continuation
+    // must not satisfy the mention-boundary check for the shorter, unrelated
+    // agent name. Both "pve" and "pve-backup" are distinct registered agents;
+    // a message naming only "pve-backup" must inject ONLY pve-backup's
+    // memories. -------------------------------------------------------------
+    {
+        QTemporaryDir tmpHyphen;
+        const QString dbPathHyphen = tmpHyphen.path() + QStringLiteral("/agent_hyphen.db");
+        MemoryStore s;
+        check(s.open(dbPathHyphen, QStringLiteral("mem-agent-hyphen-conn")), "hyphen: store open");
+
+        const QString pveId = s.add(QStringLiteral("pve cpu load nominal"),
+                                    {QStringLiteral("status")}, QString(),
+                                    QStringLiteral("agent"), QStringLiteral("pve"));
+        const QString pveBackupId = s.add(QStringLiteral("pve-backup disk usage at 70 percent"),
+                                          {QStringLiteral("status")}, QString(),
+                                          QStringLiteral("agent"), QStringLiteral("pve-backup"));
+        check(!pveId.isEmpty() && !pveBackupId.isEmpty(), "hyphen: pve and pve-backup memories added");
+
+        const auto pf = s.prefetch(QStringLiteral("what's the disk usage on pve-backup"), 20);
+        bool sawPve = false, sawPveBackup = false;
+        for (const auto &r : pf) {
+            if (r.id == pveId) sawPve = true;
+            if (r.id == pveBackupId) sawPveBackup = true;
+        }
+        check(sawPveBackup, "hyphen: mentioning 'pve-backup' injects its own memory");
+        check(!sawPve, "hyphen: mentioning 'pve-backup' does NOT also match the unrelated 'pve' agent");
+    }
+
+    // --- regression: migrate() against a genuinely pre-existing, already-
+    // populated OLD-schema database (the real upgrade scenario: an existing
+    // user's jarvis.db, created by code that predates the scope/entity_ref
+    // columns, now opened by this build). Unlike the backfill test above
+    // (whose "legacy" row is inserted AFTER a MemoryStore has already run
+    // migrate() once), this builds the raw db file itself via bare Qt SQL
+    // first — with the true OLD 5-column schema and data already in it —
+    // before MemoryStore ever touches it, so migrate()'s hasColumn()-guarded
+    // ALTER TABLE runs against a real, populated old-schema table.
+    {
+        QTemporaryDir tmp3;
+        const QString dbPath3 = tmp3.path() + QStringLiteral("/legacy_schema.db");
+
+        // Build the OLD 5-column schema directly (no MemoryStore involved)
+        // and insert a row into it, mirroring a pre-upgrade jarvis.db.
+        {
+            QSqlDatabase raw = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"),
+                                                         QStringLiteral("mem-legacy-raw-conn"));
+            raw.setDatabaseName(dbPath3);
+            check(raw.open(), "legacy-migration: raw sqlite file opened");
+            {
+                QSqlQuery ddl(raw);
+                check(ddl.exec(QStringLiteral(
+                          "CREATE TABLE memories ("
+                          " id TEXT PRIMARY KEY,"
+                          " text TEXT NOT NULL,"
+                          " tags TEXT,"
+                          " created INTEGER,"
+                          " updated INTEGER)")),
+                      "legacy-migration: created OLD 5-column memories table (no scope/entity_ref)");
+            }
+            {
+                QSqlQuery ins(raw);
+                ins.prepare(QStringLiteral(
+                    "INSERT INTO memories (id,text,tags,created,updated) VALUES (?,?,?,?,?)"));
+                ins.addBindValue(QStringLiteral("legacy-pre-existing-1"));
+                ins.addBindValue(QStringLiteral("The vault PIN rotates every 90 days"));
+                ins.addBindValue(QStringLiteral("security vault"));
+                ins.addBindValue(qint64(1700000000000));
+                ins.addBindValue(qint64(1700000000000));
+                check(ins.exec(), "legacy-migration: raw-inserted a row into the old-schema table");
+            }
+            raw.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("mem-legacy-raw-conn"));
+
+        // Now open that SAME file through MemoryStore — this is what triggers
+        // migrate()'s ALTER TABLE ADD COLUMN against a genuinely pre-existing,
+        // already-populated old-schema table.
+        MemoryStore migrated;
+        check(migrated.open(dbPath3, QStringLiteral("mem-legacy-migrated-conn")),
+              "legacy-migration: MemoryStore.open() migrates the pre-existing populated db");
+
+        auto legacyRow = migrated.get(QStringLiteral("legacy-pre-existing-1"));
+        check(legacyRow.has_value(), "legacy-migration: pre-existing row still retrievable after migrate");
+        if (legacyRow) {
+            check(legacyRow->text == QStringLiteral("The vault PIN rotates every 90 days"),
+                  "legacy-migration: pre-existing row's text is untouched");
+            check(legacyRow->tags == (QStringList{QStringLiteral("security"), QStringLiteral("vault")}),
+                  "legacy-migration: pre-existing row's tags are untouched");
+            check(legacyRow->created == 1700000000000LL,
+                  "legacy-migration: pre-existing row's created is untouched");
+            check(legacyRow->updated == 1700000000000LL,
+                  "legacy-migration: pre-existing row's updated is untouched");
+            check(legacyRow->scope == QStringLiteral("global"),
+                  "legacy-migration: pre-existing row defaults scope='global'");
+            check(legacyRow->entityRef.isEmpty(),
+                  "legacy-migration: pre-existing row defaults entity_ref to empty");
+        }
+
+        // Search must still find the pre-existing row post-migration.
+        {
+            const auto hits = migrated.search(QStringLiteral("vault PIN"), 10);
+            check(anyTextContains(hits, QStringLiteral("vault PIN")),
+                  "legacy-migration: search finds the pre-existing row after migration");
+        }
+
+        // A brand-new row added post-migration must coexist correctly with
+        // the migrated legacy row (both old and new rows work after the
+        // ALTER TABLE has run against real data).
+        const QString freshId = migrated.add(
+            QStringLiteral("Freshly added memory after migrating the legacy db"),
+            {QStringLiteral("fresh")});
+        check(!freshId.isEmpty(), "legacy-migration: add() works on the freshly-migrated db");
+        auto freshRow = migrated.get(freshId);
+        check(freshRow.has_value() && freshRow->scope == QStringLiteral("global"),
+              "legacy-migration: freshly-added row defaults scope='global' too");
+        check(migrated.list().size() == 2,
+              "legacy-migration: both the legacy row and the fresh row coexist post-migration");
+    }
+
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

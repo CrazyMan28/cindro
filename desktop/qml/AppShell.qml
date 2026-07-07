@@ -184,7 +184,7 @@ Item {
                             case 13: return replayComp
                             case 14: return mcpComp
                             case 15: return pluginsComp
-                            case 16: return sshComp
+                            case 16: return outpostComp
                             case 17: return phoneComp
                             case 18: return settingsComp
                             }
@@ -269,7 +269,7 @@ Item {
     }
     Component { id: schedulesComp; SchedulesPage {} }
     Component { id: activityComp; ActivityPage {} }
-    Component { id: sshComp;      SshPage {} }
+    Component { id: outpostComp;  OutpostPage {} }
     Component { id: memoryComp;   MemoryPage {} }
     Component { id: memGraphComp; MemoryGraphPage {} }
     Component { id: replayComp;   ReplayPage { Component.onCompleted: shell.replayPanel = this } }

@@ -434,7 +434,6 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("agents.result") ||
         // Wave 8 ops reads.
         method == QStringLiteral("schedule.list") ||
-        method == QStringLiteral("ssh.allow_list") ||
         method == QStringLiteral("audit.list") ||
         // Trust-policy reads/previews (jarvis#71).
         method == QStringLiteral("policy.list") ||
@@ -470,12 +469,9 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("queue.remove") ||
         method == QStringLiteral("queue.set_priority") ||
         // Wave 8 ops actions that aren't security-sensitive (toggling/removing a
-        // schedule, managing the ssh allow-list). schedule.create + ssh.exec are
-        // biometric (below).
+        // schedule). schedule.create is biometric (below).
         method == QStringLiteral("schedule.set_enabled") ||
         method == QStringLiteral("schedule.remove") ||
-        method == QStringLiteral("ssh.allow_add") ||
-        method == QStringLiteral("ssh.allow_remove") ||
         // Config actions that aren't security-sensitive.
         method == QStringLiteral("mcp.remove") ||
         method == QStringLiteral("mcp.set_enabled") ||
@@ -514,14 +510,12 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("policy.remove") ||
         method == QStringLiteral("policy.set_default") ||
         method == QStringLiteral("take_over.request") ||
-        // Wave 8: a scheduled job runs unattended, and ssh.exec runs a remote
-        // command — both are biometric-tier on the phone.
+        // Wave 8: a scheduled job runs unattended — biometric-tier on the phone.
         method == QStringLiteral("schedule.create") ||
-        method == QStringLiteral("ssh.exec") ||
         // Self-edited TUI layout + self-authored slash commands: mutations that
         // create/delete persistent state the phone routes through the ops path
         // (ControlServer::isOpsMethod) are biometric-tier, matching
-        // schedule.create/ssh.exec above. The non-mutating reads
+        // schedule.create above. The non-mutating reads
         // (tui.layout.list / command.list) and command.invoke (runs
         // already-authored content) stay at the default action tier below.
         method == QStringLiteral("tui.layout.add") ||
@@ -565,12 +559,10 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("agents.create"),   QStringLiteral("agents.remove"),
         QStringLiteral("agents.dispatch"), QStringLiteral("agents.running"),
         QStringLiteral("agents.result"),
-        // Wave 8 co-worker ops mirrored to the phone: scheduler, ssh allow-list
-        // + gated exec, and the audit log. schedule.create + ssh.exec biometric.
+        // Wave 8 co-worker ops mirrored to the phone: scheduler and the audit
+        // log. schedule.create is biometric.
         QStringLiteral("schedule.create"), QStringLiteral("schedule.list"),
         QStringLiteral("schedule.set_enabled"), QStringLiteral("schedule.remove"),
-        QStringLiteral("ssh.allow_list"),  QStringLiteral("ssh.allow_add"),
-        QStringLiteral("ssh.allow_remove"), QStringLiteral("ssh.exec"),
         QStringLiteral("audit.list"),
         // FULL Contract-C config surface: the phone can configure everything.
         QStringLiteral("settings.get"),    QStringLiteral("settings.set"),
@@ -679,11 +671,44 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         // channel; tierFor gates reads vs actions.
         resp = m_control->dispatchQueueMethod(req);
     } else if (ControlServer::isOpsMethod(m)) {
-        // Wave 8 co-worker ops mirror: schedule.* / ssh.* / audit.list share the
-        // same SQLite tables + allow-list as the desktop. `remote=true` so the
-        // audit log records that the action originated from a paired device, and
-        // ssh.exec/schedule.create were biometric-gated on the phone.
-        resp = m_control->dispatchOpsMethod(req, /*remote=*/true);
+        // Wave 8 co-worker ops mirror: schedule.* / audit.list share the same
+        // SQLite tables as the desktop. `remote=true` so the audit log records
+        // that the action originated from a paired device, and schedule.create
+        // was biometric-gated on the phone.
+        //
+        // outpost.* is explicitly OUT OF SCOPE for the phone/device channel
+        // (v1 design: desktop/web/TUI only, narrower blast radius for a
+        // feature that can pair with and execute on other machines).
+        // capabilityMap() above already doesn't advertise outpost.* to the
+        // phone UI, but that's advisory only — isOpsMethod() still matches
+        // outpost.* (it must, for the desktop control channel), so without
+        // this explicit reject a phone-paired device could dispatch
+        // outpost.exec/screenshot/pair_start/pair_status/list/revoke
+        // directly over this WebSocket. Reject it here, at the channel
+        // boundary, rather than narrowing isOpsMethod() itself.
+        if (m.startsWith(QStringLiteral("outpost."))) {
+            resp = Response::failure(req.id, QStringLiteral("channel_not_allowed"),
+                                     QStringLiteral("outpost.* is not available over "
+                                                    "the phone/device channel"));
+        } else if (m == QStringLiteral("schedule.webhook_token")) {
+            // schedule.webhook_token returns the raw, cleartext per-workflow
+            // webhook bearer secret (see handleScheduleWebhookToken) — a
+            // durable, portable credential that isn't tied to the device
+            // session and isn't revoked by unpairing the phone. It exists
+            // solely for the daemon-local webhook ingestion path
+            // (fire_webhook() in tools_workflows.py) to hmac-compare the
+            // presented bearer; it must never be handed to a paired device.
+            // Every OTHER schedule.* method (list/create/remove/set_enabled/
+            // run_now) is legitimately used by the phone app's Bridge/UI to
+            // manage schedules, so this exclusion is scoped to this single
+            // token-disclosure method, not the whole schedule.* family.
+            resp = Response::failure(req.id, QStringLiteral("channel_not_allowed"),
+                                     QStringLiteral("schedule.webhook_token is not "
+                                                    "available over the phone/device "
+                                                    "channel"));
+        } else {
+            resp = m_control->dispatchOpsMethod(req, /*remote=*/true);
+        }
     } else if (ControlServer::isConfigMethod(m)) {
         // FULL Contract-C exposure: settings/model/mcp/plugins/voice/devices/
         // take_over/file.* all mirror to the phone via the SAME ControlServer

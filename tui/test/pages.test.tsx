@@ -57,9 +57,33 @@ const MANIFEST = {
       config: { text: "# build ok\neverything green" },
       order: 0,
     },
+    {
+      id: "memory",
+      title: "Memory",
+      section: "mind",
+      kind: "table",
+      // Mirrors the builtin manifest's memory page (core/src/UiManifest.cpp):
+      // query_param must match the daemon's memory.search param key ("q"),
+      // and params.include_agent_scoped opts the human-facing browser into
+      // agent-scoped rows (recall()/prefetch() keep defaulting it false).
+      data: {
+        list: { verb: "memory.list", result_key: "memories" },
+        search: {
+          verb: "memory.search",
+          result_key: "memories",
+          query_param: "q",
+          params: { include_agent_scoped: true },
+        },
+      },
+      columns: [
+        { key: "text", label: "Memory" },
+        { key: "created", label: "When", format: "reltime" },
+      ],
+    },
   ],
   commands: [
     { name: "sessions", description: "browse sessions", kind: "page", target: "sessions" },
+    { name: "memory", description: "browse memories", kind: "page", target: "memory" },
   ],
 }
 
@@ -124,6 +148,35 @@ test("/sessions opens the generic TablePage overlay with daemon rows; Esc closes
   await setup.mockInput.pressKey("ESCAPE")
   await sleep(150)
   await setup.waitForFrame((f) => !f.includes("// SESSIONS"))
+}, 15000)
+
+test("memory page search sends query_param 'q' + params.include_agent_scoped to memory.search", async () => {
+  const setup = await boot()
+  daemon!.handlers["memory.list"] = () => ({
+    memories: [{ id: "m1", text: "remember this", created: Date.now() }],
+  })
+  daemon!.handlers["memory.search"] = () => ({ memories: [] })
+
+  await setup.mockInput.pressKeys([..."/memory"])
+  await setup.mockInput.pressKey("RETURN")
+  await setup.waitForFrame((f) => f.includes("// MEMORY"))
+  await sleep(200) // rows land one ws roundtrip after the header paints
+  await setup.waitForFrame((f) => f.includes("remember this"))
+
+  await setup.mockInput.pressKey("f") // opens the search input (page.data.search present)
+  await sleep(100)
+  await setup.mockInput.pressKeys([..."hello"])
+  await setup.mockInput.pressKey("RETURN")
+  await sleep(200)
+
+  // The manifest's query_param ("q") must match what handleMemorySearch reads,
+  // and params.include_agent_scoped must ride along unconditionally — this is
+  // the exact wiring that was missing before this fix (TUI v2's Memory page
+  // is manifest-driven via TablePage, unlike the other four UI surfaces that
+  // were fixed by hand).
+  const calls = daemon!.callsFor("memory.search")
+  expect(calls.length).toBeGreaterThanOrEqual(1)
+  expect(calls[calls.length - 1]).toEqual({ include_agent_scoped: true, q: "hello" })
 }, 15000)
 
 test("row action menu: Enter opens actions, confirm step guards delete", async () => {

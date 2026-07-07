@@ -70,7 +70,7 @@ qt_add_qml_module(jarvis-sidebar
         qml/PhoneSettingsTab.qml
         qml/PhoneScreeningTab.qml
         qml/PhoneCallOverlay.qml
-        qml/SshPage.qml
+        qml/OutpostPage.qml
         qml/ActivityPage.qml
         qml/BrowserPage.qml
         qml/SubAgentTree.qml

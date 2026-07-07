@@ -160,8 +160,6 @@ bool ControlServer::start()
         connect(m_queueTimer, &QTimer::timeout, this, &ControlServer::tickWorkQueue);
         m_queueTimer->start();
     }
-    if (!m_sshAllow.load())
-        qWarning("jarvisd: ssh allow-list load: %s", qPrintable(m_sshAllow.lastError()));
     if (!m_scheduler.open()) {
         qWarning("jarvisd: scheduler unavailable: %s", qPrintable(m_scheduler.lastError()));
     } else {
@@ -2833,6 +2831,11 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "Either way you always get the summary. agent_result(session_id) re-fetches it; "
             "agent_status lists running ones; agent_stop cancels; agent_create saves a "
             "reusable agent for recurring work.\n"
+            "DON'T over-delegate: if the task is one direct tool call away — run a "
+            "command on a paired machine, save/look up a memory fact, check a schedule — "
+            "just call that tool yourself instead of spawning a subagent for it. Reserve "
+            "agent_start for genuinely separable work: parallel, repeatable, or long "
+            "enough to not want to block your own turn on it.\n"
             "CAPABILITIES: if the user asks what you can do / your features / how to do "
             "something with you, OR you're unsure what you're capable of, CALL "
             "skill_load(\"internal_docs\") — it returns the full list of your features + docs. "
@@ -4550,8 +4553,15 @@ Response ControlServer::handleMemorySearch(const Request &req)
 {
     const QString q = req.params.value(QStringLiteral("q")).toString();
     const int limit = req.params.value(QStringLiteral("limit")).toInt(20);
+    const QString agent = req.params.value(QStringLiteral("agent")).toString();
+    // Opt-in for human-facing memory-browser UIs (web/desktop/TUI/phone
+    // "search my memory" boxes) only — see MemoryStore::search()'s doc
+    // comment. Defaults to false so the model's own recall()/prefetch path is
+    // unaffected; only pass true from an explicit human browse/search action.
+    const bool includeAgentScoped =
+        req.params.value(QStringLiteral("include_agent_scoped")).toBool(false);
     QJsonArray arr;
-    for (const MemoryRow &m : m_memory.search(q, limit))
+    for (const MemoryRow &m : m_memory.search(q, limit, agent, includeAgentScoped))
         arr.append(m.toJson());
     QJsonObject result;
     result.insert(QStringLiteral("memories"), arr);
@@ -4577,7 +4587,10 @@ Response ControlServer::handleMemoryAdd(const Request &req)
             req.id, QStringLiteral("memory_too_large"),
             QStringLiteral("memory text too long (%1 chars, max %2) — store a concise "
                            "fact, not a document").arg(text.size()).arg(kMaxMemoryChars));
-    const QString id = m_memory.add(text, tags);
+    const QString agent = req.params.value(QStringLiteral("agent")).toString();
+    const QString id = agent.isEmpty()
+        ? m_memory.add(text, tags)
+        : m_memory.add(text, tags, QString(), QStringLiteral("agent"), agent);
     if (id.isEmpty())
         return Response::failure(req.id, QStringLiteral("store_error"), m_memory.lastError());
     QJsonObject result;
@@ -4732,7 +4745,7 @@ void ControlServer::seedInternalDocsSkill()
     // installs pick up new capabilities — but never clobber a user's own skills.
     // If internal_docs exists and already carries the current marker, skip;
     // otherwise (absent OR stale) refresh it.
-    const QString kMarker = QStringLiteral("[catalog v3]");
+    const QString kMarker = QStringLiteral("[catalog v4]");
     if (auto existing = m_skills.get(QStringLiteral("internal_docs"))) {
         QFile f(existing->path);
         if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -4744,7 +4757,7 @@ void ControlServer::seedInternalDocsSkill()
         m_skills.remove(QStringLiteral("internal_docs")); // stale builtin -> refresh
     }
     const QString body = QStringLiteral(
-        "[catalog v3] When the user asks what you can do, your features, how to do "
+        "[catalog v4] When the user asks what you can do, your features, how to do "
         "something with you, or you're unsure you're capable of something, use THIS as "
         "the source of truth for Jarvis's capabilities. Tell them what fits + offer to "
         "do it.\n\n"
@@ -4770,9 +4783,16 @@ void ControlServer::seedInternalDocsSkill()
         "**Agents / subagents** — define specialists (agent_create) and delegate sub-tasks "
         "(agent_start) that run as their own child sessions; agent_wait blocks for the "
         "result, agent_result/agent_status check them. (docs/AGENTS_AND_COMMANDS.md)\n"
-        "**Memory** — long-term memory: remember/recall/list_memories/edit_memory/forget.\n"
+        "**Memory** — long-term memory: remember/recall/list_memories/edit_memory/forget. "
+        "Pass `agent` (a paired machine or agent name) to remember/recall to scope a fact "
+        "to that agent — it stays isolated from unrelated chats, but auto-surfaces when a "
+        "conversation mentions that agent by name.\n"
         "**Schedules** — run tasks later or on a cadence: schedule_task / list_schedules / "
         "cancel_schedule (cron or natural language). (docs/SCHEDULES.md)\n"
+        "**Workflows** — named, manageable jobs combining a trigger (cron, polling, or "
+        "webhook), a target agent/machine, a model, and an inbox report thread: "
+        "workflow_create / workflow_list / workflow_delete. A webhook-triggered workflow "
+        "gets its own callback URL + bearer token. (docs/WORKFLOWS.md)\n"
         "**Files** — send any file to the user's phone/desktop with send_file.\n"
         "**MCP & plugins** — extra MCP tool servers + a plugin marketplace, managed in the "
         "app.\n"
@@ -4798,8 +4818,8 @@ void ControlServer::seedInternalDocsSkill()
         "**Permissions** — an ask-before-risky policy (cautious / balanced / autonomous) "
         "the user sets in Settings → Permissions; you call ask_user before actions "
         "above the chosen risk line.\n"
-        "**SSH** — gated remote command execution on allow-listed hosts (the user manages "
-        "the allow-list in the app).\n"
+        "**Outpost** — pair a remote Windows/Linux/macOS machine (one-line install) then run "
+        "gated shell commands + screenshots on it by name.\n"
         "**Connectors** — a Google connectors framework (Gmail / Calendar / Drive etc.) "
         "the user can enable. (docs/JARVIS_GOOGLE_CONNECTORS.md)\n"
         "**Security / unlock** — optional 2FA: open Jarvis by approving on the paired "
@@ -5872,14 +5892,14 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
                              QStringLiteral("unknown config method: ") + m);
 }
 
-// --- Wave 8: co-worker ops (scheduler / ssh allow-list / audit) -------------
+// --- Wave 8: co-worker ops (scheduler / outpost pairing+exec / audit) -------
 
 bool ControlServer::isOpsMethod(const QString &method)
 {
     return method.startsWith(QStringLiteral("schedule.")) ||
            method.startsWith(QStringLiteral("tui.layout.")) ||
            method.startsWith(QStringLiteral("command.")) ||
-           method.startsWith(QStringLiteral("ssh.")) ||
+           method.startsWith(QStringLiteral("outpost.")) ||
            method.startsWith(QStringLiteral("diff.")) ||
            method == QStringLiteral("audit.list");
 }
@@ -6049,6 +6069,7 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("schedule.set_enabled")) return handleScheduleSetEnabled(req);
     if (m == QStringLiteral("schedule.remove"))      return handleScheduleRemove(req);
     if (m == QStringLiteral("schedule.run_now"))     return handleScheduleRunNow(req);
+    if (m == QStringLiteral("schedule.webhook_token")) return handleScheduleWebhookToken(req);
     if (m == QStringLiteral("tui.layout.list"))    return handleTuiLayoutList(req);
     if (m == QStringLiteral("tui.layout.add"))     return handleTuiLayoutAdd(req);
     if (m == QStringLiteral("tui.layout.edit"))    return handleTuiLayoutEdit(req);
@@ -6062,10 +6083,12 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("diff.revert"))          return handleDiffRevert(req);
     if (m == QStringLiteral("diff.commit"))          return handleDiffCommit(req);
     if (m == QStringLiteral("diff.open_pr"))         return handleDiffOpenPr(req);
-    if (m == QStringLiteral("ssh.allow_list"))       return handleSshAllowList(req);
-    if (m == QStringLiteral("ssh.allow_add"))        return handleSshAllowAdd(req);
-    if (m == QStringLiteral("ssh.allow_remove"))     return handleSshAllowRemove(req);
-    if (m == QStringLiteral("ssh.exec"))             return handleSshExec(req, remote);
+    if (m == QStringLiteral("outpost.list"))         return handleOutpostList(req);
+    if (m == QStringLiteral("outpost.pair_start"))   return handleOutpostPairStart(req);
+    if (m == QStringLiteral("outpost.pair_status"))  return handleOutpostPairStatus(req);
+    if (m == QStringLiteral("outpost.exec"))         return handleOutpostExec(req, remote);
+    if (m == QStringLiteral("outpost.screenshot"))   return handleOutpostScreenshot(req);
+    if (m == QStringLiteral("outpost.revoke"))       return handleOutpostRevoke(req);
     if (m == QStringLiteral("audit.list"))           return handleAuditList(req);
     return Response::failure(req.id, QStringLiteral("unknown_method"),
                              QStringLiteral("unknown ops method: ") + m);
@@ -6087,7 +6110,15 @@ QString ControlServer::fireScheduledJob(const ScheduleRow &row)
                  qPrintable(row.name), qPrintable(err));
         return QString();
     }
-    if (!sendToSession(sid, row.prompt, {}, &err))
+    QString prompt = row.prompt;
+    if (!row.reportThread.isEmpty()) {
+        prompt += QStringLiteral(
+            "\n\n[Workflow report] When you finish this task, post a concise "
+            "summary of the outcome to the user's Jarvis inbox by calling the "
+            "notify_user tool with title=\"%1\". Keep it to a few lines.")
+            .arg(row.reportThread);
+    }
+    if (!sendToSession(sid, prompt, {}, &err))
         qWarning("jarvisd: scheduled job '%s' send failed: %s",
                  qPrintable(row.name), qPrintable(err));
     // Push a notification to paired phones (incl. backgrounded ones) that a
@@ -6126,7 +6157,10 @@ Response ControlServer::handleScheduleCreate(const Request &req)
         p.value(QStringLiteral("brain")).toString(),
         p.value(QStringLiteral("model")).toString(),
         p.value(QStringLiteral("profile")).toString(),
-        p.value(QStringLiteral("enabled")).toBool(true));
+        p.value(QStringLiteral("enabled")).toBool(true),
+        p.value(QStringLiteral("target")).toString(),
+        p.value(QStringLiteral("report_thread")).toString(),
+        p.value(QStringLiteral("token")).toString());
     if (id.isEmpty())
         return Response::failure(req.id, QStringLiteral("schedule_error"),
                                  m_scheduler.lastError());
@@ -6191,6 +6225,25 @@ Response ControlServer::handleScheduleRunNow(const Request &req)
     return Response::success(req.id, result);
 }
 
+Response ControlServer::handleScheduleWebhookToken(const Request &req)
+{
+    // Returns the stored per-workflow webhook bearer for `id` (empty for an
+    // unknown id or a non-webhook workflow), plus its current `enabled` state.
+    // Used ONLY by the webhook ingestion endpoint (fire_webhook() in
+    // tools_workflows.py) to hmac-compare the presented bearer AND refuse to
+    // fire a disabled webhook workflow even when the presented token is
+    // otherwise valid — never surfaced in schedule.list / workflow_list
+    // output. This method is also excluded from the phone/device channel (see
+    // DeviceServer::dispatchAuthed) since the token itself is a durable,
+    // portable credential that must never leave the daemon.
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const std::optional<ScheduleRow> row = m_scheduler.get(id);
+    QJsonObject result;
+    result.insert(QStringLiteral("token"), row ? row->webhookToken : QString());
+    result.insert(QStringLiteral("enabled"), row ? row->enabled : false);
+    return Response::success(req.id, result);
+}
+
 // --- diff review: diff.* -----------------------------------------------------
 // Git actions behind the GUI DiffReviewPanel's PillButtons and the TUI's
 // /stage /commit /revert /openpr slash commands. Both frontends already sent
@@ -6198,7 +6251,7 @@ Response ControlServer::handleScheduleRunNow(const Request &req)
 // quietly degraded. Git-level failures come back as success{ok:false,message}
 // (not Response::failure) so the clients render git's own text inline instead
 // of a generic error path. Blocking QProcess in the handler follows the
-// ssh.exec precedent (SshAllowList::exec).
+// same synchronous-subprocess precedent as the outpost.exec proxy.
 
 namespace {
 Response diffResult(const Request &req, const jarvis::GitResult &r,
@@ -6557,66 +6610,169 @@ Response ControlServer::handleCommandInvoke(const Request &req)
     return Response::success(req.id, result);
 }
 
-Response ControlServer::handleSshAllowList(const Request &req)
+QString ControlServer::outpostPort()
 {
-    return Response::success(req.id, m_sshAllow.toJson());
+    return qEnvironmentVariable("OUTPOST_MCP_PORT", QStringLiteral("8798"));
 }
 
-Response ControlServer::handleSshAllowAdd(const Request &req)
+QJsonObject ControlServer::outpostHttp(const QString &httpMethod, const QString &path,
+                                       const QJsonObject &body, bool *reachable)
 {
-    const QString host = req.params.value(QStringLiteral("host")).toString();
-    if (host.trimmed().isEmpty())
-        return Response::failure(req.id, QStringLiteral("bad_request"),
-                                 QStringLiteral("host is required"));
-    const bool changed = m_sshAllow.add(host);
-    m_audit.record(QStringLiteral("ssh.allow_add"), true, QStringLiteral("medium"),
-                   QStringLiteral("allow-listed ssh host ") + host);
-    QJsonObject result = m_sshAllow.toJson();
-    result.insert(QStringLiteral("added"), changed);
-    return Response::success(req.id, result);
-}
-
-Response ControlServer::handleSshAllowRemove(const Request &req)
-{
-    const QString host = req.params.value(QStringLiteral("host")).toString();
-    const bool changed = m_sshAllow.remove(host);
-    if (changed)
-        m_audit.record(QStringLiteral("ssh.allow_remove"), true, QStringLiteral("low"),
-                       QStringLiteral("removed ssh host ") + host);
-    QJsonObject result = m_sshAllow.toJson();
-    result.insert(QStringLiteral("removed"), changed);
-    return Response::success(req.id, result);
-}
-
-Response ControlServer::handleSshExec(const Request &req, bool remote)
-{
-    const QString host = req.params.value(QStringLiteral("host")).toString();
-    const QString cmd = req.params.value(QStringLiteral("cmd")).toString();
-    if (host.trimmed().isEmpty() || cmd.trimmed().isEmpty())
-        return Response::failure(req.id, QStringLiteral("bad_request"),
-                                 QStringLiteral("host and cmd are required"));
-
-    // HARD GATE: ssh.exec only runs for allow-listed hosts; non-listed hosts
-    // never spawn ssh (SshAllowList::exec enforces this). Audited either way.
-    const SshAllowList::ExecResult r = m_sshAllow.exec(host, cmd);
-    if (!r.allowed) {
-        m_audit.record(QStringLiteral("ssh.exec"), false, QStringLiteral("high"),
-                       QStringLiteral("REJECTED ssh.exec to non-allow-listed host ") + host,
-                       QString(), remote);
-        return Response::failure(req.id, QStringLiteral("host_not_allowed"),
-                                 QStringLiteral("host is not in the ssh allow-list: ") + host);
+    // outpost-mcp inbound bearer lives beside ours (~/.config/jarvis/outpost_mcp_token
+    // by default). OUTPOST_CONFIG_DIR / OUTPOST_MCP_PORT mirror outpost_mcp/config.py's
+    // own env overrides (used by its test suite) so a shared harness that sets them
+    // before starting BOTH the daemon and outpost-mcp keeps this proxy in sync with
+    // wherever outpost-mcp is actually listening / reading its token from.
+    QString configDir = qEnvironmentVariable("OUTPOST_CONFIG_DIR");
+    if (configDir.isEmpty())
+        configDir = QDir::homePath() + QStringLiteral("/.config/jarvis");
+    QString token;
+    {
+        QFile f(configDir + QStringLiteral("/outpost_mcp_token"));
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            token = QString::fromUtf8(f.readAll()).trimmed();
+            f.close();
+        }
     }
-    m_audit.record(QStringLiteral("ssh.exec"), r.ok, QStringLiteral("high"),
-                   QStringLiteral("ssh %1: %2").arg(host, cmd.left(80)),
-                   QString(), remote);
+    QNetworkAccessManager nam;
+    QNetworkRequest rq(QUrl(QStringLiteral("http://127.0.0.1:%1%2").arg(outpostPort(), path)));
+    rq.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    if (!token.isEmpty())
+        rq.setRawHeader("Authorization", QByteArray("Bearer ") + token.toUtf8());
+    const QByteArray data = QJsonDocument(body).toJson(QJsonDocument::Compact);
+    QNetworkReply *reply = (httpMethod == QStringLiteral("GET"))
+        ? nam.get(rq) : nam.post(rq, data);
 
-    QJsonObject result;
-    result.insert(QStringLiteral("ok"), r.ok);
-    result.insert(QStringLiteral("exit_code"), r.exitCode);
-    result.insert(QStringLiteral("output"), r.output);
-    if (!r.error.isEmpty())
-        result.insert(QStringLiteral("error"), r.error);
-    return Response::success(req.id, result);
+    QEventLoop loop;
+    QTimer::singleShot(60000, &loop, &QEventLoop::quit);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    if (!reply->isFinished()) {
+        reply->abort();
+        reply->deleteLater();
+        if (reachable) *reachable = false;
+        return {};
+    }
+    const QNetworkReply::NetworkError nerr = reply->error();
+    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray resp = reply->readAll();
+    reply->deleteLater();
+    if (status == 0 && nerr != QNetworkReply::NoError) {
+        if (reachable) *reachable = false;
+        return {};
+    }
+    if (reachable) *reachable = true;
+    const QJsonDocument d = QJsonDocument::fromJson(resp);
+    return d.isObject() ? d.object() : QJsonObject();
+}
+
+Response ControlServer::handleOutpostList(const Request &req)
+{
+    bool ok = false;
+    const QJsonObject r = outpostHttp(QStringLiteral("GET"),
+                                      QStringLiteral("/api/machines"), {}, &ok);
+    m_audit.record(QStringLiteral("outpost.list"), ok, QStringLiteral("low"),
+                   QStringLiteral("listed outpost machines"));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleOutpostPairStart(const Request &req)
+{
+    QJsonObject body;
+    body.insert(QStringLiteral("name"), req.params.value(QStringLiteral("name")).toString());
+    body.insert(QStringLiteral("os_hint"), req.params.value(QStringLiteral("os_hint")).toString());
+    bool ok = false;
+    const QJsonObject r = outpostHttp(QStringLiteral("POST"),
+                                      QStringLiteral("/api/pair/start"), body, &ok);
+    m_audit.record(QStringLiteral("outpost.pair_start"), ok, QStringLiteral("medium"),
+                   QStringLiteral("started outpost pairing"));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleOutpostPairStatus(const Request &req)
+{
+    const QString bid = req.params.value(QStringLiteral("bootstrap_id")).toString();
+    bool ok = false;
+    const QJsonObject r = outpostHttp(QStringLiteral("GET"),
+                                      QStringLiteral("/api/pair/status/%1").arg(bid), {}, &ok);
+    m_audit.record(QStringLiteral("outpost.pair_status"), ok, QStringLiteral("low"),
+                   QStringLiteral("polled outpost pairing"));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleOutpostExec(const Request &req, bool remote)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    const QString cmd = req.params.value(QStringLiteral("cmd")).toString();
+    if (machine.trimmed().isEmpty() || cmd.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine and cmd are required"));
+    QJsonObject body;
+    body.insert(QStringLiteral("machine"), machine);
+    body.insert(QStringLiteral("cmd"), cmd);
+    if (req.params.contains(QStringLiteral("timeout")))
+        body.insert(QStringLiteral("timeout"), req.params.value(QStringLiteral("timeout")).toDouble());
+    if (req.params.contains(QStringLiteral("shell")))
+        body.insert(QStringLiteral("shell"), req.params.value(QStringLiteral("shell")).toString());
+    bool ok = false;
+    const QJsonObject r = outpostHttp(QStringLiteral("POST"),
+                                      QStringLiteral("/api/exec"), body, &ok);
+    m_audit.record(QStringLiteral("outpost.exec"), ok && r.value(QStringLiteral("ok")).toBool(),
+                   QStringLiteral("high"),
+                   QStringLiteral("outpost %1: %2").arg(machine, cmd.left(80)),
+                   QString(), remote);
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleOutpostScreenshot(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    if (machine.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine is required"));
+    QJsonObject body;
+    body.insert(QStringLiteral("machine"), machine);
+    bool ok = false;
+    const QJsonObject r = outpostHttp(QStringLiteral("POST"),
+                                      QStringLiteral("/api/screenshot"), body, &ok);
+    m_audit.record(QStringLiteral("outpost.screenshot"),
+                   ok && r.value(QStringLiteral("ok")).toBool(), QStringLiteral("medium"),
+                   QStringLiteral("outpost screenshot %1").arg(machine));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleOutpostRevoke(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    if (machine.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine is required"));
+    QJsonObject body;
+    body.insert(QStringLiteral("machine"), machine);
+    bool ok = false;
+    const QJsonObject r = outpostHttp(QStringLiteral("POST"),
+                                      QStringLiteral("/api/revoke"), body, &ok);
+    m_audit.record(QStringLiteral("outpost.revoke"), ok, QStringLiteral("low"),
+                   QStringLiteral("revoked outpost machine %1").arg(machine));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    return Response::success(req.id, r);
 }
 
 Response ControlServer::handleAuditList(const Request &req)

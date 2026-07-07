@@ -359,16 +359,24 @@ public:
     // schedule.run_now{id} — fire a due job immediately (best-effort).
     Q_INVOKABLE void scheduleRunNow(const QString &id);
 
-    // ---- SSH allow-list + gated exec (Contract A additions) ----------------
-    // ssh.allow_list -> sshHostsListed(QStringList).
-    Q_INVOKABLE void sshAllowList();
-    // ssh.allow_add{host}; refreshes the allow-list on success.
-    Q_INVOKABLE void sshAllowAdd(const QString &host);
-    // ssh.allow_remove{host}; refreshes the allow-list on success.
-    Q_INVOKABLE void sshAllowRemove(const QString &host);
-    // ssh.exec{host,cmd} -> sshExecResult(host,ok,output). The daemon enforces the
-    // allow-list (error 'host_not_allowed') and the biometric tier; this only sends.
-    Q_INVOKABLE void sshExec(const QString &host, const QString &cmd);
+    // ---- Outpost: paired remote machines + gated exec/screenshot -----------
+    // outpost.list -> outpostMachinesListed(QVariantList). Rows:
+    //   {id,name,os,transport,status,last_seen}.
+    Q_INVOKABLE void outpostList();
+    // outpost.pair_start {} -> outpostPairStarted(QVariantMap). Result:
+    //   {pairing_code,bootstrap_id,expires_at,install_cmd_linux,install_cmd_windows}.
+    Q_INVOKABLE void outpostPairStart();
+    // outpost.pair_status{bootstrap_id} -> outpostPairStatusResult(QVariantMap).
+    //   Result: {status,machine_id}.
+    Q_INVOKABLE void outpostPairStatus(const QString &bootstrapId);
+    // outpost.exec{machine,cmd} -> outpostExecResult(machine,ok,output). The
+    // daemon enforces pairing + the gating tier; this only sends.
+    Q_INVOKABLE void outpostExec(const QString &machine, const QString &cmd);
+    // outpost.screenshot{machine} -> outpostScreenshotResult(machine,ok,imageBase64,error).
+    Q_INVOKABLE void outpostScreenshot(const QString &machine);
+    // outpost.revoke{machine} -> outpostRevoked(machine,ok); refreshes the list
+    // on success.
+    Q_INVOKABLE void outpostRevoke(const QString &machine);
 
     // ---- Audit log (HERMES_FEATURES risk gate) -----------------------------
     // audit.list{limit?} -> auditListed(QVariantList). Rows:
@@ -728,10 +736,14 @@ signals:
     void schedulesListed(const QVariantList &schedules);
     void schedulesChanged();   // emitted after create/remove/set_enabled
 
-    // ---- SSH results --------------------------------------------------------
-    void sshHostsListed(const QStringList &hosts);
-    void sshHostsChanged();    // emitted after allow_add/remove
-    void sshExecResult(const QString &host, bool ok, const QString &output);
+    // ---- Outpost results ------------------------------------------------------
+    void outpostMachinesListed(const QVariantList &machines);
+    void outpostPairStarted(const QVariantMap &result);
+    void outpostPairStatusResult(const QVariantMap &result);
+    void outpostExecResult(const QString &machine, bool ok, const QString &output);
+    void outpostScreenshotResult(const QString &machine, bool ok,
+                                  const QString &imageBase64, const QString &error);
+    void outpostRevoked(const QString &machine, bool ok);
 
     // ---- Audit results ------------------------------------------------------
     void auditListed(const QVariantList &entries);

@@ -1,4 +1,4 @@
-"""McpPane + PluginsPane + SshPane — the SYSTEM group's config/admin
+"""McpPane + PluginsPane + OutpostPane — the SYSTEM group's config/admin
 screens, all thin TablePane subclasses over existing Contract-A verbs."""
 
 from __future__ import annotations
@@ -75,46 +75,59 @@ class PluginsPane(TablePane):
             self.refresh_data()
 
 
-class SshPane(TablePane):
-    HINT = "type a host + enter: allow · x: revoke · r: refresh"
-    COLUMNS = ("allowed host",)
+class OutpostPane(TablePane):
+    HINT = "type a command + enter: run on selected · p: pair · x: revoke · r: refresh"
+    COLUMNS = ("machine", "os", "status")
 
     def compose(self) -> ComposeResult:
         yield Static(Text(self.HINT, style="bright_black"), classes="pane-hint")
-        yield Input(placeholder="user@host", id="ssh-add")
+        yield Input(placeholder="command to run on the selected machine", id="outpost-exec")
         from textual.widgets import DataTable
         table = DataTable(cursor_type="row")
         table.add_columns(*self.COLUMNS)
         yield table
 
     async def fetch(self) -> list[dict]:
-        res = await self.client.call("ssh.allow_list", {})
-        return [{"host": h} for h in res.get("hosts", [])]
+        res = await self.client.call("outpost.list", {})
+        return list(res.get("machines", []))
 
     def to_cells(self, r: dict) -> tuple:
-        return (r["host"],)
+        status = r.get("status", "")
+        return (r.get("name", ""), r.get("os", ""),
+                Text(status, style="green" if status == "online" else "bright_black"))
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id != "ssh-add":
+        if event.input.id != "outpost-exec":
             return
-        host = event.value.strip()
+        cmd = event.value.strip()
         event.input.value = ""
-        if not host:
+        row = self.selected()
+        if not cmd or not row:
             return
         try:
-            await self.client.call("ssh.allow_add", {"host": host})
+            res = await self.client.call("outpost.exec",
+                                         {"machine": row["name"], "cmd": cmd})
+            out = res.get("output") or res.get("error") or "(no output)"
+            self.notify(f"[{row['name']}] {str(out)[:400]}", timeout=12)
         except (ControlError, ConnectionError, TimeoutError) as exc:
             self.notify(str(exc), severity="error")
-        self.refresh_data()
 
     async def on_key(self, event) -> None:
         if event.key == "r":
             self.refresh_data()
+        elif event.key == "p":
+            try:
+                res = await self.client.call("outpost.pair_start", {})
+                self.notify("Linux: " + res.get("install_cmd_linux", "")
+                            + "  |  Windows: " + res.get("install_cmd_windows", ""),
+                            timeout=20)
+            except (ControlError, ConnectionError, TimeoutError) as exc:
+                self.notify(str(exc), severity="error")
         elif event.key == "x":
             row = self.selected()
             if row:
                 try:
-                    await self.client.call("ssh.allow_remove", {"host": row["host"]})
-                except ControlError as exc:
+                    await self.client.call("outpost.revoke", {"machine": row["name"]})
+                except (ControlError, ConnectionError, TimeoutError) as exc:
                     self.notify(str(exc), severity="error")
                 self.refresh_data()

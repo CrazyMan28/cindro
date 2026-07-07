@@ -21,6 +21,35 @@ def _err(exc: Exception) -> str:
     return json.dumps({"error": str(exc)})
 
 
+def remember(text: str, tags: list[str] | None = None, agent: str = "") -> str:
+    """Save a fact to Jarvis's long-term memory so it persists across sessions
+    (preferences, project facts, decisions). Pass `agent` (an agent name or a
+    paired-machine id, e.g. "ci-runner-104") to scope the fact to THAT agent so
+    it is only recalled with recall(agent=...); omit it for global memory.
+    Returns {id}."""
+    try:
+        params: dict = {"text": text, "tags": tags or []}
+        if agent:
+            params["agent"] = agent
+        return json.dumps(daemon_client.call("memory.add", params))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def recall(query: str = "", agent: str = "", limit: int = 20) -> str:
+    """Full-text search Jarvis's long-term memory for relevant facts. Pass
+    `agent` (an agent name / paired-machine id) to recall ONLY that agent's
+    scoped memories (empty `query` + `agent` returns that agent's recent
+    state — the condition-polling pattern). Omit `agent` for global recall."""
+    try:
+        params: dict = {"q": query, "limit": limit}
+        if agent:
+            params["agent"] = agent
+        return json.dumps(daemon_client.call("memory.search", params))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 def register(mcp: FastMCP) -> None:
     # ---- SEND A FILE TO THE USER -------------------------------------------
     @mcp.tool()
@@ -88,24 +117,8 @@ def register(mcp: FastMCP) -> None:
             return _err(exc)
 
     # ---- MEMORY -------------------------------------------------------------
-    @mcp.tool()
-    def remember(text: str, tags: list[str] | None = None) -> str:
-        """Save a fact to Jarvis's long-term memory so it persists across sessions
-        (preferences, project facts, decisions). Returns {id}."""
-        try:
-            return json.dumps(daemon_client.call("memory.add",
-                                                 {"text": text, "tags": tags or []}))
-        except Exception as exc:  # noqa: BLE001
-            return _err(exc)
-
-    @mcp.tool()
-    def recall(query: str, limit: int = 20) -> str:
-        """Full-text search Jarvis's long-term memory for relevant facts."""
-        try:
-            return json.dumps(daemon_client.call("memory.search",
-                                                 {"q": query, "limit": limit}))
-        except Exception as exc:  # noqa: BLE001
-            return _err(exc)
+    mcp.tool()(remember)
+    mcp.tool()(recall)
 
     @mcp.tool()
     def session_search(query: str, limit: int = 20, context_window: int = 2,
@@ -353,15 +366,24 @@ def register(mcp: FastMCP) -> None:
         `task` on its own and reports back (shows under this session in the
         sub-agent tree). Returns {session_id} — pass it to agent_stop to cancel.
 
-        `name` can be one of your DEFINED agents (see agent_list) OR any new label
-        for an AD-HOC subagent (you do NOT need to pre-create an agent to delegate).
-        You may choose the `brain` (codex|claude|api) and `model` it runs on, and
-        give it a one-off `system_prompt` (its role/instructions for the task).
-        A stored agent's def fills any of these you leave blank.
+        If the task is something YOU can do directly with a single tool call —
+        run a command on a paired machine (outpost_exec), take a screenshot
+        (outpost_screenshot), save or look up a fact (remember/recall), check a
+        schedule, etc. — just call that tool yourself. Do NOT spin up a subagent
+        for work you could do in one or two tool calls; that only adds latency
+        and an extra point of failure. Reserve agent_start for work that's
+        genuinely separable: a distinct kind of sub-task you'll repeat (see
+        agent_create), something you want running in parallel while you keep
+        working, or a long enough job that you don't want to block your own
+        turn on it.
 
-        Use this to actually OFFLOAD work — e.g. agent_start("file-writer", "write
-        /tmp/x.py as hello world", model="gpt-5.5"). Don't just narrate that you
-        delegated; call this tool."""
+        `name` can be one of your DEFINED agents (see agent_list) OR any new label
+        for an AD-HOC subagent (you do NOT need to pre-create an agent to delegate
+        genuinely separable work). You may choose the `brain` (codex|claude|api)
+        and `model` it runs on, and give it a one-off `system_prompt` (its
+        role/instructions for the task). Don't just narrate that you delegated;
+        call this tool. A stored agent's def fills any of these
+        you leave blank."""
         try:
             params = {"agent": name, "task": task}
             if brain:

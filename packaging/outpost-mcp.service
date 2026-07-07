@@ -1,0 +1,18 @@
+[Unit]
+Description=Outpost-MCP server (pair remote machines; relay gated exec/screenshot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Auto-generates ~/.config/jarvis/outpost_mcp_token (0600) on first start and
+# binds 0.0.0.0:8798 (tailnet bearer model). Serves the Go agent binaries from
+# outpost-mcp/agent-bin/. Run from the project's uv venv; PYTHONPATH is unset
+# because the host exports a 3.14 PYTHONPATH that breaks venvs.
+WorkingDirectory=%h/projects/computer_use/outpost-mcp
+Environment=PYTHONPATH=
+ExecStart=/usr/bin/env -u PYTHONPATH %h/.local/bin/uv run outpost-mcp
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

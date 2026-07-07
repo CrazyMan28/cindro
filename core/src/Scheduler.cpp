@@ -80,6 +80,11 @@ CronSpec CronSpec::parse(const QString &expr)
 
     const QString lower = e.toLower();
 
+    if (lower == QStringLiteral("webhook")) {
+        s.kind = Kind::Webhook;
+        return s;
+    }
+
     // "every Nm" / "every N minutes/min/m" / "Nh/hours" / "Ns/seconds".
     static const QRegularExpression everyRe(
         QStringLiteral(R"(^every\s+(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$)"));
@@ -174,6 +179,9 @@ QDateTime CronSpec::nextAfter(const QDateTime &from) const
         return QDateTime();
     }
 
+    case Kind::Webhook:
+        return QDateTime(); // externally triggered only — never timer-scheduled
+
     case Kind::Invalid:
     default:
         return QDateTime();
@@ -199,6 +207,10 @@ QJsonObject ScheduleRow::toJson() const
     o.insert(QStringLiteral("next_run"), nextRun);
     o.insert(QStringLiteral("last_run"), lastRun);
     o.insert(QStringLiteral("created"), created);
+    if (!targetRef.isEmpty())
+        o.insert(QStringLiteral("target"), targetRef);
+    if (!reportThread.isEmpty())
+        o.insert(QStringLiteral("report_thread"), reportThread);
     return o;
 }
 
@@ -290,21 +302,42 @@ bool Scheduler::exec(const QString &sql, QString *err)
     return true;
 }
 
+bool Scheduler::hasColumn(const QString &table, const QString &column)
+{
+    QSqlQuery q(m_db);
+    if (!q.exec(QStringLiteral("PRAGMA table_info(%1)").arg(table)))
+        return false;
+    while (q.next())
+        if (q.value(1).toString().compare(column, Qt::CaseInsensitive) == 0)
+            return true;
+    return false;
+}
+
 bool Scheduler::migrate()
 {
-    return exec(QStringLiteral(
-        "CREATE TABLE IF NOT EXISTS schedules ("
-        " id TEXT PRIMARY KEY,"
-        " name TEXT,"
-        " cron TEXT NOT NULL,"
-        " prompt TEXT NOT NULL,"
-        " brain TEXT,"
-        " model TEXT,"
-        " profile TEXT,"
-        " enabled INTEGER NOT NULL DEFAULT 1,"
-        " next_run INTEGER NOT NULL DEFAULT 0,"
-        " last_run INTEGER NOT NULL DEFAULT 0,"
-        " created INTEGER)"));
+    if (!exec(QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS schedules ("
+            " id TEXT PRIMARY KEY,"
+            " name TEXT,"
+            " cron TEXT NOT NULL,"
+            " prompt TEXT NOT NULL,"
+            " brain TEXT,"
+            " model TEXT,"
+            " profile TEXT,"
+            " enabled INTEGER NOT NULL DEFAULT 1,"
+            " next_run INTEGER NOT NULL DEFAULT 0,"
+            " last_run INTEGER NOT NULL DEFAULT 0,"
+            " created INTEGER)")))
+        return false;
+    // Additive workflow columns (target ref, inbox report thread, webhook token).
+    // Existing schedule rows keep NULL/'' for all three — untouched.
+    if (!hasColumn(QStringLiteral("schedules"), QStringLiteral("target_ref")))
+        exec(QStringLiteral("ALTER TABLE schedules ADD COLUMN target_ref TEXT"));
+    if (!hasColumn(QStringLiteral("schedules"), QStringLiteral("report_thread")))
+        exec(QStringLiteral("ALTER TABLE schedules ADD COLUMN report_thread TEXT"));
+    if (!hasColumn(QStringLiteral("schedules"), QStringLiteral("webhook_token")))
+        exec(QStringLiteral("ALTER TABLE schedules ADD COLUMN webhook_token TEXT"));
+    return true;
 }
 
 void Scheduler::start(int tickMs)
@@ -329,7 +362,9 @@ void Scheduler::onTick()
 
 QString Scheduler::create(const QString &name, const QString &cronExpr, const QString &prompt,
                           const QString &brain, const QString &model,
-                          const QString &profile, bool enabled)
+                          const QString &profile, bool enabled,
+                          const QString &targetRef, const QString &reportThread,
+                          const QString &webhookToken)
 {
     const CronSpec spec = CronSpec::parse(cronExpr);
     if (!spec.valid()) {
@@ -354,12 +389,16 @@ QString Scheduler::create(const QString &name, const QString &cronExpr, const QS
     r.lastRun = 0;
     const QDateTime next = spec.nextAfter(QDateTime::currentDateTime());
     r.nextRun = (enabled && next.isValid()) ? next.toMSecsSinceEpoch() : 0;
+    r.targetRef = targetRef;
+    r.reportThread = reportThread;
+    r.webhookToken = webhookToken;
 
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
         "INSERT INTO schedules"
-        " (id,name,cron,prompt,brain,model,profile,enabled,next_run,last_run,created)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?)"));
+        " (id,name,cron,prompt,brain,model,profile,enabled,next_run,last_run,created,"
+        "  target_ref,report_thread,webhook_token)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"));
     q.addBindValue(r.id);
     q.addBindValue(r.name);
     q.addBindValue(r.cron);
@@ -371,6 +410,9 @@ QString Scheduler::create(const QString &name, const QString &cronExpr, const QS
     q.addBindValue(r.nextRun);
     q.addBindValue(r.lastRun);
     q.addBindValue(r.created);
+    q.addBindValue(r.targetRef);
+    q.addBindValue(r.reportThread);
+    q.addBindValue(r.webhookToken);
     if (!q.exec()) {
         m_lastError = q.lastError().text();
         return QString();
@@ -392,6 +434,9 @@ static ScheduleRow rowFromQuery(QSqlQuery &q)
     r.nextRun = q.value(8).toLongLong();
     r.lastRun = q.value(9).toLongLong();
     r.created = q.value(10).toLongLong();
+    r.targetRef = q.value(11).toString();
+    r.reportThread = q.value(12).toString();
+    r.webhookToken = q.value(13).toString();
     return r;
 }
 
@@ -400,7 +445,8 @@ QVector<ScheduleRow> Scheduler::list()
     QVector<ScheduleRow> out;
     QSqlQuery q(m_db);
     if (!q.exec(QStringLiteral(
-            "SELECT id,name,cron,prompt,brain,model,profile,enabled,next_run,last_run,created"
+            "SELECT id,name,cron,prompt,brain,model,profile,enabled,next_run,last_run,created,"
+            "target_ref,report_thread,webhook_token"
             " FROM schedules ORDER BY created ASC"))) {
         m_lastError = q.lastError().text();
         return out;
@@ -414,7 +460,8 @@ std::optional<ScheduleRow> Scheduler::get(const QString &id)
 {
     QSqlQuery q(m_db);
     q.prepare(QStringLiteral(
-        "SELECT id,name,cron,prompt,brain,model,profile,enabled,next_run,last_run,created"
+        "SELECT id,name,cron,prompt,brain,model,profile,enabled,next_run,last_run,created,"
+        "target_ref,report_thread,webhook_token"
         " FROM schedules WHERE id=?"));
     q.addBindValue(id);
     if (!q.exec()) {
