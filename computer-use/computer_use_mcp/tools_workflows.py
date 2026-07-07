@@ -89,6 +89,51 @@ def workflow_create(name: str, trigger: str, prompt: str, brain: str = "",
         return _err(exc)
 
 
+def workflow_update(id: str, name: str = "", trigger: str = "", prompt: str = "",
+                    brain: str = "", model: str = "", target: str = "",
+                    report_thread: str = "") -> str:
+    """Edit an existing Workflow (from workflow_list) IN PLACE. Every argument
+    besides `id` is OPTIONAL and defaults to "" meaning "don't change this
+    field" — only pass the fields you actually want to change. This is an
+    intentional design choice mirroring workflow_create's own "empty =
+    default" convention, NOT a bug: an empty `brain`/`model`/`target`/
+    `report_thread` NEVER clears that field, and there is currently no way to
+    clear any of these four fields back to blank through this tool at all
+    (delete and recreate the workflow if you genuinely need that). `trigger`
+    follows the same syntax as workflow_create (a cron / "every Nm" / "at
+    HH:MM" / the literal "webhook") — EXCEPT passing trigger="webhook" for an
+    existing NON-webhook workflow is rejected server-side: webhook tokens are
+    minted only by workflow_create, so converting a row's trigger to
+    "webhook" here always fails; call workflow_create for a fresh webhook
+    workflow instead. The workflow's existing webhook token (if any) is never
+    editable here — it stays fixed once minted, EXCEPT that converting the
+    trigger AWAY from "webhook" invalidates (clears) it server-side, since a
+    row that is no longer webhook-triggered must not leave a still-live
+    token/URL behind. Returns {ok}."""
+    try:
+        if not id.strip():
+            return _err(ValueError("id is required"))
+        params: dict = {"id": id}
+        if name:
+            params["name"] = name
+        if trigger:
+            params["cron"] = trigger
+        if prompt:
+            params["prompt"] = prompt
+        if brain:
+            params["brain"] = brain
+        if model:
+            params["model"] = model
+        if target:
+            params["target"] = target
+        if report_thread:
+            params["report_thread"] = report_thread
+        res = daemon_client.call("schedule.update", params)
+        return json.dumps({"ok": bool(res.get("ok", False))})
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 def workflow_list() -> str:
     """List all Workflows (id, name, trigger, target, report_thread, brain,
     model, next_run, last_run, enabled)."""
@@ -196,4 +241,5 @@ def register_webhook_route(app: FastAPI) -> None:
 def register(mcp: FastMCP) -> None:
     mcp.tool()(workflow_create)
     mcp.tool()(workflow_list)
+    mcp.tool()(workflow_update)
     mcp.tool()(workflow_delete)

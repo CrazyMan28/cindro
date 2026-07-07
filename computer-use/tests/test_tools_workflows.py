@@ -59,6 +59,42 @@ def test_workflow_create_requires_fields():
     assert "error" in result
 
 
+def test_workflow_update_only_sends_provided_fields():
+    with patch.object(tools_workflows.daemon_client, "call",
+                      return_value={"ok": True}) as m:
+        result = json.loads(tools_workflows.workflow_update(
+            "sched_1", prompt="new prompt only"))
+    m.assert_called_once_with("schedule.update",
+                              {"id": "sched_1", "prompt": "new prompt only"})
+    assert result == {"ok": True}
+
+
+def test_workflow_update_maps_trigger_to_cron():
+    with patch.object(tools_workflows.daemon_client, "call",
+                      return_value={"ok": True}) as m:
+        tools_workflows.workflow_update("sched_1", trigger="every 10m")
+    assert m.call_args[0][1] == {"id": "sched_1", "cron": "every 10m"}
+
+
+def test_workflow_update_can_send_all_fields_together():
+    with patch.object(tools_workflows.daemon_client, "call",
+                      return_value={"ok": True}) as m:
+        tools_workflows.workflow_update(
+            "sched_1", name="renamed", trigger="0 3 * * *", prompt="p2",
+            brain="claude", model="opus", target="host-2",
+            report_thread="Alerts")
+    assert m.call_args[0][1] == {
+        "id": "sched_1", "name": "renamed", "cron": "0 3 * * *",
+        "prompt": "p2", "brain": "claude", "model": "opus",
+        "target": "host-2", "report_thread": "Alerts",
+    }
+
+
+def test_workflow_update_requires_id():
+    result = json.loads(tools_workflows.workflow_update(""))
+    assert "error" in result
+
+
 def test_workflow_list_maps_cron_to_trigger_and_new_fields():
     rows = {"schedules": [{"id": "s1", "name": "nightly", "cron": "0 2 * * *",
                            "target": "ci-runner-104", "report_thread": "Workflows",
@@ -197,6 +233,20 @@ def test_fire_webhook_disabled_workflow_403_even_with_valid_token():
     assert body == {"error": "workflow_disabled"}
     # Must short-circuit BEFORE ever calling schedule.run_now.
     assert "schedule.run_now" not in calls
+
+
+def test_fire_webhook_rejects_stale_token_after_trigger_converted_away_from_webhook():
+    # Regression for the bug where converting a workflow's trigger away from
+    # "webhook" via Scheduler::update() left webhookToken untouched in the DB,
+    # so a presenter of the old URL/token could keep firing the "converted"
+    # row forever. Scheduler::update() now clears webhook_token in the same
+    # update, so schedule.webhook_token subsequently returns token:"" for
+    # that (now non-webhook) row — fire_webhook must treat a still-presented
+    # old token exactly like "no such webhook workflow" (404), not honor it.
+    with patch.object(tools_workflows.daemon_client, "call",
+                      return_value={"token": "", "enabled": True}):
+        status, body = tools_workflows.fire_webhook("w1", "old-stale-token-from-before-conversion")
+    assert status == 404
 
 
 def test_fire_webhook_disabled_workflow_403_does_not_leak_token():

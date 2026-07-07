@@ -511,7 +511,11 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("policy.set_default") ||
         method == QStringLiteral("take_over.request") ||
         // Wave 8: a scheduled job runs unattended — biometric-tier on the phone.
+        // schedule.update is equivalent risk to schedule.create (it can rewrite
+        // an existing job's prompt/target/brain to anything, same unattended
+        // blast radius as authoring a brand new one) so it gets the same tier.
         method == QStringLiteral("schedule.create") ||
+        method == QStringLiteral("schedule.update") ||
         // Self-edited TUI layout + self-authored slash commands: mutations that
         // create/delete persistent state the phone routes through the ops path
         // (ControlServer::isOpsMethod) are biometric-tier, matching
@@ -560,8 +564,10 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("agents.dispatch"), QStringLiteral("agents.running"),
         QStringLiteral("agents.result"),
         // Wave 8 co-worker ops mirrored to the phone: scheduler and the audit
-        // log. schedule.create is biometric.
-        QStringLiteral("schedule.create"), QStringLiteral("schedule.list"),
+        // log. schedule.create/schedule.update are biometric (editing a job is
+        // equivalent risk to creating one — see tierFor() above).
+        QStringLiteral("schedule.create"), QStringLiteral("schedule.update"),
+        QStringLiteral("schedule.list"),
         QStringLiteral("schedule.set_enabled"), QStringLiteral("schedule.remove"),
         QStringLiteral("audit.list"),
         // FULL Contract-C config surface: the phone can configure everything.

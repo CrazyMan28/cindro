@@ -6067,6 +6067,7 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("schedule.create"))      return handleScheduleCreate(req);
     if (m == QStringLiteral("schedule.list"))        return handleScheduleList(req);
     if (m == QStringLiteral("schedule.set_enabled")) return handleScheduleSetEnabled(req);
+    if (m == QStringLiteral("schedule.update"))      return handleScheduleUpdate(req);
     if (m == QStringLiteral("schedule.remove"))      return handleScheduleRemove(req);
     if (m == QStringLiteral("schedule.run_now"))     return handleScheduleRunNow(req);
     if (m == QStringLiteral("schedule.webhook_token")) return handleScheduleWebhookToken(req);
@@ -6189,6 +6190,52 @@ Response ControlServer::handleScheduleSetEnabled(const Request &req)
     if (!m_scheduler.setEnabled(id, enabled))
         return Response::failure(req.id, QStringLiteral("no_schedule"),
                                  QStringLiteral("unknown schedule: ") + id);
+    QJsonObject ok;
+    ok.insert(QStringLiteral("ok"), true);
+    return Response::success(req.id, ok);
+}
+
+Response ControlServer::handleScheduleUpdate(const Request &req)
+{
+    // Partial update: a field is only changed when the caller's params object
+    // actually contains that key (mirrors config.update's patch-style
+    // convention above) — an omitted key leaves the stored value untouched.
+    // `webhook_token` is never accepted here; it stays immutable once minted
+    // (see handleScheduleWebhookToken).
+    const QJsonObject p = req.params;
+    const QString id = p.value(QStringLiteral("id")).toString();
+    if (id.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("id is required"));
+
+    auto opt = [&](const char *key) -> std::optional<QString> {
+        const QLatin1String k(key);
+        if (!p.contains(k))
+            return std::nullopt;
+        return p.value(k).toString();
+    };
+
+    // Accept either `cron` or `when` (alias) for the trigger, same as create —
+    // and, to match handleScheduleCreate's EMPTINESS-based fallback exactly
+    // (cronExpr.isEmpty() ? ... : ...) rather than opt()'s presence-based
+    // check, so a caller that (like schedule.create callers already do)
+    // sends both keys with `cron` blank and the real value in `when` doesn't
+    // have the blank `cron` key block the `when` fallback and abort the
+    // whole update on an unparseable empty trigger.
+    QString cronCombined = p.value(QStringLiteral("cron")).toString();
+    if (cronCombined.isEmpty())
+        cronCombined = p.value(QStringLiteral("when")).toString();
+    const std::optional<QString> cronExpr =
+        cronCombined.isEmpty() ? std::nullopt : std::make_optional(cronCombined);
+
+    if (!m_scheduler.update(id, opt("name"), cronExpr, opt("prompt"), opt("brain"),
+                            opt("model"), opt("profile"), opt("target"),
+                            opt("report_thread")))
+        return Response::failure(req.id, QStringLiteral("schedule_error"),
+                                 m_scheduler.lastError());
+
+    m_audit.record(QStringLiteral("schedule.update"), true, QStringLiteral("low"),
+                   QStringLiteral("updated schedule %1").arg(id));
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, ok);
