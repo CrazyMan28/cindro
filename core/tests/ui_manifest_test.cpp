@@ -67,6 +67,29 @@ int main(int argc, char **argv)
     check(pagesOk, "every page has unique id + title + section + known kind");
     check(tablesOk, "every table page has data.list verb/result_key + columns");
 
+    // The memory page's search data source must stay wired to what the
+    // daemon actually reads/does: handleMemorySearch (ControlServer.cpp)
+    // reads the query from params["q"], and only includes agent-scoped rows
+    // when params["include_agent_scoped"] is explicitly true. TUI v2's
+    // Memory page is manifest-driven (TablePage.tsx), so if this drifts, the
+    // human-facing search box silently breaks (query_param mismatch) and/or
+    // agent-scoped memories silently vanish from search (missing params) —
+    // exactly the bug this check guards against.
+    bool memorySearchOk = false;
+    for (const auto &v : pages) {
+        const QJsonObject p = v.toObject();
+        if (p.value(QStringLiteral("id")).toString() != QStringLiteral("memory"))
+            continue;
+        const QJsonObject search = p.value(QStringLiteral("data")).toObject()
+                                       .value(QStringLiteral("search")).toObject();
+        memorySearchOk =
+            search.value(QStringLiteral("query_param")).toString() == QStringLiteral("q")
+            && search.value(QStringLiteral("params")).toObject()
+                   .value(QStringLiteral("include_agent_scoped")).toBool(false) == true;
+    }
+    check(memorySearchOk,
+          "memory page's search source: query_param == \"q\" + params.include_agent_scoped == true");
+
     // The full builtin surface is present (the 20-screen contract).
     for (const char *want : {"home", "chat", "voice", "computer", "browser",
                              "canvas", "widgets", "phone", "sessions", "memory",

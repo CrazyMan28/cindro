@@ -47,7 +47,8 @@ constexpr const char *kBaseManifest = R"json({
     {"id": "memory", "title": "Memory", "section": "mind", "kind": "table",
      "data": {"list":   {"verb": "memory.list",   "result_key": "memories"},
               "search": {"verb": "memory.search", "result_key": "memories",
-                         "query_param": "query"}},
+                         "query_param": "q",
+                         "params": {"include_agent_scoped": true}}},
      "columns": [
        {"key": "text", "label": "Memory"},
        {"key": "tags", "label": "Tags", "format": "chips"},
