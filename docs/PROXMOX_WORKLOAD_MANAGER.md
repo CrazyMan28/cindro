@@ -109,8 +109,14 @@ opted into per-session).
      exec (sidesteps shell-quoting entirely — see `ControlServer::writeRemoteFile`).
      Fails with `no_mistral_key` if you don't have one configured locally.
    - **proxmox-mcp**: a shallow, sparse `git clone` of just the `proxmox-mcp/`
-     directory from the public repo (`main` branch) into
+     directory from the repo (`main` branch) into
      `/opt/jarvis-proxmox-agent/src`, then its own venv + `pip install`.
+     **The repo is PRIVATE**, so this (and the release fetch below) needs a
+     GitHub token configured locally as the `github` API key (Settings → API
+     keys); the installer pushes it to
+     `/etc/jarvis-proxmox-agent/github_token` (0600) and git reads it via a
+     `GIT_ASKPASS` helper so it never appears in `ps`. Without one, both
+     GitHub steps run anonymously and fail on a private repo.
    - **jarvisd**: fetches the latest GitHub Release's AppImage (via the
      GitHub API, `/repos/CrazyMan28/jarvis/releases/latest`) and
      `--appimage-extract`s it into `/opt/jarvis-proxmox-agent/appimage/` — the
@@ -195,3 +201,19 @@ default (all VMs in scope).
    self-clears on the agent's next tuning decision for that VM, not
    immediately on restart (not worth a second remote round-trip just to flip
    a flag a few minutes early — see the comment in `handleProxmoxRestartVm`).
+6. **`deploy proxmox-mcp` fails with "could not read Username for
+   'https://github.com'"** — the repo is private and no `github` API key is
+   configured locally (see "Bringing it up" step 2).
+7. **jarvisd crash-loops with `GLIBC_2.4x not found` from the AppImage's own
+   bundled libs** — the CI box (Fedora, glibc 2.43) bundles distro libs newer
+   than the Proxmox host's Debian glibc (2.41 on trixie). The jarvisd binary
+   and the Qt libs themselves only need ≤2.38 — it's the linuxdeploy-swept
+   extras (glib, libssh, libcrypt, samba/ffmpeg pile) that are too new. Fix
+   applied on pve (2026-07-09): move every bundled lib whose max GLIBC
+   requirement exceeds the host's out of `squashfs-root/usr/lib/` (system
+   copies get used instead), keep bundled `libsasl2.so.3` (Debian's soname is
+   `.so.2`) with a `libcrypt.so.2 → /lib/x86_64-linux-gnu/libcrypt.so.1`
+   symlink, and quarantine the whole bundled glib family together (a half
+   bundled/half system glib mix aborts with `undefined symbol:
+   g_string_copy`). The real fix is pinning the CI AppImage build to an older
+   baseline image.
