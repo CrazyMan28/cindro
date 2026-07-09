@@ -440,6 +440,61 @@ Design pillars:
   but the fetch-from-release step needs an actual release to exist — it
   can't be exercised until this ships to `main` and a release is cut.
 
+## New subsystems (2026-07-09) — Windows field-bug wave gotchas
+
+- **The take-over banner/glow only auto-arms off `agent_bus` publishes, and
+  Windows wasn't making them.** Linux's real-screen mouse primitives
+  (`computer_use_mcp/input.py`) call `agent_bus.publish(..., session="real")`
+  on every move/click/drag/scroll; the desktop tails that bus
+  (`Bridge::readPointerTail`) to flip `driving=true`. `windows/engine/
+  backend_windows.py` reimplements the same primitives via Win32 `SendInput`
+  but is a SEPARATE module (monkeypatched over `input.py` by
+  `server_windows.py`, not a subclass) — it must publish to `agent_bus`
+  itself; nothing does that for it automatically. If you add a new Windows
+  input primitive, publish to `agent_bus` there too (mirror `_pointer_session()`
+  for the `which=="agent"` vs real-screen tag).
+- **`SendInput` can report success while the cursor never moves — verified
+  live, root cause unconfirmed.** Dangerous because `click()`/`drag()` fire
+  button-down/up as a SEPARATE zero-relative `SendInput` call that lands
+  wherever the cursor CURRENTLY is, so a swallowed move silently misdirects
+  the click. `backend_windows._mouse_move_abs()` now reads back
+  `GetCursorPos` and falls back to `SetCursorPos` on a mismatch (>2px) —
+  keep this readback if you touch that function; it's the only defense
+  against a whole class of "clicks land somewhere else" reports.
+- **MSVC's classic preprocessor cannot parse a bare `#ifdef` inside a macro
+  call's argument list.** `QStringLiteral("a" #ifdef X "b" #endif "c")`
+  fails with `C2121: '#': invalid character` — GCC/Clang tolerate this,
+  MSVC's default (non-`/Zc:preprocessor`) one doesn't. Any per-platform text
+  embedded in a `QStringLiteral`/similar macro call (e.g. the co-work
+  preamble's `widget_live` CPU example in `ControlServer.cpp`) must be
+  hoisted to its own `#define WHOLE_ARG ... #else ... #endif` BEFORE the
+  call, used as a bare token inside it, then `#undef`'d after.
+- **`<iphlpapi.h>`/`<netioapi.h>` (`GetIfTable2`, used for Windows NET stats
+  in `Bridge::pollStats`) need `<winsock2.h>` + `<ws2tcpip.h>` included
+  FIRST.** This repo sets `WIN32_LEAN_AND_MEAN` globally (`posix_compat.h`,
+  force-included into every Windows TU), which stops `<windows.h>` from
+  pulling in legacy Winsock — so unlike a default Windows build, you must
+  add those two includes yourself before any iphlpapi-family header, or
+  `MIB_IF_TABLE2`/`GetIfTable2`/etc. are silently "undeclared identifier"
+  with no hint about the real cause.
+- **`Bridge::pollStats()` is a SHARED file (`desktop/src/Bridge.cpp`,
+  referenced read-only by `windows/CMakeLists.txt`), not a windows/-only
+  copy** — unlike `WindowController`/`AgentDesktop`/`PluginSandbox`, which
+  get COPY-and-edit Windows variants under `windows/shell/`. Its CPU/RAM/NET
+  stats are `#ifdef Q_OS_WIN` branches inside the one function, not a
+  separate file. Follow that same pattern (guard in place, not a new copy)
+  for future additions to this function — a copy would drift from the Linux
+  `/proc` path silently.
+- **The `widget_live` command example in the co-work preamble is
+  platform-conditional now** (`ControlServer.cpp`, `JARVIS_LIVE_CPU_CMD_EXAMPLE`)
+  — Linux gets `top -bn1 | awk …`, Windows gets a `Get-Counter` PowerShell
+  one-liner, because `widget_live`'s `command` runs through
+  `subprocess(shell=True)` (`/bin/sh` vs `cmd.exe`) and a Linux pipeline
+  silently produces no `{{value}}` on Windows ("no data" widget). If you add
+  another OS-specific example to that preamble, mirror this pattern — don't
+  give the model a single-OS example it'll copy verbatim regardless of what
+  Jarvis is actually running on.
+
 ## Branches & flow
 
 Three long-lived branches; **`main` is protected** (PR-only, no direct pushes, no

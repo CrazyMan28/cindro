@@ -303,7 +303,9 @@ target_include_directories(jarvis-sidebar PRIVATE
 
 target_link_libraries(jarvis-sidebar PRIVATE
     Qt6::Core Qt6::Gui Qt6::Quick Qt6::Qml Qt6::QuickControls2
-    Qt6::WebSockets Qt6::Network Qt6::Multimedia)
+    Qt6::WebSockets Qt6::Network Qt6::Multimedia
+    # GetIfTable2/FreeMibTable (Bridge::pollStats' Windows NET-stats path).
+    iphlpapi)
 target_compile_features(jarvis-sidebar PRIVATE cxx_std_20)
 target_compile_options(jarvis-sidebar PRIVATE ${FORCE_INCLUDE_FLAGS})
 

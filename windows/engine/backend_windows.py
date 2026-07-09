@@ -47,6 +47,10 @@ import time
 
 # Engine modules: imported (never modified). map_to_desktop / Rect / LAST_SHOT /
 # the _LOCK and the SessionInfo/Output dataclasses are all OS-agnostic and reused.
+# agent_bus is the pointer-event bus (~/.local/share/jarvis/agent_pointer.jsonl)
+# the desktop sidebar tails to auto-arm the "Jarvis is using your computer"
+# banner + glowing cursor overlay -- pure stdlib, safe to reuse verbatim here.
+from computer_use_mcp import agent_bus as _agent_bus
 from computer_use_mcp import screen as _screen
 from computer_use_mcp import session as _session
 from computer_use_mcp.config import load_config
@@ -168,15 +172,22 @@ def _winapi():
     class INPUT(ctypes.Structure):
         _fields_ = [("type", ctypes.c_ulong), ("u", _INPUTunion)]
 
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
     user32.SendInput.restype = wintypes.UINT
     user32.GetSystemMetrics.argtypes = (ctypes.c_int,)
     user32.GetSystemMetrics.restype = ctypes.c_int
+    user32.GetCursorPos.argtypes = (ctypes.POINTER(POINT),)
+    user32.GetCursorPos.restype = wintypes.BOOL
+    user32.SetCursorPos.argtypes = (ctypes.c_int, ctypes.c_int)
+    user32.SetCursorPos.restype = wintypes.BOOL
 
     _WIN = SimpleNamespace(
         ctypes=ctypes, user32=user32,
-        MOUSEINPUT=MOUSEINPUT, KEYBDINPUT=KEYBDINPUT, INPUT=INPUT,
+        MOUSEINPUT=MOUSEINPUT, KEYBDINPUT=KEYBDINPUT, INPUT=INPUT, POINT=POINT,
         # constants
         INPUT_MOUSE=0, INPUT_KEYBOARD=1,
         MOUSEEVENTF_MOVE=0x0001,
@@ -198,6 +209,14 @@ _BUTTON_FLAGS = {
     "right": ("MOUSEEVENTF_RIGHTDOWN", "MOUSEEVENTF_RIGHTUP"),
     "middle": ("MOUSEEVENTF_MIDDLEDOWN", "MOUSEEVENTF_MIDDLEUP"),
 }
+
+
+def _pointer_session(which: str) -> str:
+    """Windows analogue of computer_use_mcp.input._is_agent: tag bus events
+    'agent' only for the isolated in-sandbox desktop (v2), 'real' for every
+    ordinary v1 call -- which drives the user's actual screen -- so the
+    take-over banner/glow auto-arms exactly like the Linux real-screen path."""
+    return "agent" if which == "agent" else "real"
 
 
 def _virtual_screen() -> tuple[int, int, int, int]:
@@ -271,11 +290,34 @@ def _send(*inputs) -> None:
         raise RuntimeError(f"SendInput injected {sent}/{n} events (GetLastError={err})")
 
 
+def _cursor_pos() -> tuple[int, int] | None:
+    """Read back the real OS cursor position (GetCursorPos), or None if the
+    call fails (e.g. off-Windows / no desktop)."""
+    w = _winapi()
+    pt = w.POINT()
+    if not w.user32.GetCursorPos(w.ctypes.byref(pt)):
+        return None
+    return int(pt.x), int(pt.y)
+
+
 def _mouse_move_abs(gx: int, gy: int) -> None:
     w = _winapi()
     nx, ny = _normalize_abs(gx, gy)
     flags = w.MOUSEEVENTF_MOVE | w.MOUSEEVENTF_ABSOLUTE | w.MOUSEEVENTF_VIRTUALDESK
     _send(_mouse_input(nx, ny, 0, flags))
+    # SendInput can report success (all events injected, GetLastError=0) while
+    # the cursor never actually moves -- observed live on a field machine, root
+    # cause unconfirmed (input-filter driver / UIPI edge case / similar). A
+    # swallowed move is dangerous here specifically because click()/drag() fire
+    # their button-down/up as a SEPARATE, zero-relative SendInput call that
+    # lands wherever the cursor CURRENTLY is -- so a silently-missed move makes
+    # the click land at the last real position instead of the intended one
+    # (exactly the "clicks land somewhere else" failure mode). Verify against
+    # GetCursorPos and fall back to SetCursorPos, a different kernel path, so a
+    # miss here doesn't propagate into a wrong-target click.
+    pos = _cursor_pos()
+    if pos is not None and (abs(pos[0] - gx) > 2 or abs(pos[1] - gy) > 2):
+        w.user32.SetCursorPos(int(gx), int(gy))
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +327,10 @@ def move(x: float, y: float, coord_space: str = "image",
          which: str = "active") -> tuple[int, int]:
     gx, gy = _screen.map_to_desktop(x, y, coord_space, which)
     _mouse_move_abs(gx, gy)
+    # Publish the GLOBAL desktop position so the desktop sidebar's distinct-
+    # cursor overlay (WindowController.showOverlay) auto-arms and tracks it --
+    # the Windows analogue of computer_use_mcp.input.move's agent_bus.publish.
+    _agent_bus.publish(gx, gy, kind="move", session=_pointer_session(which))
     return gx, gy
 
 
@@ -305,6 +351,9 @@ def click(x: float | None = None, y: float | None = None, button: str = "left",
         _send(_mouse_input(0, 0, 0, up))
         if double and i == 0:
             time.sleep(0.12)
+    if pos is not None:
+        _agent_bus.publish(pos[0], pos[1], button=button, kind="click",
+                           session=_pointer_session(which))
     return {"clicked": button, "double": double, "desktop_pos": pos}
 
 
@@ -317,7 +366,9 @@ def drag(x1: float, y1: float, x2: float, y2: float, button: str = "left",
     g2 = _screen.map_to_desktop(x2, y2, coord_space, which)
     w = _winapi()
     down, up = (getattr(w, n) for n in _BUTTON_FLAGS[button])
+    session_tag = _pointer_session(which)
     _mouse_move_abs(*g1)
+    _agent_bus.publish(g1[0], g1[1], button=button, kind="down", session=session_tag)
     time.sleep(0.1)
     _send(_mouse_input(0, 0, 0, down))
     try:
@@ -326,10 +377,12 @@ def drag(x1: float, y1: float, x2: float, y2: float, button: str = "left",
             px = round(g1[0] + (g2[0] - g1[0]) * t)
             py = round(g1[1] + (g2[1] - g1[1]) * t)
             _mouse_move_abs(px, py)
+            _agent_bus.publish(px, py, button=button, kind="drag", session=session_tag)
             time.sleep(0.02)
     finally:
         time.sleep(0.1)
         _send(_mouse_input(0, 0, 0, up))
+        _agent_bus.publish(g2[0], g2[1], button=button, kind="up", session=session_tag)
     return {"from": g1, "to": g2, "button": button}
 
 
@@ -358,6 +411,9 @@ def scroll(amount: int = 3, direction: str = "down",
     for _ in range(amount):
         _send(_mouse_input(0, 0, sign * WHEEL_DELTA, flag))
         time.sleep(0.02)
+    if pos is not None:
+        _agent_bus.publish(pos[0], pos[1], button=direction, kind="scroll",
+                           session=_pointer_session(which))
     return {"scrolled": direction, "notches": amount, "desktop_pos": pos}
 
 

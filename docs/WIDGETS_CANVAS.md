@@ -68,11 +68,19 @@ every `interval_sec`, substitutes its stdout wherever the literal token
 `widget_live_list()` manage jobs. Example (live CPU):
 
 ```
-command = "top -bn1 | awk '/Cpu/{print 100-$8}'"
+command = "top -bn1 | awk '/Cpu/{print 100-$8}'"          # Linux
+command = "powershell -NoProfile -Command \"(Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue\""   # Windows
 spec    = {"type":"column","gap":4,"children":[
             {"type":"text","text":"CPU {{value}}%","weight":700},
             {"type":"progress","value":"{{value}}","grow":true}]}
 ```
+
+`command` runs through `subprocess(shell=True)` — `/bin/sh` on Linux, `cmd.exe` on
+Windows — so a Linux-only pipeline (`top`/`awk`/`grep`) silently produces no
+`{{value}}` on Windows ("no data"). The co-work system prompt
+(`ControlServer.cpp`) picks the right example per-platform at compile time; if
+you hand-write a `widget_live` command, pick the one for the OS Jarvis is
+actually running on.
 
 Jobs are tracked in `~/.local/share/jarvis/widget_jobs/<id>.json` and survive the
 (per-session) engine process.

@@ -2796,6 +2796,18 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
     // say whose screen, the model MUST ask_user first.
     if (!isSubagent && m_agentDesktops.has(sessionId) && !m_coworkGuided.contains(sessionId)) {
         m_coworkGuided.insert(sessionId);
+        // MSVC's classic preprocessor chokes on a bare #ifdef mid-argument-list
+        // inside a macro call ("C2121: '#': invalid character") — hoist the
+        // per-OS live-CPU example out to its own macro so QStringLiteral(...)
+        // below only ever sees a plain token, never a directive.
+#ifdef Q_OS_WIN
+#define JARVIS_LIVE_CPU_CMD_EXAMPLE \
+    "\"powershell -NoProfile -Command \\\"(Get-Counter " \
+    "'\\Processor(_Total)\\% Processor Time').CounterSamples.CookedValue\\\"\", "
+#else
+#define JARVIS_LIVE_CPU_CMD_EXAMPLE \
+    "\"top -bn1 | awk '/Cpu/{print 100-$8}'\", "
+#endif
         const QString guide = QStringLiteral(
             "[Jarvis co-work — READ FIRST] You have TWO separate computer-use tool "
             "sets, plus ask_user, schedule_task, remember/recall/forget, create_skill.\n"
@@ -2914,7 +2926,8 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "ANYTHING, not just system stats — call widget_live(id, command, spec, "
             "interval_sec, target): a background loop runs `command`, substitutes its "
             "output wherever \"{{value}}\" appears in `spec`, and re-renders that id every "
-            "interval. e.g. live CPU: command \"top -bn1 | awk '/Cpu/{print 100-$8}'\", "
+            "interval. e.g. live CPU: command "
+            JARVIS_LIVE_CPU_CMD_EXAMPLE
             "spec a progress with value \"{{value}}\". widget_live_stop(id) stops it; "
             "widget_live_list() shows running jobs. Use the cadence the user wants (or a "
             "one-shot render_widget if they don't want it updating).\n"
@@ -2963,6 +2976,7 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "shell hooks that fire on your lifecycle events (Claude-Code style).\n"
             "• MODES — the user selects plan / build / co-worker in Settings; follow "
             "the mode clause appended below.");
+#undef JARVIS_LIVE_CPU_CMD_EXAMPLE
         // Trust policies (jarvis#71): tell the model the enforced rules up
         // front so it plans around them instead of discovering them by being
         // blocked at the tool layer. Reload first — the file is edited live
