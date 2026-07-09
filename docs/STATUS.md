@@ -4,7 +4,67 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-07-03._
+_Last updated: 2026-07-09._
+
+---
+
+## 🆕 Windows field-bug wave: driving overlay, click accuracy, Home/HUD stats, live-CPU widget (2026-07-09)
+
+Four field-reported Windows-only bugs, all root-caused against the Linux reference
+behavior and fixed on `dev` (zero behavior change on Linux — every fix is additive
+`#ifdef Q_OS_WIN`/platform-guarded):
+
+- **"Jarvis is using your computer" banner + glowing cursor never appeared on
+  Windows.** Root cause: `windows/engine/backend_windows.py`'s `move`/`click`/
+  `drag`/`scroll` reimplement the Linux `input.py` primitives via Win32
+  `SendInput`, but never published to `agent_bus` (`agent_pointer.jsonl`) the way
+  Linux's real-screen path does — so the desktop sidebar's pointer-tail auto-arm
+  (`Bridge::readPointerTail`, `session=="real"`) never saw any events and the
+  overlay (which itself was already correctly built for Windows in
+  `windows/shell/WindowController.cpp`) never had anything to trigger it. Fixed
+  by publishing the same bus events from the Windows backend, tagged identically
+  (`session="real"` for the real screen, `"agent"` for the v2 isolated desktop).
+- **Clicks sometimes landed at the wrong spot ("mouse all over the place").**
+  Live-tested on a 3-monitor field machine (no DPI-scaling bug found — every
+  monitor was 100%): `SendInput` can report success while the cursor never
+  actually moves. Dangerous specifically because `click()`/`drag()` fire their
+  button-down/up as a SEPARATE zero-relative `SendInput` call that lands
+  wherever the cursor CURRENTLY is — a swallowed move makes the click land at
+  the stale position. `_mouse_move_abs()` now reads back `GetCursorPos` and
+  falls back to `SetCursorPos` (a different kernel path) on a mismatch.
+- **Home dashboard / HUD strip showed no CPU, RAM, or NET data on Windows.**
+  `Bridge::pollStats()` (`desktop/src/Bridge.cpp`, shared) was `/proc/stat` +
+  `/proc/meminfo` + `/proc/net/dev` only — those paths don't exist on Windows, so
+  every stat silently stayed at 0. Added a `#ifdef Q_OS_WIN` path:
+  `GetSystemTimes` (CPU), `GlobalMemoryStatusEx` (RAM), `GetIfTable2` (NET, sums
+  non-loopback interfaces that are up). GPU (`nvidia-smi` via `QProcess`) was
+  already cross-platform and untouched.
+- **A model-created "CPU widget" showed no data on Windows.** The co-work system
+  prompt's `widget_live` example (`daemon/src/ControlServer.cpp`, sent to every
+  session) hard-coded a Linux-only command (`top -bn1 | awk '/Cpu/{print
+  100-$8}'`) — `widget_live`'s command runs through `subprocess(shell=True)`
+  (`cmd.exe` on Windows), which has no `top`/`awk`, so the model's exact literal
+  example produced an empty `{{value}}`. Now branches per-OS at compile time; the
+  Windows example (`powershell -NoProfile -Command "(Get-Counter
+  '\Processor(_Total)\% Processor Time').CounterSamples.CookedValue"`) was
+  verified live through the EXACT `subprocess.run(command, shell=True)` path
+  `live_widgets.py` uses before being committed.
+
+**Two hard-won C++/Windows build gotchas** hit while fixing the last two (see
+`AGENTS.md` "New subsystems (2026-07-09)" for the durable record): MSVC's
+classic preprocessor cannot parse a bare `#ifdef` sitting inside a macro call's
+argument list (`QStringLiteral(...)`) — hoist to an external `#define`/`#undef`
+pair instead; and `<iphlpapi.h>`/`<netioapi.h>` (`GetIfTable2`) need
+`<winsock2.h>` + `<ws2tcpip.h>` included first, which doesn't happen for free
+once `WIN32_LEAN_AND_MEAN` is set (it is, repo-wide, via `posix_compat.h`).
+
+Verified: local incremental MSVC compile of `jarvisd`+`jarvis-sidebar` (clean),
+`windows/engine/tests` pytest (41/41, new SetCursorPos-fallback + agent_bus
+coverage), a full local `Jarvis-Setup.exe` build+install+manual test of the
+driving-overlay fix. The click-accuracy and stats fixes are compile-verified
+locally; the Windows CI build on this PR is the first environment that can
+actually launch+exercise the new code paths at runtime (they're behind
+`#ifdef Q_OS_WIN`, so they never compile at all on the Linux/AppImage CI job).
 
 ---
 

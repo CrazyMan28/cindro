@@ -39,6 +39,19 @@
 #include <QMediaPlayer>
 #include <QAudioOutput>
 
+#ifdef Q_OS_WIN
+// <windows.h> is already pulled in (WIN32_LEAN_AND_MEAN + NOMINMAX) via the
+// force-included windows/shell/posix_compat.h, which means <windows.h> does
+// NOT drag in the legacy Winsock 1 headers -- so <iphlpapi.h> (GetIfTable2 /
+// MIB_IF_TABLE2 / FreeMibTable, the NET stats source below; it pulls in
+// <netioapi.h> itself) needs <winsock2.h> + <ws2tcpip.h> included FIRST,
+// exactly as documented at the top of the SDK's netioapi.h. Linked via
+// windows/CMakeLists.txt (iphlpapi is Windows-only).
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <iphlpapi.h>
+#endif
+
 Bridge::Bridge(QObject *parent)
     : QObject(parent)
     , m_socket(new QWebSocket(QString(), QWebSocketProtocol::VersionLatest, this))
@@ -97,6 +110,72 @@ void Bridge::pollStats()
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     const qreal dtSec = m_statsPrevMs > 0 ? (nowMs - m_statsPrevMs) / 1000.0 : 0.0;
 
+#ifdef Q_OS_WIN
+    // --- CPU: GetSystemTimes (100ns ticks: idle/kernel/user) -----------------
+    // Windows has no /proc/stat. kernelTime INCLUDES idle time (documented
+    // GetSystemTimes behavior), so total=kernel+user mirrors /proc/stat's "sum
+    // of all jiffies incl. idle", keeping the same delta math as Linux below.
+    {
+        FILETIME idleFt, kernelFt, userFt;
+        if (::GetSystemTimes(&idleFt, &kernelFt, &userFt)) {
+            auto toU64 = [](const FILETIME &ft) -> quint64 {
+                return (quint64(ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
+            };
+            const quint64 idle = toU64(idleFt);
+            const quint64 total = toU64(kernelFt) + toU64(userFt);
+            if (m_cpuPrevTotal > 0 && total > m_cpuPrevTotal) {
+                const quint64 dTotal = total - m_cpuPrevTotal;
+                const quint64 dIdle = idle >= m_cpuPrevIdle ? idle - m_cpuPrevIdle : 0;
+                const qreal busy = dTotal > 0 ? 100.0 * (dTotal - dIdle) / dTotal : 0.0;
+                m_cpuPercent = qBound(0.0, busy, 100.0);
+            }
+            m_cpuPrevTotal = total;
+            m_cpuPrevIdle = idle;
+        }
+    }
+
+    // --- RAM: GlobalMemoryStatusEx (physical bytes) ---------------------------
+    {
+        MEMORYSTATUSEX ms;
+        ms.dwLength = sizeof(ms);
+        if (::GlobalMemoryStatusEx(&ms)) {
+            const quint64 totalKb = static_cast<quint64>(ms.ullTotalPhys) / 1024;
+            const quint64 availKb = static_cast<quint64>(ms.ullAvailPhys) / 1024;
+            if (totalKb > 0) {
+                const quint64 usedKb = totalKb > availKb ? totalKb - availKb : 0;
+                m_ramTotalGb = totalKb / 1048576.0;
+                m_ramUsedGb = usedKb / 1048576.0;
+                m_ramPercent = 100.0 * usedKb / totalKb;
+            }
+        }
+    }
+
+    // --- NET: GetIfTable2 (iphlpapi), sum real (non-loopback, up) ifaces -----
+    {
+        MIB_IF_TABLE2 *table = nullptr;
+        if (::GetIfTable2(&table) == NO_ERROR && table) {
+            quint64 rx = 0, tx = 0;
+            for (ULONG i = 0; i < table->NumEntries; ++i) {
+                const MIB_IF_ROW2 &row = table->Table[i];
+                if (row.Type == IF_TYPE_SOFTWARE_LOOPBACK)
+                    continue;
+                if (row.OperStatus != IfOperStatusUp)
+                    continue;
+                rx += row.InOctets;
+                tx += row.OutOctets;
+            }
+            ::FreeMibTable(table);
+            if (m_netPrevRx > 0 && dtSec > 0.05) {
+                const qreal dRx = rx >= m_netPrevRx ? rx - m_netPrevRx : 0;
+                const qreal dTx = tx >= m_netPrevTx ? tx - m_netPrevTx : 0;
+                m_netDownMbps = (dRx * 8.0 / 1e6) / dtSec;   // megabits/s
+                m_netUpMbps = (dTx * 8.0 / 1e6) / dtSec;
+            }
+            m_netPrevRx = rx;
+            m_netPrevTx = tx;
+        }
+    }
+#else
     // --- CPU: aggregate jiffies delta from /proc/stat's first "cpu" line ---
     {
         QFile f(QStringLiteral("/proc/stat"));
@@ -176,6 +255,7 @@ void Bridge::pollStats()
             m_netPrevTx = tx;
         }
     }
+#endif
 
     m_statsPrevMs = nowMs;
     emit statsChanged();

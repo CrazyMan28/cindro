@@ -6,6 +6,7 @@ Run:  env -u PYTHONPATH computer-use/.venv/bin/python -m pytest windows/engine/t
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 
 import pytest
@@ -135,3 +136,171 @@ def test_patched_move_routes_through_backend(monkeypatch):
     gx, gy = _i.move(100, 200, coord_space="desktop")
     assert (gx, gy) == (100, 200)
     assert calls == [(100, 200)]
+
+
+# ---------------------------------------------------------------------------
+# (e) mouse ops publish to agent_bus, tagged like the Linux real-screen path
+#     (jarvis#<windows-driving-overlay>: backend_windows never published, so
+#     the desktop sidebar's "Jarvis is using your computer" banner + glowing
+#     cursor overlay never auto-armed on Windows). Mirrors
+#     computer-use/tests/test_agent_pointer_bus.py's contract exactly.
+# ---------------------------------------------------------------------------
+def _lines(path):
+    if not path.exists():
+        return []
+    return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+
+
+@pytest.fixture
+def bus_file(tmp_path, monkeypatch):
+    path = tmp_path / "agent_pointer.jsonl"
+    monkeypatch.setenv("JARVIS_AGENT_POINTER_LOG", str(path))
+    return path
+
+
+@pytest.fixture
+def fake_win32(monkeypatch):
+    """Stub every Win32 touchpoint (SendInput ctypes layer + absolute-move
+    emit) so click/drag/scroll run hermetically off-Windows; map_to_desktop
+    is pinned to identity (desktop coord_space) like the Linux bus tests."""
+    fake = type("FakeWin32", (), {
+        "MOUSEEVENTF_LEFTDOWN": 1, "MOUSEEVENTF_LEFTUP": 2,
+        "MOUSEEVENTF_RIGHTDOWN": 3, "MOUSEEVENTF_RIGHTUP": 4,
+        "MOUSEEVENTF_MIDDLEDOWN": 5, "MOUSEEVENTF_MIDDLEUP": 6,
+        "MOUSEEVENTF_WHEEL": 7, "MOUSEEVENTF_HWHEEL": 8,
+    })()
+    monkeypatch.setattr(bw, "_winapi", lambda: fake)
+    monkeypatch.setattr(bw, "_mouse_input", lambda *a, **k: None)
+    monkeypatch.setattr(bw, "_send", lambda *a, **k: None)
+    monkeypatch.setattr(bw, "_mouse_move_abs", lambda gx, gy: None)
+    monkeypatch.setattr(
+        bw._screen, "map_to_desktop",
+        lambda x, y, cs="image", which="active": (int(x), int(y)),
+    )
+    monkeypatch.setattr(bw.time, "sleep", lambda *_a, **_k: None)
+
+
+def test_move_publishes_real_session_event(bus_file, fake_win32):
+    bw.move(5, 7, coord_space="desktop", which="active")
+    events = _lines(bus_file)
+    assert len(events) == 1
+    assert events[0]["kind"] == "move"
+    assert events[0]["session"] == "real"
+    assert events[0]["x"] == 5 and events[0]["y"] == 7
+
+
+def test_click_publishes_move_and_click_events(bus_file, fake_win32):
+    bw.click(100, 200, button="left", coord_space="desktop", which="active")
+    events = _lines(bus_file)
+    kinds = [e["kind"] for e in events]
+    assert "move" in kinds and "click" in kinds
+    click_ev = next(e for e in events if e["kind"] == "click")
+    assert click_ev["session"] == "real"
+    assert click_ev["button"] == "left"
+    assert click_ev["x"] == 100 and click_ev["y"] == 200
+
+
+def test_click_in_place_publishes_nothing(bus_file, fake_win32):
+    """No x/y => no desktop_pos => nothing to publish (matches Linux: a
+    click-in-place has no meaningful position for the overlay to draw at)."""
+    bw.click(button="left")
+    assert _lines(bus_file) == []
+
+
+def test_drag_emits_down_drag_up_tagged_real(bus_file, fake_win32):
+    bw.drag(0, 0, 100, 100, coord_space="desktop", which="active", steps=4)
+    events = _lines(bus_file)
+    kinds = [e["kind"] for e in events]
+    assert kinds[0] == "down"
+    assert "drag" in kinds
+    assert kinds[-1] == "up"
+    assert all(e["session"] == "real" for e in events)
+
+
+def test_scroll_publishes_scroll_event_tagged_real(bus_file, fake_win32):
+    bw.scroll(amount=1, direction="down", x=10, y=20, coord_space="desktop",
+              which="active")
+    events = _lines(bus_file)
+    scroll_ev = next(e for e in events if e["kind"] == "scroll")
+    assert scroll_ev["session"] == "real"
+    assert scroll_ev["button"] == "down"
+
+
+def test_agent_which_tags_session_agent_not_real(bus_file, fake_win32):
+    """which='agent' (the v2 isolated-sandbox desktop, jarvis#75-adjacent)
+    tags events 'agent' so the real-screen take-over banner does NOT auto-arm
+    for actions confined to the isolated agent desktop."""
+    bw.move(1, 2, coord_space="desktop", which="agent")
+    events = _lines(bus_file)
+    assert events[0]["session"] == "agent"
+
+
+def test_patched_click_routes_through_backend_and_publishes(bus_file, fake_win32):
+    """End-to-end through the monkeypatch server_windows installs (mirrors
+    test_patched_move_routes_through_backend but for click, which is the path
+    an actual computer_use_click tool call takes on Windows)."""
+    import server_windows
+    server_windows.apply_patches()
+
+    from computer_use_mcp import input as _i
+
+    _i.click(50, 60, button="left", coord_space="desktop")
+    events = _lines(bus_file)
+    assert any(e["kind"] == "click" and e["session"] == "real" for e in events)
+
+
+# ---------------------------------------------------------------------------
+# (f) _mouse_move_abs verifies the cursor actually landed and falls back to
+#     SetCursorPos on a mismatch -- SendInput has been observed (live, on a
+#     field machine) to report success while the cursor never moves, which is
+#     dangerous because click()/drag() fire button-down/up as a SEPARATE
+#     zero-relative SendInput call that lands wherever the cursor CURRENTLY
+#     is: a silently-swallowed move makes the click land at the OLD position
+#     instead of the intended one ("clicks land somewhere else").
+# ---------------------------------------------------------------------------
+def _stub_winapi(monkeypatch):
+    """A minimal fake _winapi() covering exactly what _mouse_move_abs touches
+    directly (the flag constants + user32.SetCursorPos); _mouse_input/_send
+    are separately no-op'd so no real ctypes structures are needed."""
+    import types
+
+    calls: list[tuple[int, int]] = []
+    fake = types.SimpleNamespace(
+        MOUSEEVENTF_MOVE=0, MOUSEEVENTF_ABSOLUTE=0, MOUSEEVENTF_VIRTUALDESK=0,
+        user32=types.SimpleNamespace(
+            SetCursorPos=lambda x, y: calls.append((x, y)) or True,
+        ),
+    )
+    monkeypatch.setattr(bw, "_winapi", lambda: fake)
+    monkeypatch.setattr(bw, "_normalize_abs", lambda gx, gy: (0, 0))
+    monkeypatch.setattr(bw, "_mouse_input", lambda *a, **k: None)
+    monkeypatch.setattr(bw, "_send", lambda *a, **k: None)
+    return calls
+
+
+def test_mouse_move_abs_falls_back_to_setcursorpos_on_mismatch(monkeypatch):
+    calls = _stub_winapi(monkeypatch)
+    monkeypatch.setattr(bw, "_cursor_pos", lambda: (0, 0))  # SendInput no-op'd
+    bw._mouse_move_abs(500, 400)
+    assert calls == [(500, 400)]
+
+
+def test_mouse_move_abs_skips_fallback_when_cursor_landed(monkeypatch):
+    calls = _stub_winapi(monkeypatch)
+    monkeypatch.setattr(bw, "_cursor_pos", lambda: (500, 400))  # landed correctly
+    bw._mouse_move_abs(500, 400)
+    assert calls == []
+
+
+def test_mouse_move_abs_skips_fallback_within_tolerance(monkeypatch):
+    calls = _stub_winapi(monkeypatch)
+    monkeypatch.setattr(bw, "_cursor_pos", lambda: (501, 399))  # off by <=2px
+    bw._mouse_move_abs(500, 400)
+    assert calls == []
+
+
+def test_mouse_move_abs_skips_fallback_when_cursor_pos_unavailable(monkeypatch):
+    calls = _stub_winapi(monkeypatch)
+    monkeypatch.setattr(bw, "_cursor_pos", lambda: None)  # GetCursorPos failed
+    bw._mouse_move_abs(500, 400)
+    assert calls == []
