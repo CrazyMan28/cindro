@@ -101,6 +101,18 @@ Once paired, the machine appears in `outpost_list_machines`, and exec /
 screenshot can target it by name or id from any surface — web, TUI, or an
 MCP-calling agent session.
 
+**Re-pairing an already-paired machine is supported and is the upgrade
+path** — just run a fresh one-liner on it. The install script stages the
+new binary to a temp file and atomically swaps it (a live agent locks the
+installed path — the old in-place download failed with
+`curl: (23)`/ETXTBSY), stops the previous agent (exact-cmdline `pkill
+-xf`, never substring `-f`), and starts the new one in the foreground.
+Server-side, `/pair/complete` **replaces** any existing same-name registry
+row (and drops its live socket) instead of appending a duplicate that
+would shadow the new machine in by-name lookups forever. On Windows the
+download is staged *before* the old agent is touched, so a failed download
+leaves the old, working agent running rather than an agentless machine.
+
 ## Installing capabilities onto a paired machine
 
 `outpost.install_workload` is the first instance of a general pattern:

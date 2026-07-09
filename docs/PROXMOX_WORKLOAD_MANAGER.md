@@ -140,7 +140,14 @@ opted into per-session).
    loopback-only by design — see `AGENTS.md`'s Conventions section — so the
    laptop can't call it directly, only `outpost.exec` reaches the host at
    all). This is still a manual one-time step after install — not yet
-   wrapped into `outpost.install_workload`.
+   wrapped into `outpost.install_workload`. A ready-made, idempotent seeder
+   ships at `proxmox-mcp/packaging/seed_schedule.py` — copy it to the host
+   and run it with the deployed venv's python (it needs `websockets`, one
+   `pip install` into that venv):
+   ```
+   /opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/pip install -q websockets
+   /opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/python3 seed_schedule.py
+   ```
 
 ## MCP tools
 
