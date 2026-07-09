@@ -28,8 +28,14 @@ DIR="$HOME/.local/share/outpost-agent"
 mkdir -p "$DIR"
 BIN="$DIR/outpost-agent"
 echo "Outpost: downloading agent ($OS/$ARCH)..."
-curl -fsSL "$BASE/agent/download/$BID/$OS/$ARCH" -o "$BIN"
-chmod +x "$BIN"
+# Stage to a temp file and rename: writing straight onto $BIN fails with
+# ETXTBSY (curl exit 23) while an agent from a previous pairing is running.
+TMP=$(mktemp "$DIR/.outpost-agent.XXXXXX")
+trap 'rm -f "$TMP"' EXIT
+curl -fsSL "$BASE/agent/download/$BID/$OS/$ARCH" -o "$TMP"
+chmod +x "$TMP"
+mv -f "$TMP" "$BIN"
+trap - EXIT
 echo "Outpost: registering this machine..."
 RESP=$(curl -fsSL -X POST "$BASE/pair/$BID/complete" \
   -H 'Content-Type: application/json' \
@@ -51,10 +57,23 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 EOF
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl --user daemon-reload || true
-  systemctl --user enable --now outpost-agent.service || nohup "$BIN" >/dev/null 2>&1 &
-else
+# Stop any agent left from a previous pairing so exactly one runs with the
+# new token ("enable --now" alone would leave a running old agent untouched).
+# pkill -x: exact-cmdline match — plain -f would also kill any unrelated
+# process that merely has this path somewhere in its argv.
+HAVE_SYSTEMD=0
+command -v systemctl >/dev/null 2>&1 && HAVE_SYSTEMD=1
+[ "$HAVE_SYSTEMD" = 1 ] && systemctl --user stop outpost-agent.service 2>/dev/null || true
+pkill -xf "$BIN" 2>/dev/null || true
+# Start in the foreground: `systemctl ... || nohup ... &` would background
+# the WHOLE and-or list, letting the script exit before the start is even
+# attempted (and unprotected from the pipe teardown of `curl | bash`).
+STARTED=0
+if [ "$HAVE_SYSTEMD" = 1 ]; then
+  systemctl --user daemon-reload 2>/dev/null || true
+  systemctl --user enable --now outpost-agent.service 2>/dev/null && STARTED=1 || true
+fi
+if [ "$STARTED" = 0 ]; then
   nohup "$BIN" >/dev/null 2>&1 &
 fi
 echo "Outpost agent installed."
@@ -67,14 +86,36 @@ $arch = if ([Environment]::Is64BitOperatingSystem) { 'amd64' } else { '386' }
 $dir = Join-Path $env:LOCALAPPDATA 'outpost-agent'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $bin = Join-Path $dir 'outpost-agent.exe'
+$tmp = Join-Path $dir 'outpost-agent.new.exe'
 Write-Host "Outpost: downloading agent (windows/$arch)..."
-Invoke-WebRequest "$Base/agent/download/$Bid/windows/$arch" -OutFile $bin
+# Stage to a temp file: a running old agent locks $bin, and downloading
+# before stopping anything means a failed download leaves the old, working
+# agent untouched instead of an agentless machine.
+Invoke-WebRequest "$Base/agent/download/$Bid/windows/$arch" -OutFile $tmp
 Write-Host "Outpost: registering this machine..."
 $body = @{ name = $env:COMPUTERNAME; os = 'windows'; arch = $arch } | ConvertTo-Json
 $resp = Invoke-RestMethod -Method Post "$Base/pair/$Bid/complete" -ContentType 'application/json' -Body $body
 $cfgdir = Join-Path $env:APPDATA 'outpost-agent'
 New-Item -ItemType Directory -Force -Path $cfgdir | Out-Null
 ($resp | ConvertTo-Json) | Set-Content -Path (Join-Path $cfgdir 'agent.json') -Encoding UTF8
+# Only now stop any agent left from a previous pairing so the locked exe can
+# be swapped. Match by image name — reading a process's Path property can
+# throw on protected processes and abort the script under EAP=Stop.
+Get-ScheduledTask -TaskName 'OutpostAgent' -ErrorAction SilentlyContinue |
+  Stop-ScheduledTask -ErrorAction SilentlyContinue
+$old = Get-Process -Name 'outpost-agent' -ErrorAction SilentlyContinue
+if ($old) {
+  $old | Stop-Process -Force -ErrorAction SilentlyContinue
+  $old | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
+}
+# Brief retry: a just-killed process (or AV scanning the exe) can hold the
+# lock a moment longer than Stop/Wait-Process report.
+$moved = $false
+for ($i = 0; $i -lt 10 -and -not $moved; $i++) {
+  try { Move-Item -Force $tmp $bin; $moved = $true }
+  catch { Start-Sleep -Milliseconds 300 }
+}
+if (-not $moved) { Move-Item -Force $tmp $bin }
 # Install as a Scheduled Task in the INTERACTIVE session so screenshots see a
 # real desktop (a session-0 service returns a blank capture).
 $act  = New-ScheduledTaskAction -Execute $bin

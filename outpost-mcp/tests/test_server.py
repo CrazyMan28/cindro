@@ -167,3 +167,22 @@ def test_api_revoke_by_id_route_tears_down_hub_connection(tmp_path, monkeypatch)
         resp2 = client.post("/api/machines/ghost/revoke", headers=auth)
         assert resp2.status_code == 200
         assert resp2.json() == {"ok": False, "revoked": False}
+
+
+async def test_repair_same_name_replaces_old_row(server):
+    """Re-pairing a host must replace its registry row, not append a
+    same-name duplicate — get()-by-name returns the FIRST match, so a stale
+    duplicate would shadow the new machine forever."""
+    base, _, token = server
+    auth = {"Authorization": f"Bearer {token}"}
+    async with httpx.AsyncClient() as hc:
+        ids = []
+        for _ in range(2):
+            bid = (await hc.post(f"{base}/api/pair/start", headers=auth,
+                                 json={"name": "box"})).json()["bootstrap_id"]
+            done = (await hc.post(f"{base}/pair/{bid}/complete",
+                                  json={"name": "box", "os": "linux"})).json()
+            ids.append(done["machine_id"])
+        machines = (await hc.get(f"{base}/api/machines", headers=auth)).json()["machines"]
+        boxes = [m for m in machines if m["name"] == "box"]
+        assert len(boxes) == 1 and boxes[0]["id"] == ids[1]

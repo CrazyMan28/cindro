@@ -1,3 +1,4 @@
+import subprocess
 import time
 
 from outpost_mcp.pairing import PairingStore
@@ -55,3 +56,38 @@ def test_render_scripts_embed_ids():
     assert bid in ps1 and "Invoke-WebRequest" in ps1
     # Windows: Scheduled Task in the interactive session, not a service.
     assert "LogonType Interactive" in ps1 and "RunLevel Highest" in ps1
+
+
+def test_reinstall_safe_while_old_agent_running():
+    """Re-pairing a machine whose agent is still running must not fail.
+
+    Linux/macOS: writing straight onto the running binary fails with
+    ETXTBSY (curl exit 23), so the download must stage to a temp file and
+    rename over $BIN, and the old agent must be stopped before the new
+    one starts. Windows: a running exe is locked, so the task/process
+    must be stopped before Invoke-WebRequest writes the file."""
+    ps = PairingStore()
+    bid = ps.start()["bootstrap_id"]
+    sh = ps.render_sh(bid)
+    assert '-o "$BIN"' not in sh
+    assert "mktemp" in sh and 'mv -f "$TMP" "$BIN"' in sh
+    assert "systemctl --user stop outpost-agent.service" in sh
+    # -x: exact-cmdline match, or any process with $BIN in its argv dies too
+    assert 'pkill -xf "$BIN"' in sh
+    # old agent must be stopped before the new one is started
+    assert (sh.index("systemctl --user stop")
+            < sh.index("systemctl --user enable --now outpost-agent.service"))
+    ps1 = ps.render_ps1(bid)
+    # download staged to a temp file BEFORE the old agent is touched: a
+    # failed download must leave the old, working agent running
+    assert ps1.index("Invoke-WebRequest") < ps1.index("Stop-ScheduledTask")
+    assert "Stop-Process" in ps1 and "Wait-Process" in ps1 and "Move-Item" in ps1
+    # match by image name — reading $_.Path can throw on protected processes
+    assert "Get-Process -Name 'outpost-agent'" in ps1 and "$_.Path" not in ps1
+
+
+def test_sh_script_is_valid_bash():
+    ps = PairingStore()
+    sh = ps.render_sh(ps.start()["bootstrap_id"])
+    r = subprocess.run(["bash", "-n"], input=sh, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr

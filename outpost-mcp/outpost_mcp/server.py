@@ -124,8 +124,13 @@ async def pair_complete(bootstrap_id: str, request: Request):
     b = pairing.redeem(bootstrap_id)
     if b is None:
         return JSONResponse({"error": "invalid_or_used"}, status_code=403)
-    created = registry.add(name=body.get("name") or b.get("name") or "",
-                           os_name=body.get("os", ""))
+    name = body.get("name") or b.get("name") or ""
+    # Re-pairing replaces: drop any existing same-name row (and its live
+    # socket) first, or the old dead row would shadow the new one forever in
+    # get()-by-name lookups (get() returns the FIRST id-or-name match).
+    while name and registry.get(name):
+        _revoke_machine(name)
+    created = registry.add(name=name, os_name=body.get("os", ""))
     row = created["row"]
     pairing.mark_paired(bootstrap_id, row["id"])
     return {"machine_id": row["id"], "token": created["token"],
