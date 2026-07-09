@@ -7097,9 +7097,12 @@ Response ControlServer::handleOutpostInstallWorkload(const Request &req)
             "  https://api.github.com/repos/CrazyMan28/jarvis/releases/latest; "
             // Private-repo assets must come from the assets API url with
             // Accept: octet-stream — browser_download_url 404s with a token.
+            // .get(): a rate-limit body / draft release has no "assets" key —
+            // fall through to the clean [ -n "$URL" ] guard, not a KeyError.
             "URL=$(python3 -c 'import json; "
-            "a=[x for x in json.load(open(\"release.json\"))[\"assets\"] "
-            "if x[\"name\"].endswith(\".AppImage\")]; print(a[0][\"url\"] if a else \"\")'); "
+            "a=[x for x in json.load(open(\"release.json\")).get(\"assets\", []) "
+            "if x.get(\"name\", \"\").endswith(\".AppImage\")]; "
+            "print(a[0].get(\"url\", \"\") if a else \"\")'); "
             "[ -n \"$URL\" ]; "
             "curl -fsSL ${AUTH:+-H \"$AUTH\"} -H 'Accept: application/octet-stream' -L "
             "  \"$URL\" -o Jarvis.AppImage; "
