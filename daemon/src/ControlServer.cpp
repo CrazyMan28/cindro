@@ -6973,7 +6973,8 @@ Response ControlServer::handleOutpostInstallWorkload(const Request &req)
     // success (r["ok"]) — a base64-decode/chmod failure on the remote host
     // must not be reported as a successful install. Stops at the first
     // failure instead of firing all five writes regardless.
-    struct { QString path, mode; QByteArray content; } files[] = {
+    struct RemoteFile { QString path, mode; QByteArray content; };
+    std::vector<RemoteFile> files = {
         {QStringLiteral("/etc/jarvis-proxmox-agent/jarvisd/secrets.json"), QStringLiteral("600"),
          QJsonDocument(jarvisSecrets).toJson(QJsonDocument::Compact)},
         {QStringLiteral("/etc/jarvis-proxmox-agent/project_tracker_token"), QStringLiteral("600"),
@@ -6986,6 +6987,19 @@ Response ControlServer::handleOutpostInstallWorkload(const Request &req)
         {QStringLiteral("/etc/jarvis-proxmox-agent/blocklist.json"), QStringLiteral("644"),
          QByteArrayLiteral("{\"vmids\":[]}")},
     };
+    // GitHub auth for the two pull-from-GitHub steps below — the repo is
+    // PRIVATE, so anonymous clone/release-download fails. The token rides in
+    // a 0600 file read by a GIT_ASKPASS helper (never in argv, so never
+    // visible in `ps`). Without a locally-configured "github" API key the
+    // steps still run anonymously (works only if the repo goes public).
+    const QString ghToken = m_settings.apiKey(QStringLiteral("github"));
+    if (!ghToken.isEmpty()) {
+        files.push_back({QStringLiteral("/etc/jarvis-proxmox-agent/github_token"),
+                         QStringLiteral("600"), ghToken.toUtf8()});
+        files.push_back({QStringLiteral("/etc/jarvis-proxmox-agent/git-askpass.sh"),
+                         QStringLiteral("755"),
+                         QByteArrayLiteral("#!/bin/sh\ncat /etc/jarvis-proxmox-agent/github_token\n")});
+    }
     for (const auto &f : files) {
         bool wok = false;
         const QJsonObject wr = writeRemoteFile(machine, f.path, f.content, f.mode, &wok);
@@ -7021,11 +7035,18 @@ Response ControlServer::handleOutpostInstallWorkload(const Request &req)
             return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
                                      QStringLiteral("outpost-mcp (:%1) unreachable")
                                          .arg(outpostPort()));
-        if (!ssuccess)
+        if (!ssuccess) {
+            // The agent's "error" field is often empty for a plain non-zero
+            // exit — the actual reason (git/curl/pip stderr) is in "output".
+            QString why = sr.value(QStringLiteral("error")).toString();
+            const QString tail =
+                sr.value(QStringLiteral("output")).toString().right(400).trimmed();
+            if (!tail.isEmpty())
+                why = why.isEmpty() ? tail : why + QStringLiteral(" — ") + tail;
             return Response::failure(req.id, QStringLiteral("install_failed"),
                                      QStringLiteral("%1 failed on %2: %3")
-                                         .arg(label, machine,
-                                              sr.value(QStringLiteral("error")).toString()));
+                                         .arg(label, machine, why));
+        }
         return std::nullopt;
     };
 
@@ -7036,11 +7057,21 @@ Response ControlServer::handleOutpostInstallWorkload(const Request &req)
             "set -e; "
             "install -d -m755 /opt/jarvis-proxmox-agent; "
             "cd /opt/jarvis-proxmox-agent; "
+            // Fail fast with git's real error instead of hanging on a
+            // username prompt when the token is missing/wrong.
+            "export GIT_TERMINAL_PROMPT=0; "
+            "REPO_URL=https://github.com/CrazyMan28/jarvis.git; "
+            "if [ -s /etc/jarvis-proxmox-agent/github_token ]; then "
+            "  export GIT_ASKPASS=/etc/jarvis-proxmox-agent/git-askpass.sh; "
+            "  REPO_URL=https://x-access-token@github.com/CrazyMan28/jarvis.git; "
+            "fi; "
             "if [ ! -d src/.git ]; then "
+            "  rm -rf src; "
             "  git clone --filter=blob:none --sparse --depth 1 --branch main "
-            "    https://github.com/CrazyMan28/jarvis.git src; "
+            "    \"$REPO_URL\" src; "
             "  git -C src sparse-checkout set proxmox-mcp; "
             "else "
+            "  git -C src remote set-url origin \"$REPO_URL\"; "
             "  git -C src fetch --depth 1 origin main && git -C src reset --hard origin/main; "
             "fi; "
             "python3 -m venv /opt/jarvis-proxmox-agent/proxmox-mcp/.venv; "
@@ -7058,11 +7089,23 @@ Response ControlServer::handleOutpostInstallWorkload(const Request &req)
             "set -e; "
             "install -d -m755 /opt/jarvis-proxmox-agent/appimage; "
             "cd /opt/jarvis-proxmox-agent/appimage; "
-            "URL=$(curl -fsSL https://api.github.com/repos/CrazyMan28/jarvis/releases/latest "
-            "  | grep -o '\"browser_download_url\": *\"[^\"]*AppImage\"' "
-            "  | head -1 | cut -d'\"' -f4); "
+            "AUTH=; "
+            "if [ -s /etc/jarvis-proxmox-agent/github_token ]; then "
+            "  AUTH=\"Authorization: Bearer $(cat /etc/jarvis-proxmox-agent/github_token)\"; "
+            "fi; "
+            "curl -fsSL ${AUTH:+-H \"$AUTH\"} -o release.json "
+            "  https://api.github.com/repos/CrazyMan28/jarvis/releases/latest; "
+            // Private-repo assets must come from the assets API url with
+            // Accept: octet-stream — browser_download_url 404s with a token.
+            // .get(): a rate-limit body / draft release has no "assets" key —
+            // fall through to the clean [ -n "$URL" ] guard, not a KeyError.
+            "URL=$(python3 -c 'import json; "
+            "a=[x for x in json.load(open(\"release.json\")).get(\"assets\", []) "
+            "if x.get(\"name\", \"\").endswith(\".AppImage\")]; "
+            "print(a[0].get(\"url\", \"\") if a else \"\")'); "
             "[ -n \"$URL\" ]; "
-            "curl -fsSL \"$URL\" -o Jarvis.AppImage; "
+            "curl -fsSL ${AUTH:+-H \"$AUTH\"} -H 'Accept: application/octet-stream' -L "
+            "  \"$URL\" -o Jarvis.AppImage; "
             "chmod +x Jarvis.AppImage; "
             "rm -rf squashfs-root; "
             "./Jarvis.AppImage --appimage-extract >/dev/null"), 300.0))

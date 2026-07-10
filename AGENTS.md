@@ -495,6 +495,45 @@ Design pillars:
   give the model a single-OS example it'll copy verbatim regardless of what
   Jarvis is actually running on.
 
+## New subsystems (2026-07-09, Outpost re-pair + Proxmox deploy) — gotchas
+
+- **Re-pairing a machine with a live agent used to be impossible** — the
+  install script downloaded straight onto the running binary (ETXTBSY /
+  locked exe). The templates in `outpost-mcp/outpost_mcp/pairing.py` now
+  stage-and-swap; `tests/test_pairing.py` pins the load-bearing shape
+  (staged download, exact-match `pkill -xf`, stop-before-start ordering, no
+  `$_.Path` reads on Windows). Don't "simplify" any of those back out — each
+  one was a verified live failure.
+- **`/pair/complete` REPLACES same-name registry rows** (`server.py`). The
+  registry's `get()` returns the first id-or-name match, so appending on
+  re-pair left a dead duplicate shadowing the new machine forever. Two
+  DIFFERENT hosts that share a hostname will evict each other — name
+  machines uniquely when pairing.
+- **`pkill -f "<path>"` over `ssh host '<cmd>'` kills the remote shell
+  itself** — the pattern substring-matches the shell's own command line;
+  ssh dies with exit 255 and looks like a connection failure. Use
+  `pkill -x <name>` / `pkill -xf <exact-cmdline>` in anything remote-exec'd.
+- **The GitHub repo is PRIVATE — nothing remote can anonymously clone it or
+  fetch release assets.** `outpost.install_workload` needs a `github` API
+  key configured locally (Settings → API keys); it rides to the host as a
+  0600 file read via `GIT_ASKPASS` (never argv), and release assets come
+  through the authenticated assets API (`browser_download_url` 404s with a
+  token on private repos).
+- **Release AppImages built on the Fedora CI box (glibc 2.43) do NOT run on
+  a Debian-trixie Proxmox host (2.41)** — jarvisd + Qt only need ≤2.38; the
+  linuxdeploy-swept distro extras (glib/libssh/libcrypt/samba/ffmpeg) are
+  the problem. Workaround (applied on pve, see
+  `docs/PROXMOX_WORKLOAD_MANAGER.md` troubleshooting §7): quarantine
+  bundled libs whose max GLIBC exceeds the host's, keep bundled
+  `libsasl2.so.3` (Debian's soname is `.so.2`) with a
+  `libcrypt.so.2 → .so.1` symlink, and move the glib family as ONE unit
+  (mixing bundled gobject with system glib aborts on `g_string_copy`). Real
+  fix: pin the CI AppImage build to an older baseline image.
+- **The workload-manager schedule seeder now ships in-repo**
+  (`proxmox-mcp/packaging/seed_schedule.py`, idempotent) — the KNOWN GAP
+  step is copy + run with the deployed venv's python on the Proxmox host,
+  not hand-rolling `schedule.create` JSON.
+
 ## Branches & flow
 
 Three long-lived branches; **`main` is protected** (PR-only, no direct pushes, no
