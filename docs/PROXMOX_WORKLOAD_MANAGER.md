@@ -29,6 +29,12 @@ enforced structurally, not just by prompting:
   VM), `proxmox_tune` still writes the config change (Proxmox stores it as
   pending) and sets `pending_restart=true` in its state — it does NOT
   restart the VM to force it live.
+- `proxmox_guest_service` (2026-07-09) is NOT an exception: it can
+  start/restart/status a **service inside** a guest (regex-validated name,
+  closed verb set, argv built in code — the one sanctioned bypass of the
+  free-form guest-exec denylist) but has **no `stop` verb and no path to VM
+  power whatsoever**. It heals, it can't kill. Mutating verbs are refused
+  for blocklisted VMs.
 
 ## Tuning scope
 
@@ -142,12 +148,24 @@ opted into per-session).
    all). This is still a manual one-time step after install — not yet
    wrapped into `outpost.install_workload`. A ready-made, idempotent seeder
    ships at `proxmox-mcp/packaging/seed_schedule.py` — copy it to the host
-   and run it with the deployed venv's python (it needs `websockets`, one
-   `pip install` into that venv):
+   and run it with the deployed venv's python (`websockets` is a normal
+   proxmox-mcp dependency since 2026-07-09 — no separate pip step):
    ```
-   /opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/pip install -q websockets
    /opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/python3 seed_schedule.py
    ```
+   Since 2026-07-09 the seeder is an **upsert**: if a `proxmox-*` row already
+   exists with an older prompt, it updates the prompt in place
+   (`schedule.update`). **Re-running it after redeploying proxmox-mcp is the
+   documented way to roll the tick prompt forward on an existing install** —
+   the upgrade path is: re-run `outpost.install_workload` (idempotent —
+   re-syncs the sparse clone from `main` + `pip install`s, so it only picks
+   up code that has MERGED to main), then re-run `seed_schedule.py`.
+4. **Since 2026-07-09 the installer also**: sweeps the running VMs with
+   `qm agent <vmid> ping` (4s/VM behind a 35s deadline) and reports "M of N
+   running VMs answered a guest-agent ping" in the install note, kicks an
+   **initial fleet scout** (detached — watch the Outpost page), and registers
+   the machine in the daemon's `proxmox_machines.json` so agent questions and
+   fired pinged rules ping your inbox (see below).
 
 ## MCP tools
 
@@ -162,6 +180,16 @@ opted into per-session).
 | `proxmox_get_blocklist` / `proxmox_add_to_blocklist` | `() -> {vmids}` / `(vmids, reason="") -> {ok, vmids}` | `proxmox_add_to_blocklist` is ADDITIVE ONLY (union, never a replace) — the agent can protect a VM, never unprotect one. |
 | `remember` / `recall` | `(text, tags="")` / `(query="", limit=20)` | Local, durable SQLite+FTS5 (`/var/lib/jarvis-proxmox-agent/memory.db`) — survives the laptop being off. |
 | `project_tracker_checkin` / `project_tracker_report` | `(status="idle")` / `(summary)` | Enrolls as `proxmox-<hostname>` under `proj-jarvis`. |
+| `proxmox_scout` | `(vmids=[], full=False) -> results \| {detached}` | 1–3 vmids scan synchronously; fleet/`full=True` runs the detached `proxmox-scout` CLI. Refreshes JARVIS.md profiles. |
+| `proxmox_scout_status` | `() -> {scout:{state,done,total,current_vmid,results}}` | Progress of the current/last scan (backed by `scout_status.json`). |
+| `proxmox_get_vm_profile` | `(vmid) -> {exists, profile, meta}` | **Read before tuning/working on a VM** — Purpose/Preferences are binding context. |
+| `proxmox_update_vm_profile` | `(vmid, section, text) -> {ok}` | User-owned sections only (Purpose/Preferences/Notes); Observed is scout-owned and refused. |
+| `proxmox_list_vm_profiles` | `() -> {profiles:[{vmid,has_purpose,stale,...}]}` | Drives re-scout + interview decisions. |
+| `proxmox_ask_user` | `(question, vmid=0, options=[]) -> {ok,qid}` | Non-blocking interview question (max 3 pending, deduped) — answered from the Outpost page. |
+| `proxmox_get_answers` | `() -> {answers:[...]}` | Consume answers at the start of every tick; write them into profiles. |
+| `proxmox_get_tasks` / `proxmox_reply` | `() -> {tasks}` / `(rid, text) -> {ok}` | Asks/tasks from the user's main Jarvis (`proxmox.ask_agent`); reply lands back in the user's chat. |
+| `proxmox_get_due_pinged` / `proxmox_record_pinged` | `() -> {rules}` / `(rule_id, fired, result="") -> {ok}` | Watch rules due this tick; ALWAYS record, fired or not (that's what stops a daily rule re-firing all day). |
+| `proxmox_guest_service` | `(vmid, service, verb) -> exec result` | verb ∈ {start, restart, status} — see the safety invariant above. |
 
 ### On the laptop (`computer_use_mcp`, for a plain chat)
 
@@ -171,9 +199,71 @@ opted into per-session).
 | `proxmox_get_report` | `(machine) -> proxmox.report result` | Sync-then-recall from the remote memory db into local agent-scoped memory (`agent="proxmox-<hostname>"`), watermarked by the newest `created` already synced. |
 | `proxmox_give_direction` | `(machine, text) -> {ok}` | Queues a directive for the next tick. |
 | `proxmox_agent_checkin` | `() -> {agents:[...]}` | Liveness via Project Tracker's `agent_list_active`, filtered to `proxmox-*`. |
+| `proxmox_scout` / `proxmox_scout_status` | `(machine, vmids?)` / `(machine)` | "Scan my VMs" — kicks the detached fleet scout, then poll status for live per-VM summaries. |
+| `proxmox_vm_profile` | `(machine, vmid)` | Read a guest's JARVIS.md. |
+| `proxmox_list_questions` / `proxmox_answer_question` | `(machine)` / `(machine, qid, answer)` | The interview flow from chat. |
+| `proxmox_ask_agent` | `(machine, text, kind="ask", wait_sec=90)` | **Talk directly to the pve agent**: queues the ask/task, kicks `schedule.run_now` via the host-side `proxmox-agent-kick` helper, then polls for the reply. Timeout → `{pending:true, rid}` (reply lands ≤5 min via the tick). |
+| `proxmox_pinged_list` / `proxmox_pinged_add` / `proxmox_pinged_remove` | see docstrings | Manage watch rules from chat. |
 
 These ship inside Jarvis's own built-in MCP server — no separate server to
 register, no "only visible to Claude Code" gap.
+
+## VM scout, JARVIS.md profiles, questions, tasks & Pinged (2026-07-09)
+
+The agent no longer flies blind about what runs INSIDE the guests — and no
+per-VM agent is ever installed. Everything below scans from the pve host:
+QEMU VMs through the guest agent Proxmox already talks to (`qm guest exec`,
+Linux via `sh`, Windows via PowerShell — one marker-delimited battery per
+guest, every section head-capped), LXC containers through `pct exec` (needs
+nothing inside the CT). `systemctl` is on the guest-exec denylist, so the
+batteries list services from `/sys/fs/cgroup/*/system.slice` — do NOT
+"fix" that by weakening the denylist.
+
+**Host is source of truth.** All state lives under
+`/var/lib/jarvis-proxmox-agent/` and the laptop only reads/appends over
+`outpost.exec` (free text always travels base64; reply lookups
+fetch-then-filter daemon-side so caller-supplied ids are never interpolated
+into a shell command):
+
+| File | What |
+|---|---|
+| `vms/<vmid>.md` | The guest's **JARVIS.md profile** — like CLAUDE.md, but for a VM. `## Purpose` + `## Preferences` are USER-owned (filled via the interview flow), `## Observed` is SCOUT-owned (regenerated wholesale each scan; user sections preserved byte-for-byte), `## Notes` is agent-owned. |
+| `scout_status.json` | Live fleet-scan progress the Outpost UIs poll at 3s. Doubles as the concurrency lock (pid-liveness + 30-min staleness — a killed runner never wedges scouting). |
+| `questions.jsonl` / `answers.jsonl` | Interview mailbox (agent asks, ≤3 pending, deduped; user answers from the Outpost page or chat; agent consumes next tick and writes the answer into the profile). |
+| `agent_tasks.jsonl` / `agent_replies.jsonl` | Talk-to-the-agent mailbox: `proxmox.ask_agent` appends + best-effort kicks `proxmox-agent-kick` (loopback `schedule.run_now`) so asks are processed in seconds; replies stay readable until fetched, pruned after 24h. |
+| `pinged.json` / `pinged_events.jsonl` | **Pinged watch rules**: `condition` rules (free text, judged by the agent every tick — "the CI runner on VM 104 looks stuck → check up on it and fix it, don't break anything") and `schedule` rules (daily `HH:MM`, dueness decided deterministically in code). Fired events append to a 200-capped log. |
+
+**Scouting runs two ways** (forced by the 60s outpost-exec wall and the
+256KB exec output cap): 1–3 vmids synchronously inside the agent's tick via
+`proxmox_scout`, or the whole fleet via the `proxmox-scout` console script
+launched detached (`setsid … &`) by `proxmox.scout` / `full=True` /
+install. Re-scout policy is manual + agent-judged: no profile, `stale`
+(>7 days, `profile_stale_days`), or observed workload no longer matching
+`proxmox_status`.
+
+**Inbox pings.** The laptop daemon polls each machine in
+`proxmox_machines.json` every 5 minutes for new questions + fired pinged
+events, dedupes forever via `proxmox_seen_notifications.json`
+(`machine:qid|eid` keys, pruned when gone), and notifies through the phone
+proxy (`notify_user` → Jarvis inbox on every surface). No `phone.env` → the
+poll silently skips; the Outpost page still shows everything. Opening the
+Outpost page marks what you saw as seen, so you don't get pinged for
+questions you already answered.
+
+**Outpost page** (desktop QML / web / TUI): "Scout VMs" button with live
+progress ("Scouting… 3/8 — VM 104"), per-VM ✓/✗ result lines, answerable
+agent-question cards (option pills + free text), a Pinged card (add/remove
+rules, last-checked/fired status, recent fires), and a per-VM "Profile"
+viewer. TUI keys: `o` scout, `q` questions, `i` profile, `n` pinged, plus
+input commands `answer <qid> <text>` and
+`pinged add <name> | <HH:MM or condition> | <action> [| vmid]`.
+
+**Security model** (unchanged in kind): the main Jarvis reaches the pve
+agent ONLY through MCP tools → daemon Contract-A RPCs (loopback control
+socket; the phone/device channel blocks `proxmox.*` outright) → the
+token-authed Outpost relay → files on the host. proxmox-mcp itself stays
+loopback-only (:8799, bearer-gated) for the co-located jarvisd; no new
+listening ports anywhere.
 
 ## Config reference (`/etc/jarvis-proxmox-agent/config.toml`)
 
@@ -185,6 +275,8 @@ register, no "only visible to Claude Code" gap.
 | `bump_step_cores` / `bump_step_mem_mb` | 2 / 2048 | Max increase per tune action, regardless of what's requested. |
 | `max_cores_per_vm` / `max_mem_mb_per_vm` | 16 / 32768 | Hard per-VM ceiling. |
 | `cpu_congested_pct` / `mem_congested_pct` | 85.0 / 90.0 | Congestion thresholds. |
+| `max_pending_questions` | 3 | Interview-question queue bound (deduped on vmid+question). |
+| `profile_stale_days` | 7 | A profile older than this is a re-scout candidate. |
 
 `/etc/jarvis-proxmox-agent/blocklist.json` — `{"vmids": [...]}`, empty by
 default (all VMs in scope).
@@ -211,7 +303,24 @@ default (all VMs in scope).
 6. **`deploy proxmox-mcp` fails with "could not read Username for
    'https://github.com'"** — the repo is private and no `github` API key is
    configured locally (see "Bringing it up" step 2).
-7. **jarvisd crash-loops with `GLIBC_2.4x not found` from the AppImage's own
+7. **Scout says "guest agent not responding" for a running VM** — the QEMU
+   guest agent isn't installed/running inside that guest
+   (`qemu-guest-agent` package on Linux, the QEMU GA service on Windows) or
+   the VM's `agent: 1` option is off. The VM still gets tuned from outside;
+   it just can't be profiled deeply.
+8. **A scout never starts / "already running"** — check
+   `/var/lib/jarvis-proxmox-agent/scout_status.json`; the lock only believes
+   `running` while `started_at` is <30 min old AND the recorded pid is
+   alive, so a killed runner self-heals on the next attempt.
+9. **`proxmox_ask_agent` always times out** — the kick helper needs the
+   `proxmox-agent-kick` console script (redeploy proxmox-mcp on the host)
+   and the seeded schedule row; without either, replies still arrive on the
+   next 5-minute tick, just not in seconds.
+10. **Questions/pinged never ping the inbox** — the phone subsystem isn't
+   set up (`~/.config/jarvis/phone.env` missing) or the machine never made
+   it into `proxmox_machines.json` (self-heals on any successful
+   `proxmox.status` call — open the Outpost page once).
+11. **jarvisd crash-loops with `GLIBC_2.4x not found` from the AppImage's own
    bundled libs** — the CI box (Fedora, glibc 2.43) bundles distro libs newer
    than the Proxmox host's Debian glibc (2.41 on trixie). The jarvisd binary
    and the Qt libs themselves only need ≤2.38 — it's the linuxdeploy-swept

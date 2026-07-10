@@ -8,6 +8,43 @@ _Last updated: 2026-07-09._
 
 ---
 
+## 🆕 Proxmox VM scout: agentless guest scanning, JARVIS.md profiles, interview questions, talk-to-agent, Pinged watch rules (2026-07-09)
+
+The always-on Proxmox workload manager can now see INSIDE the guests — with
+zero per-VM agent installs (QEMU guest agent for Linux+Windows VMs, `pct
+exec` for LXC) — and the user can talk to it directly from any Jarvis chat.
+
+- **Scout**: one marker-delimited command battery per guest (services listed
+  from cgroup dirs — `systemctl` stays denylisted), fleet scans run detached
+  with live progress on the Outpost page (all three surfaces, 3s poll of
+  `scout_status.json`); `outpost.install_workload` now sweeps guest agents
+  and kicks an initial scout automatically.
+- **JARVIS.md per VM/CT** at `/var/lib/jarvis-proxmox-agent/vms/<vmid>.md`:
+  scout-owned Observed section, user-owned Purpose/Preferences preserved
+  byte-for-byte across re-scans; the tick prompt makes the agent read a
+  profile BEFORE tuning and respect it; re-scout is manual + agent-judged
+  (no profile / stale >7d / workload mismatch).
+- **Interview flow**: the agent queues ≤3 deduped questions ("What is VM 104
+  for?"); the user gets an inbox ping + answerable cards on the Outpost page
+  (or `proxmox_answer_question` in chat); answers land in the profile next
+  tick.
+- **Talk to the agent**: `proxmox_ask_agent` chat tool → task mailbox +
+  `proxmox-agent-kick` (loopback `schedule.run_now`) → the reply is polled
+  back into the chat in seconds, ≤5 min worst case via the tick.
+- **Pinged**: named watch rules — free-text condition rules judged every
+  tick and daily HH:MM rules with deterministic dueness; fired rules ping
+  the inbox with what was done; managed from chat and the Outpost page.
+  "Fix, don't break" is structural: the new `proxmox_guest_service` heals
+  services inside guests (start/restart/status only — no stop verb, still
+  zero VM-power paths anywhere in the agent's catalog).
+- Tests: proxmox-mcp 87 (was 39), computer-use 900, cli 187, outpost-mcp 34,
+  ctest 33/33, web typecheck + build, offscreen QML smoke. Live pve
+  validation pending the merge-to-main deploy loop (the host's sparse clone
+  tracks `main`); upgrade path = re-run install_workload + re-run the now-
+  upserting `seed_schedule.py`.
+
+---
+
 ## 🆕 Windows field-bug wave: driving overlay, click accuracy, Home/HUD stats, live-CPU widget (2026-07-09)
 
 Four field-reported Windows-only bugs, all root-caused against the Linux reference

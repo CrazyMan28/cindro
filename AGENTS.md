@@ -589,6 +589,57 @@ test. When qa passes, open a **PR into `main`** and merge it. Never commit direc
   - **When SSH is flaky (loaded host), reach winvm via the QEMU guest agent:**
     `ssh pve 'qm guest exec 106 -- powershell -NoProfile -Command "…"'`.
 
+## New subsystems (2026-07-09, VM scout + profiles + Pinged) — gotchas
+
+The Proxmox workload manager grew agentless guest scouting (QEMU guest agent /
+`pct exec`), per-VM `JARVIS.md` profiles, an agent→user interview mailbox, a
+user→agent task mailbox (`proxmox.ask_agent` + run-now kick), and "Pinged"
+watch rules. See `docs/PROXMOX_WORKLOAD_MANAGER.md` for the design; these are
+the load-bearing truths:
+
+- **`systemctl` is in `_GUEST_EXEC_DENYLIST` — the scout batteries deliberately
+  list services from `/sys/fs/cgroup/*/system.slice` instead. NEVER weaken the
+  denylist to make a battery nicer.** The ONE sanctioned bypass is
+  `scout.guest_service()` → `proxmox_ops._exec_via_agent_unchecked` /
+  `scout._pct_exec_unchecked`: argv built in code from a regex-validated
+  service name and a closed verb set {start, restart, status} — deliberately
+  no `stop`, no power verbs. Never expose the `_unchecked` functions to a tool
+  that accepts caller-supplied argv.
+- **Every long host-side operation must run detached** (`setsid … & echo ok`):
+  `outpostHttp` has a hard 60s event-loop wall and outpost-agent caps exec
+  output at 256KB. That's why the fleet scout is a console script
+  (`proxmox-scout`) writing `scout_status.json`, not an RPC that streams.
+- **Free text NEVER rides inline in a remote command.** Answers/tasks are
+  base64-appended (like directives); pinged rules travel as a base64 JSON
+  payload file run through the HOST's own `pinged_store` (one validator, no
+  C++ re-implementation); `proxmox.agent_reply` fetches ALL replies and
+  filters daemon-side because the rid is caller-supplied.
+- **Daemon one-liners: double quotes INSIDE, single quotes OUTSIDE** (the
+  whole `python3 -c '…'` body is single-quoted for `sh`). One stray `'`
+  inside the python breaks the shell quoting — same discipline
+  `handleProxmoxStatus` established.
+- **`update_observed()` must preserve user sections byte-for-byte** — a
+  re-scan that eats `## Purpose`/`## Preferences` silently undoes the whole
+  interview flow (unit-tested in `test_profile_store.py`).
+- **Pinged schedule dueness is decided in code** (`pinged_store.due_rules`:
+  due when past today's HH:MM and `last_checked_at` < today's trigger), and
+  `proxmox_record_pinged` must be called for every handled rule **fired or
+  not** — recording is what stops a daily rule re-firing every 5-minute tick.
+- **The notification poll dedupes via `<data>/proxmox_seen_notifications.json`**
+  (`machine:qid|eid`), pruned only for machines actually reached that round —
+  pruning on an unreachable machine would re-ping everything when it returns.
+  UI reads (`proxmox.questions` / `proxmox.pinged_list`) also mark seen so an
+  open Outpost page never double-notifies. Inbox pings go through the phone
+  proxy and silently skip when `phone.env` is absent.
+- **`seed_schedule.py` is an upsert now** — rerunning it updates the tick
+  prompt in place; that + re-running `outpost.install_workload` (sparse clone
+  tracks `main`, so the host only gets MERGED code) is the whole upgrade path
+  for an existing install. `websockets` became a real proxmox-mcp dependency
+  (the kick helper needs it) — no more manual pip step.
+- **`scout_status.json` is also the concurrency lock**: `running` is only
+  believed while `started_at` <30min AND the recorded pid is alive — a killed
+  runner never wedges scouting; don't "simplify" the pid check away.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.
