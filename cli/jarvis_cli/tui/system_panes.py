@@ -471,6 +471,12 @@ class OutpostPane(TablePane):
                                                  {"machine": row["name"]})
                     self.notify(res.get("note") or f"workload manager installed on {row['name']}",
                                timeout=8)
+                    # Install also opened a live scout+interview chat — jump
+                    # there so the user watches it happen instead of finding
+                    # out later (mirrors the Sessions tab's "open in Chat").
+                    session_id = res.get("session_id") or ""
+                    if session_id:
+                        await self.app.open_chat(session_id, res.get("session_title", ""))
                 except (ControlError, ConnectionError, TimeoutError) as exc:
                     self.notify(str(exc), severity="error")
         elif event.key == "v":

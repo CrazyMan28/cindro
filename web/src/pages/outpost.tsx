@@ -519,6 +519,16 @@ function Outpost() {
       setInstallOk(true)
       setInstallMsg(String(res.note ?? "Installed."))
       await loadVms()
+      // Install also opened a live scout+interview chat — jump there so the
+      // user watches it happen instead of finding out later (same
+      // sessionStorage handoff sessions.tsx uses for "open in Chat").
+      const sessionId = String(res.session_id ?? "")
+      if (sessionId) {
+        sessionStorage.setItem("jarvis.web.openSessionId", sessionId)
+        const sessionTitle = String(res.session_title ?? "")
+        if (sessionTitle) sessionStorage.setItem("jarvis.web.openSessionTitle", sessionTitle)
+        app.navigate("chat")
+      }
     } catch (e) {
       if (!alive) return
       setInstallOk(false)

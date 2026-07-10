@@ -1280,6 +1280,19 @@ function ChatPage() {
     onCleanup(() => clearInterval(timer))
   })
 
+  // Cross-page handoff (see sessions.tsx's comment on jarvis.web.* keys):
+  // another page (Outpost's "Install workload manager", the Sessions list)
+  // stashed a session id before navigating here, meaning "resume THIS
+  // thread" rather than "start fresh". Mirrors replay.tsx's own handoff key.
+  onMount(() => {
+    const id = sessionStorage.getItem("jarvis.web.openSessionId")
+    if (!id) return
+    sessionStorage.removeItem("jarvis.web.openSessionId")
+    const title = sessionStorage.getItem("jarvis.web.openSessionTitle") ?? ""
+    sessionStorage.removeItem("jarvis.web.openSessionTitle")
+    void controller.openSession(id, title).catch((e) => app.notify(String(e), "error"))
+  })
+
   // sticky-bottom autoscroll: stick unless the user has scrolled up to read
   // history, matching the TUI scrollbox's stickyScroll/stickyStart="bottom".
   const onScroll = () => {

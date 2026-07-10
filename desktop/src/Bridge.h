@@ -798,8 +798,12 @@ signals:
     void outpostScreenshotResult(const QString &machine, bool ok,
                                   const QString &imageBase64, const QString &error);
     void outpostRevoked(const QString &machine, bool ok);
-    void outpostWorkloadInstalled(const QString &machine, bool ok,
-                                  const QString &note, const QString &code);
+    // sessionId/sessionTitle are non-empty when the install also opened a
+    // live scout+interview chat (best-effort — empty on any failure there,
+    // the install itself can still have fully succeeded).
+    void outpostWorkloadInstalled(const QString &machine, bool ok, const QString &note,
+                                  const QString &code, const QString &sessionId,
+                                  const QString &sessionTitle);
 
     // ---- Proxmox Workload Manager results ------------------------------------
     void proxmoxStatusResult(const QString &machine, bool ok,
