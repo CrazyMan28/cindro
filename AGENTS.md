@@ -533,10 +533,12 @@ Design pillars:
   `libcrypt.so.2 → .so.1` symlink, and move the glib family as ONE unit
   (mixing bundled gobject with system glib aborts on `g_string_copy`). Real
   fix: pin the CI AppImage build to an older baseline image.
-- **The workload-manager schedule seeder now ships in-repo**
-  (`proxmox-mcp/packaging/seed_schedule.py`, idempotent) — the KNOWN GAP
-  step is copy + run with the deployed venv's python on the Proxmox host,
-  not hand-rolling `schedule.create` JSON.
+- **The workload-manager schedule seeder ships in-repo**
+  (`proxmox-mcp/packaging/seed_schedule.py`, idempotent) — never hand-roll
+  `schedule.create` JSON. **2026-07-10: no longer a manual step at all** —
+  `outpost.install_workload` runs it itself, detached, via `outpost.exec`;
+  the manual venv-python invocation is now only a fallback for when the
+  automatic seed doesn't stick (see the 2026-07-10 gotchas below).
 
 ## Branches & flow
 
@@ -663,6 +665,54 @@ the load-bearing truths:
 - **`scout_status.json` is also the concurrency lock**: `running` is only
   believed while `started_at` <30min AND the recorded pid is alive — a killed
   runner never wedges scouting; don't "simplify" the pid check away.
+
+## New subsystems (2026-07-10, live install chat + auto-seed) — gotchas
+
+`outpost.install_workload` now opens a live, interactive Jarvis chat (scout +
+interview right in the conversation) and auto-seeds the tick schedule instead
+of leaving it a manual step. Found by directly reading `createSession`'s
+internals during review — not by trusting an earlier research pass that
+missed both of these:
+
+- **NEVER pass `profile="coworker"` to `createSession` for a headless/tool-
+  only session.** `createSession` defaults `target` to `"agent"` whenever
+  `profile=="coworker"` and no explicit target is given, which triggers
+  `AgentDesktop::ensure()` — a full nested Sway/Wayland compositor + a
+  per-session computer-use engine, ~45-60s blocking on the daemon's main
+  thread — for a session that will never drive a screen. The install-chat
+  session (and `fireScheduledJob`'s recurring tick, its longstanding
+  precedent) both use an **empty** profile (→ `"coder"` default) precisely
+  to avoid this.
+- **`createSession`'s `autoComputer` auto-spawn gate now excludes any
+  `scheduleTargetRef`-routed session** (`ControlServer.cpp` ~2261,
+  `scheduleTargetRef.isEmpty()` added to the condition). Without this, ANY
+  session routed via `scheduleTargetRef` — not just the new install-chat one,
+  but the pre-existing recurring proxmox tick too — would auto-provision the
+  same expensive nested desktop whenever the user's global "let Jarvis use a
+  computer" setting happens to be on, since that setting alone was enough to
+  trigger it for literally any session before this fix. If you add a new
+  kind of `scheduleTargetRef`-routed session, this exclusion already covers
+  you; don't re-litigate it per-caller.
+- **`createSession` unconditionally broadcasts `session.opened` to every
+  connected client** for any top-level (non-subagent) session — this is NOT
+  something a caller opts into. Desktop's own handling of that broadcast is
+  deliberately raise-only for any client that didn't explicitly open the
+  session itself (`Bridge.cpp` ~3745, `sessionFocusRequested` vs.
+  `sessionOpened`) — it never steals another window's active chat. Don't
+  add a second "notify the UI a session was created" mechanism assuming
+  `createSession` is silent; it isn't, and the existing raise-only design is
+  already the answer to "don't hijack other windows."
+- **Long-running best-effort exec steps inside `handleOutpostInstallWorkload`
+  should be detached** (`setsid … & echo started`, matching the scout kick),
+  not awaited, when nothing downstream actually reads the result — the
+  schedule-seed step was awaited for up to 25s for no reason before this was
+  caught; every extra awaited step there adds straight to the install RPC's
+  latency and delays the live chat the user is waiting to land in.
+- **A best-effort step's failure must be surfaced in the install `note`, not
+  just `qWarning`** — the install response is the ONLY thing telling the user
+  what actually happened; a `qWarning`-only failure for something the note
+  otherwise implies succeeded ("Initial VM scout started...") is invisible
+  to anyone who isn't tailing the daemon's log.
 
 ## Conventions
 

@@ -137,30 +137,53 @@ opted into per-session).
      (embedded verbatim in `handleOutpostInstallWorkload` — keep them in sync
      if you edit either `.service` file) to `/etc/systemd/system/`, then
      `daemon-reload` + `enable --now` both.
-3. **KNOWN GAP — seed the schedule row.** The periodic tick is one
-   `schedule.create` row (cron `"every Nm"`, `targetRef="proxmox-<hostname>"`,
-   a fixed prompt telling the brain to check directives, check status, tune
-   what's congested, remember every decision, check in with Project
-   Tracker, and never attempt a restart) that must be created **on pve's own
-   jarvisd**, over ITS OWN loopback control API (`ControlServer` is
-   loopback-only by design — see `AGENTS.md`'s Conventions section — so the
+3. **The periodic tick is seeded automatically (2026-07-10).** One
+   `schedule.create`/`schedule.update` row (cron `"every 5m"`,
+   `targetRef="proxmox-<hostname>"`, a prompt telling the brain to check
+   directives, check status, tune what's congested, remember every decision,
+   check in with Project Tracker, and never attempt a restart) must exist
+   **on pve's own jarvisd**, over ITS OWN loopback control API (`ControlServer`
+   is loopback-only by design — see `AGENTS.md`'s Conventions section — so the
    laptop can't call it directly, only `outpost.exec` reaches the host at
-   all). This is still a manual one-time step after install — not yet
-   wrapped into `outpost.install_workload`. A ready-made, idempotent seeder
-   ships at `proxmox-mcp/packaging/seed_schedule.py` — copy it to the host
-   and run it with the deployed venv's python (`websockets` is a normal
-   proxmox-mcp dependency since 2026-07-09 — no separate pip step):
-   ```
-   /opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/python3 seed_schedule.py
-   ```
-   Since 2026-07-09 the seeder is an **upsert**: if a `proxmox-*` row already
+   all). `outpost.install_workload` now runs `seed_schedule.py` itself via
+   `outpost.exec` right on the host (`websockets` is a normal proxmox-mcp
+   dependency — no separate pip step), **detached** so it never blocks the
+   install RPC. The seeder is an **upsert**: if a `proxmox-*` row already
    exists with an older prompt, it updates the prompt in place
-   (`schedule.update`). **Re-running it after redeploying proxmox-mcp is the
-   documented way to roll the tick prompt forward on an existing install** —
-   the upgrade path is: re-run `outpost.install_workload` (idempotent —
-   re-syncs the sparse clone from `main` + `pip install`s, so it only picks
-   up code that has MERGED to main), then re-run `seed_schedule.py`.
-4. **Since 2026-07-09 the installer also**: sweeps the running VMs with
+   (`schedule.update`). This is also the documented **upgrade path** for an
+   existing install after a proxmox-mcp code change: re-run
+   `outpost.install_workload` (idempotent — re-syncs the sparse clone from
+   `main` + `pip install`s, so it only picks up code that has MERGED to main
+   — this also re-seeds the schedule and re-opens a fresh scout chat). If the
+   automatic seed doesn't stick (e.g. jarvisd-proxmox-agent was still starting
+   up), the manual fallback still works:
+   ```
+   /opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/python3 \
+     /opt/jarvis-proxmox-agent/src/proxmox-mcp/packaging/seed_schedule.py
+   ```
+4. **Install also opens a LIVE scout+interview chat (2026-07-10).** Beyond
+   the recurring headless tick above, `outpost.install_workload` creates a
+   normal, interactive Jarvis session — routed at the proxmox-mcp MCP
+   endpoint the same way the tick is (`scheduleTargetRef="proxmox-<machine>"`)
+   — and sends it a one-time prompt: introduce itself, scout the fleet live
+   (reusing whatever the install-time sweep already started), narrate what it
+   finds VM by VM, and for any VM with no recorded Purpose, ask directly IN
+   THE CHAT (not the async `proxmox_ask_user` mailbox — this is a real,
+   synchronous conversation) and save the answer via `proxmox_update_vm_profile`.
+   All three UI surfaces (desktop, web, TUI) read `session_id`/`session_title`
+   off the `outpost.install_workload` result and navigate the triggering
+   client straight there. Best-effort: a failure opening this chat (surfaced
+   in the install `note`, not just a daemon log) still leaves a fully working
+   install — the recurring tick picks up any interviewing it didn't get to.
+   **Gotcha if you touch this code**: the session MUST be created with an
+   empty `profile` (→ "coder" default), never `"coworker"` — that would
+   default `target` to `"agent"` and spin up a whole nested Sway/Wayland
+   compositor + computer-use engine for a session that only ever calls
+   proxmox-mcp tools. `createSession`'s `autoComputer` auto-spawn path is
+   also gated on `scheduleTargetRef.isEmpty()` for the same reason (a
+   scheduled/routed session is headless by definition — this also fixed a
+   latent version of the same issue in the pre-existing recurring tick).
+5. **Since 2026-07-09 the installer also**: sweeps the running VMs with
    `qm agent <vmid> ping` (4s/VM behind a 35s deadline) and reports "M of N
    running VMs answered a guest-agent ping" in the install note, kicks an
    **initial fleet scout** (detached — watch the Outpost page), and registers
@@ -320,7 +343,18 @@ default (all VMs in scope).
    set up (`~/.config/jarvis/phone.env` missing) or the machine never made
    it into `proxmox_machines.json` (self-heals on any successful
    `proxmox.status` call — open the Outpost page once).
-11. **jarvisd crash-loops with `GLIBC_2.4x not found` from the AppImage's own
+11. **Install succeeds but no live chat opens** — check the install `note`
+   in the response; a failure opening the scout chat is surfaced there
+   (e.g. "Couldn't open the live scout chat automatically"), not just a
+   daemon log. The install and recurring tick are unaffected either way —
+   the tick will interview you over the next few minutes instead.
+12. **Install seems to hang for ~45s+** — if you're on an install before
+   2026-07-10, check you're not looking at a stale binary: that version's
+   live-chat session used `profile="coworker"`, which spins up a whole
+   nested desktop + computer-use engine before the install RPC can return.
+   Fixed by using an empty profile (defaults to `"coder"`) instead — pull
+   `main` and rebuild if you're seeing this.
+13. **jarvisd crash-loops with `GLIBC_2.4x not found` from the AppImage's own
    bundled libs** — the CI box (Fedora, glibc 2.43) bundles distro libs newer
    than the Proxmox host's Debian glibc (2.41 on trixie). The jarvisd binary
    and the Qt libs themselves only need ≤2.38 — it's the linuxdeploy-swept

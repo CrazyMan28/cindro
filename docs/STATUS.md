@@ -4,7 +4,46 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-07-09._
+_Last updated: 2026-07-10._
+
+---
+
+## 🆕 Install opens a live scout+interview chat; tick schedule auto-seeded (2026-07-10)
+
+Clicking "Install Proxmox Workload Manager" no longer just kicks a silent
+background job — it opens a real, interactive Jarvis chat that scouts the
+fleet live, narrates findings VM by VM, and asks the user directly in the
+conversation about any VM with no recorded Purpose, saving answers as it
+goes. All three UIs (desktop, web, TUI) auto-navigate the triggering client
+there the moment install succeeds. The previously-manual "seed the periodic
+schedule" step is now folded into install itself (detached, idempotent).
+
+- **Caught in code review, not the initial build**: the live session was
+  first wired up with `profile="coworker"`, which — verified by reading
+  `createSession`'s internals directly rather than trusting an earlier
+  research pass — defaults `target` to `"agent"` and spins up a full nested
+  Sway/Wayland compositor + computer-use engine (~45-60s blocking) for a
+  session that only ever calls proxmox-mcp tools. Fixed to an empty profile
+  (→ `"coder"`), matching the recurring tick's own `createSession` call.
+- Also fixed a **latent version of the same issue in the pre-existing
+  recurring tick**: `createSession`'s `autoComputer` auto-spawn path never
+  excluded `scheduleTargetRef`-routed (headless/scheduled) sessions, so
+  ANY session routed that way — including every 5-minute tick — would
+  auto-provision the same expensive nested desktop whenever a user's global
+  "let Jarvis use a computer" setting was on. Now gated on
+  `scheduleTargetRef.isEmpty()`.
+- The schedule-seed exec was awaited for up to 25s for a result nothing
+  downstream needed — detached, matching the existing scout-kick pattern.
+- A failure opening the live chat is now surfaced in the install's
+  user-facing `note`, not just a daemon log.
+- Web dashboard gained a real missing piece: `chat.tsx` didn't actually
+  read the `jarvis.web.openSessionId` sessionStorage handoff key —
+  `sessions.tsx`'s own comment flagged this as "chat.tsx (once built)
+  should do the same" — now implemented, mirroring `replay.tsx`'s existing
+  handoff pattern.
+- Tests: ctest 33/33, cli 187, web typecheck+build, offscreen QML smoke.
+  Live pve validation pending merge to `main` (same deploy-loop constraint
+  as the rest of this feature).
 
 ---
 

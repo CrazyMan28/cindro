@@ -2258,8 +2258,16 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
     // target — its effTarget defaults to "real" but it is NOT a take-over, so it
     // should still auto-provision a nested desktop. Distinguish by the RAW target.
     const bool explicitTakeOver = (target == QStringLiteral("real"));
+    // A scheduleTargetRef-routed session (the always-on Proxmox agent today;
+    // any future headless/background job routed the same way) is
+    // structurally never going to touch a screen — it's an MCP-endpoint
+    // override for unattended tool-calling, not an interactive co-work
+    // session — so it must never AUTO-provision the expensive nested
+    // desktop (~45-60s blocking AgentDesktop::ensure()) just because the
+    // user's global "let Jarvis use a computer" toggle happens to be on.
     const bool autoComputer = m_settings.letJarvisUseComputer() &&
-                              !explicitTakeOver && !explicitAgent && brainCanDrive;
+                              !explicitTakeOver && !explicitAgent && brainCanDrive &&
+                              scheduleTargetRef.isEmpty();
 
     CodexMcpOverrides agentOverrides;
     if (explicitAgent || autoComputer) {
@@ -7232,17 +7240,101 @@ Response ControlServer::handleOutpostInstallWorkload(const Request &req)
     }
     registerProxmoxMachine(machine);
 
+    // 6. Seed (or, on a re-install, upsert) the periodic tick schedule —
+    // used to be a documented manual step ("loopback-only control API, must
+    // run ON the host"), but `outpost.exec` already runs arbitrary commands
+    // ON the host, so there was never a real reason a human had to do this
+    // by hand. Detached like the scout kick above (not awaited): the script
+    // is idempotent (upsert), jarvisd-proxmox-agent may still be finishing
+    // its own startup right after `systemctl enable --now`, and waiting up
+    // to 25s here for a result nobody reads a definitive answer from just
+    // holds the RPC (and the live chat below) open longer for no benefit —
+    // the documented manual command remains a fallback either way.
+    execOnMachine(machine, QStringLiteral(
+        "setsid /usr/bin/env -u PYTHONPATH /opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/python3 "
+        "/opt/jarvis-proxmox-agent/src/proxmox-mcp/packaging/seed_schedule.py "
+        ">/dev/null 2>&1 </dev/null & echo started"), 15.0, nullptr);
+    const QString scheduleNote = QStringLiteral(
+        "Periodic schedule seed kicked off (idempotent — safe to also run "
+        "seed_schedule.py by hand per docs/PROXMOX_WORKLOAD_MANAGER.md if it "
+        "doesn't stick). ");
+
+    // 7. Open a LIVE, interactive chat session (not the headless recurring
+    // tick — that's the schedule row above) that scouts the fleet and
+    // interviews the user right here, so installing doesn't just start a
+    // silent background job the user has to go check on later. Routed at
+    // proxmox-mcp exactly like the scheduled tick (scheduleTargetRef
+    // "proxmox-<machine>" -> makeBrain() picks the proxmox-mcp MCP endpoint,
+    // ControlServer.cpp ~1723). Best-effort: a failure here still leaves a
+    // fully working install (config/services/scout/schedule are all already
+    // done above) — the recurring tick will pick up any interviewing this
+    // session didn't get to.
+    QString sessionId, sessionTitle;
+    {
+        QString err;
+        sessionTitle = QStringLiteral("Proxmox Scout: ") + machine;
+        const QString prompt = QStringLiteral(
+            "You were just installed as the Proxmox workload manager on host '%1'. This is a "
+            "ONE-TIME interactive introduction (the recurring 5-minute tick is separate and "
+            "already scheduled) — the user is watching this chat live. In order: "
+            "1) Introduce yourself in 1-2 sentences. "
+            "2) Call proxmox_scout_status — a fleet scan was already kicked off during install, "
+            "so it may already be running or done; if 'idle', call proxmox_scout(full=true) "
+            "yourself. Poll proxmox_scout_status a handful of times (each call shows real "
+            "progress) until state is 'done'/'error', or up to about 10 polls — if it's still "
+            "running after that, tell the user it's taking a while and they can watch it finish "
+            "on the Outpost page, then continue anyway with whatever profiles exist so far. "
+            "3) Call proxmox_list_vm_profiles and briefly summarize what you found, VM by VM "
+            "(what's running, from proxmox_get_vm_profile's Observed section). "
+            "4) For any VM with has_purpose=false, ask the user DIRECTLY IN THIS CHAT what it's "
+            "for — a normal question, wait for their real reply as a conversation turn (do NOT "
+            "call proxmox_ask_user for this; that tool is for the headless tick asking "
+            "asynchronously when nobody's watching, not for this live session). When they "
+            "answer, call proxmox_update_vm_profile to save it as Purpose, and if they mention "
+            "how they want that VM handled, save that as Preferences too. "
+            "5) Once every unclear VM is covered, tell the user you're done — from now on the "
+            "background agent checks in every 5 minutes on its own and will respect what they "
+            "just told you. You have no tool that can restart, stop, or start a VM — never "
+            "imply otherwise.").arg(machine);
+        // profile is deliberately EMPTY (-> "coder" default), matching
+        // fireScheduledJob's row.profile for the recurring tick — NOT
+        // "coworker", which defaults target to "agent" and spins up a whole
+        // nested Sway/Wayland compositor + computer-use engine (~45-60s
+        // blocking AgentDesktop::ensure()) for a session that only ever
+        // calls proxmox-mcp tools and never drives a screen.
+        sessionId = createSession(QString(), QStringLiteral("api"),
+                                  QStringLiteral("mistral-large-latest"), QString(),
+                                  sessionTitle, &err, QString(), QString(), QString(),
+                                  QString(), QStringLiteral("proxmox-") + machine);
+        if (sessionId.isEmpty()) {
+            qWarning("outpost.install_workload: failed to open scout chat on %s: %s",
+                     qPrintable(machine), qPrintable(err));
+        } else if (!sendToSession(sessionId, prompt, {}, &err)) {
+            qWarning("outpost.install_workload: failed to start scout chat on %s: %s",
+                     qPrintable(machine), qPrintable(err));
+            sessionId.clear();  // don't hand the UI a session nobody ever sent a turn to
+        }
+    }
+    // Surfaced in the note (not just qWarning) — this is a real, user-visible
+    // downgrade of what the install just promised, not a silent internal detail.
+    const QString chatNote = sessionId.isEmpty()
+        ? QStringLiteral("Couldn't open the live scout chat automatically — the recurring "
+                        "tick will still interview you over the next few minutes. ")
+        : QString();
+
     m_audit.record(QStringLiteral("outpost.install_workload"), true, QStringLiteral("high"),
                    QStringLiteral("installed proxmox workload manager onto %1").arg(machine));
     QJsonObject result;
     result.insert(QStringLiteral("ok"), true);
     result.insert(QStringLiteral("machine"), machine);
     result.insert(QStringLiteral("note"),
-                 QStringLiteral("proxmox-mcp + jarvisd-proxmox-agent installed and running. %1"
-                               "Initial VM scout started — watch the Outpost page. One "
-                               "manual step remains: seed the periodic schedule (see "
-                               "docs/PROXMOX_WORKLOAD_MANAGER.md — loopback-only control API).")
-                     .arg(sweepNote));
+                 QStringLiteral("proxmox-mcp + jarvisd-proxmox-agent installed and running. %1%2%3"
+                               "Initial VM scout started — watch the Outpost page.")
+                     .arg(sweepNote, scheduleNote, chatNote));
+    if (!sessionId.isEmpty()) {
+        result.insert(QStringLiteral("session_id"), sessionId);
+        result.insert(QStringLiteral("session_title"), sessionTitle);
+    }
     return Response::success(req.id, result);
 }
 

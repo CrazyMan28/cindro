@@ -308,7 +308,7 @@ Item {
             // the bridge re-queries outpost.list on success; nothing else to do.
         }
 
-        function onOutpostWorkloadInstalled(machine, ok, note, code) {
+        function onOutpostWorkloadInstalled(machine, ok, note, code, sessionId, sessionTitle) {
             if (page.installingMachine === machine)
                 page.installingMachine = ""
             // Reuse the exec console as the result toast — it already renders
@@ -324,6 +324,18 @@ Item {
             consoleView.positionViewAtEnd()
             if (ok && machine === page.selectedMachine)
                 page.refreshVmStatus()   // it's freshly installed — pull its VM table
+            // Install also opened a live scout+interview chat — jump there so
+            // the user watches it happen instead of finding out later.
+            if (ok && sessionId.length > 0) {
+                if (sessionTitle.length > 0) {
+                    consoleModel.append({
+                        "cmachine": machine, "cmd": "install_workload",
+                        "output": "Opening live chat: " + sessionTitle, "ok": true
+                    })
+                    consoleView.positionViewAtEnd()
+                }
+                bridge.openSession(sessionId)
+            }
         }
 
         function onProxmoxStatusResult(machine, ok, vms, error) {

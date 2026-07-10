@@ -3959,7 +3959,7 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         // their own result signals so the page can show the human message inline
         // instead of a generic toast.
         if (method == QStringLiteral("outpost.install_workload")) {
-            emit outpostWorkloadInstalled(ctx, false, msg, code);
+            emit outpostWorkloadInstalled(ctx, false, msg, code, QString(), QString());
             return;
         }
         if (method == QStringLiteral("proxmox.status")) {
@@ -4379,7 +4379,8 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             outpostList();   // refresh the list after a successful revoke
     } else if (method == QStringLiteral("outpost.install_workload")) {
         emit outpostWorkloadInstalled(ctx, true, result.value(QStringLiteral("note")).toString(),
-                                      QString());
+                                      QString(), result.value(QStringLiteral("session_id")).toString(),
+                                      result.value(QStringLiteral("session_title")).toString());
     } else if (method == QStringLiteral("proxmox.status")) {
         emit proxmoxStatusResult(ctx, true, result.value(QStringLiteral("vms")).toList(), QString());
     } else if (method == QStringLiteral("proxmox.report")) {
