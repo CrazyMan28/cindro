@@ -123,7 +123,11 @@ message type on the WebSocket relay; `ControlServer::writeRemoteFile` writes
 files via base64-over-exec (sidesteps shell-quoting the payload entirely,
 whatever it is) and the install flow is just a sequence of those plus a
 `systemctl enable --now`. See `docs/PROXMOX_WORKLOAD_MANAGER.md` for the
-first (and so far only) consumer of this pattern.
+first (and so far only) consumer of this pattern — which as of 2026-07-09
+also drives VM scouting, per-VM `JARVIS.md` profiles, agent interview
+questions, ask-the-agent tasks, and Pinged watch rules through the same
+Outpost page (scout progress, question cards, and rule management all
+render per selected machine on desktop/web/TUI).
 
 ## MCP tools
 

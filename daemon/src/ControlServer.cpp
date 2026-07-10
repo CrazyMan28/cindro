@@ -190,6 +190,13 @@ bool ControlServer::start()
         connect(m_queueTimer, &QTimer::timeout, this, &ControlServer::tickWorkQueue);
         m_queueTimer->start();
     }
+    // Proxmox agent -> user notifications (questions / fired pinged rules):
+    // cheap no-op while proxmox_machines.json is empty.
+    m_proxmoxMailboxTimer = new QTimer(this);
+    m_proxmoxMailboxTimer->setInterval(5 * 60 * 1000);
+    connect(m_proxmoxMailboxTimer, &QTimer::timeout,
+            this, &ControlServer::pollProxmoxMailboxes);
+    m_proxmoxMailboxTimer->start();
     if (!m_scheduler.open()) {
         qWarning("jarvisd: scheduler unavailable: %s", qPrintable(m_scheduler.lastError()));
     } else {
@@ -6155,6 +6162,16 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("proxmox.restart_vm"))   return handleProxmoxRestartVm(req);
     if (m == QStringLiteral("proxmox.set_blocklist")) return handleProxmoxSetBlocklist(req);
     if (m == QStringLiteral("proxmox.send_directive")) return handleProxmoxSendDirective(req);
+    if (m == QStringLiteral("proxmox.scout"))        return handleProxmoxScout(req);
+    if (m == QStringLiteral("proxmox.scout_status")) return handleProxmoxScoutStatus(req);
+    if (m == QStringLiteral("proxmox.vm_profile"))   return handleProxmoxVmProfile(req);
+    if (m == QStringLiteral("proxmox.questions"))    return handleProxmoxQuestions(req);
+    if (m == QStringLiteral("proxmox.answer"))       return handleProxmoxAnswer(req);
+    if (m == QStringLiteral("proxmox.ask_agent"))    return handleProxmoxAskAgent(req);
+    if (m == QStringLiteral("proxmox.agent_reply"))  return handleProxmoxAgentReply(req);
+    if (m == QStringLiteral("proxmox.pinged_list"))  return handleProxmoxPingedList(req);
+    if (m == QStringLiteral("proxmox.pinged_add"))   return handleProxmoxPingedAdd(req);
+    if (m == QStringLiteral("proxmox.pinged_remove")) return handleProxmoxPingedRemove(req);
     if (m == QStringLiteral("audit.list"))           return handleAuditList(req);
     return Response::failure(req.id, QStringLiteral("unknown_method"),
                              QStringLiteral("unknown ops method: ") + m);
@@ -7167,15 +7184,65 @@ Response ControlServer::handleOutpostInstallWorkload(const Request &req)
             "systemctl enable --now proxmox-mcp.service jarvisd-proxmox-agent.service"), 30.0))
         return *fail;
 
+    // 5. Guest-agent sweep + initial scout — strictly informational: a host
+    // with zero agent-capable VMs is still a complete install, so unlike
+    // every step above, failures here degrade to a note, never a failure.
+    QString sweepNote;
+    {
+        bool sok = false;
+        // Ping budget: 4s per VM behind a 35s overall deadline, all inside
+        // one exec that stays well under the outpost 60s wall.
+        const QJsonObject sr = execOnMachine(machine, QStringLiteral(
+            "python3 -c '\n"
+            "import json, subprocess, time\n"
+            "vms = []\n"
+            "try:\n"
+            "    out = subprocess.check_output([\"qm\", \"list\"], text=True, timeout=15)\n"
+            "    for line in out.splitlines()[1:]:\n"
+            "        parts = line.split()\n"
+            "        if len(parts) >= 3 and parts[2] == \"running\":\n"
+            "            vms.append(int(parts[0]))\n"
+            "except Exception:\n"
+            "    pass\n"
+            "with_agent = 0\n"
+            "deadline = time.time() + 35\n"
+            "for vmid in vms:\n"
+            "    if time.time() > deadline:\n"
+            "        break\n"
+            "    try:\n"
+            "        subprocess.check_output([\"qm\", \"agent\", str(vmid), \"ping\"],\n"
+            "                                stderr=subprocess.DEVNULL, timeout=4)\n"
+            "        with_agent += 1\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "print(json.dumps({\"running\": len(vms), \"with_agent\": with_agent}))\n"
+            "'"), 50.0, &sok);
+        if (sok && sr.value(QStringLiteral("ok")).toBool()) {
+            const QJsonObject sweep = QJsonDocument::fromJson(
+                sr.value(QStringLiteral("output")).toString().trimmed().toUtf8()).object();
+            sweepNote = QStringLiteral("%1 of %2 running VMs answered a guest-agent ping. ")
+                .arg(sweep.value(QStringLiteral("with_agent")).toInt())
+                .arg(sweep.value(QStringLiteral("running")).toInt());
+        }
+        bool kok = false;
+        execOnMachine(machine, QStringLiteral(
+            "setsid /usr/bin/env -u PYTHONPATH "
+            "/opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/proxmox-scout "
+            "--trigger install >/dev/null 2>&1 </dev/null & echo started"), 15.0, &kok);
+    }
+    registerProxmoxMachine(machine);
+
     m_audit.record(QStringLiteral("outpost.install_workload"), true, QStringLiteral("high"),
                    QStringLiteral("installed proxmox workload manager onto %1").arg(machine));
     QJsonObject result;
     result.insert(QStringLiteral("ok"), true);
     result.insert(QStringLiteral("machine"), machine);
     result.insert(QStringLiteral("note"),
-                 QStringLiteral("proxmox-mcp + jarvisd-proxmox-agent installed and running. One "
+                 QStringLiteral("proxmox-mcp + jarvisd-proxmox-agent installed and running. %1"
+                               "Initial VM scout started — watch the Outpost page. One "
                                "manual step remains: seed the periodic schedule (see "
-                               "docs/PROXMOX_WORKLOAD_MANAGER.md — loopback-only control API)."));
+                               "docs/PROXMOX_WORKLOAD_MANAGER.md — loopback-only control API).")
+                     .arg(sweepNote));
     return Response::success(req.id, result);
 }
 
@@ -7194,7 +7261,7 @@ Response ControlServer::handleProxmoxStatus(const Request &req)
     // choice) — a single JSON blob has no such ambiguity.
     const QString cmd = QStringLiteral(
         "python3 -c '\n"
-        "import json, subprocess\n"
+        "import json, shutil, subprocess\n"
         "def safe(fn, default):\n"
         "    try:\n"
         "        return fn()\n"
@@ -7204,7 +7271,9 @@ Response ControlServer::handleProxmoxStatus(const Request &req)
         "\"/cluster/resources\",\"--output-format\",\"json\"])), [])\n"
         "state = safe(lambda: json.load(open(\"/var/lib/jarvis-proxmox-agent/state.json\")), {})\n"
         "blocklist = safe(lambda: json.load(open(\"/etc/jarvis-proxmox-agent/blocklist.json\")), {})\n"
-        "print(json.dumps({\"resources\": resources, \"state\": state, \"blocklist\": blocklist}))\n"
+        "has_proxmox = bool(shutil.which(\"qm\") and shutil.which(\"pvesh\"))\n"
+        "print(json.dumps({\"resources\": resources, \"state\": state, \"blocklist\": blocklist,"
+        "\"has_proxmox\": has_proxmox}))\n"
         "'");
     bool ok = false;
     const QJsonObject r = execOnMachine(machine, cmd, 20.0, &ok);
@@ -7254,6 +7323,15 @@ Response ControlServer::handleProxmoxStatus(const Request &req)
     }
     QJsonObject result;
     result.insert(QStringLiteral("vms"), vms);
+    // Only register for background polling when this host actually HAS
+    // qm+pvesh — the exec above succeeds (exit 0, empty resources) on ANY
+    // paired machine with python3, workload manager or not, so a bare
+    // "the RPC didn't fail" is not proof of anything. This self-heals the
+    // notification registry for pre-existing installs without silently
+    // enrolling ordinary paired laptops for a 5-minute remote-exec poll
+    // with no way to un-enroll them.
+    if (combined.value(QStringLiteral("has_proxmox")).toBool())
+        registerProxmoxMachine(machine);
     return Response::success(req.id, result);
 }
 
@@ -7411,6 +7489,679 @@ Response ControlServer::handleProxmoxSendDirective(const Request &req)
     QJsonObject result;
     result.insert(QStringLiteral("ok"), true);
     return Response::success(req.id, result);
+}
+
+// --- VM scout / profiles / questions / tasks / pinged -----------------------
+
+namespace {
+// The workload manager's install prefix on the pve host (see
+// handleOutpostInstallWorkload's systemd units — keep in sync).
+const QString kProxmoxVenvBin =
+    QStringLiteral("/opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin");
+const QString kProxmoxStateDir = QStringLiteral("/var/lib/jarvis-proxmox-agent");
+
+// Pending questions + recent pinged events in ONE JSON blob (same
+// single-blob rationale as handleProxmoxStatus — no sentinel splitting).
+// Double-quotes-only inside: the whole -c body rides in sh single quotes.
+QString proxmoxMailboxCmd()
+{
+    return QStringLiteral(
+        "python3 -c '\n"
+        "import json\n"
+        "base = \"/var/lib/jarvis-proxmox-agent\"\n"
+        "def rows(path):\n"
+        "    out = []\n"
+        "    try:\n"
+        "        lines = open(path).read().splitlines()\n"
+        "    except OSError:\n"
+        "        return out\n"
+        "    for line in lines:\n"
+        "        line = line.strip()\n"
+        "        if not line:\n"
+        "            continue\n"
+        "        try:\n"
+        "            row = json.loads(line)\n"
+        "        except ValueError:\n"
+        "            continue\n"
+        "        if isinstance(row, dict):\n"
+        "            out.append(row)\n"
+        "    return out\n"
+        "answered = {r.get(\"qid\") for r in rows(base + \"/answers.jsonl\") if r.get(\"qid\")}\n"
+        "questions = [r for r in rows(base + \"/questions.jsonl\")\n"
+        "             if r.get(\"qid\") and r.get(\"qid\") not in answered]\n"
+        "events = rows(base + \"/pinged_events.jsonl\")[-50:]\n"
+        "events.reverse()\n"
+        "print(json.dumps({\"questions\": questions, \"events\": events}))\n"
+        "'");
+}
+} // namespace
+
+Response ControlServer::handleProxmoxScout(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    if (machine.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine is required"));
+    QStringList vmids;
+    for (const QJsonValue &v : req.params.value(QStringLiteral("vmids")).toArray()) {
+        const qint64 vmid = v.toVariant().toLongLong();
+        if (vmid > 0)
+            vmids << QString::number(vmid);  // ints only — nothing to quote
+    }
+    // Detached on purpose: a fleet scan runs for minutes, outpost exec has a
+    // 60s wall. Progress lands in scout_status.json; UIs poll proxmox.scout_status.
+    // `setsid cmd & echo started` exits 0 regardless of whether `cmd` itself
+    // exists — a shell backgrounding a nonexistent binary still succeeds at
+    // forking — so the binary's presence is checked FIRST and reported
+    // honestly instead of claiming success for a scan that never ran (this
+    // is the real situation on any host installed before scouting shipped).
+    QString cmd = QStringLiteral(
+        "if [ -x %1/proxmox-scout ]; then setsid /usr/bin/env -u PYTHONPATH "
+        "%1/proxmox-scout --trigger chat").arg(kProxmoxVenvBin);
+    if (!vmids.isEmpty())
+        cmd += QStringLiteral(" --vmids ") + vmids.join(QLatin1Char(','));
+    cmd += QStringLiteral(" >/dev/null 2>&1 </dev/null & echo started; "
+                          "else echo missing:proxmox-scout; fi");
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, cmd, 15.0, &ok);
+    const QString output = r.value(QStringLiteral("output")).toString().trimmed();
+    const bool success = ok && r.value(QStringLiteral("ok")).toBool()
+                        && output == QStringLiteral("started");
+    m_audit.record(QStringLiteral("proxmox.scout"), success, QStringLiteral("medium"),
+                   QStringLiteral("started VM scout on %1 (%2)")
+                       .arg(machine, vmids.isEmpty() ? QStringLiteral("fleet")
+                                                     : vmids.join(QLatin1Char(','))));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (output.startsWith(QStringLiteral("missing:")))
+        return Response::failure(req.id, QStringLiteral("scout_not_installed"),
+                                 QStringLiteral("proxmox-scout isn't installed on %1 — redeploy "
+                                               "proxmox-mcp on the host (re-run "
+                                               "outpost.install_workload) to pick up VM scouting")
+                                     .arg(machine));
+    if (!success)
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("started"), true);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleProxmoxScoutStatus(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    if (machine.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine is required"));
+    const QString cmd = QStringLiteral(
+        "python3 -c '\n"
+        "import json\n"
+        "try:\n"
+        "    status = json.load(open(\"/var/lib/jarvis-proxmox-agent/scout_status.json\"))\n"
+        "except Exception:\n"
+        "    status = {\"state\": \"idle\"}\n"
+        "if not isinstance(status, dict):\n"
+        "    status = {\"state\": \"idle\"}\n"
+        "print(json.dumps({\"scout\": status}))\n"
+        "'");
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, cmd, 15.0, &ok);
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!r.value(QStringLiteral("ok")).toBool())
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+    const QJsonObject parsed =
+        QJsonDocument::fromJson(r.value(QStringLiteral("output")).toString().trimmed().toUtf8())
+            .object();
+    QJsonObject result;
+    result.insert(QStringLiteral("scout"), parsed.value(QStringLiteral("scout")).toObject());
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleProxmoxVmProfile(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    const qint64 vmid = req.params.value(QStringLiteral("vmid")).toVariant().toLongLong();
+    if (machine.trimmed().isEmpty() || vmid <= 0)
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine and a positive vmid are required"));
+    // vmid is a validated integer — the only interpolated value. The profile
+    // text comes back JSON-wrapped, so markdown content can't confuse parsing.
+    const QString cmd = QStringLiteral(
+        "python3 -c '\n"
+        "import json\n"
+        "vmid = %1\n"
+        "try:\n"
+        "    text = open(\"/var/lib/jarvis-proxmox-agent/vms/\" + str(vmid) + \".md\").read()\n"
+        "except OSError:\n"
+        "    text = \"\"\n"
+        "print(json.dumps({\"vmid\": vmid, \"exists\": bool(text), \"profile\": text}))\n"
+        "'").arg(vmid);
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, cmd, 15.0, &ok);
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!r.value(QStringLiteral("ok")).toBool())
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+    const QJsonObject parsed =
+        QJsonDocument::fromJson(r.value(QStringLiteral("output")).toString().trimmed().toUtf8())
+            .object();
+    return Response::success(req.id, parsed);
+}
+
+Response ControlServer::handleProxmoxQuestions(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    if (machine.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine is required"));
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, proxmoxMailboxCmd(), 15.0, &ok);
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!r.value(QStringLiteral("ok")).toBool())
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+    const QJsonObject parsed =
+        QJsonDocument::fromJson(r.value(QStringLiteral("output")).toString().trimmed().toUtf8())
+            .object();
+    const QJsonArray questions = parsed.value(QStringLiteral("questions")).toArray();
+    // Deliberately does NOT mark these seen: the design is "Outpost page +
+    // inbox ping", not "page suppresses the ping" — a user who leaves a
+    // dashboard open on this page must still get notified within the next
+    // 5-minute mailbox poll, not silently never. Same reasoning as
+    // handleProxmoxPingedList below. Also deliberately does NOT
+    // registerProxmoxMachine: unlike proxmox.status (backed by a real
+    // qm/pvesh check), this exec succeeds on any machine with python3, so
+    // it proves nothing about whether the workload manager is installed.
+    QJsonObject result;
+    result.insert(QStringLiteral("questions"), questions);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleProxmoxAnswer(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    const QString qid = req.params.value(QStringLiteral("qid")).toString();
+    const QString answer = req.params.value(QStringLiteral("answer")).toString();
+    if (machine.trimmed().isEmpty() || qid.trimmed().isEmpty() || answer.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine, qid and answer are required"));
+    QJsonObject row;
+    row.insert(QStringLiteral("qid"), qid);
+    row.insert(QStringLiteral("answer"), answer);
+    row.insert(QStringLiteral("at"), QDateTime::currentMSecsSinceEpoch());
+    const QByteArray line = QJsonDocument(row).toJson(QJsonDocument::Compact) + "\n";
+    const QString b64 = QString::fromLatin1(line.toBase64());
+    // Same append-over-base64 as send_directive: qid/answer are free text and
+    // must never ride inline in a shell command.
+    const QString cmd = QStringLiteral(
+        "install -d -m700 %1 && printf '%2' | base64 -d >> %1/answers.jsonl")
+        .arg(kProxmoxStateDir, b64);
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, cmd, 15.0, &ok);
+    const bool success = ok && r.value(QStringLiteral("ok")).toBool();
+    m_audit.record(QStringLiteral("proxmox.answer"), success, QStringLiteral("medium"),
+                   QStringLiteral("answered %1 on %2: %3").arg(qid, machine, answer.left(120)));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!success)
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+    markProxmoxSeen({machine + QLatin1Char(':') + qid});
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("qid"), qid);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleProxmoxAskAgent(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    const QString text = req.params.value(QStringLiteral("text")).toString();
+    QString kind = req.params.value(QStringLiteral("kind")).toString();
+    if (kind != QStringLiteral("task"))
+        kind = QStringLiteral("ask");
+    if (machine.trimmed().isEmpty() || text.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine and text are required"));
+    const QString rid = QStringLiteral("t-%1-%2")
+        .arg(QDateTime::currentMSecsSinceEpoch())
+        .arg(QRandomGenerator::system()->bounded(0x10000), 4, 16, QLatin1Char('0'));
+    QJsonObject row;
+    row.insert(QStringLiteral("rid"), rid);
+    row.insert(QStringLiteral("kind"), kind);
+    row.insert(QStringLiteral("text"), text);
+    row.insert(QStringLiteral("at"), QDateTime::currentMSecsSinceEpoch());
+    const QByteArray line = QJsonDocument(row).toJson(QJsonDocument::Compact) + "\n";
+    const QString b64 = QString::fromLatin1(line.toBase64());
+    // Queue the task, then best-effort kick the agent's schedule to run NOW
+    // (proxmox-agent-kick -> loopback schedule.run_now on the pve jarvisd).
+    // The trailing `; echo queued` keeps exit 0 even when the kick binary is
+    // missing (pre-upgrade install) — the tick picks the task up within 5min.
+    const QString cmd = QStringLiteral(
+        "install -d -m700 %1 && printf '%2' | base64 -d >> %1/agent_tasks.jsonl && "
+        "{ setsid /usr/bin/env -u PYTHONPATH %3/proxmox-agent-kick "
+        ">/dev/null 2>&1 </dev/null & } ; echo queued")
+        .arg(kProxmoxStateDir, b64, kProxmoxVenvBin);
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, cmd, 15.0, &ok);
+    const bool success = ok && r.value(QStringLiteral("ok")).toBool();
+    m_audit.record(QStringLiteral("proxmox.ask_agent"), success, QStringLiteral("medium"),
+                   QStringLiteral("asked agent on %1 (%2): %3")
+                       .arg(machine, kind, text.left(120)));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!success)
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+    // Deliberately no registerProxmoxMachine here — appending a jsonl line
+    // succeeds on any host with a writable filesystem, so it proves nothing
+    // about whether the workload manager is installed (see handleProxmoxStatus).
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("rid"), rid);
+    result.insert(QStringLiteral("kick_started"), true);
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleProxmoxAgentReply(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    const QString rid = req.params.value(QStringLiteral("rid")).toString();
+    if (machine.trimmed().isEmpty() || rid.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine and rid are required"));
+    // Fetch ALL replies and filter here — rid is caller-supplied free text
+    // and must never be interpolated into the remote command.
+    const QString cmd = QStringLiteral(
+        "python3 -c '\n"
+        "import json\n"
+        "out = []\n"
+        "try:\n"
+        "    lines = open(\"/var/lib/jarvis-proxmox-agent/agent_replies.jsonl\").read().splitlines()\n"
+        "except OSError:\n"
+        "    lines = []\n"
+        "for line in lines:\n"
+        "    line = line.strip()\n"
+        "    if not line:\n"
+        "        continue\n"
+        "    try:\n"
+        "        row = json.loads(line)\n"
+        "    except ValueError:\n"
+        "        continue\n"
+        "    if isinstance(row, dict):\n"
+        "        out.append(row)\n"
+        "print(json.dumps({\"replies\": out}))\n"
+        "'");
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, cmd, 15.0, &ok);
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!r.value(QStringLiteral("ok")).toBool())
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+    const QJsonObject parsed =
+        QJsonDocument::fromJson(r.value(QStringLiteral("output")).toString().trimmed().toUtf8())
+            .object();
+    QJsonObject result;
+    result.insert(QStringLiteral("rid"), rid);
+    result.insert(QStringLiteral("pending"), true);
+    for (const QJsonValue &rv : parsed.value(QStringLiteral("replies")).toArray()) {
+        const QJsonObject row = rv.toObject();
+        if (row.value(QStringLiteral("rid")).toString() != rid)
+            continue;
+        result.insert(QStringLiteral("pending"), false);
+        result.insert(QStringLiteral("reply"), row.value(QStringLiteral("reply")));
+        result.insert(QStringLiteral("replied_at"), row.value(QStringLiteral("at")));
+    }
+    return Response::success(req.id, result);
+}
+
+Response ControlServer::handleProxmoxPingedList(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    if (machine.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine is required"));
+    const QString cmd = QStringLiteral(
+        "python3 -c '\n"
+        "import json\n"
+        "base = \"/var/lib/jarvis-proxmox-agent\"\n"
+        "try:\n"
+        "    rules = json.load(open(base + \"/pinged.json\")).get(\"rules\", [])\n"
+        "except Exception:\n"
+        "    rules = []\n"
+        "events = []\n"
+        "try:\n"
+        "    lines = open(base + \"/pinged_events.jsonl\").read().splitlines()\n"
+        "except OSError:\n"
+        "    lines = []\n"
+        "for line in lines[-50:]:\n"
+        "    line = line.strip()\n"
+        "    if not line:\n"
+        "        continue\n"
+        "    try:\n"
+        "        row = json.loads(line)\n"
+        "    except ValueError:\n"
+        "        continue\n"
+        "    if isinstance(row, dict):\n"
+        "        events.append(row)\n"
+        "events.reverse()\n"
+        "print(json.dumps({\"rules\": rules, \"events\": events}))\n"
+        "'");
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, cmd, 15.0, &ok);
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!r.value(QStringLiteral("ok")).toBool())
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+    const QJsonObject parsed =
+        QJsonDocument::fromJson(r.value(QStringLiteral("output")).toString().trimmed().toUtf8())
+            .object();
+    // Deliberately does NOT mark events seen here — same reasoning as
+    // handleProxmoxQuestions: a dashboard left open on this page must not
+    // silently suppress the promised inbox ping for a newly-fired rule.
+    QJsonObject result;
+    result.insert(QStringLiteral("rules"), parsed.value(QStringLiteral("rules")).toArray());
+    result.insert(QStringLiteral("events"), parsed.value(QStringLiteral("events")).toArray());
+    return Response::success(req.id, result);
+}
+
+// pinged_add / pinged_remove ship their payload as a base64 JSON file and run
+// the HOST's own pinged_store through the workload venv — one validator (the
+// same one the agent's tools use), not a C++ re-implementation that drifts.
+Response ControlServer::handleProxmoxPingedAdd(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    const QString name = req.params.value(QStringLiteral("name")).toString();
+    const QString action = req.params.value(QStringLiteral("action")).toString();
+    if (machine.trimmed().isEmpty() || name.trimmed().isEmpty() || action.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine, name and action are required"));
+    QJsonObject payload;
+    payload.insert(QStringLiteral("name"), name);
+    payload.insert(QStringLiteral("action"), action);
+    payload.insert(QStringLiteral("vmid"),
+                  req.params.value(QStringLiteral("vmid")).toVariant().toLongLong());
+    payload.insert(QStringLiteral("condition"),
+                  req.params.value(QStringLiteral("condition")).toString());
+    payload.insert(QStringLiteral("time"), req.params.value(QStringLiteral("time")).toString());
+    const QString b64 = QString::fromLatin1(
+        QJsonDocument(payload).toJson(QJsonDocument::Compact).toBase64());
+    const QString cmd = QStringLiteral(
+        "install -d -m700 %1 && T=$(mktemp %1/.pinged_add.XXXXXX) && "
+        "printf '%2' | base64 -d > \"$T\" && "
+        "JARVIS_PINGED_PAYLOAD=\"$T\" /usr/bin/env -u PYTHONPATH %3/python3 -c '\n"
+        "import json, os, time\n"
+        "path = os.environ[\"JARVIS_PINGED_PAYLOAD\"]\n"
+        "req = json.load(open(path))\n"
+        "os.unlink(path)\n"
+        "from proxmox_mcp import config, pinged_store\n"
+        "print(json.dumps(pinged_store.add_rule(config.PINGED_FILE,\n"
+        "    name=str(req.get(\"name\", \"\")), action=str(req.get(\"action\", \"\")),\n"
+        "    vmid=int(req.get(\"vmid\", 0) or 0),\n"
+        "    condition=str(req.get(\"condition\", \"\")),\n"
+        "    time_of_day=str(req.get(\"time\", \"\")),\n"
+        "    now_ms=int(time.time() * 1000))))\n"
+        "'").arg(kProxmoxStateDir, b64, kProxmoxVenvBin);
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, cmd, 20.0, &ok);
+    const bool success = ok && r.value(QStringLiteral("ok")).toBool();
+    m_audit.record(QStringLiteral("proxmox.pinged_add"), success, QStringLiteral("medium"),
+                   QStringLiteral("added pinged rule '%1' on %2").arg(name, machine));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!success)
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+    const QJsonObject parsed =
+        QJsonDocument::fromJson(r.value(QStringLiteral("output")).toString().trimmed().toUtf8())
+            .object();
+    if (!parsed.value(QStringLiteral("ok")).toBool())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 parsed.value(QStringLiteral("error")).toString());
+    // Deliberately no registerProxmoxMachine here — see handleProxmoxStatus,
+    // the sole source of truth for "this machine actually runs the workload
+    // manager" (install_workload registers directly, already preflighted).
+    return Response::success(req.id, parsed);
+}
+
+Response ControlServer::handleProxmoxPingedRemove(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    const QString ruleId = req.params.value(QStringLiteral("rule_id")).toString();
+    if (machine.trimmed().isEmpty() || ruleId.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine and rule_id are required"));
+    QJsonObject payload;
+    payload.insert(QStringLiteral("id"), ruleId);
+    const QString b64 = QString::fromLatin1(
+        QJsonDocument(payload).toJson(QJsonDocument::Compact).toBase64());
+    const QString cmd = QStringLiteral(
+        "install -d -m700 %1 && T=$(mktemp %1/.pinged_rm.XXXXXX) && "
+        "printf '%2' | base64 -d > \"$T\" && "
+        "JARVIS_PINGED_PAYLOAD=\"$T\" /usr/bin/env -u PYTHONPATH %3/python3 -c '\n"
+        "import json, os\n"
+        "path = os.environ[\"JARVIS_PINGED_PAYLOAD\"]\n"
+        "req = json.load(open(path))\n"
+        "os.unlink(path)\n"
+        "from proxmox_mcp import config, pinged_store\n"
+        "print(json.dumps(pinged_store.remove_rule(config.PINGED_FILE, str(req.get(\"id\", \"\")))))\n"
+        "'").arg(kProxmoxStateDir, b64, kProxmoxVenvBin);
+    bool ok = false;
+    const QJsonObject r = execOnMachine(machine, cmd, 20.0, &ok);
+    const bool success = ok && r.value(QStringLiteral("ok")).toBool();
+    m_audit.record(QStringLiteral("proxmox.pinged_remove"), success, QStringLiteral("medium"),
+                   QStringLiteral("removed pinged rule %1 on %2").arg(ruleId, machine));
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (!success)
+        return Response::failure(req.id, QStringLiteral("exec_failed"),
+                                 r.value(QStringLiteral("error")).toString());
+    const QJsonObject parsed =
+        QJsonDocument::fromJson(r.value(QStringLiteral("output")).toString().trimmed().toUtf8())
+            .object();
+    if (!parsed.value(QStringLiteral("ok")).toBool())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 parsed.value(QStringLiteral("error")).toString());
+    return Response::success(req.id, parsed);
+}
+
+// --- proxmox notification plumbing ------------------------------------------
+
+void ControlServer::registerProxmoxMachine(const QString &machine)
+{
+    if (machine.trimmed().isEmpty())
+        return;
+    const QString path = jarvis::dataDir() + QStringLiteral("/proxmox_machines.json");
+    QStringList machines;
+    {
+        QFile f(path);
+        if (f.open(QIODevice::ReadOnly)) {
+            for (const QJsonValue &v : QJsonDocument::fromJson(f.readAll())
+                                           .object().value(QStringLiteral("machines")).toArray())
+                machines << v.toString();
+        }
+    }
+    if (machines.contains(machine))
+        return;
+    machines << machine;
+    QJsonObject obj;
+    obj.insert(QStringLiteral("machines"), QJsonArray::fromStringList(machines));
+    QDir().mkpath(jarvis::dataDir());
+    QFile f(path);
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        f.write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+}
+
+void ControlServer::markProxmoxSeen(const QStringList &keys)
+{
+    if (keys.isEmpty())
+        return;
+    const QString path = jarvis::dataDir() + QStringLiteral("/proxmox_seen_notifications.json");
+    QSet<QString> seen;
+    {
+        QFile f(path);
+        if (f.open(QIODevice::ReadOnly)) {
+            for (const QJsonValue &v : QJsonDocument::fromJson(f.readAll())
+                                           .object().value(QStringLiteral("keys")).toArray())
+                seen.insert(v.toString());
+        }
+    }
+    const int before = seen.size();
+    for (const QString &k : keys)
+        if (!k.endsWith(QLatin1Char(':')))
+            seen.insert(k);
+    if (seen.size() == before)
+        return;
+    QJsonArray arr;
+    for (const QString &k : std::as_const(seen))
+        arr.append(k);
+    QJsonObject obj;
+    obj.insert(QStringLiteral("keys"), arr);
+    QDir().mkpath(jarvis::dataDir());
+    QFile f(path);
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        f.write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+}
+
+bool ControlServer::phoneNotifyUser(const QString &title, const QString &message)
+{
+    // Route through the existing phone.mcp proxy (the bearer stays in the
+    // daemon); notify_user lands in the Jarvis inbox on every surface.
+    Request req;
+    req.id = 0;
+    req.method = QStringLiteral("phone.mcp");
+    QJsonObject args;
+    args.insert(QStringLiteral("title"), title);
+    args.insert(QStringLiteral("message"), message);
+    QJsonObject params;
+    params.insert(QStringLiteral("name"), QStringLiteral("notify_user"));
+    params.insert(QStringLiteral("arguments"), args);
+    req.params = params;
+    return handlePhoneMcp(req).ok;
+}
+
+void ControlServer::pollProxmoxMailboxes()
+{
+    QStringList machines;
+    {
+        QFile f(jarvis::dataDir() + QStringLiteral("/proxmox_machines.json"));
+        if (f.open(QIODevice::ReadOnly)) {
+            for (const QJsonValue &v : QJsonDocument::fromJson(f.readAll())
+                                           .object().value(QStringLiteral("machines")).toArray()) {
+                const QString m = v.toString();
+                if (!m.trimmed().isEmpty())
+                    machines << m;
+            }
+        }
+    }
+    if (machines.isEmpty())
+        return;
+
+    const QString seenPath = jarvis::dataDir() + QStringLiteral("/proxmox_seen_notifications.json");
+    QSet<QString> seen;
+    {
+        QFile f(seenPath);
+        if (f.open(QIODevice::ReadOnly)) {
+            for (const QJsonValue &v : QJsonDocument::fromJson(f.readAll())
+                                           .object().value(QStringLiteral("keys")).toArray())
+                seen.insert(v.toString());
+        }
+    }
+
+    QSet<QString> live;          // keys still visible on a machine we reached
+    QSet<QString> polledPrefixes; // "machine:" prefixes we successfully polled
+    bool changed = false;
+    for (const QString &machine : std::as_const(machines)) {
+        bool ok = false;
+        const QJsonObject r = execOnMachine(machine, proxmoxMailboxCmd(), 15.0, &ok);
+        if (!ok || !r.value(QStringLiteral("ok")).toBool())
+            continue;  // unreachable now -> keep its seen keys, retry next poll
+        const QJsonObject parsed = QJsonDocument::fromJson(
+            r.value(QStringLiteral("output")).toString().trimmed().toUtf8()).object();
+        polledPrefixes.insert(machine + QLatin1Char(':'));
+
+        for (const QJsonValue &qv : parsed.value(QStringLiteral("questions")).toArray()) {
+            const QJsonObject q = qv.toObject();
+            const QString qid = q.value(QStringLiteral("qid")).toString();
+            if (qid.isEmpty())
+                continue;
+            const QString key = machine + QLatin1Char(':') + qid;
+            live.insert(key);
+            if (seen.contains(key))
+                continue;
+            const qint64 vmid = q.value(QStringLiteral("vmid")).toVariant().toLongLong();
+            const QString where = vmid > 0 ? QStringLiteral("VM %1: ").arg(vmid) : QString();
+            phoneNotifyUser(QStringLiteral("Proxmox agent question (%1)").arg(machine),
+                            where + q.value(QStringLiteral("question")).toString()
+                                + QStringLiteral("\nAnswer it on the Outpost page."));
+            seen.insert(key);
+            changed = true;
+        }
+        for (const QJsonValue &ev : parsed.value(QStringLiteral("events")).toArray()) {
+            const QJsonObject e = ev.toObject();
+            const QString eid = e.value(QStringLiteral("eid")).toString();
+            if (eid.isEmpty())
+                continue;
+            const QString key = machine + QLatin1Char(':') + eid;
+            live.insert(key);
+            if (seen.contains(key))
+                continue;
+            const qint64 vmid = e.value(QStringLiteral("vmid")).toVariant().toLongLong();
+            const QString where = vmid > 0 ? QStringLiteral(" on VM %1").arg(vmid) : QString();
+            phoneNotifyUser(QStringLiteral("Pinged fired (%1)").arg(machine),
+                            QStringLiteral("'%1'%2: %3")
+                                .arg(e.value(QStringLiteral("name")).toString(), where,
+                                     e.value(QStringLiteral("result")).toString()));
+            seen.insert(key);
+            changed = true;
+        }
+    }
+
+    // Prune seen keys that are gone from machines we actually reached —
+    // answered questions and events that scrolled out of the last-50 window
+    // can never ping again, so dropping them keeps the file bounded.
+    QSet<QString> pruned;
+    for (const QString &key : std::as_const(seen)) {
+        bool belongsToPolled = false;
+        for (const QString &prefix : std::as_const(polledPrefixes)) {
+            if (key.startsWith(prefix)) {
+                belongsToPolled = true;
+                break;
+            }
+        }
+        if (!belongsToPolled || live.contains(key))
+            pruned.insert(key);
+        else
+            changed = true;
+    }
+    if (!changed)
+        return;
+    QJsonArray arr;
+    for (const QString &k : std::as_const(pruned))
+        arr.append(k);
+    QJsonObject obj;
+    obj.insert(QStringLiteral("keys"), arr);
+    QDir().mkpath(jarvis::dataDir());
+    QFile f(seenPath);
+    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        f.write(QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }
 
 Response ControlServer::handleAuditList(const Request &req)

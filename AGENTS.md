@@ -416,9 +416,13 @@ Design pillars:
   identically to `outpost.*` — don't remove that check if you touch either.
 - **`proxmox.restart_vm` is the ONLY code path that runs `qm reboot`,
   anywhere in this feature.** The scheduled agent's own tool catalog
-  (`proxmox-mcp/tools_proxmox.py`) never registers a restart tool at all —
+  (`proxmox-mcp/tools_proxmox.py`) never registers a VM-power tool at all —
   this is enforced structurally, not by prompting. Preserve this invariant
-  if you touch `proxmox_tune` or `handleProxmoxRestartVm`.
+  if you touch `proxmox_tune` or `handleProxmoxRestartVm`. (2026-07-09:
+  the catalog DOES gain `proxmox_guest_service`, which can start/restart a
+  *service inside a guest* — see the 2026-07-09 VM-scout gotchas below for
+  why that's not an exception: it has no stop verb and `scout.py` refuses
+  any name that looks like a systemd power/sleep target.)
 - **`proxmox.report` is sync-then-recall, not a blind recall.** The remote
   agent's memory lives in ITS OWN sqlite db on the Proxmox host (durable
   independent of the laptop); the RPC pulls rows newer than the newest
@@ -588,6 +592,77 @@ test. When qa passes, open a **PR into `main`** and merge it. Never commit direc
     that is NORMAL, not a hang. Don't cancel/reboot before ~45 min.
   - **When SSH is flaky (loaded host), reach winvm via the QEMU guest agent:**
     `ssh pve 'qm guest exec 106 -- powershell -NoProfile -Command "…"'`.
+
+## New subsystems (2026-07-09, VM scout + profiles + Pinged) — gotchas
+
+The Proxmox workload manager grew agentless guest scouting (QEMU guest agent /
+`pct exec`), per-VM `JARVIS.md` profiles, an agent→user interview mailbox, a
+user→agent task mailbox (`proxmox.ask_agent` + run-now kick), and "Pinged"
+watch rules. See `docs/PROXMOX_WORKLOAD_MANAGER.md` for the design; these are
+the load-bearing truths:
+
+- **`systemctl` is in `_GUEST_EXEC_DENYLIST` — the scout batteries deliberately
+  list services from `/sys/fs/cgroup/*/system.slice` instead. NEVER weaken the
+  denylist to make a battery nicer.** The ONE sanctioned bypass is
+  `scout.guest_service()` → `proxmox_ops._exec_via_agent_unchecked` /
+  `scout._pct_exec_unchecked`: argv built in code from a regex-validated
+  service name and a closed verb set {start, restart, status} — deliberately
+  no `stop`, no power verbs. **The name regex ALONE is not enough** — a
+  syntactically valid unit name like `poweroff.target` is a full VM-power
+  bypass, so `scout._service_dangerous()` separately refuses anything ending
+  `.target` or matching a power/sleep denylist (`poweroff`, `reboot`, `halt`,
+  `shutdown`, `emergency`, `rescue`, `sleep`, `suspend`, `hibernate`, …) — a
+  bug found and fixed 2026-07-10, tested in
+  `test_guest_service_rejects_power_targets`. Never expose the `_unchecked`
+  functions to a tool that accepts caller-supplied argv.
+- **Every long host-side operation must run detached** (`setsid … & echo ok`):
+  `outpostHttp` has a hard 60s event-loop wall and outpost-agent caps exec
+  output at 256KB. That's why the fleet scout is a console script
+  (`proxmox-scout`) writing `scout_status.json`, not an RPC that streams.
+- **Free text NEVER rides inline in a remote command.** Answers/tasks are
+  base64-appended (like directives); pinged rules travel as a base64 JSON
+  payload file run through the HOST's own `pinged_store` (one validator, no
+  C++ re-implementation); `proxmox.agent_reply` fetches ALL replies and
+  filters daemon-side because the rid is caller-supplied.
+- **Daemon one-liners: double quotes INSIDE, single quotes OUTSIDE** (the
+  whole `python3 -c '…'` body is single-quoted for `sh`). One stray `'`
+  inside the python breaks the shell quoting — same discipline
+  `handleProxmoxStatus` established.
+- **`update_observed()` must preserve user sections byte-for-byte** — a
+  re-scan that eats `## Purpose`/`## Preferences` silently undoes the whole
+  interview flow (unit-tested in `test_profile_store.py`).
+- **Pinged schedule dueness is decided in code** (`pinged_store.due_rules`:
+  due when past today's HH:MM and `last_checked_at` < today's trigger), and
+  `proxmox_record_pinged` must be called for every handled rule **fired or
+  not** — recording is what stops a daily rule re-firing every 5-minute tick.
+- **The notification poll dedupes via `<data>/proxmox_seen_notifications.json`**
+  (`machine:qid|eid`), pruned only for machines actually reached that round —
+  pruning on an unreachable machine would re-ping everything when it returns.
+  **UI reads (`proxmox.questions` / `proxmox.pinged_list`) deliberately do
+  NOT mark seen** — "Outpost page + inbox ping" means BOTH, and marking seen
+  on read would let anyone with a dashboard open silently never get the
+  promised phone ping. `handleProxmoxAnswer` is the one exception (an
+  answered question is genuinely resolved, so it marks that qid seen so it
+  isn't re-pinged). Inbox pings go through the phone proxy and silently skip
+  when `phone.env` is absent.
+- **`registerProxmoxMachine` is called from EXACTLY TWO places**:
+  `outpost.install_workload` (preflighted with a real `qm`/`pvesh` check) and
+  `proxmox.status` when its python one-liner's `has_proxmox` flag (a real
+  `shutil.which("qm") and shutil.which("pvesh")`) is true. No other
+  `proxmox.*` handler self-registers — most of those execs succeed on ANY
+  paired machine with python3 (empty jsonl files just read back as `[]`),
+  which proved nothing and would silently enroll ordinary laptops in a
+  forever, un-removable 5-minute remote-exec poll (found and fixed
+  2026-07-10). Don't add a `registerProxmoxMachine` call to a handler unless
+  its success genuinely proves the workload manager is installed.
+- **`seed_schedule.py` is an upsert now** — rerunning it updates the tick
+  prompt in place; that + re-running `outpost.install_workload` (sparse clone
+  tracks `main`, so the host only gets MERGED code) is the whole upgrade path
+  for an existing install. `websockets` became a real proxmox-mcp dependency
+  (the kick helper needs it) — no more manual pip step.
+- **`scout_status.json` is also the concurrency lock**: `running` is only
+  believed while `started_at` <30min AND the recorded pid is alive — a killed
+  runner never wedges scouting; don't "simplify" the pid check away.
 
 ## Conventions
 

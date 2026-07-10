@@ -49,8 +49,53 @@ Item {
     property string reportError: ""
     property bool reportBusy: false
 
+    // ---- VM scout / interview questions / pinged rules ----------------------
+    property var scoutStatus: null          // last proxmox.scout_status payload
+    property string scoutError: ""
+    property bool scoutStarting: false
+    // Wall-clock ms when we last clicked Scout — a status reply whose
+    // started_at predates this is a STALE read from a previous run (the
+    // detached runner takes a moment to boot + enumerate VMs before it
+    // writes state=running), not evidence the new scan already finished.
+    // Only a reply that's actually FROM our run may stop the poll.
+    property real scoutRequestedAt: 0
+    property int scoutPollAttempts: 0
+    readonly property int scoutMaxPollAttempts: 200   // ~10min safety cap @3s
+    property var questionsList: []          // [{qid,vmid,question,options}]
+    property var pingedRules: []            // [{id,name,vmid,trigger,action,...}]
+    property var pingedEvents: []           // [{name,vmid,result,fired_at}] newest first
+    property string pingedError: ""
+    property bool pingedAddOpen: false
+
     function refresh() { if (bridge.connected) bridge.outpostList() }
     Component.onCompleted: refresh()
+
+    function startScout() {
+        if (page.selectedMachine.length === 0) return
+        page.scoutStarting = true
+        page.scoutError = ""
+        page.scoutRequestedAt = Date.now()
+        page.scoutPollAttempts = 0
+        bridge.proxmoxScout(page.selectedMachine)
+    }
+
+    // A status reply "reflects our run" once its started_at catches up to
+    // the moment we clicked Scout; before that it's leftover data from a
+    // previous scan (or the idle default) and must not stop the poll.
+    function scoutReflectsOurRun(status) {
+        return !!(status && status.started_at && status.started_at >= page.scoutRequestedAt)
+    }
+
+    // Questions + pinged piggyback the 15s list timer — but only once the
+    // workload manager answered a status call successfully (vmMachine gate
+    // + no vmError), so machines without it never get spammed with extra
+    // RPCs (and never get silently registered for background polling).
+    function refreshAux() {
+        if (!bridge.connected || page.selectedMachine.length === 0) return
+        if (page.vmMachine !== page.selectedMachine || page.vmError.length > 0) return
+        bridge.proxmoxQuestions(page.selectedMachine)
+        bridge.proxmoxPingedList(page.selectedMachine)
+    }
 
     // Selecting a machine drops any stale VM/report view and (best-effort)
     // re-probes proxmox.status; machines without the workload manager just
@@ -62,6 +107,14 @@ Item {
         reportModel.clear()
         reportMachine = ""
         reportError = ""
+        scoutPollTimer.stop()
+        scoutStatus = null
+        scoutError = ""
+        scoutStarting = false
+        questionsList = []
+        pingedRules = []
+        pingedEvents = []
+        pingedError = ""
         if (page.selectedMachine.length > 0) {
             page.vmBusy = true
             bridge.proxmoxStatus(page.selectedMachine)
@@ -115,7 +168,25 @@ Item {
         interval: 15000
         running: true
         repeat: true
-        onTriggered: page.refresh()
+        onTriggered: {
+            page.refresh()
+            page.refreshAux()
+        }
+    }
+
+    // fast poll while a scout runs — stopped the moment state leaves "running"
+    // and on machine change, so it never outlives its scan.
+    Timer {
+        id: scoutPollTimer
+        interval: 3000
+        repeat: true
+        running: false
+        onTriggered: {
+            if (page.selectedMachine.length > 0)
+                bridge.proxmoxScoutStatus(page.selectedMachine)
+            else
+                scoutPollTimer.stop()
+        }
     }
 
     // polls pairing status every ~5s until the machine pairs or the code expires
@@ -258,8 +329,11 @@ Item {
         function onProxmoxStatusResult(machine, ok, vms, error) {
             if (machine !== page.selectedMachine) return   // stale reply, ignore
             page.vmBusy = false
+            var hadWorkload = page.vmMachine === machine
             page.vmMachine = machine
             page.vmError = ok ? "" : error
+            if (ok && !hadWorkload)
+                page.refreshAux()   // workload confirmed — pull questions/pinged now
             vmModel.clear()
             if (ok) {
                 for (var i = 0; i < vms.length; i++) {
@@ -326,6 +400,94 @@ Item {
             }
             if (machine === page.selectedMachine)
                 page.refreshVmStatus()   // vmModel's blocklisted flags come from the daemon, not us
+        }
+
+        function onProxmoxScoutStarted(machine, ok, error) {
+            if (machine !== page.selectedMachine) return
+            page.scoutStarting = false
+            if (ok) {
+                bridge.proxmoxScoutStatus(machine)
+                scoutPollTimer.restart()
+            } else {
+                page.scoutError = error
+            }
+        }
+
+        function onProxmoxScoutStatusResult(machine, ok, status, error) {
+            if (machine !== page.selectedMachine) return
+            if (!ok) {
+                page.scoutError = error
+                scoutPollTimer.stop()
+                return
+            }
+            page.scoutError = ""
+            page.scoutStatus = status
+            page.scoutPollAttempts += 1
+            // Keep polling while state=running OR this reply predates our
+            // click (still catching up to the detached runner's first
+            // write) — only a reply that's actually ours and non-running
+            // stops the poll. A safety cap bounds a genuinely stuck host.
+            const keepPolling = status.state === "running"
+                || (!page.scoutReflectsOurRun(status)
+                    && page.scoutPollAttempts < page.scoutMaxPollAttempts)
+            if (keepPolling) {
+                if (!scoutPollTimer.running)
+                    scoutPollTimer.start()
+            } else {
+                scoutPollTimer.stop()
+            }
+        }
+
+        function onProxmoxQuestionsResult(machine, ok, questions, error) {
+            if (machine !== page.selectedMachine || !ok) return
+            page.questionsList = questions
+        }
+
+        function onProxmoxAnswerResult(machine, qid, ok, error) {
+            if (!ok) {
+                consoleModel.append({
+                    "cmachine": machine, "cmd": "answer " + qid,
+                    "output": "(failed) " + error, "ok": false
+                })
+                consoleView.positionViewAtEnd()
+                return
+            }
+            if (machine === page.selectedMachine)
+                bridge.proxmoxQuestions(machine)   // answered row drops out
+        }
+
+        function onProxmoxPingedListResult(machine, ok, rules, events, error) {
+            if (machine !== page.selectedMachine) return
+            page.pingedError = ok ? "" : error
+            if (ok) {
+                page.pingedRules = rules
+                page.pingedEvents = events
+            }
+        }
+
+        function onProxmoxPingedAddResult(machine, ok, error) {
+            if (machine !== page.selectedMachine) return
+            if (!ok) {
+                page.pingedError = error
+                return
+            }
+            page.pingedError = ""
+            page.pingedAddOpen = false
+            bridge.proxmoxPingedList(machine)
+        }
+
+        function onProxmoxPingedRemoveResult(machine, ok, error) {
+            if (machine !== page.selectedMachine) return
+            if (!ok) {
+                page.pingedError = error
+                return
+            }
+            bridge.proxmoxPingedList(machine)
+        }
+
+        function onProxmoxVmProfileResult(machine, vmid, ok, profile, error) {
+            if (machine !== page.selectedMachine) return
+            profilePopup.openFor(vmid, ok ? profile : "", ok ? "" : error)
         }
     }
 
@@ -623,6 +785,101 @@ Item {
                     enabledBtn: bridge.connected && !page.reportBusy
                     onClicked: page.getReport()
                 }
+                Widgets.PillButton {
+                    label: page.scoutStarting ? "Starting…"
+                           : (page.scoutStatus && page.scoutStatus.state === "running")
+                             ? "Scouting…" : "Scout VMs"
+                    primary: true
+                    busy: page.scoutStarting
+                          || (page.scoutStatus && page.scoutStatus.state === "running") === true
+                    enabledBtn: bridge.connected && !page.scoutStarting
+                                && !(page.scoutStatus && page.scoutStatus.state === "running")
+                    onClicked: page.startScout()
+                }
+            }
+
+            // ---- scout progress / results (scout_status.json, polled @3s) --------
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 4
+                visible: page.scoutError.length > 0 || page.scoutStatus !== null
+
+                Text {
+                    visible: page.scoutError.length > 0
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    text: "Scout failed: " + page.scoutError
+                    color: Theme.danger
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                }
+                Text {
+                    visible: page.scoutStatus !== null && page.scoutStatus.state === "running"
+                    Layout.fillWidth: true
+                    text: {
+                        var s = page.scoutStatus
+                        if (!s) return ""
+                        var cur = s.current_vmid ? (" — VM " + s.current_vmid
+                                  + (s.current_name ? (" (" + s.current_name + ")") : "")) : ""
+                        return "Scouting… " + (s.done || 0) + "/" + (s.total || 0) + cur
+                    }
+                    color: Theme.accentBright
+                    font.family: Theme.fontMono
+                    font.pixelSize: 12
+                }
+                Text {
+                    visible: page.scoutStatus !== null && page.scoutStatus.state === "done"
+                    Layout.fillWidth: true
+                    text: {
+                        var s = page.scoutStatus
+                        if (!s || !s.results) return ""
+                        var okCount = 0
+                        for (var i = 0; i < s.results.length; i++)
+                            if (s.results[i].ok) okCount++
+                        return "Scout done: " + okCount + "/" + (s.total || 0)
+                               + " guests profiled · " + page.relTime(s.finished_at)
+                    }
+                    color: Theme.success
+                    font.family: Theme.fontMono
+                    font.pixelSize: 12
+                }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(scoutResultsList.contentHeight + 16, 160)
+                    visible: page.scoutStatus !== null && page.scoutStatus.results !== undefined
+                             && page.scoutStatus.results.length > 0
+                    radius: Theme.radiusSm
+                    color: Theme.surfaceDeep
+                    border.width: 1
+                    border.color: Theme.hairlineSoft
+                    clip: true
+                    ListView {
+                        id: scoutResultsList
+                        anchors.fill: parent
+                        anchors.margins: 8
+                        clip: true
+                        spacing: 2
+                        boundsBehavior: Flickable.StopAtBounds
+                        model: (page.scoutStatus && page.scoutStatus.results)
+                               ? page.scoutStatus.results : []
+                        ScrollBar.vertical: ScrollBar {
+                            policy: ScrollBar.AsNeeded; width: 5
+                            background: Item {}
+                            contentItem: Rectangle { implicitWidth: 4; radius: 2; color: Theme.hairline; opacity: 0.5 }
+                        }
+                        delegate: Text {
+                            required property var modelData
+                            width: ListView.view.width
+                            text: (modelData.ok ? "✓ " : "✗ ") + "VM " + modelData.vmid
+                                  + " (" + modelData.name + ", " + modelData.kind + ") — "
+                                  + (modelData.ok ? modelData.summary : modelData.error)
+                            color: modelData.ok ? Theme.textMuted : Theme.danger
+                            font.family: Theme.fontMono
+                            font.pixelSize: 11
+                            wrapMode: Text.Wrap
+                        }
+                    }
+                }
             }
 
             Text {
@@ -660,7 +917,7 @@ Item {
                     Text { Layout.preferredWidth: 50;  text: "CPU%"; color: Theme.textFaint; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: Theme.trackWide }
                     Text { Layout.preferredWidth: 50;  text: "MEM%"; color: Theme.textFaint; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: Theme.trackWide }
                     Text { Layout.preferredWidth: 70;  text: "BLOCKED"; color: Theme.textFaint; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: Theme.trackWide }
-                    Item { Layout.preferredWidth: 74 }
+                    Item { Layout.preferredWidth: 148 }
                 }
 
                 Repeater {
@@ -720,6 +977,11 @@ Item {
                                         checked: vrow.vblocklisted
                                         onToggled: page.toggleBlocklist(vrow.vmid)
                                     }
+                                }
+                                Widgets.PillButton {
+                                    Layout.preferredWidth: 66
+                                    label: "Profile"
+                                    onClicked: bridge.proxmoxVmProfile(page.selectedMachine, vrow.vmid)
                                 }
                                 Widgets.PillButton {
                                     Layout.preferredWidth: 74
@@ -820,6 +1082,290 @@ Item {
                                 font.pixelSize: 10
                             }
                         }
+                    }
+                }
+            }
+
+            // ---- agent interview questions (proxmox.questions/answer) ------------
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                visible: page.questionsList.length > 0
+
+                Text {
+                    text: "AGENT QUESTIONS"
+                    color: Theme.amber
+                    font.family: Theme.fontDisplay
+                    font.pixelSize: 10
+                    font.letterSpacing: Theme.trackMid
+                }
+
+                Repeater {
+                    model: page.questionsList
+                    delegate: Rectangle {
+                        id: qCard
+                        required property var modelData
+                        Layout.fillWidth: true
+                        radius: Theme.radiusSm
+                        color: Theme.surface
+                        border.width: 1
+                        border.color: Theme.amberDim
+                        implicitHeight: qcol.implicitHeight + 16
+
+                        ColumnLayout {
+                            id: qcol
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.margins: 8
+                            spacing: 6
+
+                            Text {
+                                Layout.fillWidth: true
+                                text: (qCard.modelData.vmid > 0
+                                       ? ("VM " + qCard.modelData.vmid + " · ") : "")
+                                      + qCard.modelData.question
+                                color: Theme.text
+                                font.family: Theme.fontSans
+                                font.pixelSize: 12
+                                wrapMode: Text.Wrap
+                            }
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                visible: qCard.modelData.options !== undefined
+                                         && qCard.modelData.options.length > 0
+                                Repeater {
+                                    model: qCard.modelData.options !== undefined
+                                           ? qCard.modelData.options : []
+                                    delegate: Widgets.PillButton {
+                                        required property var modelData
+                                        label: "" + modelData
+                                        onClicked: bridge.proxmoxAnswer(page.selectedMachine,
+                                                                        qCard.modelData.qid,
+                                                                        "" + modelData)
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Widgets.StyledField {
+                                    id: answerField
+                                    Layout.fillWidth: true
+                                    placeholder: "Type an answer…"
+                                    onAccepted: {
+                                        if (text.trim().length === 0) return
+                                        bridge.proxmoxAnswer(page.selectedMachine,
+                                                             qCard.modelData.qid, text.trim())
+                                        text = ""
+                                    }
+                                }
+                                Widgets.PillButton {
+                                    label: "Answer"
+                                    primary: true
+                                    enabledBtn: answerField.text.trim().length > 0
+                                    onClicked: {
+                                        bridge.proxmoxAnswer(page.selectedMachine,
+                                                             qCard.modelData.qid,
+                                                             answerField.text.trim())
+                                        answerField.text = ""
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---- pinged watch rules (proxmox.pinged_*) ----------------------------
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 6
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Text {
+                        text: "PINGED WATCH RULES"
+                        color: Theme.textFaint
+                        font.family: Theme.fontDisplay
+                        font.pixelSize: 10
+                        font.letterSpacing: Theme.trackMid
+                    }
+                    Item { Layout.fillWidth: true }
+                    Widgets.PillButton {
+                        label: page.pingedAddOpen ? "Cancel" : "Add rule"
+                        onClicked: page.pingedAddOpen = !page.pingedAddOpen
+                    }
+                }
+
+                Text {
+                    visible: page.pingedError.length > 0
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    text: page.pingedError
+                    color: Theme.danger
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                }
+
+                // add-rule form: exactly one trigger — condition XOR daily time
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: page.pingedAddOpen
+                    spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Widgets.StyledField {
+                            id: pingedNameField
+                            Layout.preferredWidth: 160
+                            placeholder: "Rule name"
+                        }
+                        Widgets.StyledField {
+                            id: pingedVmidField
+                            Layout.preferredWidth: 90
+                            placeholder: "VMID (0=all)"
+                        }
+                        Widgets.StyledField {
+                            id: pingedTimeField
+                            Layout.preferredWidth: 110
+                            placeholder: "Daily HH:MM"
+                        }
+                    }
+                    Widgets.StyledField {
+                        id: pingedConditionField
+                        Layout.fillWidth: true
+                        placeholder: "…or condition (e.g. \"the CI runner on this VM looks stuck\") — leave empty for a daily rule"
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Widgets.StyledField {
+                            id: pingedActionField
+                            Layout.fillWidth: true
+                            placeholder: "Action when it fires (e.g. \"check up on it and fix it, don't break anything\")"
+                        }
+                        Widgets.PillButton {
+                            label: "Create"
+                            primary: true
+                            enabledBtn: pingedNameField.text.trim().length > 0
+                                        && pingedActionField.text.trim().length > 0
+                                        && (pingedConditionField.text.trim().length > 0)
+                                           !== (pingedTimeField.text.trim().length > 0)
+                            onClicked: {
+                                bridge.proxmoxPingedAdd(page.selectedMachine,
+                                    pingedNameField.text.trim(),
+                                    pingedActionField.text.trim(),
+                                    parseInt(pingedVmidField.text) || 0,
+                                    pingedConditionField.text.trim(),
+                                    pingedTimeField.text.trim())
+                                pingedNameField.text = ""
+                                pingedVmidField.text = ""
+                                pingedTimeField.text = ""
+                                pingedConditionField.text = ""
+                                pingedActionField.text = ""
+                            }
+                        }
+                    }
+                }
+
+                Text {
+                    visible: page.pingedRules.length === 0 && !page.pingedAddOpen
+                    text: "No watch rules yet — add one and the agent checks it every tick."
+                    color: Theme.textFaint
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                }
+
+                Repeater {
+                    model: page.pingedRules
+                    delegate: Rectangle {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        radius: Theme.radiusSm
+                        color: Theme.surface
+                        border.width: 1
+                        border.color: Theme.hairlineSoft
+                        implicitHeight: prCol.implicitHeight + 16
+
+                        ColumnLayout {
+                            id: prCol
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.margins: 8
+                            spacing: 2
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modelData.name
+                                          + (modelData.vmid > 0 ? (" · VM " + modelData.vmid) : " · fleet")
+                                          + (modelData.trigger && modelData.trigger.type === "schedule"
+                                             ? (" · daily " + modelData.trigger.time)
+                                             : " · condition")
+                                    color: Theme.text
+                                    font.family: Theme.fontSans
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                                Widgets.PillButton {
+                                    label: "Remove"
+                                    danger: true
+                                    onClicked: bridge.proxmoxPingedRemove(page.selectedMachine,
+                                                                          modelData.id)
+                                }
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: (modelData.trigger && modelData.trigger.condition
+                                       ? ("when: " + modelData.trigger.condition + " → ") : "")
+                                      + "do: " + modelData.action
+                                color: Theme.textMuted
+                                font.family: Theme.fontSans
+                                font.pixelSize: 11
+                                wrapMode: Text.Wrap
+                            }
+                            Text {
+                                text: "checked " + page.relTime(modelData.last_checked_at)
+                                      + (modelData.last_fired_at
+                                         ? (" · fired " + page.relTime(modelData.last_fired_at)) : "")
+                                      + (modelData.last_result && modelData.last_result.length
+                                         ? (" · " + modelData.last_result) : "")
+                                color: Theme.textFaint
+                                font.family: Theme.fontMono
+                                font.pixelSize: 10
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                            }
+                        }
+                    }
+                }
+
+                Text {
+                    visible: page.pingedEvents.length > 0
+                    text: "RECENT FIRES"
+                    color: Theme.textFaint
+                    font.family: Theme.fontDisplay
+                    font.pixelSize: 10
+                    font.letterSpacing: Theme.trackMid
+                }
+                Repeater {
+                    model: page.pingedEvents.slice(0, 5)
+                    delegate: Text {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        text: "⚡ " + modelData.name
+                              + (modelData.vmid > 0 ? (" (VM " + modelData.vmid + ")") : "")
+                              + " — " + modelData.result + " · " + page.relTime(modelData.fired_at)
+                        color: Theme.amber
+                        font.family: Theme.fontMono
+                        font.pixelSize: 11
+                        wrapMode: Text.Wrap
                     }
                 }
             }
@@ -1020,6 +1566,105 @@ Item {
                             bridge.proxmoxRestartVm(restartConfirm.machine, restartConfirm.vmid)
                             restartConfirm.close()
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // ===== per-VM JARVIS.md profile viewer (proxmox.vm_profile) ================
+    Popup {
+        id: profilePopup
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(page.width - 60, 640)
+        height: Math.min(page.height - 80, 560)
+        modal: true
+        focus: true
+        padding: 0
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        property int vmid: 0
+        property string profileText: ""
+        property string errorText: ""
+        function openFor(vmid_, profile_, error_) {
+            vmid = vmid_
+            profileText = profile_
+            errorText = error_
+            open()
+        }
+
+        background: Rectangle {
+            radius: Theme.radius
+            color: Qt.rgba(0.039, 0.071, 0.110, 0.98)
+            border.color: Theme.accentDim
+            border.width: 1
+        }
+        Overlay.modal: Rectangle { color: Qt.rgba(0, 0, 0, 0.6) }
+
+        contentItem: ColumnLayout {
+            spacing: 0
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.margins: 18
+                spacing: 10
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Text {
+                        text: "VM " + profilePopup.vmid + " — JARVIS.md"
+                        color: Theme.accent
+                        font.family: Theme.fontDisplay
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                        font.letterSpacing: Theme.trackMid
+                    }
+                    Item { Layout.fillWidth: true }
+                    Widgets.PillButton { label: "Close"; onClicked: profilePopup.close() }
+                }
+
+                Text {
+                    visible: profilePopup.errorText.length > 0
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    text: profilePopup.errorText
+                    color: Theme.danger
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                }
+                Text {
+                    visible: profilePopup.errorText.length === 0
+                             && profilePopup.profileText.length === 0
+                    text: "No profile yet — run Scout VMs first."
+                    color: Theme.textFaint
+                    font.family: Theme.fontSans
+                    font.pixelSize: 12
+                }
+
+                Flickable {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    visible: profilePopup.profileText.length > 0
+                    clip: true
+                    contentWidth: width
+                    contentHeight: profileBody.implicitHeight
+                    boundsBehavior: Flickable.StopAtBounds
+                    ScrollBar.vertical: ScrollBar {
+                        policy: ScrollBar.AsNeeded; width: 5
+                        background: Item {}
+                        contentItem: Rectangle { implicitWidth: 4; radius: 2; color: Theme.hairline; opacity: 0.5 }
+                    }
+                    Text {
+                        id: profileBody
+                        width: parent.width
+                        text: profilePopup.profileText
+                        textFormat: Text.MarkdownText
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                        lineHeight: 1.35
                     }
                 }
             }

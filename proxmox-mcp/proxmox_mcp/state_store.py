@@ -1,7 +1,11 @@
 """Per-VM tuning state (config.STATE_FILE): cores/memory_mb Proxmox is
 CURRENTLY configured to, pending_restart, and the cooldown timestamp. Small
 enough that plain read-modify-write with an atomic rename is sufficient —
-this daemon is the only writer, single process, one tick at a time."""
+this daemon is the only writer, single process, one tick at a time.
+
+load_json/save_json are the shared atomic-JSON-file primitive every other
+small store in this package (scout_status, pinged_store) builds on, so the
+tmp-suffix + os.replace dance exists in exactly one place."""
 
 from __future__ import annotations
 
@@ -10,18 +14,26 @@ import os
 from pathlib import Path
 
 
-def load(state_file: Path) -> dict:
+def load_json(path: Path, default: dict) -> dict:
     try:
-        return json.loads(state_file.read_text())
+        return json.loads(path.read_text())
     except (OSError, ValueError):
-        return {"vms": {}}
+        return default
+
+
+def save_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.replace(tmp, path)  # atomic on the same filesystem
+
+
+def load(state_file: Path) -> dict:
+    return load_json(state_file, {"vms": {}})
 
 
 def save(state_file: Path, state: dict) -> None:
-    state_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp = state_file.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2))
-    os.replace(tmp, state_file)  # atomic on the same filesystem
+    save_json(state_file, state)
 
 
 def vm_entry(state: dict, vmid: int) -> dict:

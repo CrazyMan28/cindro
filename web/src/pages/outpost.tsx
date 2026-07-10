@@ -59,6 +59,58 @@ interface ProxmoxMemory {
   score?: number
 }
 
+interface ScoutResult {
+  vmid: number
+  name: string
+  kind: string
+  ok: boolean
+  os_family: string
+  agent: boolean | null
+  summary: string
+  error: string
+}
+
+interface ScoutStatus {
+  state: string // idle | running | done | error
+  trigger?: string
+  started_at?: number
+  finished_at?: number | null
+  total?: number
+  done?: number
+  current_vmid?: number | null
+  current_name?: string
+  results?: ScoutResult[]
+}
+
+interface ProxmoxQuestion {
+  qid: string
+  vmid: number
+  question: string
+  options?: string[]
+  at: number
+}
+
+interface PingedRule {
+  id: string
+  name: string
+  vmid: number
+  trigger: { type: string; condition?: string; time?: string }
+  action: string
+  enabled: boolean
+  last_checked_at: number | null
+  last_fired_at: number | null
+  last_result: string
+}
+
+interface PingedEvent {
+  eid: string
+  rule_id: string
+  name: string
+  vmid: number
+  fired_at: number
+  result: string
+}
+
 let entrySeq = 0
 
 function fmtTime(ms?: number): string {
@@ -123,10 +175,33 @@ function Outpost() {
   const [reportError, setReportError] = createSignal("")
   const [reportLoaded, setReportLoaded] = createSignal(false)
 
+  const [scout, setScout] = createSignal<ScoutStatus | null>(null)
+  const [scoutError, setScoutError] = createSignal("")
+  const [scoutStarting, setScoutStarting] = createSignal(false)
+  const [questions, setQuestions] = createSignal<ProxmoxQuestion[]>([])
+  const [answerText, setAnswerText] = createSignal<Record<string, string>>({})
+  const [pingedRules, setPingedRules] = createSignal<PingedRule[]>([])
+  const [pingedEvents, setPingedEvents] = createSignal<PingedEvent[]>([])
+  const [pingedError, setPingedError] = createSignal("")
+  const [pingedAddOpen, setPingedAddOpen] = createSignal(false)
+  const [prName, setPrName] = createSignal("")
+  const [prVmid, setPrVmid] = createSignal("")
+  const [prTime, setPrTime] = createSignal("")
+  const [prCondition, setPrCondition] = createSignal("")
+  const [prAction, setPrAction] = createSignal("")
+  const [profileVmid, setProfileVmid] = createSignal<number | null>(null)
+  const [profileText, setProfileText] = createSignal("")
+  const [profileError, setProfileError] = createSignal("")
+
   let alive = true
   onCleanup(() => {
     alive = false
   })
+
+  // The workload manager is confirmed present once proxmox.status has
+  // succeeded for the selected machine — that's the gate for the extra
+  // questions/pinged polling below.
+  const workloadPresent = () => vmsLoaded() && !vmsError()
 
   const load = async () => {
     try {
@@ -167,12 +242,148 @@ function Outpost() {
     }
   }
 
+  // Questions + pinged rules piggyback the 15s cadence, gated on the
+  // workload manager actually being present (see workloadPresent). The two
+  // calls are independent (different remote execs) — fire them in parallel
+  // rather than paying the round-trip twice, sequentially, every 15s.
+  const loadAux = async () => {
+    const machine = selected()
+    if (!machine || !workloadPresent()) return
+    const [qResult, pResult] = await Promise.allSettled([
+      app.client.call("proxmox.questions", { machine }, 15000),
+      app.client.call("proxmox.pinged_list", { machine }, 15000),
+    ])
+    if (!alive || selected() !== machine) return
+    if (qResult.status === "fulfilled") {
+      setQuestions((qResult.value.questions ?? []) as ProxmoxQuestion[])
+    } // else: best-effort; the card just keeps its last state
+    if (pResult.status === "fulfilled") {
+      setPingedRules((pResult.value.rules ?? []) as PingedRule[])
+      setPingedEvents((pResult.value.events ?? []) as PingedEvent[])
+      setPingedError("")
+    } else {
+      setPingedError(String(pResult.reason))
+    }
+  }
+
+  // 3s scout-status poll while a scan runs; stops itself the moment the
+  // machine changes or the state leaves "running" (mirrors pollPairing).
+  // The detached runner takes a moment to boot + enumerate VMs before it
+  // writes state="running" — a status reply whose started_at predates
+  // `requestedAt` is stale data from a PREVIOUS run (or the idle default),
+  // not evidence the new scan already finished. Only a reply that's
+  // actually from our run may stop the poll.
+  const reflectsOurRun = (status: ScoutStatus, requestedAt: number) =>
+    Boolean(status.started_at) && (status.started_at as number) >= requestedAt
+
+  const pollScout = async (machine: string, requestedAt: number) => {
+    for (let i = 0; i < 400 && alive; i++) {
+      try {
+        const res = await app.client.call("proxmox.scout_status", { machine }, 15000)
+        if (!alive || selected() !== machine) return
+        const status = (res.scout ?? { state: "idle" }) as ScoutStatus
+        setScout(status)
+        setScoutError("")
+        if (status.state !== "running" && reflectsOurRun(status, requestedAt)) return
+      } catch (e) {
+        if (!alive || selected() !== machine) return
+        setScoutError(String(e))
+        return
+      }
+      await new Promise((r) => setTimeout(r, 3000))
+      if (!alive || selected() !== machine) return
+    }
+  }
+
+  const startScout = async () => {
+    const machine = selected()
+    if (!machine || scoutStarting()) return
+    setScoutStarting(true)
+    setScoutError("")
+    const requestedAt = Date.now()
+    try {
+      await app.client.call("proxmox.scout", { machine }, 30000)
+      if (!alive || selected() !== machine) return
+      void pollScout(machine, requestedAt)
+    } catch (e) {
+      if (!alive) return
+      setScoutError(e instanceof ControlError ? `${e.code}: ${e.message}` : String(e))
+    } finally {
+      if (alive) setScoutStarting(false)
+    }
+  }
+
+  const answerQuestion = async (q: ProxmoxQuestion, answer: string) => {
+    const machine = selected()
+    const text = answer.trim()
+    if (!machine || !text) return
+    try {
+      await app.client.call("proxmox.answer", { machine, qid: q.qid, answer: text }, 15000)
+      setAnswerText((prev) => ({ ...prev, [q.qid]: "" }))
+      await loadAux()
+    } catch (e) {
+      app.notify(`Answer failed: ${String(e)}`, "error")
+    }
+  }
+
+  const addPinged = async () => {
+    const machine = selected()
+    if (!machine) return
+    try {
+      await app.client.call("proxmox.pinged_add", {
+        machine,
+        name: prName().trim(),
+        action: prAction().trim(),
+        vmid: parseInt(prVmid(), 10) || 0,
+        condition: prCondition().trim(),
+        time: prTime().trim(),
+      }, 20000)
+      setPrName("")
+      setPrVmid("")
+      setPrTime("")
+      setPrCondition("")
+      setPrAction("")
+      setPingedAddOpen(false)
+      await loadAux()
+    } catch (e) {
+      setPingedError(e instanceof ControlError ? `${e.code}: ${e.message}` : String(e))
+    }
+  }
+
+  const removePinged = async (rule: PingedRule) => {
+    const machine = selected()
+    if (!machine) return
+    try {
+      await app.client.call("proxmox.pinged_remove", { machine, rule_id: rule.id }, 20000)
+      await loadAux()
+    } catch (e) {
+      app.notify(`Remove failed: ${String(e)}`, "error")
+    }
+  }
+
+  const openProfile = async (vm: ProxmoxVm) => {
+    const machine = selected()
+    if (!machine) return
+    setProfileVmid(vm.vmid)
+    setProfileText("")
+    setProfileError("")
+    try {
+      const res = await app.client.call("proxmox.vm_profile", { machine, vmid: vm.vmid }, 15000)
+      if (!alive || profileVmid() !== vm.vmid) return
+      setProfileText(String(res.profile ?? ""))
+    } catch (e) {
+      if (!alive) return
+      setProfileError(String(e))
+    }
+  }
+
   onMount(() => {
     void load()
     const conn = setInterval(() => setConnected(app.client.connected), 500)
     const timer = setInterval(() => {
       void load()
       void loadVms()
+      void loadAux()
     }, 15000)
     const tick = setInterval(() => setNow(Date.now()), 1000)
     onCleanup(() => {
@@ -191,7 +402,14 @@ function Outpost() {
     setReport([])
     setReportLoaded(false)
     setReportError("")
-    void loadVms()
+    setScout(null)
+    setScoutError("")
+    setQuestions([])
+    setPingedRules([])
+    setPingedEvents([])
+    setPingedError("")
+    setProfileVmid(null)
+    void loadVms().then(() => loadAux())
   })
 
   const remaining = () => {
@@ -469,6 +687,37 @@ function Outpost() {
         .op-report-tag { display: inline-block; margin-right: 6px; padding: 1px 6px; border-radius: 4px;
           background: var(--accent-faint); color: var(--accent); font-size: 9px;
           font-family: var(--font-display); letter-spacing: var(--track-tight); }
+        .op-scout-progress { margin-top: 10px; font-family: var(--font-mono); font-size: 12px; color: var(--accent-bright); }
+        .op-scout-done { margin-top: 10px; font-family: var(--font-mono); font-size: 12px; color: var(--success); }
+        .op-scout-results { max-height: 160px; overflow-y: auto; margin-top: 8px;
+          background: var(--surface-deep); border: 1px solid var(--hairline-soft);
+          border-radius: var(--radius-sm); padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; }
+        .op-scout-line { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); word-break: break-word; }
+        .op-scout-line.fail { color: var(--danger); }
+        .op-question { border-radius: var(--radius-sm); background: var(--panel-soft);
+          border: 1px solid var(--amber-dim, var(--accent-dim)); padding: 10px 14px; margin-top: 8px; }
+        .op-question-text { color: var(--text); font-size: 13px; }
+        .op-question-opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+        .op-question-row { display: flex; gap: 8px; margin-top: 8px; }
+        .op-pinged-rule { border-radius: var(--radius-sm); background: var(--panel-soft);
+          border: 1px solid var(--hairline-soft); padding: 10px 14px; margin-top: 8px; }
+        .op-pinged-head { display: flex; align-items: center; gap: 10px; }
+        .op-pinged-name { flex: 1; color: var(--text); font-size: 13px; font-weight: 500; min-width: 0; }
+        .op-pinged-detail { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+        .op-pinged-meta { color: var(--text-faint); font-family: var(--font-mono); font-size: 10px; margin-top: 4px; }
+        .op-pinged-event { color: var(--amber); font-family: var(--font-mono); font-size: 11px; margin-top: 4px; word-break: break-word; }
+        .op-pinged-form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+        .op-pinged-form-row { display: flex; gap: 8px; flex-wrap: wrap; }
+        .op-profile-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+          display: flex; align-items: center; justify-content: center; z-index: 60; }
+        .op-profile-modal { width: min(680px, calc(100vw - 40px)); max-height: min(600px, calc(100vh - 60px));
+          display: flex; flex-direction: column; background: var(--panel, #0a1220);
+          border: 1px solid var(--accent-dim); border-radius: var(--radius-sm); padding: 18px; }
+        .op-profile-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+        .op-profile-title { flex: 1; color: var(--accent); font-family: var(--font-display);
+          font-size: 12px; letter-spacing: var(--track-mid); }
+        .op-profile-body { overflow-y: auto; white-space: pre-wrap; font-family: var(--font-mono);
+          font-size: 12px; color: var(--text); line-height: 1.45; }
       `}</style>
 
       <div class="op-header">
@@ -610,6 +859,49 @@ function Outpost() {
             </div>
           </Show>
 
+          <div class="op-pair-row op-report-btn">
+            <div class="op-pair-text">
+              <div class="op-pair-label">VM scout</div>
+              <div class="op-pair-sub">
+                Agentless scan of what's running inside every VM/container — refreshes each guest's JARVIS.md profile.
+              </div>
+            </div>
+            <button
+              type="button"
+              class="op-btn"
+              disabled={!connected() || scoutStarting() || scout()?.state === "running"}
+              onClick={() => void startScout()}
+            >
+              {scoutStarting() ? "Starting…" : scout()?.state === "running" ? "Scouting…" : "Scout VMs"}
+            </button>
+          </div>
+          <Show when={scoutError()}>
+            <div class="op-banner-error">⚠ {scoutError()}</div>
+          </Show>
+          <Show when={scout()?.state === "running"}>
+            <div class="op-scout-progress">
+              Scouting… {scout()?.done ?? 0}/{scout()?.total ?? 0}
+              {scout()?.current_vmid ? ` — VM ${scout()!.current_vmid} (${scout()!.current_name ?? ""})` : ""}
+            </div>
+          </Show>
+          <Show when={scout()?.state === "done"}>
+            <div class="op-scout-done">
+              Scout done: {(scout()?.results ?? []).filter((r) => r.ok).length}/{scout()?.total ?? 0} guests profiled
+              {scout()?.finished_at ? ` · ${timeAgo(scout()!.finished_at!)}` : ""}
+            </div>
+          </Show>
+          <Show when={(scout()?.results ?? []).length > 0}>
+            <div class="op-scout-results">
+              <For each={scout()!.results!}>
+                {(r) => (
+                  <div class="op-scout-line" classList={{ fail: !r.ok }}>
+                    {r.ok ? "✓" : "✗"} VM {r.vmid} ({r.name}, {r.kind}) — {r.ok ? r.summary : r.error}
+                  </div>
+                )}
+              </For>
+            </div>
+          </Show>
+
           <div class="op-cmd-label">VIRTUAL MACHINES</div>
           <Show when={vmsError()}>
             <div class="op-banner-error">⚠ {vmsError()}</div>
@@ -630,6 +922,7 @@ function Outpost() {
                     <th>CPU %</th>
                     <th>Mem %</th>
                     <th>Blocklist</th>
+                    <th></th>
                     <th></th>
                   </tr>
                 </thead>
@@ -660,6 +953,11 @@ function Outpost() {
                             disabled={blocklistBusyVmid() === vm.vmid}
                             onChange={() => void toggleBlocklist(vm)}
                           />
+                        </td>
+                        <td>
+                          <button type="button" class="op-vm-restart" onClick={() => void openProfile(vm)}>
+                            Profile
+                          </button>
                         </td>
                         <td>
                           <button
@@ -709,6 +1007,151 @@ function Outpost() {
               </For>
             </div>
           </Show>
+
+          <Show when={questions().length > 0}>
+            <div class="op-cmd-label">AGENT QUESTIONS</div>
+            <For each={questions()}>
+              {(q) => (
+                <div class="op-question">
+                  <div class="op-question-text">
+                    {q.vmid > 0 ? `VM ${q.vmid} · ` : ""}{q.question}
+                  </div>
+                  <Show when={(q.options ?? []).length > 0}>
+                    <div class="op-question-opts">
+                      <For each={q.options!}>
+                        {(opt) => (
+                          <button type="button" class="op-btn" onClick={() => void answerQuestion(q, opt)}>
+                            {opt}
+                          </button>
+                        )}
+                      </For>
+                    </div>
+                  </Show>
+                  <form
+                    class="op-question-row"
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      void answerQuestion(q, answerText()[q.qid] ?? "")
+                    }}
+                  >
+                    <input
+                      class="op-input"
+                      placeholder="Type an answer…"
+                      value={answerText()[q.qid] ?? ""}
+                      onInput={(e) => {
+                        const v = e.currentTarget.value
+                        setAnswerText((prev) => ({ ...prev, [q.qid]: v }))
+                      }}
+                    />
+                    <button type="submit" class="op-btn" disabled={!(answerText()[q.qid] ?? "").trim()}>
+                      Answer
+                    </button>
+                  </form>
+                </div>
+              )}
+            </For>
+          </Show>
+
+          <Show when={workloadPresent()}>
+            <div class="op-pair-row op-report-btn">
+              <div class="op-pair-text">
+                <div class="op-pair-label">Pinged watch rules</div>
+                <div class="op-pair-sub">
+                  Condition rules the agent judges every tick ("the runner looks stuck → fix it")
+                  plus daily check-ups. Fired rules ping your inbox.
+                </div>
+              </div>
+              <button type="button" class="op-btn" onClick={() => setPingedAddOpen(!pingedAddOpen())}>
+                {pingedAddOpen() ? "Cancel" : "Add rule"}
+              </button>
+            </div>
+            <Show when={pingedError()}>
+              <div class="op-banner-error">⚠ {pingedError()}</div>
+            </Show>
+            <Show when={pingedAddOpen()}>
+              <div class="op-pinged-form">
+                <div class="op-pinged-form-row">
+                  <input class="op-input" style={{ flex: "2" }} placeholder="Rule name"
+                         value={prName()} onInput={(e) => setPrName(e.currentTarget.value)} />
+                  <input class="op-input" style={{ flex: "1" }} placeholder="VMID (0 = fleet)"
+                         value={prVmid()} onInput={(e) => setPrVmid(e.currentTarget.value)} />
+                  <input class="op-input" style={{ flex: "1" }} placeholder="Daily HH:MM"
+                         value={prTime()} onInput={(e) => setPrTime(e.currentTarget.value)} />
+                </div>
+                <input class="op-input" placeholder='…or a condition (e.g. "the CI runner on this VM looks stuck") — leave empty for a daily rule'
+                       value={prCondition()} onInput={(e) => setPrCondition(e.currentTarget.value)} />
+                <div class="op-pinged-form-row">
+                  <input class="op-input" style={{ flex: "1" }}
+                         placeholder='Action when it fires (e.g. "check up on it and fix it, don&apos;t break anything")'
+                         value={prAction()} onInput={(e) => setPrAction(e.currentTarget.value)} />
+                  <button
+                    type="button"
+                    class="op-btn"
+                    disabled={!prName().trim() || !prAction().trim()
+                              || (prCondition().trim().length > 0) === (prTime().trim().length > 0)}
+                    onClick={() => void addPinged()}
+                  >
+                    Create
+                  </button>
+                </div>
+              </div>
+            </Show>
+            <Show when={pingedRules().length === 0 && !pingedAddOpen()}>
+              <div class="op-empty">No watch rules yet — add one and the agent checks it every tick.</div>
+            </Show>
+            <For each={pingedRules()}>
+              {(rule) => (
+                <div class="op-pinged-rule">
+                  <div class="op-pinged-head">
+                    <div class="op-pinged-name">
+                      {rule.name} {rule.vmid > 0 ? `· VM ${rule.vmid}` : "· fleet"}
+                      {rule.trigger?.type === "schedule" ? ` · daily ${rule.trigger.time}` : " · condition"}
+                    </div>
+                    <button type="button" class="op-revoke" onClick={() => void removePinged(rule)}>
+                      Remove
+                    </button>
+                  </div>
+                  <div class="op-pinged-detail">
+                    {rule.trigger?.condition ? `when: ${rule.trigger.condition} → ` : ""}do: {rule.action}
+                  </div>
+                  <div class="op-pinged-meta">
+                    checked {rule.last_checked_at ? timeAgo(rule.last_checked_at) : "never"}
+                    {rule.last_fired_at ? ` · fired ${timeAgo(rule.last_fired_at)}` : ""}
+                    {rule.last_result ? ` · ${rule.last_result}` : ""}
+                  </div>
+                </div>
+              )}
+            </For>
+            <Show when={pingedEvents().length > 0}>
+              <div class="op-cmd-label">RECENT FIRES</div>
+              <For each={pingedEvents().slice(0, 5)}>
+                {(ev) => (
+                  <div class="op-pinged-event">
+                    ⚡ {ev.name}{ev.vmid > 0 ? ` (VM ${ev.vmid})` : ""} — {ev.result} · {timeAgo(ev.fired_at)}
+                  </div>
+                )}
+              </For>
+            </Show>
+          </Show>
+        </div>
+      </Show>
+
+      <Show when={profileVmid() !== null}>
+        <div class="op-profile-overlay" onClick={() => setProfileVmid(null)}>
+          <div class="op-profile-modal" onClick={(e) => e.stopPropagation()}>
+            <div class="op-profile-head">
+              <div class="op-profile-title">VM {profileVmid()} — JARVIS.md</div>
+              <button type="button" class="op-btn" onClick={() => setProfileVmid(null)}>Close</button>
+            </div>
+            <Show when={profileError()}>
+              <div class="op-banner-error">⚠ {profileError()}</div>
+            </Show>
+            <Show when={!profileError()}>
+              <div class="op-profile-body">
+                {profileText() || "No profile yet — run Scout VMs first."}
+              </div>
+            </Show>
+          </div>
         </div>
       </Show>
     </div>
