@@ -1380,6 +1380,21 @@ void Bridge::outpostInstallWorkload(const QString &machine)
 
 // ---- Proxmox Workload Manager (per-machine, once installed) ---------------
 
+namespace {
+// Several proxmox.* requests pack "machine:id" (vmid/qid) into the request's
+// ctx string so the reply can address the right row without a second
+// round-trip (see proxmoxRestartVm/proxmoxVmProfile/proxmoxAnswer below) —
+// one splitter shared by every dispatch site instead of six copies of the
+// same lastIndexOf(':') dance.
+QString splitMachineCtx(const QString &ctx, QString *rest)
+{
+    const int sep = ctx.lastIndexOf(QLatin1Char(':'));
+    if (rest)
+        *rest = sep >= 0 ? ctx.mid(sep + 1) : QString();
+    return sep >= 0 ? ctx.left(sep) : ctx;
+}
+} // namespace
+
 void Bridge::proxmoxStatus(const QString &machine)
 {
     const QString m = machine.trimmed();
@@ -3956,10 +3971,9 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             return;
         }
         if (method == QStringLiteral("proxmox.restart_vm")) {
-            const int sep = ctx.lastIndexOf(QLatin1Char(':'));
-            const QString machine = sep >= 0 ? ctx.left(sep) : ctx;
-            const int vmid = sep >= 0 ? ctx.mid(sep + 1).toInt() : 0;
-            emit proxmoxVmRestarted(machine, vmid, false, msg.isEmpty() ? code : msg);
+            QString rest;
+            const QString machine = splitMachineCtx(ctx, &rest);
+            emit proxmoxVmRestarted(machine, rest.toInt(), false, msg.isEmpty() ? code : msg);
             return;
         }
         if (method == QStringLiteral("proxmox.set_blocklist")) {
@@ -3975,10 +3989,9 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             return;
         }
         if (method == QStringLiteral("proxmox.vm_profile")) {
-            const int sep = ctx.lastIndexOf(QLatin1Char(':'));
-            const QString machine = sep >= 0 ? ctx.left(sep) : ctx;
-            const int vmid = sep >= 0 ? ctx.mid(sep + 1).toInt() : 0;
-            emit proxmoxVmProfileResult(machine, vmid, false, QString(),
+            QString rest;
+            const QString machine = splitMachineCtx(ctx, &rest);
+            emit proxmoxVmProfileResult(machine, rest.toInt(), false, QString(),
                                         msg.isEmpty() ? code : msg);
             return;
         }
@@ -3987,9 +4000,8 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             return;
         }
         if (method == QStringLiteral("proxmox.answer")) {
-            const int sep = ctx.lastIndexOf(QLatin1Char(':'));
-            const QString machine = sep >= 0 ? ctx.left(sep) : ctx;
-            const QString qid = sep >= 0 ? ctx.mid(sep + 1) : QString();
+            QString qid;
+            const QString machine = splitMachineCtx(ctx, &qid);
             emit proxmoxAnswerResult(machine, qid, false, msg.isEmpty() ? code : msg);
             return;
         }
@@ -4374,10 +4386,10 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         emit proxmoxReportResult(ctx, true, result.value(QStringLiteral("memories")).toList(),
                                  QString());
     } else if (method == QStringLiteral("proxmox.restart_vm")) {
-        const int sep = ctx.lastIndexOf(QLatin1Char(':'));
-        const QString machine = sep >= 0 ? ctx.left(sep) : ctx;
-        const int vmid = sep >= 0 ? ctx.mid(sep + 1).toInt()
-                                   : result.value(QStringLiteral("vmid")).toInt();
+        QString rest;
+        const QString machine = splitMachineCtx(ctx, &rest);
+        const int vmid = rest.isEmpty() ? result.value(QStringLiteral("vmid")).toInt()
+                                        : rest.toInt();
         emit proxmoxVmRestarted(machine, vmid, true, QString());
     } else if (method == QStringLiteral("proxmox.set_blocklist")) {
         emit proxmoxBlocklistSet(ctx, true, result.value(QStringLiteral("vmids")).toList(), QString());
@@ -4387,10 +4399,10 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         emit proxmoxScoutStatusResult(ctx, true,
                                       result.value(QStringLiteral("scout")).toMap(), QString());
     } else if (method == QStringLiteral("proxmox.vm_profile")) {
-        const int sep = ctx.lastIndexOf(QLatin1Char(':'));
-        const QString machine = sep >= 0 ? ctx.left(sep) : ctx;
-        const int vmid = sep >= 0 ? ctx.mid(sep + 1).toInt()
-                                   : result.value(QStringLiteral("vmid")).toInt();
+        QString rest;
+        const QString machine = splitMachineCtx(ctx, &rest);
+        const int vmid = rest.isEmpty() ? result.value(QStringLiteral("vmid")).toInt()
+                                        : rest.toInt();
         emit proxmoxVmProfileResult(machine, vmid, true,
                                     result.value(QStringLiteral("profile")).toString(),
                                     QString());
@@ -4398,10 +4410,9 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         emit proxmoxQuestionsResult(ctx, true,
                                     result.value(QStringLiteral("questions")).toList(), QString());
     } else if (method == QStringLiteral("proxmox.answer")) {
-        const int sep = ctx.lastIndexOf(QLatin1Char(':'));
-        const QString machine = sep >= 0 ? ctx.left(sep) : ctx;
-        const QString qid = sep >= 0 ? ctx.mid(sep + 1)
-                                      : result.value(QStringLiteral("qid")).toString();
+        QString rest;
+        const QString machine = splitMachineCtx(ctx, &rest);
+        const QString qid = rest.isEmpty() ? result.value(QStringLiteral("qid")).toString() : rest;
         emit proxmoxAnswerResult(machine, qid, true, QString());
     } else if (method == QStringLiteral("proxmox.pinged_list")) {
         emit proxmoxPingedListResult(ctx, true,

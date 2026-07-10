@@ -17,28 +17,22 @@ polls for inbox pings.
 
 from __future__ import annotations
 
-import json
-import os
 import time
 from pathlib import Path
+
+from proxmox_mcp import mailbox, state_store
 
 _EVENTS_CAP = 200
 
 
 def load_rules(rules_file: Path) -> list[dict]:
-    try:
-        data = json.loads(rules_file.read_text())
-    except (OSError, ValueError):
-        return []
+    data = state_store.load_json(rules_file, {"rules": []})
     rules = data.get("rules", []) if isinstance(data, dict) else []
     return [r for r in rules if isinstance(r, dict) and r.get("id")]
 
 
 def save_rules(rules_file: Path, rules: list[dict]) -> None:
-    rules_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp = rules_file.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"rules": rules}, indent=2))
-    os.replace(tmp, rules_file)
+    state_store.save_json(rules_file, {"rules": rules})
 
 
 def _valid_time(hhmm: str) -> bool:
@@ -137,35 +131,14 @@ def record(rules_file: Path, events_file: Path, rule_id: str, fired: bool,
 
 
 def _append_event(events_file: Path, event: dict) -> None:
-    events_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(events_file, "a") as f:
-        f.write(json.dumps(event) + "\n")
+    mailbox.append_jsonl(events_file, event)
     # Cap the file so years of daily rules can't grow it unbounded.
-    try:
-        lines = events_file.read_text().splitlines()
-    except OSError:
-        return
-    if len(lines) > _EVENTS_CAP:
-        tmp = events_file.with_suffix(".tmp")
-        tmp.write_text("\n".join(lines[-_EVENTS_CAP:]) + "\n")
-        os.replace(tmp, events_file)
+    rows = mailbox.read_jsonl(events_file)
+    if len(rows) > _EVENTS_CAP:
+        mailbox.rewrite_jsonl(events_file, rows[-_EVENTS_CAP:])
 
 
 def events(events_file: Path, limit: int = 50) -> list[dict]:
-    rows = []
-    try:
-        lines = events_file.read_text().splitlines()
-    except OSError:
-        return []
-    for line in lines[-limit:]:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
+    rows = mailbox.read_jsonl(events_file)[-limit:]
     rows.reverse()  # newest first
     return rows

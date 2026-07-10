@@ -505,9 +505,11 @@ private:
     Response handleProxmoxPingedRemove(const Request &req);
     // Best-effort inbox pings for new agent questions / fired pinged events:
     // a 5-min poll over the machines in <data>/proxmox_machines.json (written
-    // on install_workload, self-healed by successful proxmox.* calls), deduped
-    // forever via <data>/proxmox_seen_notifications.json. No phone.env ->
-    // silently skipped; the Outpost page still shows everything.
+    // by install_workload, self-healed by proxmox.status ONLY — the one RPC
+    // that actually verifies qm+pvesh — never by exec calls that merely
+    // succeed on any machine with python3), deduped forever via
+    // <data>/proxmox_seen_notifications.json. No phone.env -> silently
+    // skipped; the Outpost page still shows everything.
     void pollProxmoxMailboxes();
     void registerProxmoxMachine(const QString &machine);
     void markProxmoxSeen(const QStringList &keys);

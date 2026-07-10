@@ -8,9 +8,10 @@ run past the staleness window."""
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
+
+from proxmox_mcp import state_store
 
 _STALE_MS = 30 * 60 * 1000
 
@@ -18,18 +19,12 @@ IDLE = {"state": "idle"}
 
 
 def read(status_file: Path) -> dict:
-    try:
-        data = json.loads(status_file.read_text())
-    except (OSError, ValueError):
-        return dict(IDLE)
+    data = state_store.load_json(status_file, dict(IDLE))
     return data if isinstance(data, dict) else dict(IDLE)
 
 
 def write(status_file: Path, status: dict) -> None:
-    status_file.parent.mkdir(parents=True, exist_ok=True)
-    tmp = status_file.with_suffix(".tmp")
-    tmp.write_text(json.dumps(status, indent=2))
-    os.replace(tmp, status_file)
+    state_store.save_json(status_file, status)
 
 
 def _pid_alive(pid: int) -> bool:

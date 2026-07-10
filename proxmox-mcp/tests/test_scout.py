@@ -222,6 +222,28 @@ def test_guest_service_rejects_bad_service_names(monkeypatch):
         assert result["ok"] is False and "service name" in result["error"]
 
 
+def test_guest_service_rejects_power_targets(monkeypatch):
+    # The name regex alone would accept these — a valid unit name is a
+    # perfectly good VM-power bypass, so this must be blocked independently.
+    monkeypatch.setattr(ops, "_exec_via_agent_unchecked", lambda *a, **k: (
+        (_ for _ in ()).throw(AssertionError("must not exec"))))
+    for name in ("poweroff.target", "reboot.target", "halt.target",
+                 "shutdown.target", "kexec.target", "emergency.target",
+                 "rescue.target", "sleep.target", "suspend.target",
+                 "hibernate.target", "hybrid-sleep.target",
+                 "some-other.target", "REBOOT.TARGET", "my-poweroff-hook"):
+        result = scout.guest_service(104, name, "restart")
+        assert result["ok"] is False and "power" in result["error"], name
+
+
+def test_guest_service_allows_ordinary_service_names(monkeypatch):
+    seen = _capture_agent_exec(monkeypatch)
+    for name in ("nginx", "nginx.service", "gitea-runner", "actions.runner@1"):
+        seen.clear()
+        result = scout.guest_service(104, name, "status")
+        assert result["ok"] is True, name
+
+
 def test_guest_service_blocklist_refuses_mutation_allows_status(monkeypatch):
     seen = _capture_agent_exec(monkeypatch)
     blocked = scout.guest_service(104, "nginx", "restart", blocklist={104})

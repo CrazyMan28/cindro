@@ -9,6 +9,7 @@ proxmox_guest_service is NOT an exception to that: it can start/restart a
 service INSIDE a guest (closed verb set, validated name, no stop verb) but
 has no path to VM power whatsoever."""
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -258,7 +259,11 @@ def register(mcp: FastMCP) -> list[str]:
         profile is stale (proxmox_list_vm_profiles) or its workload no
         longer matches what proxmox_status shows."""
         if not full and vmids and len(vmids) <= 3:
-            return scout_runner.run_scout([int(v) for v in vmids], "agent")
+            # run_scout is blocking (subprocess-based guest_exec polling,
+            # up to 120s/guest) — off-load it so it doesn't freeze this
+            # server's single asyncio event loop for the whole scan.
+            return await asyncio.to_thread(scout_runner.run_scout,
+                                           [int(v) for v in vmids], "agent")
         exe = Path(sys.executable).parent / "proxmox-scout"
         if not exe.exists():
             which = shutil.which("proxmox-scout")
@@ -411,9 +416,10 @@ def register(mcp: FastMCP) -> list[str]:
         if kind == "lxc":
             os_family = "linux"
         elif not os_family:
-            os_family = scout.guest_os_family(vmid)
-        return scout.guest_service(vmid, service, verb, kind=kind,
-                                   os_family=os_family, blocklist=blocklist)
+            os_family = await asyncio.to_thread(scout.guest_os_family, vmid)
+        return await asyncio.to_thread(scout.guest_service, vmid, service, verb,
+                                       kind=kind, os_family=os_family,
+                                       blocklist=blocklist)
 
     return [
         "proxmox_status", "proxmox_tune", "proxmox_guest_exec", "proxmox_get_directives",

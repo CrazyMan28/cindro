@@ -139,6 +139,8 @@ class OutpostPane(TablePane):
         self._restart_confirm_timer = None
         self._scout_timer = None       # 3s poll while a scout runs
         self._scout_machine: str | None = None
+        self._scout_requested_at_ms: int = 0
+        self._scout_poll_attempts = 0
 
     def compose(self) -> ComposeResult:
         yield Static(Text(self.HINT, style="bright_black"), classes="pane-hint")
@@ -250,9 +252,14 @@ class OutpostPane(TablePane):
         log.display = True
         return log
 
+    # ~10min safety cap @3s so a genuinely stuck/broken install doesn't poll forever.
+    _SCOUT_MAX_POLL_ATTEMPTS = 200
+
     @work(exclusive=True)
     async def start_scout(self, machine: str) -> None:
+        import time
         log = self._show_log()
+        self._scout_requested_at_ms = int(time.time() * 1000)
         try:
             await self.client.call("proxmox.scout", {"machine": machine})
         except (ControlError, ConnectionError, TimeoutError) as exc:
@@ -261,6 +268,7 @@ class OutpostPane(TablePane):
         log.clear()
         log.write("scout started — progress below")
         self._scout_machine = machine
+        self._scout_poll_attempts = 0
         if self._scout_timer is not None:
             self._scout_timer.stop()
         self._scout_timer = self.set_interval(3.0, self._poll_scout)
@@ -287,7 +295,15 @@ class OutpostPane(TablePane):
             mark = "✓" if r.get("ok") else "✗"
             detail = r.get("summary") if r.get("ok") else r.get("error")
             log.write(f"{mark} VM {r.get('vmid')} ({r.get('name')}, {r.get('kind')}) — {detail}")
-        if state != "running":
+        self._scout_poll_attempts += 1
+        # The detached runner takes a moment to boot before it writes
+        # state=running — a reply whose started_at predates our request is
+        # stale data from a PREVIOUS scan, not evidence this one finished.
+        started_at = scout.get("started_at") or 0
+        reflects_our_run = started_at >= self._scout_requested_at_ms
+        still_starting = (not reflects_our_run
+                          and self._scout_poll_attempts < self._SCOUT_MAX_POLL_ATTEMPTS)
+        if state != "running" and not still_starting:
             log.write(f"scout {state}")
             if self._scout_timer is not None:
                 self._scout_timer.stop()

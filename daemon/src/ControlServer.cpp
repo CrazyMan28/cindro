@@ -7261,7 +7261,7 @@ Response ControlServer::handleProxmoxStatus(const Request &req)
     // choice) — a single JSON blob has no such ambiguity.
     const QString cmd = QStringLiteral(
         "python3 -c '\n"
-        "import json, subprocess\n"
+        "import json, shutil, subprocess\n"
         "def safe(fn, default):\n"
         "    try:\n"
         "        return fn()\n"
@@ -7271,7 +7271,9 @@ Response ControlServer::handleProxmoxStatus(const Request &req)
         "\"/cluster/resources\",\"--output-format\",\"json\"])), [])\n"
         "state = safe(lambda: json.load(open(\"/var/lib/jarvis-proxmox-agent/state.json\")), {})\n"
         "blocklist = safe(lambda: json.load(open(\"/etc/jarvis-proxmox-agent/blocklist.json\")), {})\n"
-        "print(json.dumps({\"resources\": resources, \"state\": state, \"blocklist\": blocklist}))\n"
+        "has_proxmox = bool(shutil.which(\"qm\") and shutil.which(\"pvesh\"))\n"
+        "print(json.dumps({\"resources\": resources, \"state\": state, \"blocklist\": blocklist,"
+        "\"has_proxmox\": has_proxmox}))\n"
         "'");
     bool ok = false;
     const QJsonObject r = execOnMachine(machine, cmd, 20.0, &ok);
@@ -7321,9 +7323,15 @@ Response ControlServer::handleProxmoxStatus(const Request &req)
     }
     QJsonObject result;
     result.insert(QStringLiteral("vms"), vms);
-    // A successful status call proves this machine runs the workload manager
-    // — self-heals the notification poll's registry for pre-existing installs.
-    registerProxmoxMachine(machine);
+    // Only register for background polling when this host actually HAS
+    // qm+pvesh — the exec above succeeds (exit 0, empty resources) on ANY
+    // paired machine with python3, workload manager or not, so a bare
+    // "the RPC didn't fail" is not proof of anything. This self-heals the
+    // notification registry for pre-existing installs without silently
+    // enrolling ordinary paired laptops for a 5-minute remote-exec poll
+    // with no way to un-enroll them.
+    if (combined.value(QStringLiteral("has_proxmox")).toBool())
+        registerProxmoxMachine(machine);
     return Response::success(req.id, result);
 }
 
@@ -7542,15 +7550,23 @@ Response ControlServer::handleProxmoxScout(const Request &req)
     }
     // Detached on purpose: a fleet scan runs for minutes, outpost exec has a
     // 60s wall. Progress lands in scout_status.json; UIs poll proxmox.scout_status.
+    // `setsid cmd & echo started` exits 0 regardless of whether `cmd` itself
+    // exists — a shell backgrounding a nonexistent binary still succeeds at
+    // forking — so the binary's presence is checked FIRST and reported
+    // honestly instead of claiming success for a scan that never ran (this
+    // is the real situation on any host installed before scouting shipped).
     QString cmd = QStringLiteral(
-        "setsid /usr/bin/env -u PYTHONPATH %1/proxmox-scout --trigger chat")
-        .arg(kProxmoxVenvBin);
+        "if [ -x %1/proxmox-scout ]; then setsid /usr/bin/env -u PYTHONPATH "
+        "%1/proxmox-scout --trigger chat").arg(kProxmoxVenvBin);
     if (!vmids.isEmpty())
         cmd += QStringLiteral(" --vmids ") + vmids.join(QLatin1Char(','));
-    cmd += QStringLiteral(" >/dev/null 2>&1 </dev/null & echo started");
+    cmd += QStringLiteral(" >/dev/null 2>&1 </dev/null & echo started; "
+                          "else echo missing:proxmox-scout; fi");
     bool ok = false;
     const QJsonObject r = execOnMachine(machine, cmd, 15.0, &ok);
-    const bool success = ok && r.value(QStringLiteral("ok")).toBool();
+    const QString output = r.value(QStringLiteral("output")).toString().trimmed();
+    const bool success = ok && r.value(QStringLiteral("ok")).toBool()
+                        && output == QStringLiteral("started");
     m_audit.record(QStringLiteral("proxmox.scout"), success, QStringLiteral("medium"),
                    QStringLiteral("started VM scout on %1 (%2)")
                        .arg(machine, vmids.isEmpty() ? QStringLiteral("fleet")
@@ -7558,10 +7574,15 @@ Response ControlServer::handleProxmoxScout(const Request &req)
     if (!ok)
         return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
                                  QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    if (output.startsWith(QStringLiteral("missing:")))
+        return Response::failure(req.id, QStringLiteral("scout_not_installed"),
+                                 QStringLiteral("proxmox-scout isn't installed on %1 — redeploy "
+                                               "proxmox-mcp on the host (re-run "
+                                               "outpost.install_workload) to pick up VM scouting")
+                                     .arg(machine));
     if (!success)
         return Response::failure(req.id, QStringLiteral("exec_failed"),
                                  r.value(QStringLiteral("error")).toString());
-    registerProxmoxMachine(machine);
     QJsonObject result;
     result.insert(QStringLiteral("ok"), true);
     result.insert(QStringLiteral("started"), true);
@@ -7652,13 +7673,14 @@ Response ControlServer::handleProxmoxQuestions(const Request &req)
         QJsonDocument::fromJson(r.value(QStringLiteral("output")).toString().trimmed().toUtf8())
             .object();
     const QJsonArray questions = parsed.value(QStringLiteral("questions")).toArray();
-    // The user is looking at these right now — don't also inbox-ping them.
-    QStringList seenKeys;
-    for (const QJsonValue &qv : questions)
-        seenKeys << machine + QLatin1Char(':')
-                    + qv.toObject().value(QStringLiteral("qid")).toString();
-    markProxmoxSeen(seenKeys);
-    registerProxmoxMachine(machine);
+    // Deliberately does NOT mark these seen: the design is "Outpost page +
+    // inbox ping", not "page suppresses the ping" — a user who leaves a
+    // dashboard open on this page must still get notified within the next
+    // 5-minute mailbox poll, not silently never. Same reasoning as
+    // handleProxmoxPingedList below. Also deliberately does NOT
+    // registerProxmoxMachine: unlike proxmox.status (backed by a real
+    // qm/pvesh check), this exec succeeds on any machine with python3, so
+    // it proves nothing about whether the workload manager is installed.
     QJsonObject result;
     result.insert(QStringLiteral("questions"), questions);
     return Response::success(req.id, result);
@@ -7742,7 +7764,9 @@ Response ControlServer::handleProxmoxAskAgent(const Request &req)
     if (!success)
         return Response::failure(req.id, QStringLiteral("exec_failed"),
                                  r.value(QStringLiteral("error")).toString());
-    registerProxmoxMachine(machine);
+    // Deliberately no registerProxmoxMachine here — appending a jsonl line
+    // succeeds on any host with a writable filesystem, so it proves nothing
+    // about whether the workload manager is installed (see handleProxmoxStatus).
     QJsonObject result;
     result.insert(QStringLiteral("ok"), true);
     result.insert(QStringLiteral("rid"), rid);
@@ -7847,12 +7871,9 @@ Response ControlServer::handleProxmoxPingedList(const Request &req)
     const QJsonObject parsed =
         QJsonDocument::fromJson(r.value(QStringLiteral("output")).toString().trimmed().toUtf8())
             .object();
-    // The user is looking at the event history right now — no inbox pings.
-    QStringList seenKeys;
-    for (const QJsonValue &ev : parsed.value(QStringLiteral("events")).toArray())
-        seenKeys << machine + QLatin1Char(':')
-                    + ev.toObject().value(QStringLiteral("eid")).toString();
-    markProxmoxSeen(seenKeys);
+    // Deliberately does NOT mark events seen here — same reasoning as
+    // handleProxmoxQuestions: a dashboard left open on this page must not
+    // silently suppress the promised inbox ping for a newly-fired rule.
     QJsonObject result;
     result.insert(QStringLiteral("rules"), parsed.value(QStringLiteral("rules")).toArray());
     result.insert(QStringLiteral("events"), parsed.value(QStringLiteral("events")).toArray());
@@ -7913,7 +7934,9 @@ Response ControlServer::handleProxmoxPingedAdd(const Request &req)
     if (!parsed.value(QStringLiteral("ok")).toBool())
         return Response::failure(req.id, QStringLiteral("bad_request"),
                                  parsed.value(QStringLiteral("error")).toString());
-    registerProxmoxMachine(machine);
+    // Deliberately no registerProxmoxMachine here — see handleProxmoxStatus,
+    // the sole source of truth for "this machine actually runs the workload
+    // manager" (install_workload registers directly, already preflighted).
     return Response::success(req.id, parsed);
 }
 

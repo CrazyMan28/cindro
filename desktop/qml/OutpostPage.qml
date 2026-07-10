@@ -53,6 +53,14 @@ Item {
     property var scoutStatus: null          // last proxmox.scout_status payload
     property string scoutError: ""
     property bool scoutStarting: false
+    // Wall-clock ms when we last clicked Scout — a status reply whose
+    // started_at predates this is a STALE read from a previous run (the
+    // detached runner takes a moment to boot + enumerate VMs before it
+    // writes state=running), not evidence the new scan already finished.
+    // Only a reply that's actually FROM our run may stop the poll.
+    property real scoutRequestedAt: 0
+    property int scoutPollAttempts: 0
+    readonly property int scoutMaxPollAttempts: 200   // ~10min safety cap @3s
     property var questionsList: []          // [{qid,vmid,question,options}]
     property var pingedRules: []            // [{id,name,vmid,trigger,action,...}]
     property var pingedEvents: []           // [{name,vmid,result,fired_at}] newest first
@@ -66,15 +74,25 @@ Item {
         if (page.selectedMachine.length === 0) return
         page.scoutStarting = true
         page.scoutError = ""
+        page.scoutRequestedAt = Date.now()
+        page.scoutPollAttempts = 0
         bridge.proxmoxScout(page.selectedMachine)
     }
 
+    // A status reply "reflects our run" once its started_at catches up to
+    // the moment we clicked Scout; before that it's leftover data from a
+    // previous scan (or the idle default) and must not stop the poll.
+    function scoutReflectsOurRun(status) {
+        return !!(status && status.started_at && status.started_at >= page.scoutRequestedAt)
+    }
+
     // Questions + pinged piggyback the 15s list timer — but only once the
-    // workload manager answered a status call (vmMachine gate), so machines
-    // without it never get spammed with extra RPCs.
+    // workload manager answered a status call successfully (vmMachine gate
+    // + no vmError), so machines without it never get spammed with extra
+    // RPCs (and never get silently registered for background polling).
     function refreshAux() {
         if (!bridge.connected || page.selectedMachine.length === 0) return
-        if (page.vmMachine !== page.selectedMachine) return
+        if (page.vmMachine !== page.selectedMachine || page.vmError.length > 0) return
         bridge.proxmoxQuestions(page.selectedMachine)
         bridge.proxmoxPingedList(page.selectedMachine)
     }
@@ -404,7 +422,15 @@ Item {
             }
             page.scoutError = ""
             page.scoutStatus = status
-            if (status.state === "running") {
+            page.scoutPollAttempts += 1
+            // Keep polling while state=running OR this reply predates our
+            // click (still catching up to the detached runner's first
+            // write) — only a reply that's actually ours and non-running
+            // stops the poll. A safety cap bounds a genuinely stuck host.
+            const keepPolling = status.state === "running"
+                || (!page.scoutReflectsOurRun(status)
+                    && page.scoutPollAttempts < page.scoutMaxPollAttempts)
+            if (keepPolling) {
                 if (!scoutPollTimer.running)
                     scoutPollTimer.start()
             } else {

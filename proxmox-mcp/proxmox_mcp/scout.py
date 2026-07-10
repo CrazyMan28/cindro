@@ -218,6 +218,25 @@ def summarize(observed: dict) -> str:
 _SERVICE_NAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,128}$")
 _SERVICE_VERBS = ("start", "restart", "status")  # no stop, no power — heal, don't kill
 
+# The name regex alone is a shell-safety check, not a power-safety check —
+# `systemctl start poweroff.target` is a perfectly well-formed unit name that
+# powers off the guest. Every systemd power/sleep target plus anything that
+# LOOKS like one (denylist-style substring match, same spirit as
+# proxmox_ops._GUEST_EXEC_DENYLIST) is refused here, and bare ".target" units
+# are refused wholesale — no legitimate "heal a stuck service" case is a
+# .target, only .service units are.
+_DANGEROUS_SERVICE_SUBSTRINGS = (
+    "poweroff", "reboot", "halt", "shutdown", "kexec", "emergency",
+    "rescue", "sleep", "suspend", "hibernate", "hybrid-sleep",
+)
+
+
+def _service_dangerous(service: str) -> bool:
+    lowered = (service or "").lower()
+    if lowered.endswith(".target"):
+        return True
+    return any(s in lowered for s in _DANGEROUS_SERVICE_SUBSTRINGS)
+
 
 def guest_service(vmid: int, service: str, verb: str, *, kind: str = "qemu",
                   os_family: str = "linux", blocklist: frozenset | set = frozenset()) -> dict:
@@ -231,6 +250,11 @@ def guest_service(vmid: int, service: str, verb: str, *, kind: str = "qemu",
                         "this tool heals services, it never kills them)"}
     if not _SERVICE_NAME_RE.match(service or ""):
         return {"ok": False, "error": "invalid service name (letters, digits, _.@- only)"}
+    if _service_dangerous(service):
+        return {"ok": False,
+                "error": f"refused: '{service}' looks like a power/shutdown target, not an "
+                        "ordinary service — this tool can only heal services, never touch "
+                        "VM or system power"}
     if verb != "status" and vmid in blocklist:
         return {"ok": False, "error": f"VM {vmid} is blocklisted; not touching its services"}
 

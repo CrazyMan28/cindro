@@ -243,32 +243,40 @@ function Outpost() {
   }
 
   // Questions + pinged rules piggyback the 15s cadence, gated on the
-  // workload manager actually being present (see workloadPresent).
+  // workload manager actually being present (see workloadPresent). The two
+  // calls are independent (different remote execs) — fire them in parallel
+  // rather than paying the round-trip twice, sequentially, every 15s.
   const loadAux = async () => {
     const machine = selected()
     if (!machine || !workloadPresent()) return
-    try {
-      const q = await app.client.call("proxmox.questions", { machine }, 15000)
-      if (!alive || selected() !== machine) return
-      setQuestions((q.questions ?? []) as ProxmoxQuestion[])
-    } catch {
-      // best-effort; the card just keeps its last state
-    }
-    try {
-      const p = await app.client.call("proxmox.pinged_list", { machine }, 15000)
-      if (!alive || selected() !== machine) return
-      setPingedRules((p.rules ?? []) as PingedRule[])
-      setPingedEvents((p.events ?? []) as PingedEvent[])
+    const [qResult, pResult] = await Promise.allSettled([
+      app.client.call("proxmox.questions", { machine }, 15000),
+      app.client.call("proxmox.pinged_list", { machine }, 15000),
+    ])
+    if (!alive || selected() !== machine) return
+    if (qResult.status === "fulfilled") {
+      setQuestions((qResult.value.questions ?? []) as ProxmoxQuestion[])
+    } // else: best-effort; the card just keeps its last state
+    if (pResult.status === "fulfilled") {
+      setPingedRules((pResult.value.rules ?? []) as PingedRule[])
+      setPingedEvents((pResult.value.events ?? []) as PingedEvent[])
       setPingedError("")
-    } catch (e) {
-      if (!alive || selected() !== machine) return
-      setPingedError(String(e))
+    } else {
+      setPingedError(String(pResult.reason))
     }
   }
 
   // 3s scout-status poll while a scan runs; stops itself the moment the
   // machine changes or the state leaves "running" (mirrors pollPairing).
-  const pollScout = async (machine: string) => {
+  // The detached runner takes a moment to boot + enumerate VMs before it
+  // writes state="running" — a status reply whose started_at predates
+  // `requestedAt` is stale data from a PREVIOUS run (or the idle default),
+  // not evidence the new scan already finished. Only a reply that's
+  // actually from our run may stop the poll.
+  const reflectsOurRun = (status: ScoutStatus, requestedAt: number) =>
+    Boolean(status.started_at) && (status.started_at as number) >= requestedAt
+
+  const pollScout = async (machine: string, requestedAt: number) => {
     for (let i = 0; i < 400 && alive; i++) {
       try {
         const res = await app.client.call("proxmox.scout_status", { machine }, 15000)
@@ -276,7 +284,7 @@ function Outpost() {
         const status = (res.scout ?? { state: "idle" }) as ScoutStatus
         setScout(status)
         setScoutError("")
-        if (status.state !== "running") return
+        if (status.state !== "running" && reflectsOurRun(status, requestedAt)) return
       } catch (e) {
         if (!alive || selected() !== machine) return
         setScoutError(String(e))
@@ -292,10 +300,11 @@ function Outpost() {
     if (!machine || scoutStarting()) return
     setScoutStarting(true)
     setScoutError("")
+    const requestedAt = Date.now()
     try {
       await app.client.call("proxmox.scout", { machine }, 30000)
       if (!alive || selected() !== machine) return
-      void pollScout(machine)
+      void pollScout(machine, requestedAt)
     } catch (e) {
       if (!alive) return
       setScoutError(e instanceof ControlError ? `${e.code}: ${e.message}` : String(e))

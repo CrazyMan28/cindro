@@ -416,9 +416,13 @@ Design pillars:
   identically to `outpost.*` — don't remove that check if you touch either.
 - **`proxmox.restart_vm` is the ONLY code path that runs `qm reboot`,
   anywhere in this feature.** The scheduled agent's own tool catalog
-  (`proxmox-mcp/tools_proxmox.py`) never registers a restart tool at all —
+  (`proxmox-mcp/tools_proxmox.py`) never registers a VM-power tool at all —
   this is enforced structurally, not by prompting. Preserve this invariant
-  if you touch `proxmox_tune` or `handleProxmoxRestartVm`.
+  if you touch `proxmox_tune` or `handleProxmoxRestartVm`. (2026-07-09:
+  the catalog DOES gain `proxmox_guest_service`, which can start/restart a
+  *service inside a guest* — see the 2026-07-09 VM-scout gotchas below for
+  why that's not an exception: it has no stop verb and `scout.py` refuses
+  any name that looks like a systemd power/sleep target.)
 - **`proxmox.report` is sync-then-recall, not a blind recall.** The remote
   agent's memory lives in ITS OWN sqlite db on the Proxmox host (durable
   independent of the laptop); the RPC pulls rows newer than the newest
@@ -603,8 +607,14 @@ the load-bearing truths:
   `scout.guest_service()` → `proxmox_ops._exec_via_agent_unchecked` /
   `scout._pct_exec_unchecked`: argv built in code from a regex-validated
   service name and a closed verb set {start, restart, status} — deliberately
-  no `stop`, no power verbs. Never expose the `_unchecked` functions to a tool
-  that accepts caller-supplied argv.
+  no `stop`, no power verbs. **The name regex ALONE is not enough** — a
+  syntactically valid unit name like `poweroff.target` is a full VM-power
+  bypass, so `scout._service_dangerous()` separately refuses anything ending
+  `.target` or matching a power/sleep denylist (`poweroff`, `reboot`, `halt`,
+  `shutdown`, `emergency`, `rescue`, `sleep`, `suspend`, `hibernate`, …) — a
+  bug found and fixed 2026-07-10, tested in
+  `test_guest_service_rejects_power_targets`. Never expose the `_unchecked`
+  functions to a tool that accepts caller-supplied argv.
 - **Every long host-side operation must run detached** (`setsid … & echo ok`):
   `outpostHttp` has a hard 60s event-loop wall and outpost-agent caps exec
   output at 256KB. That's why the fleet scout is a console script
@@ -628,9 +638,23 @@ the load-bearing truths:
 - **The notification poll dedupes via `<data>/proxmox_seen_notifications.json`**
   (`machine:qid|eid`), pruned only for machines actually reached that round —
   pruning on an unreachable machine would re-ping everything when it returns.
-  UI reads (`proxmox.questions` / `proxmox.pinged_list`) also mark seen so an
-  open Outpost page never double-notifies. Inbox pings go through the phone
-  proxy and silently skip when `phone.env` is absent.
+  **UI reads (`proxmox.questions` / `proxmox.pinged_list`) deliberately do
+  NOT mark seen** — "Outpost page + inbox ping" means BOTH, and marking seen
+  on read would let anyone with a dashboard open silently never get the
+  promised phone ping. `handleProxmoxAnswer` is the one exception (an
+  answered question is genuinely resolved, so it marks that qid seen so it
+  isn't re-pinged). Inbox pings go through the phone proxy and silently skip
+  when `phone.env` is absent.
+- **`registerProxmoxMachine` is called from EXACTLY TWO places**:
+  `outpost.install_workload` (preflighted with a real `qm`/`pvesh` check) and
+  `proxmox.status` when its python one-liner's `has_proxmox` flag (a real
+  `shutil.which("qm") and shutil.which("pvesh")`) is true. No other
+  `proxmox.*` handler self-registers — most of those execs succeed on ANY
+  paired machine with python3 (empty jsonl files just read back as `[]`),
+  which proved nothing and would silently enroll ordinary laptops in a
+  forever, un-removable 5-minute remote-exec poll (found and fixed
+  2026-07-10). Don't add a `registerProxmoxMachine` call to a handler unless
+  its success genuinely proves the workload manager is installed.
 - **`seed_schedule.py` is an upsert now** — rerunning it updates the tick
   prompt in place; that + re-running `outpost.install_workload` (sparse clone
   tracks `main`, so the host only gets MERGED code) is the whole upgrade path

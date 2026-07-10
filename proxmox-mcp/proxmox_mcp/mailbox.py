@@ -23,7 +23,7 @@ import os
 from pathlib import Path
 
 
-def _read_jsonl(path: Path) -> list[dict]:
+def read_jsonl(path: Path) -> list[dict]:
     try:
         lines = path.read_text().splitlines()
     except OSError:
@@ -42,13 +42,13 @@ def _read_jsonl(path: Path) -> list[dict]:
     return rows
 
 
-def _append_jsonl(path: Path, row: dict) -> None:
+def append_jsonl(path: Path, row: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a") as f:
         f.write(json.dumps(row) + "\n")
 
 
-def _rewrite_jsonl(path: Path, rows: list[dict]) -> None:
+def rewrite_jsonl(path: Path, rows: list[dict]) -> None:
     if not rows:
         try:
             path.unlink()
@@ -71,7 +71,7 @@ class Mailbox:
 
     def _new_id(self, now_ms: int, suffix: str = "") -> str:
         base = f"{self.id_prefix}-{now_ms}" + (f"-{suffix}" if suffix else "")
-        existing = {r.get(self.id_field) for r in _read_jsonl(self.requests_file)}
+        existing = {r.get(self.id_field) for r in read_jsonl(self.requests_file)}
         rid, n = base, 1
         while rid in existing:
             rid = f"{base}.{n}"
@@ -91,12 +91,12 @@ class Mailbox:
                             self.id_field: row.get(self.id_field)}
         rid = self._new_id(now_ms, id_suffix)
         row = {self.id_field: rid, **fields, "at": now_ms}
-        _append_jsonl(self.requests_file, row)
+        append_jsonl(self.requests_file, row)
         return {"ok": True, self.id_field: rid}
 
     def _replies_by_id(self) -> dict[str, dict]:
         out = {}
-        for row in _read_jsonl(self.replies_file):
+        for row in read_jsonl(self.replies_file):
             rid = row.get(self.id_field)
             if rid:
                 out[rid] = row  # last reply for an id wins
@@ -105,21 +105,21 @@ class Mailbox:
     def pending(self) -> list[dict]:
         """Requests that have no reply yet."""
         replies = self._replies_by_id()
-        return [r for r in _read_jsonl(self.requests_file)
+        return [r for r in read_jsonl(self.requests_file)
                 if r.get(self.id_field) and r.get(self.id_field) not in replies]
 
     def get_reply(self, rid: str) -> dict | None:
         return self._replies_by_id().get(rid)
 
     def has_request(self, rid: str) -> bool:
-        return any(r.get(self.id_field) == rid for r in _read_jsonl(self.requests_file))
+        return any(r.get(self.id_field) == rid for r in read_jsonl(self.requests_file))
 
     def prune_replied(self, now_ms: int, max_age_ms: int) -> int:
         """Drop request+reply pairs whose reply is older than max_age_ms.
         Used by the TASKS mailbox, where consume() doesn't apply: the reply
         must stay readable until the laptop side has polled it, so cleanup
         is age-based instead of fetch-based."""
-        requests = _read_jsonl(self.requests_file)
+        requests = read_jsonl(self.requests_file)
         replies = self._replies_by_id()
         keep, removed = [], 0
         for req in requests:
@@ -129,22 +129,22 @@ class Mailbox:
                 continue
             keep.append(req)
         if removed:
-            _rewrite_jsonl(self.requests_file, keep)
+            rewrite_jsonl(self.requests_file, keep)
             keep_ids = {r.get(self.id_field) for r in keep}
-            _rewrite_jsonl(self.replies_file,
-                           [r for r in _read_jsonl(self.replies_file)
+            rewrite_jsonl(self.replies_file,
+                           [r for r in read_jsonl(self.replies_file)
                             if r.get(self.id_field) in keep_ids])
         return removed
 
     def add_reply(self, rid: str, fields: dict, now_ms: int) -> dict:
-        _append_jsonl(self.replies_file, {self.id_field: rid, **fields, "at": now_ms})
+        append_jsonl(self.replies_file, {self.id_field: rid, **fields, "at": now_ms})
         return {"ok": True, self.id_field: rid}
 
     def consume(self) -> list[dict]:
         """Matched request+reply pairs, merged (reply's `at` becomes
         `replied_at`). Removes matched requests; prunes replies that no
         longer match any remaining request."""
-        requests = _read_jsonl(self.requests_file)
+        requests = read_jsonl(self.requests_file)
         replies = self._replies_by_id()
         matched, remaining = [], []
         for req in requests:
@@ -160,10 +160,10 @@ class Mailbox:
                 merged["replied_at" if k == "at" else k] = v
             matched.append(merged)
         if matched:
-            _rewrite_jsonl(self.requests_file, remaining)
+            rewrite_jsonl(self.requests_file, remaining)
             keep_ids = {r.get(self.id_field) for r in remaining}
-            _rewrite_jsonl(self.replies_file,
-                           [r for r in _read_jsonl(self.replies_file)
+            rewrite_jsonl(self.replies_file,
+                           [r for r in read_jsonl(self.replies_file)
                             if r.get(self.id_field) in keep_ids])
         return matched
 
