@@ -487,6 +487,31 @@ private:
     // never bypasses the agent's own safety rails (blocklist/cooldown/
     // headroom/hotplug/no-restart still apply on the remote side).
     Response handleProxmoxSendDirective(const Request &req);
+    // VM scout / JARVIS.md profiles / interview questions / agent tasks /
+    // pinged watch rules — all outpost.exec proxies against the same host
+    // files the proxmox-mcp tools use (the pve host is source of truth).
+    // Free text NEVER rides inline in a shell command or a python -c string:
+    // it travels base64 (answer/ask_agent) or as a base64 JSON payload file
+    // (pinged_add/remove), and reply lookups fetch-then-filter daemon-side.
+    Response handleProxmoxScout(const Request &req);
+    Response handleProxmoxScoutStatus(const Request &req);
+    Response handleProxmoxVmProfile(const Request &req);
+    Response handleProxmoxQuestions(const Request &req);
+    Response handleProxmoxAnswer(const Request &req);
+    Response handleProxmoxAskAgent(const Request &req);
+    Response handleProxmoxAgentReply(const Request &req);
+    Response handleProxmoxPingedList(const Request &req);
+    Response handleProxmoxPingedAdd(const Request &req);
+    Response handleProxmoxPingedRemove(const Request &req);
+    // Best-effort inbox pings for new agent questions / fired pinged events:
+    // a 5-min poll over the machines in <data>/proxmox_machines.json (written
+    // on install_workload, self-healed by successful proxmox.* calls), deduped
+    // forever via <data>/proxmox_seen_notifications.json. No phone.env ->
+    // silently skipped; the Outpost page still shows everything.
+    void pollProxmoxMailboxes();
+    void registerProxmoxMachine(const QString &machine);
+    void markProxmoxSeen(const QStringList &keys);
+    bool phoneNotifyUser(const QString &title, const QString &message);
     // Shell out `cmd` on `machine` via outpost.exec; returns {ok,exit_code,
     // output,error} (outpost-mcp's shape). *reachable mirrors outpostHttp.
     // POSIX-shell ONLY (outpost-agent runs `cmd` under sh -c on Linux/macOS,
@@ -676,6 +701,7 @@ private:
     static constexpr qint64 kQueueStaleMs = 3 * 60 * 1000;
     KanbanStore m_kanban;
     QTimer *m_queueTimer = nullptr;
+    QTimer *m_proxmoxMailboxTimer = nullptr;
     QHash<QString, QString> m_queueItemBySession; // sessionId -> work item id
     void tickWorkQueue();
     NotifyService m_notify;

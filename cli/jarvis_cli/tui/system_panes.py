@@ -96,11 +96,16 @@ class PluginsPane(TablePane):
 
 class OutpostPane(TablePane):
     # p/x/r are the original pairing verbs; w/v/g/b/s are the Proxmox
-    # Workload Manager additions. "p" was already taken by pair, hence "v"
-    # (not the brief's suggested "p") for the VM-status toggle.
+    # Workload Manager additions ("p" was already taken by pair, hence "v"
+    # for the VM-status toggle); o/q/i/n are the VM-scout wave. The input
+    # doubles as a command line: `answer <qid> <text>` answers an agent
+    # question, `pinged add <name> | <HH:MM or condition> | <action> [| vmid]`
+    # / `pinged rm <id>` manage watch rules; anything else runs via exec.
     HINT = ("type a command + enter: run on selected · p: pair · x: revoke · r: refresh · "
             "w: install workload mgr · v: proxmox vm status · b: toggle blocklist (vm row) · "
-            "s: restart vm — press twice to confirm · g: decision report")
+            "s: restart vm — press twice to confirm · g: decision report · o: scout VMs · "
+            "q: agent questions · i: VM profile (vm row) · n: pinged rules · "
+            "answer/pinged commands via the input")
     COLUMNS = ("machine", "os", "status")
     VM_COLUMNS = ("vmid", "name", "status", "cores", "mem MB", "cpu%", "mem%", "blk", "pend")
 
@@ -132,6 +137,8 @@ class OutpostPane(TablePane):
         self._report_visible = False
         self._restart_armed_vmid: int | None = None
         self._restart_confirm_timer = None
+        self._scout_timer = None       # 3s poll while a scout runs
+        self._scout_machine: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Static(Text(self.HINT, style="bright_black"), classes="pane-hint")
@@ -234,6 +241,175 @@ class OutpostPane(TablePane):
         for m in memories:
             log.write(f"{_relative_time(m.get('created'))}  {m.get('text', '')}")
 
+    def _show_log(self) -> RichLog:
+        """The report RichLog doubles as the output surface for scout
+        progress / questions / profiles / pinged — make it visible and
+        return it."""
+        log = self.query_one("#outpost-report", RichLog)
+        self._report_visible = True
+        log.display = True
+        return log
+
+    @work(exclusive=True)
+    async def start_scout(self, machine: str) -> None:
+        log = self._show_log()
+        try:
+            await self.client.call("proxmox.scout", {"machine": machine})
+        except (ControlError, ConnectionError, TimeoutError) as exc:
+            self.notify(str(exc), severity="error")
+            return
+        log.clear()
+        log.write("scout started — progress below")
+        self._scout_machine = machine
+        if self._scout_timer is not None:
+            self._scout_timer.stop()
+        self._scout_timer = self.set_interval(3.0, self._poll_scout)
+
+    def _poll_scout(self) -> None:
+        if self._scout_machine:
+            self.poll_scout_status(self._scout_machine)
+
+    @work()
+    async def poll_scout_status(self, machine: str) -> None:
+        try:
+            res = await self.client.call("proxmox.scout_status", {"machine": machine})
+        except (ControlError, ConnectionError, TimeoutError):
+            return
+        scout = res.get("scout", {})
+        state = scout.get("state", "idle")
+        log = self._show_log()
+        log.clear()
+        if state == "running":
+            cur = scout.get("current_vmid")
+            log.write(f"scouting… {scout.get('done', 0)}/{scout.get('total', 0)}"
+                      + (f" — VM {cur} ({scout.get('current_name', '')})" if cur else ""))
+        for r in scout.get("results", []):
+            mark = "✓" if r.get("ok") else "✗"
+            detail = r.get("summary") if r.get("ok") else r.get("error")
+            log.write(f"{mark} VM {r.get('vmid')} ({r.get('name')}, {r.get('kind')}) — {detail}")
+        if state != "running":
+            log.write(f"scout {state}")
+            if self._scout_timer is not None:
+                self._scout_timer.stop()
+                self._scout_timer = None
+            self._scout_machine = None
+
+    @work(exclusive=True)
+    async def show_questions(self, machine: str) -> None:
+        log = self._show_log()
+        try:
+            res = await self.client.call("proxmox.questions", {"machine": machine})
+        except (ControlError, ConnectionError, TimeoutError) as exc:
+            self.notify(str(exc), severity="error")
+            return
+        log.clear()
+        questions = res.get("questions", [])
+        if not questions:
+            log.write("(no pending agent questions)")
+            return
+        log.write("agent questions — reply with: answer <qid> <text>")
+        for q in questions:
+            where = f"VM {q.get('vmid')} · " if q.get("vmid") else ""
+            opts = q.get("options") or []
+            log.write(f"[{q.get('qid')}] {where}{q.get('question')}"
+                      + (f"  (options: {', '.join(opts)})" if opts else ""))
+
+    @work(exclusive=True)
+    async def show_profile(self, machine: str, vmid: int) -> None:
+        log = self._show_log()
+        try:
+            res = await self.client.call("proxmox.vm_profile",
+                                         {"machine": machine, "vmid": vmid})
+        except (ControlError, ConnectionError, TimeoutError) as exc:
+            self.notify(str(exc), severity="error")
+            return
+        log.clear()
+        profile = res.get("profile", "")
+        if not profile:
+            log.write(f"(no profile for VM {vmid} yet — press o to scout)")
+            return
+        for line in profile.splitlines():
+            log.write(line)
+
+    @work(exclusive=True)
+    async def show_pinged(self, machine: str) -> None:
+        log = self._show_log()
+        try:
+            res = await self.client.call("proxmox.pinged_list", {"machine": machine})
+        except (ControlError, ConnectionError, TimeoutError) as exc:
+            self.notify(str(exc), severity="error")
+            return
+        log.clear()
+        rules = res.get("rules", [])
+        if not rules:
+            log.write("(no pinged rules — add: pinged add <name> | <HH:MM or condition> | <action> [| vmid])")
+        for r in rules:
+            trig = r.get("trigger") or {}
+            trig_s = (f"daily {trig.get('time')}" if trig.get("type") == "schedule"
+                      else f"when: {trig.get('condition', '')}")
+            where = f"VM {r.get('vmid')}" if r.get("vmid") else "fleet"
+            log.write(f"[{r.get('id')}] {r.get('name')} · {where} · {trig_s} → {r.get('action')}")
+            checked = _relative_time(r.get("last_checked_at")) if r.get("last_checked_at") else "never"
+            fired = (f" · fired {_relative_time(r.get('last_fired_at'))}"
+                     if r.get("last_fired_at") else "")
+            result = f" · {r.get('last_result')}" if r.get("last_result") else ""
+            log.write(f"    checked {checked}{fired}{result}")
+        events = res.get("events", [])
+        if events:
+            log.write("recent fires:")
+            for ev in events[:5]:
+                log.write(f"  ⚡ {ev.get('name')} — {ev.get('result')} "
+                          f"({_relative_time(ev.get('fired_at'))})")
+
+    async def _handle_command(self, machine: str, cmd: str) -> bool:
+        """answer/pinged command-line intercepts. True when handled."""
+        if cmd.startswith("answer "):
+            parts = cmd.split(None, 2)
+            if len(parts) < 3:
+                self.notify("usage: answer <qid> <text>", severity="warning")
+                return True
+            try:
+                await self.client.call("proxmox.answer", {
+                    "machine": machine, "qid": parts[1], "answer": parts[2]})
+                self.notify(f"answered {parts[1]}", timeout=4)
+                self.show_questions(machine)
+            except (ControlError, ConnectionError, TimeoutError) as exc:
+                self.notify(str(exc), severity="error")
+            return True
+        if cmd.startswith("pinged rm "):
+            rule_id = cmd[len("pinged rm "):].strip()
+            try:
+                await self.client.call("proxmox.pinged_remove",
+                                       {"machine": machine, "rule_id": rule_id})
+                self.show_pinged(machine)
+            except (ControlError, ConnectionError, TimeoutError) as exc:
+                self.notify(str(exc), severity="error")
+            return True
+        if cmd.startswith("pinged add "):
+            # pinged add <name> | <HH:MM or condition> | <action> [| vmid]
+            parts = [p.strip() for p in cmd[len("pinged add "):].split("|")]
+            if len(parts) < 3:
+                self.notify("usage: pinged add <name> | <HH:MM or condition> | <action> [| vmid]",
+                           severity="warning")
+                return True
+            trigger = parts[1]
+            is_time = len(trigger) in (4, 5) and ":" in trigger \
+                and trigger.replace(":", "").isdigit()
+            params = {"machine": machine, "name": parts[0], "action": parts[2],
+                      "vmid": int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0,
+                      "condition": "" if is_time else trigger,
+                      "time": trigger if is_time else ""}
+            try:
+                await self.client.call("proxmox.pinged_add", params)
+                self.show_pinged(machine)
+            except (ControlError, ConnectionError, TimeoutError) as exc:
+                self.notify(str(exc), severity="error")
+            return True
+        if cmd.startswith("pinged"):
+            self.show_pinged(machine)
+            return True
+        return False
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id != "outpost-exec":
             return
@@ -241,6 +417,8 @@ class OutpostPane(TablePane):
         event.input.value = ""
         row = self.selected()
         if not cmd or not row:
+            return
+        if await self._handle_command(row["name"], cmd):
             return
         try:
             res = await self.client.call("outpost.exec",
@@ -298,6 +476,29 @@ class OutpostPane(TablePane):
                 log.display = self._report_visible
                 if self._report_visible:
                     self.refresh_report(row["name"])
+        elif event.key == "o":
+            row = self.selected()
+            if row:
+                if self._scout_machine:
+                    self.poll_scout_status(self._scout_machine)
+                else:
+                    self.start_scout(row["name"])
+        elif event.key == "q":
+            row = self.selected()
+            if row:
+                self.show_questions(row["name"])
+        elif event.key == "n":
+            row = self.selected()
+            if row:
+                self.show_pinged(row["name"])
+        elif event.key == "i" and self._vms_visible:
+            row = self.selected()
+            vm = self.selected_vm()
+            if row and vm and row["name"] != self._vms_machine:
+                self.notify("VM list is for a different machine — press v to refresh",
+                           severity="warning")
+            elif row and vm:
+                self.show_profile(row["name"], vm.get("vmid"))
         elif event.key == "b" and self._vms_visible:
             row = self.selected()
             vm = self.selected_vm()

@@ -31,6 +31,10 @@ TRACKER_TOKEN_FILE = CONFIG_DIR / "project_tracker_token"
 
 STATE_FILE = STATE_DIR / "state.json"
 MEMORY_DB = STATE_DIR / "memory.db"
+PROFILES_DIR = STATE_DIR / "vms"                       # JARVIS.md per VM/CT
+SCOUT_STATUS_FILE = STATE_DIR / "scout_status.json"    # live fleet-scan progress
+PINGED_FILE = STATE_DIR / "pinged.json"                # watch rules
+PINGED_EVENTS_FILE = STATE_DIR / "pinged_events.jsonl" # fired-rule history
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8799
@@ -50,6 +54,8 @@ _DEFAULTS = {
     "max_mem_mb_per_vm": 32768,
     "cpu_congested_pct": 85.0,
     "mem_congested_pct": 90.0,
+    "max_pending_questions": 3,
+    "profile_stale_days": 7,
     "project_tracker_agent_name": "proxmox-pve",
     "project_tracker_project_id": "proj-jarvis",
     "project_tracker_url": "http://100.114.201.41:8790/mcp",

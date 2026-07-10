@@ -122,6 +122,143 @@ def proxmox_agent_checkin() -> str:
         return _err(exc)
 
 
+def proxmox_scout(machine: str, vmids: list[int] | None = None) -> str:
+    """Scan what's running INSIDE the VMs/containers on a Proxmox host —
+    agentless (QEMU guest agent / pct exec), no per-VM install. Use when the
+    user says "scan my VMs" / "what's running on pve". Starts a detached
+    fleet scan (or just `vmids` when given) that refreshes each guest's
+    JARVIS.md profile; poll proxmox_scout_status for live progress and
+    per-VM summaries. The scan also shows live on the Outpost page."""
+    try:
+        params: dict = {"machine": machine}
+        if vmids:
+            params["vmids"] = [int(v) for v in vmids]
+        return json.dumps(daemon_client.call("proxmox.scout", params, timeout=30))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def proxmox_scout_status(machine: str) -> str:
+    """Progress of the current/last VM scout on a Proxmox host:
+    {scout:{state, done, total, current_vmid, results:[{vmid,name,ok,
+    summary}]}}. Poll this after proxmox_scout until state is done, then
+    relay the per-VM summaries to the user."""
+    try:
+        return json.dumps(daemon_client.call("proxmox.scout_status",
+                                             {"machine": machine}, timeout=30))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def proxmox_vm_profile(machine: str, vmid: int) -> str:
+    """Read one VM/CT's JARVIS.md profile from a Proxmox host — its Purpose,
+    the user's Preferences, and what the scout Observed running inside
+    (services, ports, containers, disk, top processes). The per-VM answer to
+    "what is VM 104 and what's on it?"."""
+    try:
+        return json.dumps(daemon_client.call(
+            "proxmox.vm_profile", {"machine": machine, "vmid": int(vmid)}, timeout=30))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def proxmox_list_questions(machine: str) -> str:
+    """Pending interview questions the headless Proxmox agent is asking the
+    user (e.g. "What is VM 104 for?"). Returns {questions:[{qid,vmid,
+    question,options}]}. Relay them to the user and send each answer back
+    with proxmox_answer_question."""
+    try:
+        return json.dumps(daemon_client.call("proxmox.questions",
+                                             {"machine": machine}, timeout=30))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def proxmox_answer_question(machine: str, qid: str, answer: str) -> str:
+    """Answer one of the headless Proxmox agent's pending questions (qid from
+    proxmox_list_questions). The agent consumes the answer on its next tick
+    and writes it into that VM's JARVIS.md profile."""
+    try:
+        return json.dumps(daemon_client.call(
+            "proxmox.answer", {"machine": machine, "qid": qid, "answer": answer},
+            timeout=30))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def proxmox_ask_agent(machine: str, text: str, kind: str = "ask",
+                      wait_sec: int = 90) -> str:
+    """Talk DIRECTLY to the always-on Proxmox workload-manager agent: ask it
+    a question ("what's hogging CPU right now?") or hand it a task ("check
+    the runner service on VM 104 and fix it if it's stuck"). kind: ask|task.
+    The daemon queues it AND kicks the agent to run immediately, then this
+    call polls for the reply up to wait_sec. On timeout you get
+    {pending:true, rid} — the reply lands within ~5 minutes; re-check by
+    calling this tool's sibling RPC later or just tell the user it's in
+    progress. The agent keeps ALL its safety rails for tasks (blocklist,
+    cooldown, no VM restarts — it can only heal services inside guests)."""
+    import time as _time
+    try:
+        asked = daemon_client.call(
+            "proxmox.ask_agent", {"machine": machine, "text": text, "kind": kind},
+            timeout=30)
+        rid = asked.get("rid", "")
+        if not rid:
+            return json.dumps(asked)
+        deadline = _time.time() + max(5, min(int(wait_sec or 90), 600))
+        while _time.time() < deadline:
+            _time.sleep(5)
+            reply = daemon_client.call(
+                "proxmox.agent_reply", {"machine": machine, "rid": rid}, timeout=30)
+            if not reply.get("pending", True):
+                return json.dumps({"ok": True, "rid": rid,
+                                   "reply": reply.get("reply", ""),
+                                   "replied_at": reply.get("replied_at")})
+        return json.dumps({"ok": True, "pending": True, "rid": rid,
+                           "note": "no reply yet — the agent picks tasks up within "
+                                   "~5 minutes; check back or tell the user it's queued"})
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def proxmox_pinged_list(machine: str) -> str:
+    """List the Pinged watch rules on a Proxmox host (condition rules the
+    agent judges every tick + daily schedule rules) and the recent fired
+    events. Returns {rules:[...], events:[...]}."""
+    try:
+        return json.dumps(daemon_client.call("proxmox.pinged_list",
+                                             {"machine": machine}, timeout=30))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def proxmox_pinged_add(machine: str, name: str, action: str, vmid: int = 0,
+                       condition: str = "", time_of_day: str = "") -> str:
+    """Create a Pinged watch rule for the headless Proxmox agent. Give
+    EXACTLY ONE trigger: `condition` (free text the agent judges each tick,
+    e.g. "the CI runner on VM 104 looks stuck") OR `time_of_day` ("HH:MM"
+    daily). `action` says what to do when it fires ("check up on it and fix
+    it, don't break anything"). vmid=0 means the whole fleet. Fired rules
+    ping the user's inbox with what was done."""
+    try:
+        return json.dumps(daemon_client.call("proxmox.pinged_add", {
+            "machine": machine, "name": name, "action": action,
+            "vmid": int(vmid), "condition": condition, "time": time_of_day,
+        }, timeout=30))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+def proxmox_pinged_remove(machine: str, rule_id: str) -> str:
+    """Remove a Pinged watch rule by id (from proxmox_pinged_list)."""
+    try:
+        return json.dumps(daemon_client.call(
+            "proxmox.pinged_remove", {"machine": machine, "rule_id": rule_id},
+            timeout=30))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 def register(mcp: FastMCP) -> None:
     # ---- SEND A FILE TO THE USER -------------------------------------------
     @mcp.tool()
@@ -195,6 +332,15 @@ def register(mcp: FastMCP) -> None:
     mcp.tool()(proxmox_check_status)
     mcp.tool()(proxmox_get_report)
     mcp.tool()(proxmox_give_direction)
+    mcp.tool()(proxmox_scout)
+    mcp.tool()(proxmox_scout_status)
+    mcp.tool()(proxmox_vm_profile)
+    mcp.tool()(proxmox_list_questions)
+    mcp.tool()(proxmox_answer_question)
+    mcp.tool()(proxmox_ask_agent)
+    mcp.tool()(proxmox_pinged_list)
+    mcp.tool()(proxmox_pinged_add)
+    mcp.tool()(proxmox_pinged_remove)
 
     @mcp.tool()
     def session_search(query: str, limit: int = 20, context_window: int = 2,

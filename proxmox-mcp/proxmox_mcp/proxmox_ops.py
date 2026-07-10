@@ -99,12 +99,23 @@ def guest_exec(vmid: int, argv: list[str], timeout: float = 30.0,
     `qm guest exec` returns a pid immediately; we poll exec-status until it
     reports exited or `timeout` elapses. `poller` is a test seam (defaults to
     time.sleep) so unit tests never actually sleep."""
-    poller = poller or time.sleep
     blocked = _guest_exec_blocked(argv)
     if blocked:
         return {"ok": False,
                 "error": f"blocked: '{blocked}' looks like a restart/shutdown command; "
                         "proxmox_guest_exec is diagnostic-only"}
+    return _exec_via_agent_unchecked(vmid, argv, timeout, poller)
+
+
+def _exec_via_agent_unchecked(vmid: int, argv: list[str], timeout: float = 30.0,
+                              poller=None) -> dict:
+    """guest_exec's mechanics WITHOUT the denylist gate. The ONLY callers
+    allowed here are guest_exec (which gates first) and scout.guest_service
+    (which builds its argv itself from a regex-validated service name and a
+    closed verb set — that's why e.g. `systemctl restart <svc>` may pass
+    through even though "systemctl" is denylisted for free-form argv). Never
+    expose this to a tool that accepts caller-supplied argv."""
+    poller = poller or time.sleep
     try:
         pid_info = json.loads(run(["qm", "guest", "exec", str(vmid), "--", *argv]))
     except (CommandError, ValueError) as exc:

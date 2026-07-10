@@ -4,16 +4,27 @@ Deliberately NO restart/stop/start tool is registered anywhere in this
 module — that is the structural half of the "never restarts a VM on its
 own" invariant (the other half is that the local daemon's
 proxmox.restart_vm RPC, the only code path that calls qm_reboot, is only
-reachable from a UI-triggered request, never from this tool catalog)."""
+reachable from a UI-triggered request, never from this tool catalog).
+proxmox_guest_service is NOT an exception to that: it can start/restart a
+service INSIDE a guest (closed verb set, validated name, no stop verb) but
+has no path to VM power whatsoever."""
 
 import json
+import shutil
+import subprocess
+import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from proxmox_mcp import config, proxmox_ops, state_store, tracker_client
+from proxmox_mcp import (config, mailbox, pinged_store, profile_store, proxmox_ops,
+                         scout, scout_runner, scout_status, state_store,
+                         tracker_client)
 from proxmox_mcp.memory_store import MemoryStore
+
+_REPLIED_TASK_TTL_MS = 24 * 3600 * 1000
 
 
 def register(mcp: FastMCP) -> list[str]:
@@ -235,8 +246,183 @@ def register(mcp: FastMCP) -> list[str]:
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
 
+    # --- scouting + JARVIS.md profiles ------------------------------------
+
+    @mcp.tool()
+    async def proxmox_scout(vmids: list[int] = [], full: bool = False) -> dict[str, Any]:
+        """Scan what's RUNNING INSIDE VMs/CTs (agentless: QEMU guest agent /
+        pct exec) and refresh their JARVIS.md profiles. 1-3 vmids: runs
+        synchronously and returns the results. full=True or no vmids: the
+        whole fleet is scanned by a detached runner — returns immediately,
+        poll proxmox_scout_status for progress. Re-scout a VM when its
+        profile is stale (proxmox_list_vm_profiles) or its workload no
+        longer matches what proxmox_status shows."""
+        if not full and vmids and len(vmids) <= 3:
+            return scout_runner.run_scout([int(v) for v in vmids], "agent")
+        exe = Path(sys.executable).parent / "proxmox-scout"
+        if not exe.exists():
+            which = shutil.which("proxmox-scout")
+            if not which:
+                return {"ok": False, "error": "proxmox-scout entry point not found"}
+            exe = Path(which)
+        args = [str(exe), "--trigger", "agent"]
+        if vmids:
+            args += ["--vmids", ",".join(str(int(v)) for v in vmids)]
+        subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         stdin=subprocess.DEVNULL, start_new_session=True)
+        return {"ok": True, "detached": True,
+                "note": "fleet scout started; poll proxmox_scout_status"}
+
+    @mcp.tool()
+    async def proxmox_scout_status() -> dict[str, Any]:
+        """Progress of the current/last scout run: {state: idle|running|done|
+        error, total, done, current_vmid, results:[{vmid,name,ok,summary}]}."""
+        return {"scout": scout_status.read(config.SCOUT_STATUS_FILE)}
+
+    @mcp.tool()
+    async def proxmox_get_vm_profile(vmid: int) -> dict[str, Any]:
+        """This VM/CT's JARVIS.md profile — its Purpose, the user's
+        Preferences, and what the scout Observed running inside. READ THIS
+        BEFORE TUNING OR OTHERWISE WORKING ON A VM and respect Purpose/
+        Preferences in your decision."""
+        text = profile_store.load(config.PROFILES_DIR, int(vmid))
+        return {"vmid": int(vmid), "exists": bool(text), "profile": text,
+                "meta": profile_store.read_meta(text)}
+
+    @mcp.tool()
+    async def proxmox_update_vm_profile(vmid: int, section: str, text: str) -> dict[str, Any]:
+        """Write a USER-owned profile section: Purpose | Preferences | Notes.
+        Use it to record the user's interview answers verbatim (Purpose/
+        Preferences) or your own durable observations (Notes). The Observed
+        section is scout-owned and refused here."""
+        return profile_store.set_user_section(config.PROFILES_DIR, int(vmid),
+                                              section, text, int(time.time() * 1000))
+
+    @mcp.tool()
+    async def proxmox_list_vm_profiles() -> dict[str, Any]:
+        """All profiles with staleness + interview state:
+        [{vmid,name,kind,observed_at,has_purpose,stale}]. A running guest
+        with NO profile, or stale=true, is a re-scout candidate; a profile
+        with has_purpose=false is an interview candidate (proxmox_ask_user)."""
+        cfg = config.settings()
+        return {"profiles": profile_store.list_profiles(
+            config.PROFILES_DIR, int(time.time() * 1000),
+            int(cfg["profile_stale_days"]))}
+
+    # --- interview questions (agent -> user, non-blocking) -----------------
+
+    @mcp.tool()
+    async def proxmox_ask_user(question: str, vmid: int = 0,
+                               options: list[str] = []) -> dict[str, Any]:
+        """Queue a question for the user (e.g. "What is VM 104 (ci-runner)
+        for?" or "How should I handle X?"). NON-BLOCKING: ask, then move on
+        with your tick — the user answers from the Outpost page and you
+        collect it via proxmox_get_answers next tick. The queue is small and
+        deduped; when it's full, wait for answers instead of re-asking."""
+        cfg = config.settings()
+        mb = mailbox.questions_mailbox(config.STATE_DIR)
+        return mb.add_request(
+            {"vmid": int(vmid), "question": (question or "").strip(),
+             "options": [str(o) for o in options]},
+            int(time.time() * 1000), id_suffix=str(int(vmid)),
+            max_pending=int(cfg["max_pending_questions"]),
+            dedupe_fields=("vmid", "question"))
+
+    @mcp.tool()
+    async def proxmox_get_answers() -> dict[str, Any]:
+        """Collect (and consume) the user's answers to your questions. CALL
+        AT THE START OF EVERY TICK. For each answer: write it into the VM's
+        profile (proxmox_update_vm_profile, section Purpose or Preferences)
+        and remember it. Returns {answers:[{qid,vmid,question,answer,...}]}."""
+        return {"answers": mailbox.questions_mailbox(config.STATE_DIR).consume()}
+
+    # --- tasks (user's main Jarvis -> this agent, with replies) ------------
+
+    @mcp.tool()
+    async def proxmox_get_tasks() -> dict[str, Any]:
+        """Pending asks/tasks from the user's main Jarvis (via
+        proxmox.ask_agent). CALL AT THE START OF EVERY TICK — a run_now kick
+        usually means one of these is waiting. Answer questions / do tasks
+        (normal safety rails apply), then proxmox_reply(rid, ...) EACH one —
+        the user's chat is polling for that reply."""
+        mb = mailbox.tasks_mailbox(config.STATE_DIR)
+        now_ms = int(time.time() * 1000)
+        mb.prune_replied(now_ms, _REPLIED_TASK_TTL_MS)
+        return {"tasks": mb.pending()}
+
+    @mcp.tool()
+    async def proxmox_reply(rid: str, text: str) -> dict[str, Any]:
+        """Reply to one task/ask from proxmox_get_tasks. Keep it short and
+        concrete — this lands directly in the user's chat."""
+        mb = mailbox.tasks_mailbox(config.STATE_DIR)
+        if not mb.has_request(rid):
+            return {"ok": False, "error": f"no task with rid {rid!r}"}
+        return mb.add_reply(rid, {"reply": (text or "").strip()},
+                            int(time.time() * 1000))
+
+    # --- pinged watch rules -------------------------------------------------
+
+    @mcp.tool()
+    async def proxmox_get_due_pinged() -> dict[str, Any]:
+        """Watch rules to handle THIS tick: every enabled condition rule
+        (judge its free-text condition against proxmox_status / the VM's
+        profile / a quick proxmox_guest_exec — investigate at most 2 deeply
+        per tick) plus any schedule rule whose time has come today. For each
+        rule you handle, act per its action text if it fired, then ALWAYS
+        proxmox_record_pinged — recording not-fired is what keeps a due
+        schedule rule from re-firing all day and shows the user liveness."""
+        return {"rules": pinged_store.due_rules(config.PINGED_FILE,
+                                                int(time.time() * 1000))}
+
+    @mcp.tool()
+    async def proxmox_record_pinged(rule_id: str, fired: bool,
+                                    result: str = "") -> dict[str, Any]:
+        """Record the outcome of handling a pinged rule. fired=True appends
+        a visible event (the user gets an inbox ping) — set it only when the
+        condition actually held / the scheduled check found something worth
+        saying; `result` is the one-liner the user reads."""
+        return pinged_store.record(config.PINGED_FILE, config.PINGED_EVENTS_FILE,
+                                   rule_id, bool(fired), result,
+                                   int(time.time() * 1000))
+
+    # --- sanctioned in-guest service control --------------------------------
+
+    @mcp.tool()
+    async def proxmox_guest_service(vmid: int, service: str, verb: str) -> dict[str, Any]:
+        """start | restart | status a service INSIDE a guest (systemctl /
+        PowerShell via the guest agent, pct exec for CTs). This is your ONLY
+        way to fix things in-guest: heal a stuck service per a pinged rule
+        or user task. Deliberately NO stop verb and NO VM power — heal,
+        don't kill. Refused for blocklisted VMs (except status)."""
+        vmid = int(vmid)
+        blocklist = state_store.load_blocklist(config.BLOCKLIST_FILE)
+        kind, os_family = "qemu", ""
+        meta = profile_store.read_meta(profile_store.load(config.PROFILES_DIR, vmid))
+        if meta:
+            kind = meta.get("kind", "qemu")
+            os_family = meta.get("os_family") or ""
+        else:
+            try:
+                if vmid not in {r["vmid"] for r in proxmox_ops.qm_list()} and \
+                        vmid in {r["vmid"] for r in scout.pct_list()}:
+                    kind = "lxc"
+            except proxmox_ops.CommandError:
+                pass
+        if kind == "lxc":
+            os_family = "linux"
+        elif not os_family:
+            os_family = scout.guest_os_family(vmid)
+        return scout.guest_service(vmid, service, verb, kind=kind,
+                                   os_family=os_family, blocklist=blocklist)
+
     return [
         "proxmox_status", "proxmox_tune", "proxmox_guest_exec", "proxmox_get_directives",
         "proxmox_get_blocklist", "proxmox_add_to_blocklist",
         "remember", "recall", "project_tracker_checkin", "project_tracker_report",
+        "proxmox_scout", "proxmox_scout_status", "proxmox_get_vm_profile",
+        "proxmox_update_vm_profile", "proxmox_list_vm_profiles",
+        "proxmox_ask_user", "proxmox_get_answers",
+        "proxmox_get_tasks", "proxmox_reply",
+        "proxmox_get_due_pinged", "proxmox_record_pinged",
+        "proxmox_guest_service",
     ]

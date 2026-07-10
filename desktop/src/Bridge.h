@@ -400,6 +400,37 @@ public:
     // vmids,error). REPLACES the whole blocklist — callers must send the full
     // desired vmid list, not a delta.
     Q_INVOKABLE void proxmoxSetBlocklist(const QString &machine, const QVariantList &vmids);
+    // ---- VM scout / JARVIS.md profiles / questions / pinged ----------------
+    // proxmox.scout{machine} -> proxmoxScoutStarted(machine,ok,error). Kicks a
+    // detached fleet scan on the host; poll proxmoxScoutStatus for progress.
+    Q_INVOKABLE void proxmoxScout(const QString &machine);
+    // proxmox.scout_status{machine} -> proxmoxScoutStatusResult(machine,ok,
+    // status,error). status: {state:idle|running|done|error, done, total,
+    // current_vmid, current_name, results:[{vmid,name,kind,ok,summary,error}]}.
+    Q_INVOKABLE void proxmoxScoutStatus(const QString &machine);
+    // proxmox.vm_profile{machine,vmid} -> proxmoxVmProfileResult(machine,vmid,
+    // ok,profile,error) — the VM's JARVIS.md markdown (empty if not scouted).
+    Q_INVOKABLE void proxmoxVmProfile(const QString &machine, int vmid);
+    // proxmox.questions{machine} -> proxmoxQuestionsResult(machine,ok,
+    // questions,error). Rows: {qid,vmid,question,options,at} — the headless
+    // agent's pending interview questions.
+    Q_INVOKABLE void proxmoxQuestions(const QString &machine);
+    // proxmox.answer{machine,qid,answer} -> proxmoxAnswerResult(machine,qid,
+    // ok,error). The agent consumes the answer on its next tick.
+    Q_INVOKABLE void proxmoxAnswer(const QString &machine, const QString &qid,
+                                   const QString &answer);
+    // proxmox.pinged_list{machine} -> proxmoxPingedListResult(machine,ok,rules,
+    // events,error). rules: {id,name,vmid,trigger,action,enabled,last_checked_at,
+    // last_fired_at,last_result}; events: recent fired events, newest first.
+    Q_INVOKABLE void proxmoxPingedList(const QString &machine);
+    // proxmox.pinged_add{machine,name,action,vmid,condition,time} ->
+    // proxmoxPingedAddResult(machine,ok,error). Exactly one of condition
+    // (free text, agent-judged) / timeOfDay ("HH:MM" daily).
+    Q_INVOKABLE void proxmoxPingedAdd(const QString &machine, const QString &name,
+                                      const QString &action, int vmid,
+                                      const QString &condition, const QString &timeOfDay);
+    // proxmox.pinged_remove{machine,rule_id} -> proxmoxPingedRemoveResult(...).
+    Q_INVOKABLE void proxmoxPingedRemove(const QString &machine, const QString &ruleId);
 
     // ---- Audit log (HERMES_FEATURES risk gate) -----------------------------
     // audit.list{limit?} -> auditListed(QVariantList). Rows:
@@ -777,6 +808,20 @@ signals:
                              const QVariantList &memories, const QString &error);
     void proxmoxVmRestarted(const QString &machine, int vmid, bool ok,
                             const QString &error);
+    void proxmoxScoutStarted(const QString &machine, bool ok, const QString &error);
+    void proxmoxScoutStatusResult(const QString &machine, bool ok,
+                                  const QVariantMap &status, const QString &error);
+    void proxmoxVmProfileResult(const QString &machine, int vmid, bool ok,
+                                const QString &profile, const QString &error);
+    void proxmoxQuestionsResult(const QString &machine, bool ok,
+                                const QVariantList &questions, const QString &error);
+    void proxmoxAnswerResult(const QString &machine, const QString &qid, bool ok,
+                             const QString &error);
+    void proxmoxPingedListResult(const QString &machine, bool ok,
+                                 const QVariantList &rules, const QVariantList &events,
+                                 const QString &error);
+    void proxmoxPingedAddResult(const QString &machine, bool ok, const QString &error);
+    void proxmoxPingedRemoveResult(const QString &machine, bool ok, const QString &error);
     void proxmoxBlocklistSet(const QString &machine, bool ok,
                              const QVariantList &vmids, const QString &error);
 

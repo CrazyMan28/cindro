@@ -1425,6 +1425,102 @@ void Bridge::proxmoxSetBlocklist(const QString &machine, const QVariantList &vmi
     request(QStringLiteral("proxmox.set_blocklist"), params, m);
 }
 
+void Bridge::proxmoxScout(const QString &machine)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    request(QStringLiteral("proxmox.scout"), params, m);
+}
+
+void Bridge::proxmoxScoutStatus(const QString &machine)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    request(QStringLiteral("proxmox.scout_status"), params, m);
+}
+
+void Bridge::proxmoxVmProfile(const QString &machine, int vmid)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty() || vmid <= 0)
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    params.insert(QStringLiteral("vmid"), vmid);
+    // ctx packs machine + vmid (same convention as proxmoxRestartVm).
+    request(QStringLiteral("proxmox.vm_profile"), params,
+            m + QStringLiteral(":") + QString::number(vmid));
+}
+
+void Bridge::proxmoxQuestions(const QString &machine)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    request(QStringLiteral("proxmox.questions"), params, m);
+}
+
+void Bridge::proxmoxAnswer(const QString &machine, const QString &qid,
+                           const QString &answer)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty() || qid.trimmed().isEmpty() || answer.trimmed().isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    params.insert(QStringLiteral("qid"), qid);
+    params.insert(QStringLiteral("answer"), answer);
+    // ctx packs machine + qid; qids never contain ':' so lastIndexOf is safe.
+    request(QStringLiteral("proxmox.answer"), params,
+            m + QStringLiteral(":") + qid);
+}
+
+void Bridge::proxmoxPingedList(const QString &machine)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    request(QStringLiteral("proxmox.pinged_list"), params, m);
+}
+
+void Bridge::proxmoxPingedAdd(const QString &machine, const QString &name,
+                              const QString &action, int vmid,
+                              const QString &condition, const QString &timeOfDay)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    params.insert(QStringLiteral("name"), name);
+    params.insert(QStringLiteral("action"), action);
+    params.insert(QStringLiteral("vmid"), vmid);
+    params.insert(QStringLiteral("condition"), condition);
+    params.insert(QStringLiteral("time"), timeOfDay);
+    request(QStringLiteral("proxmox.pinged_add"), params, m);
+}
+
+void Bridge::proxmoxPingedRemove(const QString &machine, const QString &ruleId)
+{
+    const QString m = machine.trimmed();
+    if (m.isEmpty() || ruleId.trimmed().isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("machine"), m);
+    params.insert(QStringLiteral("rule_id"), ruleId);
+    request(QStringLiteral("proxmox.pinged_remove"), params, m);
+}
+
 // ---- Audit log -------------------------------------------------------------
 
 void Bridge::auditList(int limit)
@@ -3870,6 +3966,46 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             emit proxmoxBlocklistSet(ctx, false, QVariantList(), msg.isEmpty() ? code : msg);
             return;
         }
+        if (method == QStringLiteral("proxmox.scout")) {
+            emit proxmoxScoutStarted(ctx, false, msg.isEmpty() ? code : msg);
+            return;
+        }
+        if (method == QStringLiteral("proxmox.scout_status")) {
+            emit proxmoxScoutStatusResult(ctx, false, QVariantMap(), msg.isEmpty() ? code : msg);
+            return;
+        }
+        if (method == QStringLiteral("proxmox.vm_profile")) {
+            const int sep = ctx.lastIndexOf(QLatin1Char(':'));
+            const QString machine = sep >= 0 ? ctx.left(sep) : ctx;
+            const int vmid = sep >= 0 ? ctx.mid(sep + 1).toInt() : 0;
+            emit proxmoxVmProfileResult(machine, vmid, false, QString(),
+                                        msg.isEmpty() ? code : msg);
+            return;
+        }
+        if (method == QStringLiteral("proxmox.questions")) {
+            emit proxmoxQuestionsResult(ctx, false, QVariantList(), msg.isEmpty() ? code : msg);
+            return;
+        }
+        if (method == QStringLiteral("proxmox.answer")) {
+            const int sep = ctx.lastIndexOf(QLatin1Char(':'));
+            const QString machine = sep >= 0 ? ctx.left(sep) : ctx;
+            const QString qid = sep >= 0 ? ctx.mid(sep + 1) : QString();
+            emit proxmoxAnswerResult(machine, qid, false, msg.isEmpty() ? code : msg);
+            return;
+        }
+        if (method == QStringLiteral("proxmox.pinged_list")) {
+            emit proxmoxPingedListResult(ctx, false, QVariantList(), QVariantList(),
+                                         msg.isEmpty() ? code : msg);
+            return;
+        }
+        if (method == QStringLiteral("proxmox.pinged_add")) {
+            emit proxmoxPingedAddResult(ctx, false, msg.isEmpty() ? code : msg);
+            return;
+        }
+        if (method == QStringLiteral("proxmox.pinged_remove")) {
+            emit proxmoxPingedRemoveResult(ctx, false, msg.isEmpty() ? code : msg);
+            return;
+        }
         // Voice STT failed (no key / network): clear the indicator quietly-ish.
         if (method == QStringLiteral("voice.stt")) {
             setRecordingState(QStringLiteral("idle"));
@@ -4245,6 +4381,36 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         emit proxmoxVmRestarted(machine, vmid, true, QString());
     } else if (method == QStringLiteral("proxmox.set_blocklist")) {
         emit proxmoxBlocklistSet(ctx, true, result.value(QStringLiteral("vmids")).toList(), QString());
+    } else if (method == QStringLiteral("proxmox.scout")) {
+        emit proxmoxScoutStarted(ctx, true, QString());
+    } else if (method == QStringLiteral("proxmox.scout_status")) {
+        emit proxmoxScoutStatusResult(ctx, true,
+                                      result.value(QStringLiteral("scout")).toMap(), QString());
+    } else if (method == QStringLiteral("proxmox.vm_profile")) {
+        const int sep = ctx.lastIndexOf(QLatin1Char(':'));
+        const QString machine = sep >= 0 ? ctx.left(sep) : ctx;
+        const int vmid = sep >= 0 ? ctx.mid(sep + 1).toInt()
+                                   : result.value(QStringLiteral("vmid")).toInt();
+        emit proxmoxVmProfileResult(machine, vmid, true,
+                                    result.value(QStringLiteral("profile")).toString(),
+                                    QString());
+    } else if (method == QStringLiteral("proxmox.questions")) {
+        emit proxmoxQuestionsResult(ctx, true,
+                                    result.value(QStringLiteral("questions")).toList(), QString());
+    } else if (method == QStringLiteral("proxmox.answer")) {
+        const int sep = ctx.lastIndexOf(QLatin1Char(':'));
+        const QString machine = sep >= 0 ? ctx.left(sep) : ctx;
+        const QString qid = sep >= 0 ? ctx.mid(sep + 1)
+                                      : result.value(QStringLiteral("qid")).toString();
+        emit proxmoxAnswerResult(machine, qid, true, QString());
+    } else if (method == QStringLiteral("proxmox.pinged_list")) {
+        emit proxmoxPingedListResult(ctx, true,
+                                     result.value(QStringLiteral("rules")).toList(),
+                                     result.value(QStringLiteral("events")).toList(), QString());
+    } else if (method == QStringLiteral("proxmox.pinged_add")) {
+        emit proxmoxPingedAddResult(ctx, true, QString());
+    } else if (method == QStringLiteral("proxmox.pinged_remove")) {
+        emit proxmoxPingedRemoveResult(ctx, true, QString());
     } else if (method == QStringLiteral("audit.list")) {
         emit auditListed(result.value(QStringLiteral("entries")).toList());
     } else if (method == QStringLiteral("diff.stage")
