@@ -8,6 +8,30 @@ _Last updated: 2026-07-10._
 
 ---
 
+## 🆕 KWin-fork agent keyboard fixed: per-seat modifiers (2026-07-10)
+
+The reported "agent's mouse works but its keyboard commands go somewhere
+else" bug on the multi-seat KWin fork is root-caused and fixed. The `jarvis`
+seat never sent `wl_keyboard.modifiers` (clients never derive modifier state
+from raw keys), so every client saw `modifiers=0` forever: `ctrl+v` typed a
+literal `v`, `shift+a` gave lowercase — agent keyboard *commands* degenerated
+into stray text. Fix: `JarvisSeat` now owns its own `xkb_state` (fed only by
+agent keys, mirroring stock `keyboard_input.cpp` ordering) and forwards
+changed modifier masks after each key; keymap is ensured before first
+keyboard focus with a rules-based fallback for headless runs.
+
+- Verified before/after in a **nested** forked KWin (`--virtual
+  --no-lockscreen` + `wev`): old lib → no modifiers event ever; new lib →
+  `depressed: Shift`, shift+a decodes `utf8: 'A'`, `depressed: Control`.
+- Engine hardening: `jarvis_seat.available()` negatives now re-probe (30 s
+  TTL) instead of being cached forever — a pre-KWin probe used to silently
+  exile all real-screen input to the shared seat (mixing). +3 tests
+  (`test_jarvis_seat_routing.py`, suite 903 passed).
+- **Pending user action**: run `~/projects/kwin-jarvis-fork/deploy-libkwin.sh`
+  (auto-mode rightly refused to overwrite the live compositor lib) and
+  **relogin**, then `scripts/jarvis_seat_type_check.py` for the live smoke.
+  Fork commit `ce0cea6` on local branch `jarvis`.
+
 ## 🆕 Install opens a live scout+interview chat; tick schedule auto-seeded (2026-07-10)
 
 Clicking "Install Proxmox Workload Manager" no longer just kicks a silent

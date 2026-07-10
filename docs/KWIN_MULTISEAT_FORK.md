@@ -5,6 +5,62 @@
 > you don't forget." This file is the durable spec. A pointer lives in the
 > auto-memory ([[jarvis-monorepo]]).
 
+## STATUS (2026-07-10) — KEYBOARD FIXED: modifiers now tracked per seat
+
+- ✅ **Keyboard-commands bug FIXED** (fork commit `ce0cea6`, branch `jarvis`).
+  Symptom (user report): agent mouse worked on its own screen, but its
+  *keyboard commands* "did something somewhere else". Root cause: the jarvis
+  seat **never sent `wl_keyboard.modifiers`** — `JarvisSeat::key()` forwarded
+  raw keycodes only, and Wayland clients do NOT derive modifier state from raw
+  keys (the compositor must send it, per seat). So every client saw
+  `modifiers=0` forever: `ctrl+v` typed a literal `v`, `ctrl+a` typed `a`,
+  `shift+x` gave lowercase. Stock KWin does this in
+  `keyboard_input.cpp` (`Xkb::updateKey` before the key event,
+  `Xkb::forwardModifiers` after); the fork's DBus path skipped all of it.
+  Fix in `src/jarvisseat.{h,cpp}`: the JarvisSeat owns its **own
+  `xkb_state`** built from the same keymap it copies to the seat, updates it
+  on every `key()`, and forwards changed `depressed/latched/locked/layout`
+  after each key — same ordering as seat0. (Never reuse seat0's `Xkb`: that
+  would mix the user's held modifiers into the agent's typing.)
+- ✅ Also fixed while in there: keymap is now ensured **before the first
+  keyboard focus** (an `enter` on a keymap-less keyboard is skipped/useless —
+  this could eat keys entirely), with a default rules-based keymap fallback
+  when seat0 has no keyboard (headless/`--virtual` runs); `refocusAt` logs the
+  hit-tested window on change so routing is visible in the journal.
+- ✅ Engine hardening (`computer-use/computer_use_mcp/jarvis_seat.py`):
+  `available()` no longer caches a negative probe forever (was
+  `lru_cache` — one probe before KWin registered the iface would silently
+  exile ALL real-screen input to the shared-seat ydotool path = mixing).
+  Negatives re-probe after 30 s; positives stick.
+- ✅ **Verified nested** (`build/bin/kwin_wayland --virtual --width 1280
+  --height 800 --no-lockscreen --socket <name> -- wev`, drive
+  `/JarvisSeat` on the nested instance's **unique bus name** via
+  `busctl --user list | grep <pid>`): with the fix, wev shows
+  `modifiers depressed: Shift` after shift press, `utf8: 'A'` for shift+a,
+  `depressed: Control` for ctrl — with the old lib, no modifiers event ever
+  follows any key. Nested-test gotchas: pass `--no-lockscreen` (the nested
+  KSldApp sees the logind session lock and covers the output with an internal
+  greeter window that swallows every jarvis hit-test), and wrap the client in
+  a script that runs `stdbuf -oL` (kwin's arg parser eats the flags, and
+  block-buffered stdout loses the evidence).
+- ⚠️ **Deploy staged, NOT yet live**: the built lib must be installed via
+  `~/projects/kwin-jarvis-fork/deploy-libkwin.sh` (backup + atomic rename —
+  auto-mode blocked overwriting the live compositor lib, and the running
+  session keeps the old mmap anyway) and loads on the **next login** into
+  "Plasma (Jarvis KWin fork)". After relogin, run the live smoke:
+  `cd computer-use && env -u PYTHONPATH .venv/bin/python3 ../scripts/jarvis_seat_type_check.py`
+  (types a mixed-case string + ctrl+d EOF into a scratch terminal via the
+  jarvis seat only, then checks the file).
+- ℹ️ Known limitations (accepted, by design or deferred): XWayland targets —
+  X has ONE core keyboard focus following the user's activity, so agent keys
+  into an X11 app can land at the user's focused X window (nothing X11 runs
+  here in practice — checked: only xwaylandvideobridge; for X11 Chrome use
+  the extension/CDP path). Runtime layout switches don't reach the jarvis
+  seat (keymap copied once per session — relogin picks up a new layout). The
+  jarvis seat's Caps/Num lock state is deliberately independent of seat0
+  (the user's CapsLock must never mutate agent typing), and auto-repeat is
+  off (rate 0) — the agent always sends discrete press/release pairs.
+
 ## STATUS (2026-06-26) — SHIPPED: agent drives the real KDE screen, clicks work
 
 - ✅ Fork is the **real session compositor** ("Plasma (Jarvis KWin fork)" session via

@@ -78,7 +78,17 @@ Design pillars:
   SDDM is the always-safe fallback. The agent drives the real screen via the
   independent `jarvis` wl_seat (DBus `org.kde.KWin.JarvisSeat`), never `seat0` — and
   `notifyPointerEnter`'s 3rd arg is the surface GLOBAL ORIGIN (`pos - local`), not the
-  local offset (passing the offset drops every click).
+  local offset (passing the offset drops every click). The seat must ALSO send
+  `wl_keyboard.modifiers` from its own per-seat xkb_state — clients never derive
+  modifiers from raw keys, so without it every `ctrl+x` combo just types the letter
+  (fixed 2026-07-10; see `docs/KWIN_MULTISEAT_FORK.md`). Deploy with the fork's
+  `deploy-libkwin.sh`; test NESTED with `--virtual --no-lockscreen` (a locked logind
+  session otherwise puts a greeter window over the nested output that swallows every
+  jarvis hit-test) driving `/JarvisSeat` on the nested instance's unique bus name;
+  live smoke after relogin: `scripts/jarvis_seat_type_check.py`. Engine side:
+  `jarvis_seat.available()` must never cache a negative probe forever — the engine
+  can start before KWin registers the iface, and a sticky False silently exiles all
+  real-screen input to the shared seat (mixing).
 - `render_widget` writes `~/.local/share/jarvis/widgets.jsonl`; **both** the desktop
   and the daemon (for the phone) **tail** it by byte offset from EOF. Records carry
   `target` (canvas/chat/voice/both) + `session_id`; ad-hoc draws = CANVAS, saved
