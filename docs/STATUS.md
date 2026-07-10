@@ -37,10 +37,16 @@ exec` for LXC) — and the user can talk to it directly from any Jarvis chat.
   "Fix, don't break" is structural: the new `proxmox_guest_service` heals
   services inside guests (start/restart/status only — no stop verb, still
   zero VM-power paths anywhere in the agent's catalog).
-- Tests: proxmox-mcp 87 (was 39), computer-use 900, cli 187, outpost-mcp 34,
-  ctest 33/33, web typecheck + build, offscreen QML smoke. Live pve
-  validation pending the merge-to-main deploy loop (the host's sparse clone
-  tracks `main`); upgrade path = re-run install_workload + re-run the now-
+- Tests: proxmox-mcp 89 (was 39), computer-use 900, cli 187, outpost-mcp 34,
+  ctest 33/33, web typecheck + build, offscreen QML smoke — including a
+  code-review pass that caught and fixed a real VM-power bypass in
+  `proxmox_guest_service` (a valid systemd unit name like `poweroff.target`
+  slipped past the name regex; closed with a target/power-keyword denylist,
+  see `AGENTS.md`) plus a scout-status UI race, false-success reporting when
+  `proxmox-scout` isn't installed, and over-eager background-poll
+  registration of non-Proxmox machines. Live pve validation pending the
+  merge-to-main deploy loop (the host's sparse clone tracks `main`);
+  upgrade path = re-run install_workload + re-run the now-
   upserting `seed_schedule.py`.
 
 ---
