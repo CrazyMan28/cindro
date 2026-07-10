@@ -10,25 +10,42 @@ with a `gdbus` fallback; no python dbus dependency.
 
 from __future__ import annotations
 
-import functools
 import shutil
 import subprocess
+import threading
+import time
 
 _SVC = "org.kde.KWin"
 _OBJ = "/JarvisSeat"
 _IFACE = "org.kde.KWin.JarvisSeat"
 
+# Negative probes are retried after this long. Positives stick for the engine's
+# lifetime (the fork IS the session compositor — it doesn't go away mid-session).
+_PROBE_TTL = 30.0
+
+_available = False
+_next_probe = 0.0
+# Engine tool handlers run on real threads (asyncio.to_thread); single-flight
+# the probe so concurrent input ops don't spawn duplicate qdbus subprocesses.
+_probe_lock = threading.Lock()
+
+
+_qdbus_bin_found: str | None = None
+
 
 def _qdbus_bin() -> str | None:
-    for b in ("qdbus6", "qdbus-qt6", "qdbus"):
-        if shutil.which(b):
-            return b
-    return None
+    # Cache only a FOUND binary (PATH lookups are cheap; caching a miss would
+    # poison every future probe if qdbus gets installed later).
+    global _qdbus_bin_found
+    if _qdbus_bin_found is None:
+        for b in ("qdbus6", "qdbus-qt6", "qdbus"):
+            if shutil.which(b):
+                _qdbus_bin_found = b
+                break
+    return _qdbus_bin_found
 
 
-@functools.lru_cache(maxsize=1)
-def available() -> bool:
-    """True iff the forked KWin is running and exposes the JarvisSeat iface."""
+def _probe() -> bool:
     qb = _qdbus_bin()
     try:
         if qb:
@@ -41,6 +58,37 @@ def available() -> bool:
     except Exception:  # noqa: BLE001
         return False
     return False
+
+
+def available() -> bool:
+    """True iff the forked KWin is running and exposes the JarvisSeat iface.
+
+    A negative result is re-probed after _PROBE_TTL rather than cached forever:
+    the engine can start before the forked KWin registers the iface (cold boot,
+    relogin), and permanently caching that one failed probe would silently exile
+    all real-screen input to the shared-seat uinput/ydotool path — exactly the
+    user/agent input mixing the jarvis seat exists to prevent.
+    """
+    global _available, _next_probe
+    if _available:
+        return True
+    # Single-flight without queueing: if another thread is already probing,
+    # answer from the cache immediately (input falls through to the shared-seat
+    # path for that one op) rather than stalling behind a up-to-3s subprocess.
+    if not _probe_lock.acquire(blocking=False):
+        return _available
+    try:
+        if _available:
+            return True
+        now = time.monotonic()
+        if now < _next_probe:
+            return False
+        _available = _probe()
+        if not _available:
+            _next_probe = now + _PROBE_TTL
+        return _available
+    finally:
+        _probe_lock.release()
 
 
 def _call(method: str, *args) -> None:
