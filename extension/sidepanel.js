@@ -2438,7 +2438,7 @@ async function openAgentConfig(ext, name) {
     agentConfigState.model     = mc.model     || null;
     agentConfigState.reasoning = mc.reasoning || null;
   } catch (_) { /* no model config yet — use defaults */ }
-  renderAgentModelSection(name);
+  await renderAgentModelSection(name, ext);
 }
 
 function closeAgentConfig() {
@@ -2498,41 +2498,51 @@ function renderVoiceGroups(container, voices, selectedId) {
   });
 }
 
-function renderAgentModelSection(agentName) {
-  const section = $("agentModelSection"); if (!section) return;
+// Which daemon brain (if any) an agent's model picker should query via
+// model.list — codex/claude only; other extensions (Copilot, Echo, Hermes,
+// Mistral Screener, ...) have no selectable Jarvis-brain model. Mirrors
+// android AgentConfigScreen.kt's brainFor() and tui/src/phone/api.ts's
+// brainForAgent() — keep all three in sync if the naming convention changes.
+function brainForAgent(agentName) {
   const lc = (agentName || "").toLowerCase();
-  const hasClaude = lc.includes("claude");
-  const hasCodex  = lc.includes("codex") || lc.includes("gpt");
+  if (lc.includes("claude")) return "claude";
+  if (lc.includes("codex") || lc.includes("gpt")) return "codex";
+  return null;
+}
 
-  let modelOptions = [];
-  let defaultModelId = null;
-  if (hasClaude) {
-    modelOptions = [
-      { label: "Sonnet 4.6", id: "claude-sonnet-4-6" },
-      { label: "Opus 4.8",   id: "claude-opus-4-8"   },
-      { label: "Haiku 4.5",  id: "claude-haiku-4-5"  }
-    ];
-    defaultModelId = "claude-sonnet-4-6";
-  } else if (hasCodex) {
-    modelOptions = [
-      { label: "5.5", id: "gpt-5.5" },
-      { label: "5.4", id: "gpt-5.4" }
-    ];
-    defaultModelId = "gpt-5.5";
-  }
+async function renderAgentModelSection(agentName, ext) {
+  const section = $("agentModelSection"); if (!section) return;
+  const brain = brainForAgent(agentName);
+  if (!brain) { section.classList.add("hidden"); return; }
 
-  if (!modelOptions.length) { section.classList.add("hidden"); return; }
+  // Live model ids for this agent's brain, same model.list RPC loadModels()
+  // uses for the main picker — replaces the old hardcoded per-brain option
+  // arrays, which went stale the same way the main picker's used to before
+  // it was wired to model.list.
+  let modelIds = [];
+  try {
+    const res = await rpc("model.list", { brain });
+    modelIds = ((res && res.models) || []).map((m) => (typeof m === "string" ? m : (m && (m.id || m.model)))).filter(Boolean);
+  } catch (_) { /* leave modelIds empty — section stays hidden below */ }
+
+  // The user may have opened a DIFFERENT agent while this await was in
+  // flight — agentConfigState.ext would then no longer match, and applying
+  // this response now would silently wire the wrong brain's model ids to
+  // whatever agent is currently on screen.
+  if (agentConfigState.ext !== ext) return;
+
+  if (!modelIds.length) { section.classList.add("hidden"); return; }
   section.classList.remove("hidden");
 
   const modelChipsEl = $("agentModelChips"); if (!modelChipsEl) return;
   modelChipsEl.innerHTML = "";
-  const currentModel = agentConfigState.model || defaultModelId;
-  modelOptions.forEach((opt) => {
+  const currentModel = agentConfigState.model || modelIds[0];
+  modelIds.forEach((id) => {
     const chip = document.createElement("button");
-    chip.className = "config-chip" + (opt.id === currentModel ? " selected" : "");
-    chip.textContent = opt.label;
+    chip.className = "config-chip" + (id === currentModel ? " selected" : "");
+    chip.textContent = id;
     chip.addEventListener("click", () => {
-      agentConfigState.model = opt.id;
+      agentConfigState.model = id;
       modelChipsEl.querySelectorAll(".config-chip").forEach((c) => c.classList.remove("selected"));
       chip.classList.add("selected");
       saveAgentModelConfig();

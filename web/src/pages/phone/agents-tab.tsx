@@ -126,11 +126,17 @@ function parseVoice(v: Row, index: number): VoiceEntry {
   return { vid: str(v.id), vname: nm, speaker, emotion }
 }
 
-const MODEL_CHIPS = [
-  { lbl: "Sonnet 4.6", id: "claude-sonnet-4-6" },
-  { lbl: "Opus 4.8", id: "claude-opus-4-8" },
-  { lbl: "Haiku 4.5", id: "claude-haiku-4-5" },
-]
+// Which daemon brain (if any) an agent's model picker should query via
+// model.list — codex/claude only; other extensions (Copilot, Echo, Hermes,
+// Mistral Screener, ...) have no selectable Jarvis-brain model. Mirrors
+// android AgentConfigScreen.kt / tui/src/phone/api.ts / extension/sidepanel.js's
+// equivalents — keep all four in sync if the naming convention changes.
+function brainForAgent(name: string): string | null {
+  const n = name.toLowerCase()
+  if (n.includes("claude")) return "claude"
+  if (n.includes("codex")) return "codex"
+  return null
+}
 const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh"]
 
 export function PhoneAgentsTab() {
@@ -148,7 +154,8 @@ export function PhoneAgentsTab() {
   const [voiceId, setVoiceId] = createSignal("")
   const [voiceName, setVoiceName] = createSignal("(default)")
   const [speed, setSpeed] = createSignal(1.0)
-  const [model, setModel] = createSignal("claude-sonnet-4-6")
+  const [model, setModel] = createSignal("")
+  const [models, setModels] = createSignal<string[]>([])
   const [thinking, setThinking] = createSignal("low")
   const [cfgStatus, setCfgStatus] = createSignal("")
 
@@ -197,7 +204,8 @@ export function PhoneAgentsTab() {
     setVoiceId("")
     setVoiceName("(default)")
     setSpeed(1.0)
-    setModel("claude-sonnet-4-6")
+    setModel("")
+    setModels([])
     setThinking("low")
     setCfgStatus("Loading…")
 
@@ -220,12 +228,30 @@ export function PhoneAgentsTab() {
       setCfgStatus(`voice profile: ${pfail}`)
     }
 
+    // Live model ids for this agent's brain, same model.list RPC the main
+    // Jarvis picker uses (chat.tsx) — replaces the old hardcoded MODEL_CHIPS,
+    // which went stale the same way the main picker's used to before it was
+    // wired to model.list.
+    const brain = brainForAgent(agent.name)
+    let modelIds: string[] = []
+    if (brain) {
+      try {
+        const mlres = await app.client.call("model.list", { brain }, 8000)
+        if (!alive) return
+        modelIds = ((mlres.models ?? []) as unknown[]).map(String)
+        setModels(modelIds)
+      } catch {
+        // leave modelIds/models empty — the MODEL section just won't render
+      }
+    }
+    if (!alive) return
+
     const mres = await phoneHttp(app.client, "GET", `/api/extensions/${agent.ext}/model`)
     if (!alive) return
     const mfail = httpFailure(mres)
     if (!mfail && mres.data) {
       const d = (mres.data ?? {}) as Row
-      setModel(str(d.model) || "claude-sonnet-4-6")
+      setModel(str(d.model) || modelIds[0] || "")
       setThinking(str(d.reasoning) || str(d.thinking) || "low")
       setCfgStatus("")
     } else if (mfail) {
@@ -422,18 +448,19 @@ export function PhoneAgentsTab() {
               <div class="phagt-ratehint">0.5× slow · 1× normal · 2× fast</div>
             </div>
 
+            <Show when={models().length > 0}>
             <div class="phagt-section-title hud-label">MODEL</div>
             <div class="card phagt-modelcard">
               <div class="phagt-chiprow">
-                <For each={MODEL_CHIPS}>
-                  {(mc) => (
+                <For each={models()}>
+                  {(id) => (
                     <button
                       type="button"
                       class="phagt-chip"
-                      classList={{ on: model() === mc.id }}
-                      onClick={() => void saveModelConfig(mc.id, "")}
+                      classList={{ on: model() === id }}
+                      onClick={() => void saveModelConfig(id, "")}
                     >
-                      {mc.lbl}
+                      {id}
                     </button>
                   )}
                 </For>
@@ -454,6 +481,7 @@ export function PhoneAgentsTab() {
                 </For>
               </div>
             </div>
+            </Show>
           </div>
         )}
       </Show>

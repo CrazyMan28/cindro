@@ -16,6 +16,7 @@ import com.agentphone.net.ApiResult
 import com.agentphone.net.PhoneEvent
 import com.agentphone.service.AgentPhoneForegroundService
 import com.agentphone.service.CallForegroundService
+import com.jarvis.app.JarvisApp
 import com.agentphone.state.AgentPhonePreferences
 import com.agentphone.state.AgentPhoneSettings
 import com.agentphone.state.CallStateReducer
@@ -248,6 +249,24 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     /** Set an agent's model and/or thinking level (applies on its next message). */
     fun setModelConfig(extension: String, model: String?, reasoning: String?, onDone: () -> Unit = {}) {
         client.putModelConfig(_settings.value, extension, model, reasoning) { onDone() }
+    }
+
+    /**
+     * Live model ids for `brain` ("claude"/"codex"), same daemon model.list RPC
+     * the main Jarvis picker uses — via the shared JarvisRepository on the
+     * Application singleton (this phone subsystem has its own AgentPhoneClient
+     * for the vendored phone server's REST API, but talks to the SAME jarvisd
+     * over the SAME connection for daemon-native RPCs like this one). Replaces
+     * the phone-agent picker's old hardcoded model id list, which went stale
+     * the same way the main picker's used to before it was wired to model.list.
+     */
+    fun listModelsForBrain(brain: String, callback: (List<String>) -> Unit) {
+        viewModelScope.launch {
+            val ids = runCatching { (app as JarvisApp).repository.listModels(brain) }
+                .getOrDefault(emptyList())
+                .map { it.id }
+            callback(ids)
+        }
     }
 
     /** Start a real group chat (one shared thread with several agents); calls back

@@ -289,7 +289,21 @@ class JarvisRepository(
 
     suspend fun listModels(brain: String): List<ModelInfo> {
         val r = client.request("model.list", Params.of("brain" to brain)).orThrow()
-        return r.getAsJsonArray("models")?.toObjects()?.map(ModelInfo::from) ?: emptyList()
+        val arr = r.getAsJsonArray("models") ?: return emptyList()
+        // The daemon's model.list returns a flat array of plain id STRINGS, not
+        // objects — toObjects() (which filters to JsonObject elements only) would
+        // silently drop every entry here, leaving the picker permanently empty
+        // ("No models reported."). Handle both: a raw string synthesizes a bare
+        // ModelInfo; an object (if the daemon ever richens the shape) still goes
+        // through ModelInfo.from.
+        return arr.mapNotNull { el ->
+            when {
+                el.isJsonObject -> ModelInfo.from(el.asJsonObject)
+                el.isJsonPrimitive && el.asJsonPrimitive.isString ->
+                    ModelInfo(id = el.asString, label = null, brain = brain)
+                else -> null
+            }
+        }
     }
 
     // --- MCP servers -------------------------------------------------------

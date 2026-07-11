@@ -6,9 +6,9 @@ import JarvisSidebar
 
 // AGENTS tab — live agent list with per-agent CONFIG panel:
 // voice picker (speaker groups + emotion chips + ▶ preview), speaking-rate
-// slider (0.5-2×), model chips (Sonnet 4.6 / Opus 4.8 / Haiku 4.5), thinking
-// chips (minimal → xhigh).  Tap "Config" on any agent card to open the panel;
-// tap "Call" to dial it directly via call_extension.
+// slider (0.5-2×), model chips (live from model.list, codex/claude agents
+// only), thinking chips (minimal → xhigh).  Tap "Config" on any agent card
+// to open the panel; tap "Call" to dial it directly via call_extension.
 Item {
     id: tab
     property var phonePage
@@ -41,6 +41,29 @@ Item {
             var cb = tab._pending[callId]
             if (cb) { delete tab._pending[callId]; cb(result) }
         }
+        // Live model ids for the open agent's brain, same model.list RPC the
+        // main model picker (ComputerPage.qml) uses — replaces the old
+        // hardcoded per-brain chip list, which went stale the same way the
+        // main picker's used to before it was wired to model.list. Broadcast
+        // signal (bridge.listModels can be called from elsewhere too), so
+        // only apply it while this panel is open and it's the brain we asked for.
+        function onModelsListed(brain, models) {
+            if (!tab.configMode || brain !== tab.configBrain) return
+            tab.configModelOptions = models
+        }
+    }
+
+    // Which daemon brain (if any) the open agent's model picker should query
+    // — codex/claude only; other extensions (Copilot, Echo, Hermes, Mistral
+    // Screener, ...) have no selectable Jarvis-brain model. Mirrors android
+    // AgentConfigScreen.kt's brainFor(), tui's brainForAgent(), and the
+    // extension's brainForAgent() — keep all four in sync if the naming
+    // convention changes.
+    function brainForAgent(name) {
+        var lc = (name || "").toLowerCase()
+        if (lc.indexOf("claude") >= 0) return "claude"
+        if (lc.indexOf("codex") >= 0 || lc.indexOf("gpt") >= 0) return "codex"
+        return ""
     }
 
     // ---- list state -----------------------------------------------------------
@@ -55,7 +78,9 @@ Item {
     property string configVoiceId: ""
     property string configVoiceName: "(default)"
     property real   configSpeed:  1.0
-    property string configModel:  "claude-sonnet-4-6"
+    property string configBrain:  ""
+    property var    configModelOptions: []
+    property string configModel:  ""
     property string configThinking: "low"
     property string configStatus: ""
 
@@ -95,9 +120,12 @@ Item {
     function openConfig(ext, name) {
         tab.configExt = ext; tab.configName = name
         tab.configVoiceId = ""; tab.configVoiceName = "(default)"
-        tab.configSpeed = 1.0; tab.configModel = "claude-sonnet-4-6"
+        tab.configSpeed = 1.0
+        tab.configBrain = tab.brainForAgent(name)
+        tab.configModelOptions = []; tab.configModel = ""
         tab.configThinking = "low"; tab.configStatus = "Loading…"
         tab.configMode = true
+        if (tab.configBrain !== "" && bridge.connected) bridge.listModels(tab.configBrain)
 
         // load voices — GET /api/voices
         voicesModel.clear()
@@ -154,11 +182,21 @@ Item {
         tab.callHttp("GET", "/api/extensions/" + ext + "/model", {}, function(r) {
             if (!r.error && r.data) {
                 var d = r.data || {}
-                tab.configModel    = d.model     || "claude-sonnet-4-6"
+                tab.configModel    = d.model     || ""
                 tab.configThinking = d.reasoning || d.thinking || "low"
             }
             tab.configStatus = ""
         })
+    }
+
+    // The chip to highlight as "current": the saved model if we have one,
+    // else the first live-fetched option (mirrors firstModelForBrain's
+    // "first entry is the default" convention) — computed at use, not at
+    // fetch time, since configModel (from callHttp) and configModelOptions
+    // (from the async bridge.listModels reply) can arrive in either order.
+    function effectiveConfigModel() {
+        if (tab.configModel !== "") return tab.configModel
+        return tab.configModelOptions.length > 0 ? tab.configModelOptions[0] : ""
     }
 
     function setVoice(vid, vname) {
@@ -511,13 +549,19 @@ Item {
                     }
                 }
 
-                // ── MODEL + THINKING section (Claude agents only) ─────────
+                // ── MODEL + THINKING section (codex/claude agents only) ────
+                // Model chips come live from model.list (bridge.listModels,
+                // triggered in openConfig) — not a hardcoded id list, so a
+                // newly-released model shows up here the same way it does in
+                // the main chat picker.
                 Text {
+                    visible: tab.configModelOptions.length > 0
                     text: "MODEL"; color: Theme.textFaint
                     font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: 2.0; font.weight: Font.DemiBold
                 }
                 Rectangle {
-                    Layout.fillWidth: true; height: _modelCol.implicitHeight + 20
+                    visible: tab.configModelOptions.length > 0
+                    Layout.fillWidth: true; height: visible ? _modelCol.implicitHeight + 20 : 0
                     color: Theme.surface; radius: Theme.radiusSm; border.color: Theme.hairlineSoft; border.width: 1
                     ColumnLayout {
                         id: _modelCol
@@ -528,20 +572,15 @@ Item {
                         Row {
                             spacing: 8
                             Repeater {
-                                model: [
-                                    {lbl:"Sonnet 4.6", id:"claude-sonnet-4-6"},
-                                    {lbl:"Opus 4.8",   id:"claude-opus-4-8"},
-                                    {lbl:"Haiku 4.5",  id:"claude-haiku-4-5"}
-                                ]
+                                model: tab.configModelOptions
                                 delegate: Rectangle {
-                                    required property var modelData
-                                    property string _mid: modelData.id
-                                    property string _mlbl: modelData.lbl
+                                    required property string modelData
+                                    property string _mid: modelData
                                     height: 28; implicitWidth: _mdLbl.implicitWidth + 18; radius: Theme.radiusXs
-                                    color: tab.configModel === _mid ? Qt.rgba(0.239,0.839,1.0,0.20) : (_mdMa.containsMouse ? Qt.rgba(1,1,1,0.08) : Theme.surfaceStrong)
-                                    border.color: tab.configModel === _mid ? Theme.accent : Theme.hairlineSoft; border.width: 1
+                                    color: tab.effectiveConfigModel() === _mid ? Qt.rgba(0.239,0.839,1.0,0.20) : (_mdMa.containsMouse ? Qt.rgba(1,1,1,0.08) : Theme.surfaceStrong)
+                                    border.color: tab.effectiveConfigModel() === _mid ? Theme.accent : Theme.hairlineSoft; border.width: 1
                                     Behavior on color { ColorAnimation { duration: Theme.durFast } }
-                                    Text { id: _mdLbl; anchors.centerIn: parent; text: parent._mlbl; color: tab.configModel === parent._mid ? Theme.accent : Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11 }
+                                    Text { id: _mdLbl; anchors.centerIn: parent; text: parent._mid; color: tab.effectiveConfigModel() === parent._mid ? Theme.accent : Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11 }
                                     MouseArea { id: _mdMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; property string mid: parent._mid; onClicked: tab.setModelConfig(mid, "") }
                                 }
                             }

@@ -1,0 +1,121 @@
+# Builds the Android app: assembleDebug + unit tests on every PR into main,
+# and attaches a debug-signed APK to the GitHub Release on a version tag —
+# same shape as windows-build.yml / linux-release.yml (PR validation + tag
+# release-attach in one workflow), but on GITHUB-HOSTED runners (ubuntu-latest)
+# since there's no self-hosted runner provisioned with the Android SDK, unlike
+# the Windows/Linux jobs which run on the Proxmox self-hosted fleet.
+#
+# NOTE: no release signing config exists yet in android/app/build.gradle.kts
+# (no signingConfigs block) — the attached APK is debug-signed (installable via
+# `adb install` / sideloading, but not eligible for Play Store distribution).
+# Add a keystore secret + signingConfigs.release block to switch this to
+# assembleRelease when real distribution signing is set up.
+name: android-build
+
+on:
+  # Same two triggers as windows-build.yml / linux-release.yml: a pull_request
+  # into main validates the change before merge; a v* tag (created by
+  # auto-release.yml on merge to main) builds the release artifact and attaches
+  # it to the GitHub Release. Day-to-day pushes to dev/qa/main trigger nothing.
+  pull_request:
+    branches: [main]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Needed so the tag build can attach the APK to the Release.
+permissions:
+  contents: write
+
+# A v* tag build (release) is never auto-cancelled — keyed by unique SHA so no
+# two tags ever share a group. PR re-pushes dedup: a newer commit on the PR
+# supersedes that PR's still-running build.
+concurrency:
+  group: android-build-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # Caches the Gradle wrapper + dependencies across runs (official Gradle action).
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          build-root-directory: android
+
+      # android/app/build.gradle.kts references libs/sherpa-onnx-1.13.2.aar
+      # (on-device TTS) as a local file dependency, but the ~56MB AAR is
+      # deliberately gitignored (android/app/libs/*.aar) — every dev machine
+      # re-fetches it locally, and CI must do the same or assembleDebug fails
+      # at the very first build with "file not found". Cached by version so a
+      # re-run doesn't re-download.
+      - name: Cache sherpa-onnx AAR
+        id: sherpa-cache
+        uses: actions/cache@v4
+        with:
+          path: android/app/libs/sherpa-onnx-1.13.2.aar
+          key: sherpa-onnx-aar-1.13.2
+
+      - name: Fetch sherpa-onnx AAR
+        if: steps.sherpa-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p android/app/libs
+          curl -fsSL -o android/app/libs/sherpa-onnx-1.13.2.aar \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-1.13.2.aar
+
+      - name: Derive version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.1.0-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build debug APK + run unit tests
+        working-directory: android
+        run: ./gradlew assembleDebug testDebugUnitTest --stacktrace
+
+      - name: Upload test report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-report
+          path: android/app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload APK artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: Jarvis-${{ steps.ver.outputs.version }}-debug.apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      # On a version tag, attach the APK to the Release (same pattern as
+      # windows-build.yml's Jarvis-Setup.exe / linux-release.yml's AppImage).
+      - name: Rename APK for release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          mkdir -p release-out
+          cp android/app/build/outputs/apk/debug/*.apk "release-out/Jarvis-${{ steps.ver.outputs.version }}.apk"
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-out/*.apk
