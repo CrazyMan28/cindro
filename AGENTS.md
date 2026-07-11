@@ -733,6 +733,70 @@ missed both of these:
   same treatment — don't rely solely on a scrollable log for a result the
   user is actively waiting on right after clicking a button.
 
+## New subsystems (2026-07-11) — dynamic model discovery
+
+`modelsForBrain()` (`daemon/src/ControlServer.cpp`) was a hardcoded array of
+codex/claude model ids per brain, feeding the `model.list` RPC every client
+surface (desktop/Android/web/TUI/CLI/extension) already just renders — so it
+went stale every time OpenAI/Anthropic shipped a model, and `coerceModelForBrain`
+(the cross-brain-mismatch guard) would silently discard a valid-but-unlisted
+model a session tried to use.
+
+- **codex has a real (if unofficial) catalog command: `codex debug models
+  --bundled`.** Live-verified (codex 0.144.1) shape is a top-level JSON
+  OBJECT with a `"models"` array of `{slug, visibility, ...}` — NOT a bare
+  array, which an earlier draft of this feature assumed from research alone
+  and only caught by actually running the command and watching `model.list`
+  silently fail to pick up new entries. Parsing lives in
+  `jarvis::parseCodexModelCatalog` (`core/src/ModelCatalog.cpp`), filtering
+  out `visibility:"hide"` entries, and fails open (`ok=false`, keep the
+  static list) on ANY shape mismatch — this is an undocumented debugging
+  subcommand with no stable spec to trust blindly.
+- **claude has no CLI list-models command, but the CLI's own OAuth session
+  can call the PUBLIC, documented Anthropic Models API directly.** `GET
+  https://api.anthropic.com/v1/models` accepts the Claude Code OAuth bearer
+  token (read from `.credentials.json`'s `claudeAiOauth.accessToken`) with
+  `anthropic-beta: oauth-2025-04-20` (the same header a third-party plugin,
+  `CrazyMan28/claude_knows`'s `bin/ck-usage`, already uses in production
+  against the sibling `/api/oauth/usage` endpoint for Claude Code's own
+  `/usage` command) plus the standard `anthropic-version` header every `/v1`
+  call needs. **Must read the token from `m_settings.claudeConfigDir()`**
+  (the SAME pro/max-account resolver `ClaudeBrain` itself is spawned with) —
+  an earlier draft tried `CLAUDE_CONFIG_DIR` / `~/.claude` /
+  `~/.claude-secondary` in a fixed fallback order, which can silently pick a
+  DIFFERENT account's token than the one actually driving the CLI (stale Pro
+  credentials on disk while the setting is "max"), reintroducing the exact
+  ambient-`CLAUDE_CONFIG_DIR` bug `ClaudeBrain`'s own `configDir` default was
+  written to prevent.
+- **Fetches are async and TTL-cached, never blocking.** `ControlServer` runs
+  on ONE event loop that also pumps every connected brain's process I/O — a
+  blocking spawn/HTTP call in `model.list`'s handler would stall live chat
+  streaming for every connected surface, not just whoever opened a dropdown.
+  `refreshLiveModelCatalog()` answers instantly from whatever's cached
+  (300s TTL on success, 30s on failure) and kicks a background refresh;
+  `handleModelList`'s `force` param drops the TTL guard for a manual
+  refresh. `coerceModelForBrain` (converted from a free function to a
+  `ControlServer` member so it can read the cache) and `settings.get`'s
+  `models_by_brain` (the Settings page's default-model dropdown) both read
+  the same merged cache — don't let either regress back to the static-only
+  list, or they'll drift from what `model.list` shows the chat picker.
+  `firstModelForBrain()` deliberately keeps reading the STATIC list, not the
+  merged one — live entries are always appended, never prepended, so a
+  brand-new/possibly-preview model becoming selectable never silently
+  changes what a fresh session defaults to.
+- **The codex child process's stderr MUST be drained**, even though only
+  stdout is parsed — `debug models` is unofficial and could write more than
+  the OS pipe buffer to stderr; with `SeparateChannels` and nothing reading
+  that pipe, the child blocks on the write and never exits (the bounded
+  timeout still catches it, but every call would eat the full timeout
+  instead of a live catalog).
+- Parse/merge logic (`parseCodexModelCatalog`/`parseClaudeModelCatalog`/
+  `mergeModelCatalogs`) lives in `core/src/ModelCatalog.cpp`, not inline in
+  `ControlServer.cpp`, specifically so it's unit-testable
+  (`core/tests/model_catalog_test.cpp`) without a full `ControlServer`
+  instance — daemon stays thin, business logic stays in `core/`, per this
+  file's own Conventions section below.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

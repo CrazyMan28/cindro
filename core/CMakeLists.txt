@@ -78,6 +78,10 @@ add_library(jarvis-core STATIC
     # The daemon-owned surface manifest (ui.manifest.get) both frontends render
     # from — pages/commands/settings/status declared ONCE, custom pages merged.
     src/UiManifest.cpp
+    # Pure parse/merge helpers for the dynamic model-discovery feature (codex
+    # `debug models --bundled` + Anthropic /v1/models catalogs) — kept here so
+    # they're unit-testable without a full ControlServer instance.
+    src/ModelCatalog.cpp
     # Headers listed so AUTOMOC processes the Q_OBJECT types (Brain, CodexBrain),
     # generating their staticMetaObject + vtable into this static lib.
     include/jarvis/Protocol.h
@@ -248,6 +252,12 @@ add_test(NAME session_store_test COMMAND session_store_test)
 add_executable(tool_loop_guard_test tests/tool_loop_guard_test.cpp)
 target_link_libraries(tool_loop_guard_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME tool_loop_guard_test COMMAND tool_loop_guard_test)
+
+# ModelCatalog: codex/claude live-catalog parse + merge (pure logic) — real
+# response shapes pinned, fail-open on any mismatch.
+add_executable(model_catalog_test tests/model_catalog_test.cpp)
+target_link_libraries(model_catalog_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME model_catalog_test COMMAND model_catalog_test)
 
 # KanbanStore: durable work queue — enqueue/claim/heartbeat/reclaim (temp DB).
 add_executable(kanban_store_test tests/kanban_store_test.cpp)

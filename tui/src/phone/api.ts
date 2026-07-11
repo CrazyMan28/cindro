@@ -192,11 +192,17 @@ export function parseVoice(v: Row, index: number): VoiceEntry {
   return { vid: str(v.id), vname: nm, speaker, emotion }
 }
 
-export const MODEL_CHIPS = [
-  { lbl: "Sonnet 4.6", id: "claude-sonnet-4-6" },
-  { lbl: "Opus 4.8", id: "claude-opus-4-8" },
-  { lbl: "Haiku 4.5", id: "claude-haiku-4-5" },
-]
+// Which daemon brain (if any) an agent's model picker should query via
+// model.list — codex/claude only; other extensions (Copilot, Echo, Hermes,
+// Mistral Screener, ...) have no selectable Jarvis-brain model. Mirrors
+// android AgentConfigScreen.kt's brainFor() and extension/sidepanel.js's
+// equivalent — keep all three in sync if the naming convention changes.
+export function brainForAgent(name: string): string | null {
+  const n = name.toLowerCase()
+  if (n.includes("claude")) return "claude"
+  if (n.includes("codex")) return "codex"
+  return null
+}
 export const THINKING_LEVELS = ["minimal", "low", "medium", "high", "xhigh"]
 export const SPEED_STEPS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 

@@ -17,9 +17,9 @@ import { theme } from "../../theme"
 import type { Row, VoiceEntry } from "../api"
 import {
   asList,
+  brainForAgent,
   DEFAULT_VOICES,
   httpFailure,
-  MODEL_CHIPS,
   parseVoice,
   phoneHttp,
   phoneMcp,
@@ -51,7 +51,8 @@ export function AgentsTab(props: TabProps) {
   const [voiceId, setVoiceId] = createSignal("")
   const [voiceName, setVoiceName] = createSignal("(default)")
   const [speed, setSpeed] = createSignal(1.0)
-  const [model, setModel] = createSignal("claude-sonnet-4-6")
+  const [model, setModel] = createSignal("")
+  const [models, setModels] = createSignal<string[]>([])
   const [thinking, setThinking] = createSignal("low")
   const [cfgStatus, setCfgStatus] = createSignal("")
   const [voicePicker, setVoicePicker] = createSignal(false)
@@ -92,7 +93,8 @@ export function AgentsTab(props: TabProps) {
     setVoiceId("")
     setVoiceName("(default)")
     setSpeed(1.0)
-    setModel("claude-sonnet-4-6")
+    setModel("")
+    setModels([])
     setThinking("low")
     setCfgStatus("Loading…")
 
@@ -112,11 +114,34 @@ export function AgentsTab(props: TabProps) {
       if (d.speed !== undefined) setSpeed(Number(d.speed) || 1.0)
     } else if (pfail) setCfgStatus(`voice profile: ${pfail}`)
 
+    // Live model ids for this agent's brain, same model.list RPC the main
+    // Jarvis picker uses (Chat.tsx) — replaces the old hardcoded MODEL_CHIPS,
+    // which went stale the same way the main picker's used to before it was
+    // wired to model.list.
+    const brain = brainForAgent(agent.name)
+    let modelIds: string[] = []
+    if (brain) {
+      try {
+        const mlres = await app.client.call("model.list", { brain }, 8000)
+        modelIds = ((mlres.models ?? []) as unknown[]).map(String)
+        // The user may have opened a DIFFERENT agent while this await was in
+        // flight — cfg() would then no longer match, and applying this
+        // response now would wire the wrong brain's model ids to whichever
+        // agent is currently displayed.
+        if (cfg()?.ext !== agent.ext) return
+        setModels(modelIds)
+      } catch {
+        // leave modelIds/models empty — the MODEL section just won't render
+      }
+    }
+    if (cfg()?.ext !== agent.ext) return
+
     const mres = await phoneHttp(app.client, "GET", `/api/extensions/${agent.ext}/model`)
     const mfail = httpFailure(mres)
+    if (cfg()?.ext !== agent.ext) return
     if (!mfail && mres.data) {
       const d = (mres.data ?? {}) as Row
-      setModel(str(d.model) || "claude-sonnet-4-6")
+      setModel(str(d.model) || modelIds[0] || "")
       setThinking(str(d.reasoning) || str(d.thinking) || "low")
       setCfgStatus("")
     } else if (mfail) setCfgStatus(`model config: ${mfail}`)
@@ -207,8 +232,10 @@ export function AgentsTab(props: TabProps) {
             void cycleSpeed()
             break
           case "m": {
-            const i = MODEL_CHIPS.findIndex((c) => c.id === model())
-            void saveModelConfig(MODEL_CHIPS[(i + 1) % MODEL_CHIPS.length].id, "")
+            const opts = models()
+            if (opts.length === 0) break
+            const i = opts.indexOf(model())
+            void saveModelConfig(opts[(i + 1) % opts.length], "")
             break
           }
           case "t": {
@@ -331,8 +358,8 @@ export function AgentsTab(props: TabProps) {
               </box>
               <Section title="MODEL" />
               <box flexDirection="row" gap={1}>
-                <For each={MODEL_CHIPS}>
-                  {(mc) => <Chip label={mc.lbl} on={model() === mc.id} />}
+                <For each={models()}>
+                  {(id) => <Chip label={id} on={model() === id} />}
                 </For>
               </box>
               <text fg={theme.textFaint} selectable={false}>

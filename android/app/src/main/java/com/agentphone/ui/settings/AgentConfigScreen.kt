@@ -46,18 +46,14 @@ import kotlin.math.roundToInt
 
 private val THINKING_LEVELS = listOf("minimal", "low", "medium", "high", "xhigh")
 
-private fun modelOptionsFor(name: String): List<Pair<String, String>> = when {
-    name.contains("claude", ignoreCase = true) -> listOf(
-        "Sonnet 4.6" to "claude-sonnet-4-6",
-        "Opus 4.8" to "claude-opus-4-8",
-        "Haiku 4.5" to "claude-haiku-4-5"
-    )
-    name.contains("codex", ignoreCase = true) -> listOf("5.5" to "gpt-5.5", "5.4" to "gpt-5.4")
-    else -> emptyList()
+// Which daemon brain (if any) this agent's model picker should query via
+// model.list — codex/claude only; other extensions (Copilot, Echo, Hermes,
+// Mistral Screener, ...) have no selectable Jarvis-brain model.
+private fun brainFor(name: String): String? = when {
+    name.contains("claude", ignoreCase = true) -> "claude"
+    name.contains("codex", ignoreCase = true) -> "codex"
+    else -> null
 }
-
-private fun defaultModelId(name: String): String? =
-    if (name.contains("claude", ignoreCase = true)) "claude-sonnet-4-6" else null
 
 /**
  * Per-agent configuration: voice (grouped by speaker, with ▶ preview),
@@ -72,11 +68,14 @@ fun AgentConfigScreen(vm: AppViewModel, extension: String, agentName: String, on
     var speed by remember(extension) { mutableDoubleStateOf(1.0) }
     var model by remember(extension) { mutableStateOf<String?>(null) }
     var reasoning by remember(extension) { mutableStateOf<String?>(null) }
+    var modelOptions by remember(extension) { mutableStateOf<List<String>>(emptyList()) }
+    val brain = remember(agentName) { brainFor(agentName) }
 
     LaunchedEffect(extension) {
         vm.listVoices { list -> voices = list }
         vm.getVoiceProfileFull(extension) { v, s -> voiceId = v; speed = s }
         vm.getModelConfig(extension) { m, r -> model = m; reasoning = r }
+        brain?.let { b -> vm.listModelsForBrain(b) { ids -> modelOptions = ids } }
     }
     // Leaving the screen stops any playing preview.
     DisposableEffect(Unit) { onDispose { vm.stopVoicePreview() } }
@@ -190,15 +189,13 @@ fun AgentConfigScreen(vm: AppViewModel, extension: String, agentName: String, on
         Spacer(Modifier.height(16.dp))
 
         // ----- Model + thinking (only for agents with selectable models) -----
-        val options = modelOptionsFor(agentName)
-        if (options.isNotEmpty()) {
+        if (brain != null && modelOptions.isNotEmpty()) {
             SectionLabel("Model")
             GlassCard {
                 ChipRow(
-                    labels = options.map { it.first },
-                    selectedLabel = options.firstOrNull { it.second == (model ?: defaultModelId(agentName)) }?.first,
-                    onSelect = { label ->
-                        val id = options.first { it.first == label }.second
+                    labels = modelOptions,
+                    selectedLabel = model ?: modelOptions.first(),
+                    onSelect = { id ->
                         model = id
                         vm.setModelConfig(extension, model = id, reasoning = null)
                     }
