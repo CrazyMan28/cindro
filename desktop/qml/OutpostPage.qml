@@ -38,6 +38,7 @@ Item {
 
     // ---- Proxmox Workload Manager state -------------------------------------
     property string installingMachine: ""   // machine with an install in flight
+    property var lastInstallResult: null    // {machine, ok, message} — shown inline on that row
 
     ListModel { id: vmModel }               // {vmid,vname,vstatus,vcores,vmemMb,vcpuPct,vmemPct,vblocklisted,vpendingRestart,vlastAction,vlastActionAt}
     property string vmMachine: ""           // machine the LAST proxmox.status reply covered
@@ -124,6 +125,7 @@ Item {
     function installWorkload(machine) {
         if (machine.length === 0) return
         page.installingMachine = machine
+        page.lastInstallResult = null   // clear any previous result on this row
         bridge.outpostInstallWorkload(machine)
     }
 
@@ -311,16 +313,15 @@ Item {
         function onOutpostWorkloadInstalled(machine, ok, note, code, sessionId, sessionTitle) {
             if (page.installingMachine === machine)
                 page.installingMachine = ""
-            // Reuse the exec console as the result toast — it already renders
-            // per-machine ok/fail lines with the same color coding.
-            consoleModel.append({
-                "cmachine": machine,
-                "cmd": "install_workload",
-                "output": ok ? (note.length ? note : "Installed ✓")
+            var message = ok ? (note.length ? note : "Installed ✓")
                              : ("[" + (code.length ? code : "error") + "] "
-                                + (note.length ? note : "install failed")),
-                "ok": ok
-            })
+                                + (note.length ? note : "install failed"))
+            // Inline on the machine row — the primary, hard-to-miss feedback
+            // for the button the user just clicked.
+            page.lastInstallResult = {"machine": machine, "ok": ok, "message": message}
+            // ALSO the exec console, for a persistent history further down the page.
+            consoleModel.append({"cmachine": machine, "cmd": "install_workload",
+                                 "output": message, "ok": ok})
             consoleView.positionViewAtEnd()
             if (ok && machine === page.selectedMachine)
                 page.refreshVmStatus()   // it's freshly installed — pull its VM table
@@ -693,18 +694,23 @@ Item {
 
                         Layout.fillWidth: true
                         radius: Theme.radiusSm
-                        implicitHeight: mrowContent.implicitHeight + 20
+                        implicitHeight: mrowColumn.implicitHeight + 20
                         color: mrow.mid === page.selectedMachine ? Theme.accentFaint : Theme.surface
                         border.width: 1
                         border.color: mrow.mid === page.selectedMachine ? Theme.accent : Theme.hairlineSoft
                         Behavior on border.color { ColorAnimation { duration: Theme.durFast } }
 
-                        RowLayout {
-                            id: mrowContent
+                        ColumnLayout {
+                            id: mrowColumn
                             anchors.left: parent.left
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
                             anchors.margins: 12
+                            spacing: 6
+
+                        RowLayout {
+                            id: mrowContent
+                            Layout.fillWidth: true
                             spacing: 10
 
                             Rectangle {
@@ -748,6 +754,27 @@ Item {
                                     onClicked: bridge.outpostRevoke(mrow.mid)
                                 }
                             }
+                        }
+
+                        // Inline install result — impossible to miss (right on the row that
+                        // was just clicked), unlike the exec console below which lives off
+                        // the current viewport on a page this long. Cleared the moment a new
+                        // install starts on this same row (see page.installWorkload).
+                        Text {
+                            Layout.fillWidth: true
+                            visible: page.lastInstallResult !== null
+                                     && page.lastInstallResult.machine === mrow.mid
+                            text: page.lastInstallResult
+                                  ? ((page.lastInstallResult.ok ? "✓ " : "⚠ ") + page.lastInstallResult.message)
+                                  : ""
+                            color: page.lastInstallResult && page.lastInstallResult.ok
+                                   ? Theme.success : Theme.danger
+                            font.family: Theme.fontSans
+                            font.pixelSize: 12
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.3
+                        }
+
                         }
 
                         MouseArea {

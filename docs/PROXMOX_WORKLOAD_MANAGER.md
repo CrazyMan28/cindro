@@ -325,7 +325,13 @@ default (all VMs in scope).
    a flag a few minutes early — see the comment in `handleProxmoxRestartVm`).
 6. **`deploy proxmox-mcp` fails with "could not read Username for
    'https://github.com'"** — the repo is private and no `github` API key is
-   configured locally (see "Bringing it up" step 2).
+   configured locally (see "Bringing it up" step 2). **This fails FAST
+   (well under a second)**, not slow — if clicking Install on desktop felt
+   like "nothing happened," you likely hit this and just didn't see the
+   result: before 2026-07-10 the outcome only appeared in the exec console
+   further down the page, easy to miss on a click that returns instantly.
+   Desktop now also shows the result inline, directly on the machine's own
+   row, impossible to miss regardless of scroll position.
 7. **Scout says "guest agent not responding" for a running VM** — the QEMU
    guest agent isn't installed/running inside that guest
    (`qemu-guest-agent` package on Linux, the QEMU GA service on Windows) or

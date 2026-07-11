@@ -300,6 +300,23 @@ def _run_job(jid: str) -> None:
                                 stdout=log, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, start_new_session=True)
         m["pid"] = proc.pid
+        # A stop() may have raced us between our initial read and Popen
+        # returning — it couldn't signal a pid it didn't know yet (this
+        # process's own start_new_session means the runner's pgid doesn't
+        # reach it either). Re-check before publishing "running": if we've
+        # already been stopped, kill what we just started ourselves and
+        # leave the "stopped" state alone instead of clobbering it.
+        if _read_meta(jid).get("state") == "stopped":
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            proc.wait()
+            log.close()
+            return
         m["state"] = "running"
         _write_meta(jid, m)
         rc = proc.wait()

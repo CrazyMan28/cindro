@@ -723,6 +723,15 @@ missed both of these:
   what actually happened; a `qWarning`-only failure for something the note
   otherwise implies succeeded ("Initial VM scout started...") is invisible
   to anyone who isn't tailing the daemon's log.
+- **Desktop `outpost.install_workload` fires and returns in under a second on
+  a failure path** (e.g. no `github` key configured → the private-repo clone
+  fails immediately) — a fast failure reads as "nothing happened" if the only
+  feedback is the exec console further down a long page. Fixed 2026-07-10:
+  `OutpostPage.qml`'s machine row now shows the install result inline on
+  itself (`page.lastInstallResult`), not just in the console. If you add
+  another install-adjacent action with its own failure mode, give it the
+  same treatment — don't rely solely on a scrollable log for a result the
+  user is actively waiting on right after clicking a button.
 
 ## Conventions
 
