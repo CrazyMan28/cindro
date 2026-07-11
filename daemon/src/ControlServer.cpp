@@ -4,10 +4,12 @@
 #include "jarvis/Brain.h"
 #include "jarvis/DataPaths.h"
 #include "jarvis/ClaudeBrain.h"
+#include "jarvis/CliResolve.h"
 #include "jarvis/CodexBrain.h"
 #include "jarvis/Connectors.h"
 #include "jarvis/GitOps.h"
 #include "jarvis/InjectionGuard.h"
+#include "jarvis/ModelCatalog.h"
 #include "jarvis/UiManifest.h"
 #include "jarvis/OsvAdvisory.h"
 #include "jarvis/PluginSigner.h"
@@ -664,7 +666,14 @@ Response ControlServer::handleStatusGet(const Request &req)
     return Response::success(req.id, r);
 }
 
-// Static model lists per brain. Codex also merges anything in ~/.codex/config.toml.
+// Static FLOOR model list per brain — the always-available baseline used when
+// there's no live catalog cached yet (or the live fetch failed) and as the
+// stable "known-good" set firstModelForBrain() defaults from. codex/claude
+// additionally get a LIVE catalog merged in by mergedModelsForBrain()
+// (fetchCodexModelCatalog/fetchClaudeModelCatalog below) so a CLI upgrade or a
+// new model release shows up without a Jarvis rebuild — see AGENTS.md's
+// "Dynamic model discovery" entry. Codex also merges anything in
+// ~/.codex/config.toml (handleModelList, unrelated to the live catalog).
 static QJsonArray modelsForBrain(const QString &brain)
 {
     QJsonArray models;
@@ -672,11 +681,10 @@ static QJsonArray modelsForBrain(const QString &brain)
         models << QStringLiteral("gpt-5.5") << QStringLiteral("gpt-5-codex")
                << QStringLiteral("gpt-5.5-codex") << QStringLiteral("o4-mini");
     } else if (brain == QStringLiteral("claude")) {
-        // Current full model names + the claude CLI's real `--model` ALIASES
-        // (opus/sonnet/haiku). The aliases are the robust "real options the CLI has":
-        // the CLI resolves each to the latest model the signed-in account can actually
-        // use, so they never go stale or offer a model the account lacks. (The claude
-        // CLI has no list-models command to query, so this is the accurate set.)
+        // Full model names (floor — the live /v1/models catalog supersedes
+        // these once fetched) + the claude CLI's real `--model` ALIASES
+        // (opus/sonnet/haiku), which resolve to whatever the signed-in
+        // account's latest is and so never go stale on their own.
         models << QStringLiteral("claude-opus-4-8")
                << QStringLiteral("claude-sonnet-4-6")
                << QStringLiteral("claude-haiku-4-5")
@@ -716,6 +724,10 @@ static QJsonObject brainAvailability()
 // The default model for a brain when the caller gives none: the FIRST entry of
 // modelsForBrain (claude -> a claude model, api -> a configured-provider model)
 // — NOT the global default (gpt-5.5, which is only correct for codex).
+// Deliberately reads the STATIC list, not mergedModelsForBrain()'s live-
+// augmented one: live catalog entries are appended (never prepended), so a
+// brand-new or possibly-preview model becoming selectable never silently
+// changes what a fresh session defaults to.
 static QString firstModelForBrain(const QString &brain)
 {
     const QJsonArray models = modelsForBrain(brain);
@@ -730,14 +742,194 @@ static QString firstModelForBrain(const QString &brain)
 // code 1`. If the stored model isn't valid for this brain, fall back to the brain's
 // own default. Empty stays empty (the brain resolves its own default). Only used for
 // the CLI brains (codex/claude) — the `api` brain accepts arbitrary provider/ollama
-// model ids not in the static list.
-static QString coerceModelForBrain(const QString &brain, const QString &model)
+// model ids not in the static list. A member function (not the free
+// modelsForBrain()) so it can check the live catalog cache too — reads only,
+// never triggers a fetch itself: this runs on session creation AND lazy resume
+// on first message after a restart, both hot paths where spawn/network latency
+// would be a regression.
+QString ControlServer::coerceModelForBrain(const QString &brain, const QString &model)
 {
     if (model.isEmpty())
         return model;
-    if (modelsForBrain(brain).contains(QJsonValue(model)))
+    if (mergedModelsForBrain(brain).contains(QJsonValue(model)))
         return model;
     return firstModelForBrain(brain);
+}
+
+QJsonArray ControlServer::mergedModelsForBrain(const QString &brain) const
+{
+    const QJsonArray baseline = modelsForBrain(brain);
+    const auto it = m_liveModelCache.constFind(brain);
+    if (it == m_liveModelCache.constEnd())
+        return baseline;
+    return jarvis::mergeModelCatalogs(baseline, it->models);
+}
+
+void ControlServer::refreshLiveModelCatalog(const QString &brain)
+{
+    if (brain != QStringLiteral("codex") && brain != QStringLiteral("claude"))
+        return; // api brain accepts arbitrary provider/ollama ids; no catalog here
+    const ModelCatalogEntry &entry = m_liveModelCache[brain]; // default-constructs if absent
+    if (entry.fetchInFlight)
+        return;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 ttlMs = entry.lastFetchFailed ? 30'000 : 300'000;
+    if (entry.fetchedAtMs != 0 && (now - entry.fetchedAtMs) < ttlMs)
+        return; // still fresh
+    if (brain == QStringLiteral("codex"))
+        fetchCodexModelCatalog();
+    else
+        fetchClaudeModelCatalog();
+}
+
+void ControlServer::storeLiveModelCatalog(const QString &brain, const QJsonArray &models, bool ok)
+{
+    ModelCatalogEntry &entry = m_liveModelCache[brain];
+    entry.fetchInFlight = false;
+    entry.fetchedAtMs = QDateTime::currentMSecsSinceEpoch();
+    entry.lastFetchFailed = !ok;
+    if (ok)
+        entry.models = models; // a failed refresh keeps the last known-good list
+}
+
+// `codex debug models --bundled` dumps the CLI's real bundled model catalog as
+// JSON (slug/display_name/description/visibility/...) — an explicitly
+// unofficial/undocumented debugging subcommand, not part of codex's stable
+// --help surface, so this is designed to fail open on ANY shape mismatch or
+// the subcommand vanishing outright, never to throw or block model.list.
+// Fully async (QProcess signals, no waitForFinished) — this file's single
+// event loop also pumps every connected brain's process I/O, so blocking here
+// would stall live chat streaming for every connected surface.
+void ControlServer::fetchCodexModelCatalog()
+{
+    const QString brain = QStringLiteral("codex");
+    m_liveModelCache[brain].fetchInFlight = true;
+
+    QString program = QStringLiteral("codex");
+    QStringList args{QStringLiteral("debug"), QStringLiteral("models"), QStringLiteral("--bundled")};
+    jarvis::resolveCliLaunch(program, args);
+
+    auto *proc = new QProcess(this);
+    proc->setProgram(program);
+    proc->setArguments(args);
+    proc->setProcessChannelMode(QProcess::SeparateChannels);
+    // Drain stderr as it arrives (discarded) — `codex debug` is an unofficial
+    // subcommand that could log more than the OS pipe buffer's worth of
+    // diagnostics to stderr; with SeparateChannels and nothing reading that
+    // pipe, the child blocks on the write and never exits on its own (the
+    // 4s timeout below would still catch it, but every codex model.list call
+    // would eat the full timeout instead of getting a live catalog).
+    connect(proc, &QProcess::readyReadStandardError, proc, [proc]() {
+        proc->readAllStandardError();
+    });
+
+    auto *timeout = new QTimer(proc);
+    timeout->setSingleShot(true);
+    connect(timeout, &QTimer::timeout, proc, [proc]() {
+        if (proc->state() != QProcess::NotRunning)
+            proc->kill();
+    });
+    timeout->start(4000);
+
+    connect(proc, &QProcess::finished, this,
+            [this, proc, brain](int exitCode, QProcess::ExitStatus status) {
+        jarvis::ModelCatalogResult parsed;
+        if (status == QProcess::NormalExit && exitCode == 0)
+            parsed = jarvis::parseCodexModelCatalog(proc->readAllStandardOutput());
+        if (!parsed.ok) {
+            qInfo().noquote() << "[model-catalog] codex live fetch failed (exit"
+                               << exitCode << "status" << status
+                               << ") — falling back to the static model list";
+        }
+        proc->deleteLater();
+        storeLiveModelCatalog(brain, parsed.models, parsed.ok);
+    });
+    // FailedToStart is the one ProcessError that's guaranteed NOT to also fire
+    // `finished` (Qt docs) — anything else (Crashed, our own kill()-induced
+    // exit, ...) is already covered by the `finished` handler above, so acting
+    // on it here too would double-store the same outcome.
+    connect(proc, &QProcess::errorOccurred, this, [this, proc, brain](QProcess::ProcessError err) {
+        if (err != QProcess::FailedToStart)
+            return;
+        qInfo().noquote() << "[model-catalog] codex not runnable (not on PATH?)"
+                              " — falling back to the static model list";
+        proc->deleteLater();
+        storeLiveModelCatalog(brain, {}, false);
+    });
+    proc->start();
+}
+
+// Reads the Claude Code OAuth access token the same field/technique the CLI's
+// own third-party tooling already uses in production (verified against
+// CrazyMan28/claude_knows' bin/ck-usage, which calls the sibling
+// /api/oauth/usage endpoint the same way for Claude Code's own `/usage`
+// command) — but from ONE dir: m_settings.claudeConfigDir(), the SAME
+// pro/max-account resolver ClaudeBrain itself is spawned with
+// (ControlServer.cpp's makeBrain, opts.configDir = m_settings.claudeConfigDir()).
+// An earlier version of this tried CLAUDE_CONFIG_DIR / ~/.claude /
+// ~/.claude-secondary in a fixed fallback order — that can silently pick a
+// DIFFERENT account's token than the one the daemon actually drives the CLI
+// with (e.g. stale-but-valid Pro credentials on disk while the account setting
+// is "max"), reintroducing exactly the ambient-CLAUDE_CONFIG_DIR bug
+// ClaudeBrain::ClaudeBrain's own configDir default was written to prevent.
+QString ControlServer::claudeOauthAccessToken() const
+{
+    QFile f(m_settings.claudeConfigDir() + QStringLiteral("/.credentials.json"));
+    if (!f.open(QIODevice::ReadOnly))
+        return QString();
+    const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+    return root.value(QStringLiteral("claudeAiOauth")).toObject()
+               .value(QStringLiteral("accessToken")).toString();
+}
+
+// GET the same PUBLIC, documented Anthropic Models API (/v1/models) the codex
+// side has no equivalent of — authenticated with the CLI's own subscription
+// OAuth token instead of a separate API key. Confirmed live (2026-07-11): the
+// endpoint accepts the OAuth bearer + the same `anthropic-beta:
+// oauth-2025-04-20` header ck-usage already sends, plus the standard
+// `anthropic-version` header every /v1 call requires. Fully async
+// (QNetworkAccessManager + finished signal), same fail-open discipline as the
+// codex fetch above.
+void ControlServer::fetchClaudeModelCatalog()
+{
+    const QString brain = QStringLiteral("claude");
+    const QString token = claudeOauthAccessToken();
+    if (token.isEmpty()) {
+        storeLiveModelCatalog(brain, {}, false);
+        return;
+    }
+    m_liveModelCache[brain].fetchInFlight = true;
+    if (!m_modelCatalogNam)
+        m_modelCatalogNam = new QNetworkAccessManager(this);
+
+    // limit=1000 is a one-shot "give me everything" fetch, not true pagination
+    // (parseClaudeModelCatalog only reads the "data" array, not has_more/
+    // last_id) — the live catalog is ~10 entries today, so this has huge
+    // headroom; revisit with real pagination if Anthropic's catalog ever
+    // approaches four figures.
+    QNetworkRequest rq(QUrl(QStringLiteral("https://api.anthropic.com/v1/models?limit=1000")));
+    rq.setRawHeader("Authorization", QByteArray("Bearer ") + token.toUtf8());
+    rq.setRawHeader("anthropic-beta", "oauth-2025-04-20");
+    rq.setRawHeader("anthropic-version", "2023-06-01");
+    QNetworkReply *reply = m_modelCatalogNam->get(rq);
+
+    auto *timeout = new QTimer(reply);
+    timeout->setSingleShot(true);
+    connect(timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
+    timeout->start(6000);
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, brain]() {
+        const QNetworkReply::NetworkError netErr = reply->error();
+        jarvis::ModelCatalogResult parsed;
+        if (netErr == QNetworkReply::NoError)
+            parsed = jarvis::parseClaudeModelCatalog(reply->readAll());
+        reply->deleteLater();
+        if (!parsed.ok) {
+            qInfo().noquote() << "[model-catalog] claude live fetch failed (network error"
+                               << netErr << ") — falling back to the static model list";
+        }
+        storeLiveModelCatalog(brain, parsed.models, parsed.ok);
+    });
 }
 
 Response ControlServer::handleSettingsGet(const Request &req)
@@ -866,9 +1058,15 @@ Response ControlServer::handleSettingsGet(const Request &req)
                         m_settings.hasApiKey(QStringLiteral("mistral")));
     s.insert(QStringLiteral("can_drive"), canDrive);
 
+    // mergedModelsForBrain (not the static-only modelsForBrain) so the
+    // Settings "default model" dropdown offers the same live-fetched models
+    // the chat picker's model.list already does — kick a refresh too, in case
+    // Settings loads before any model.list call has warmed the cache.
+    refreshLiveModelCatalog(QStringLiteral("codex"));
+    refreshLiveModelCatalog(QStringLiteral("claude"));
     QJsonObject byBrain;
-    byBrain.insert(QStringLiteral("codex"), modelsForBrain(QStringLiteral("codex")));
-    byBrain.insert(QStringLiteral("claude"), modelsForBrain(QStringLiteral("claude")));
+    byBrain.insert(QStringLiteral("codex"), mergedModelsForBrain(QStringLiteral("codex")));
+    byBrain.insert(QStringLiteral("claude"), mergedModelsForBrain(QStringLiteral("claude")));
     byBrain.insert(QStringLiteral("api"), modelsForBrain(QStringLiteral("api")));
     s.insert(QStringLiteral("models_by_brain"), byBrain);
 
@@ -1531,7 +1729,14 @@ Response ControlServer::handlePhoneHttp(const Request &req)
 Response ControlServer::handleModelList(const Request &req)
 {
     const QString brain = req.params.value(QStringLiteral("brain")).toString(m_config.defaultBrain);
-    QJsonArray models = modelsForBrain(brain);
+    // `force`: drop the TTL guard so refreshLiveModelCatalog() treats the cache
+    // as stale and kicks a fetch now (e.g. the user just upgraded their CLI and
+    // doesn't want to wait out the TTL). Never blocks this response either way
+    // — it just changes whether THIS call's refresh fires now or later.
+    if (req.params.value(QStringLiteral("force")).toBool(false))
+        m_liveModelCache[brain].fetchedAtMs = 0;
+    refreshLiveModelCatalog(brain);
+    QJsonArray models = mergedModelsForBrain(brain);
 
     // codex: merge the configured default model from ~/.codex/config.toml.
     if (brain == QStringLiteral("codex")) {

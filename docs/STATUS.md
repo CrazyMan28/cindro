@@ -4,7 +4,48 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-07-10._
+_Last updated: 2026-07-11._
+
+---
+
+## 🆕 Dynamic model discovery: codex/claude model pickers stop going stale (2026-07-11)
+
+The codex/claude model lists shown in every picker (chat, Settings default
+model, `/model` in the terminal) were a hardcoded array in the daemon —
+frozen at whatever Jarvis version last shipped, so a new OpenAI/Anthropic
+model release never showed up until a Jarvis code change caught up. Both CLI
+brains now get a real, live catalog merged in on top of the same static
+floor, fetched async and cached (never blocking a `model.list` call):
+
+- **codex**: `codex debug models --bundled` (an unofficial debugging
+  subcommand — live-verified 0.144.1 output shape, fails open to the static
+  list on any mismatch or if the CLI isn't on PATH).
+- **claude**: the CLI has no list-models command, but its own OAuth session
+  can call the **public, documented** `GET
+  https://api.anthropic.com/v1/models` directly — same technique a
+  third-party open-source plugin already uses in production against the
+  sibling `/api/oauth/usage` endpoint for Claude Code's own `/usage` command.
+  Reads the token from the SAME pro/max-account dir `ClaudeBrain` itself is
+  spawned with, not an independent guess.
+- Caught in review before merge: the first draft's account-resolution picked
+  from `CLAUDE_CONFIG_DIR`/`~/.claude`/`~/.claude-secondary` in a fixed
+  order instead of the daemon's own account setting (could silently surface
+  the wrong account's models), the Settings page's default-model dropdown
+  (`settings.get`'s `models_by_brain`) wasn't wired to the live catalog even
+  though the chat picker was, and the codex subprocess never drained its
+  stderr pipe (a theoretical hang if the unofficial subcommand ever logs
+  more than the OS pipe buffer). All three fixed; see AGENTS.md's "Dynamic
+  model discovery" entry for the full design.
+- Live-verified end-to-end against an isolated test daemon instance (profile
+  isolation via `JARVIS_CONFIG_DIR`/`JARVIS_DATA_DIR`, never touching the
+  live production daemon): both catalogs merge correctly, `settings.get` and
+  `model.list` agree, and the fail-open path (codex hidden from PATH) falls
+  back to the static list cleanly with no daemon stall or crash. New
+  `core/tests/model_catalog_test.cpp` pins the parse/merge/dedup logic
+  against the real response shapes. Windows: local incremental build clean
+  (`windows/build-win`); Linux: pending CI on this PR (`ctest --test-dir
+  build`) — no `windows/`-only code, the daemon change is shared and applies
+  to both editions identically.
 
 ---
 

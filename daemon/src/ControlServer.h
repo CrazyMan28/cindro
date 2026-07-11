@@ -663,6 +663,46 @@ private:
     QNetworkAccessManager *m_reviewNam = nullptr;
     void firePostTurnReview(const QString &sessionId);
 
+    // Live model catalogs for the CLI brains (codex/claude), fetched from the
+    // CLI/account itself instead of relying solely on modelsForBrain()'s
+    // hardcoded baseline. Async + TTL-cached so a slow/hung fetch never blocks
+    // this single-threaded event loop (which also pumps every connected
+    // brain's process I/O) — handleModelList() always answers from whatever's
+    // currently cached and kicks a background refresh when stale.
+    struct ModelCatalogEntry {
+        QJsonArray models;
+        qint64 fetchedAtMs = 0;
+        bool lastFetchFailed = false;
+        bool fetchInFlight = false;
+    };
+    QHash<QString, ModelCatalogEntry> m_liveModelCache; // key: brain ("codex"/"claude")
+    QNetworkAccessManager *m_modelCatalogNam = nullptr;
+    // Kicks an async refresh for `brain` if the cache is stale (or force-cleared
+    // via handleModelList's `force` param) and no fetch is already in flight.
+    // No-op for brains without a live source (currently only codex/claude).
+    void refreshLiveModelCatalog(const QString &brain);
+    void fetchCodexModelCatalog();
+    void fetchClaudeModelCatalog();
+    // Records a completed fetch's outcome. On failure the PREVIOUS good
+    // `models` are kept (only `lastFetchFailed`/`fetchedAtMs` change) so a
+    // transient hiccup degrades to a short retry cooldown, not a reverted list.
+    void storeLiveModelCatalog(const QString &brain, const QJsonArray &models, bool ok);
+    // modelsForBrain(brain)'s static baseline with the cached live catalog
+    // appended (case/whitespace-insensitive dedup) — live entries are never
+    // prepended, so firstModelForBrain()'s default-model pick is unaffected by
+    // what happens to be in the live cache at any given moment.
+    QJsonArray mergedModelsForBrain(const QString &brain) const;
+    // Reads the Claude Code OAuth access token the CLI itself already stores,
+    // trying CLAUDE_CONFIG_DIR / ~/.claude / ~/.claude-secondary in that order
+    // (mirrors ClaudeBrain's own config-dir resolution and the dual-account
+    // setup AGENTS.md documents). Empty when no session is logged in anywhere.
+    QString claudeOauthAccessToken() const;
+    // Cross-brain-mismatch guard: a session's stored model must be valid for
+    // ITS brain (a stale claude model id sent to codex crashes the CLI). Reads
+    // mergedModelsForBrain() — never triggers a fetch itself, since this runs
+    // on the hot session-creation/resume path.
+    QString coerceModelForBrain(const QString &brain, const QString &model);
+
     // Wave 5 intelligence backend: Jarvis-level long-term memory (SQLite+FTS5)
     // and self-authored skills. Memory is prefetched/injected before every brain
     // turn and synced after; skills are invokable + self-authoring.
