@@ -64,7 +64,7 @@ Item {
                 RowLayout {
                     spacing: 8
                     Text {
-                        text: "JARVIS"
+                        text: "ORIN"
                         color: Theme.text
                         font.family: Theme.fontDisplay
                         font.pixelSize: 16

@@ -75,7 +75,7 @@ class PairingViewModel(
         val payload = PairPayload.parse(raw)
         if (payload == null) {
             _uiState.update {
-                it.copy(status = PairStatus.ERROR, message = "That QR code isn't a Jarvis pairing code.")
+                it.copy(status = PairStatus.ERROR, message = "That QR code isn't an Orin pairing code.")
             }
             return
         }

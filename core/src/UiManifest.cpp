@@ -230,7 +230,7 @@ constexpr const char *kBaseManifest = R"json({
      "target": "brain", "aliases": ["brain"]},
     {"name": "dispatch", "description": "dispatch a task to an agent", "kind": "verb",
      "verb": "agents.dispatch"},
-    {"name": "tui",      "description": "ask Jarvis to build a custom page", "kind": "send_chat"},
+    {"name": "tui",      "description": "ask Orin to build a custom page", "kind": "send_chat"},
     {"name": "stage",    "description": "git add a reviewed file", "kind": "verb",
      "verb": "diff.stage"},
     {"name": "commit",   "description": "commit staged changes", "kind": "verb",

@@ -161,7 +161,7 @@ data class McpServer(
  * A per-brain CLI MCP server (from mcp.cli_list). These are the codex/claude CLI's
  * OWN MCP servers (codex's ~/.codex/config.toml, claude's ~/.claude.json). By default
  * the brains run ISOLATED and do NOT load them; [enabled] reflects whether it's been
- * imported into the Jarvis registry (as "cli:<brain>:<name>").
+ * imported into the Orin registry (as "cli:<brain>:<name>").
  */
 data class CliMcp(
     val brain: String,

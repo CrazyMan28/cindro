@@ -39,14 +39,14 @@ def register(mcp: FastMCP) -> None:
         """Place a REAL PSTN phone call to the user's actual cell phone, speak `say`
         via TTS, wait for their spoken reply, and return the transcript. This is the
         MOST RELIABLE way to "call the user" / "call me" — it rings their real phone
-        and does NOT need the Jarvis app to be open. `to_number` defaults to the
+        and does NOT need the Orin app to be open. `to_number` defaults to the
         user's configured number. PREFER THIS when the in-app device shows offline."""
         return _call("twilio_call_and_wait", {"reason": reason, "say": say, "to_number": to_number})
 
     @mcp.tool()
     def call_user(reason: str, urgency: str = "normal") -> str:
         """Place an IN-APP voice call to the user (ext 100) — only rings if their
-        Jarvis app is OPEN and connected (else it's marked missed/target_offline).
+        Orin app is OPEN and connected (else it's marked missed/target_offline).
         For a guaranteed ring use twilio_call_and_wait instead. urgency: low|normal|high."""
         return _call("call_user", {"reason": reason, "urgency": urgency})
 
@@ -69,12 +69,12 @@ def register(mcp: FastMCP) -> None:
 
     # ---- reach the user: TEXT -------------------------------------------------
     @mcp.tool()
-    def notify_user(message: str, title: str = "Jarvis", priority: str = "normal") -> str:
-        """Send the user a text/notification into their Jarvis inbox (phone+desktop)."""
+    def notify_user(message: str, title: str = "Orin", priority: str = "normal") -> str:
+        """Send the user a text/notification into their Orin inbox (phone+desktop)."""
         return _call("notify_user", {"title": title, "message": message, "priority": priority})
 
     @mcp.tool()
-    def notify_user_and_wait(message: str, title: str = "Jarvis",
+    def notify_user_and_wait(message: str, title: str = "Orin",
                              options: list[str] | None = None) -> str:
         """Text the user and WAIT for their reply (optionally with quick-reply
         `options` buttons); returns the reply."""

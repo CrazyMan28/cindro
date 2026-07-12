@@ -136,7 +136,7 @@ export function SetupWizard(props: { onDone: () => void }) {
       <Show when={step() === "connect"}>
         <div class="setup-card">
           <div class="hud-label" style={{ color: "var(--accent-bright)", "font-size": "13px" }}>
-            CONNECT TO JARVIS
+            CONNECT TO ORIN
           </div>
           <div style={{ color: "var(--text-muted)", "font-size": "12px" }}>
             Pair with a 6-digit code from the desktop app (Settings → Browser
@@ -193,7 +193,7 @@ export function SetupWizard(props: { onDone: () => void }) {
             SET UP PHONE CALLS (TWILIO) — OPTIONAL
           </div>
           <div style={{ color: "var(--text-muted)", "font-size": "12px" }}>
-            Connect Twilio so Jarvis can make and screen real calls and texts. Skip this and set it up any time
+            Connect Twilio so Orin can make and screen real calls and texts. Skip this and set it up any time
             later from Settings → Phone / Twilio.
           </div>
 

@@ -32,7 +32,7 @@ import com.jarvis.app.voice.WakeService
  * tapped notification works in BOTH activity lifecycles: a cold start / from-background
  * launch (handled in [onCreate]) AND a tap while the app is already in the foreground
  * (delivered to [onNewIntent], which the default `standard`/`singleTop` launch reuses).
- * Without the [onNewIntent] path, an "Unlock Jarvis" push tapped while the app was already
+ * Without the [onNewIntent] path, an "Unlock Orin" push tapped while the app was already
  * open would silently fail to open the Approve screen.
  */
 class MainActivity : FragmentActivity() {
@@ -60,7 +60,7 @@ class MainActivity : FragmentActivity() {
         // Keep the PHONE device (ext 100) ONLINE in the background so incoming VOIP
         // calls/texts reach the user even when the app is closed — start the vendored
         // agent-phone foreground service (it holds the device WS to the phone server)
-        // on EVERY Jarvis launch, not only when the Phone tab is opened. Idempotent;
+        // on EVERY Orin launch, not only when the Phone tab is opened. Idempotent;
         // also (re-)enables the boot receiver so it comes back after a reboot.
         if (AgentPhonePreferences.isAlwaysOnEnabled(this)) {
             AgentPhonePreferences.setAlwaysOnEnabled(this, true)
@@ -120,7 +120,7 @@ class MainActivity : FragmentActivity() {
         intent.getStringExtra(JarvisNotifier.EXTRA_SESSION_ID)
             ?.let { deepLinkSession.value = it }
         if (intent.getBooleanExtra(WakeService.EXTRA_WAKE, false)) deepLinkWake.value = true
-        // 2FA + fingerprint cross-device unlock: a tapped "Unlock Jarvis" push carries
+        // 2FA + fingerprint cross-device unlock: a tapped "Unlock Orin" push carries
         // the challenge id; deep-link into the Approve screen.
         intent.getStringExtra(JarvisNotifier.EXTRA_CHALLENGE_ID)
             ?.let { deepLinkAuth.value = it }

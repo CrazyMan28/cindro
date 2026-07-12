@@ -3,9 +3,9 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Bring the `jarvis` TUI to full feature parity with the 18-page desktop
-GUI, add an MCP tool so Jarvis can add/edit/remove/reorder TUI pages live
+GUI, add an MCP tool so Orin can add/edit/remove/reorder TUI pages live
 (declarative config, no code), and add a full script/tool-backed `/`
-command engine that both the user and Jarvis can extend.
+command engine that both the user and Orin can extend.
 
 **Architecture:** Two small new C++ core stores (`TuiLayoutStore`,
 `CommandStore`, both mirroring existing store classes byte-for-byte in
@@ -3395,7 +3395,7 @@ delete the old chain rather than leaving both paths live.
 execute in this pass — direct in-TUI MCP tool dispatch and script
 execution are flagged as fast-follows in the notification text itself, not
 silently dropped; `prompt` (the common case for both built-ins and
-`create_slash_command` calls Jarvis is likely to make) is fully wired.
+`create_slash_command` calls Orin is likely to make) is fully wired.
 
 - [ ] **Step 5: Run to verify it passes.**
 

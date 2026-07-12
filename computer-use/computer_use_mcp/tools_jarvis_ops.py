@@ -47,7 +47,7 @@ def _err(exc: Exception) -> str:
 
 
 def remember(text: str, tags: list[str] | None = None, agent: str = "") -> str:
-    """Save a fact to Jarvis's long-term memory so it persists across sessions
+    """Save a fact to Orin's long-term memory so it persists across sessions
     (preferences, project facts, decisions). Pass `agent` (an agent name or a
     paired-machine id, e.g. "ci-runner-104") to scope the fact to THAT agent so
     it is only recalled with recall(agent=...); omit it for global memory.
@@ -62,7 +62,7 @@ def remember(text: str, tags: list[str] | None = None, agent: str = "") -> str:
 
 
 def recall(query: str = "", agent: str = "", limit: int = 20) -> str:
-    """Full-text search Jarvis's long-term memory for relevant facts. Pass
+    """Full-text search Orin's long-term memory for relevant facts. Pass
     `agent` (an agent name / paired-machine id) to recall ONLY that agent's
     scoped memories (empty `query` + `agent` returns that agent's recent
     state — the condition-polling pattern). Omit `agent` for global recall."""
@@ -115,7 +115,7 @@ def proxmox_give_direction(machine: str, text: str) -> str:
 def proxmox_agent_checkin() -> str:
     """Check whether an enrolled Proxmox workload-manager agent is alive, via
     Project Tracker's agent_list_active (the same directory any other active
-    Jarvis agent shows up in) — filtered to agent names starting with
+    Orin agent shows up in) — filtered to agent names starting with
     "proxmox-". Returns {agents:[{name,status,last_seen,...}]} or
     {"error":...} if Project Tracker is unreachable or no token is configured."""
     try:
@@ -269,7 +269,7 @@ def register(mcp: FastMCP) -> None:
     # ---- SEND A FILE TO THE USER -------------------------------------------
     @mcp.tool()
     def send_file(path: str = "", b64: str = "", name: str = "") -> str:
-        """Send a file from THIS computer straight into the user's Jarvis chat
+        """Send a file from THIS computer straight into the user's Orin chat
         (phone + desktop) so they can view it and download it with one tap.
 
         Use this WHENEVER the user asks you to send / share / "give me" / download a
@@ -303,9 +303,9 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool()
     def schedule_task(prompt: str, when: str = "", cron: str = "",
                       name: str = "", brain: str = "", model: str = "") -> str:
-        """Schedule Jarvis to run a task LATER / on a cadence (self-waking). `when`
+        """Schedule Orin to run a task LATER / on a cadence (self-waking). `when`
         accepts 'every 30m', 'every 2h', 'at 09:00', or a 5-field cron; `cron` is an
-        explicit 5-field cron. The task fires as a new Jarvis session with `prompt`.
+        explicit 5-field cron. The task fires as a new Orin session with `prompt`.
         Use this to set reminders, recurring jobs, or follow-ups. Returns {id}."""
         try:
             return json.dumps(daemon_client.call("schedule.create", {
@@ -317,7 +317,7 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def list_schedules() -> str:
-        """List Jarvis's scheduled tasks (id, name, cadence, next run)."""
+        """List Orin's scheduled tasks (id, name, cadence, next run)."""
         try:
             return json.dumps(daemon_client.call("schedule.list"))
         except Exception as exc:  # noqa: BLE001
@@ -376,7 +376,7 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def list_memories(limit: int = 50) -> str:
-        """List ALL of Jarvis's long-term memories (newest first: id, text, tags)."""
+        """List ALL of Orin's long-term memories (newest first: id, text, tags)."""
         try:
             return json.dumps(daemon_client.call("memory.list", {"limit": limit}))
         except Exception as exc:  # noqa: BLE001
@@ -396,7 +396,7 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool()
     def create_skill(name: str, description: str, body: str,
                      group: str = "", tags: list[str] | None = None) -> str:
-        """Author a NEW reusable skill (a Markdown procedure Jarvis can invoke later
+        """Author a NEW reusable skill (a Markdown procedure Orin can invoke later
         with /name). Use this to teach yourself a repeatable task once and keep it.
         `body` is the skill's Markdown content. Returns the created skill."""
         try:
@@ -409,7 +409,7 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def list_skills() -> str:
-        """List Jarvis's self-authored + bundled skills (name, description)."""
+        """List Orin's self-authored + bundled skills (name, description)."""
         try:
             return json.dumps(daemon_client.call("skills.list"))
         except Exception as exc:  # noqa: BLE001
@@ -466,7 +466,7 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool()
     def set_goal(goals: str, session_id: str = "") -> str:
         """Set (or clear with "") THIS session's persistent goal. While a goal
-        is set and the user enabled auto-continue, Jarvis re-wakes the session
+        is set and the user enabled auto-continue, Orin re-wakes the session
         after each turn until you report the goal complete and clear it. Use
         for long multi-step objectives ("migrate all 12 services"); clear it
         the moment the objective is done."""
@@ -483,7 +483,7 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool()
     def queue_add(prompt: str, title: str = "", priority: int = 0,
                   brain: str = "", model: str = "", tags: str = "") -> str:
-        """Enqueue a DURABLE work item on Jarvis's kanban backlog. Unlike
+        """Enqueue a DURABLE work item on Orin's kanban backlog. Unlike
         agent_start (fire-and-wait), queued items survive restarts: the daemon
         runs them one after another in their own sessions and stores each
         result. Use for big multi-part jobs ("do these 10 things overnight") —

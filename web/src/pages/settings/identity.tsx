@@ -20,7 +20,7 @@ function IdentitySection() {
     try {
       const res = await app.client.call("settings.get", {}, 15000)
       const rawAssistant = res.assistant_name
-      const name = typeof rawAssistant === "string" && rawAssistant.trim().length ? rawAssistant : "Jarvis"
+      const name = typeof rawAssistant === "string" && rawAssistant.trim().length ? rawAssistant : "Orin"
       setAssistantName(name)
       setUserName(typeof res.user_name === "string" ? res.user_name : "")
       setError("")
@@ -35,7 +35,7 @@ function IdentitySection() {
     setSaving(true)
     try {
       const patch = {
-        assistant_name: assistantName().trim().length ? assistantName().trim() : "Jarvis",
+        assistant_name: assistantName().trim().length ? assistantName().trim() : "Orin",
         user_name: userName().trim(),
       }
       await app.client.call("settings.set", { patch }, 15000)
@@ -50,7 +50,7 @@ function IdentitySection() {
     }
   }
 
-  const displayName = () => (assistantName().trim().length ? assistantName().trim() : "Jarvis")
+  const displayName = () => (assistantName().trim().length ? assistantName().trim() : "Orin")
 
   return (
     <div class="sid-form">
@@ -112,7 +112,7 @@ function IdentitySection() {
             id="sid-assistant-name"
             class="sid-input"
             type="text"
-            placeholder="Jarvis"
+            placeholder="Orin"
             value={assistantName()}
             onInput={(e) => {
               setAssistantName(e.currentTarget.value)

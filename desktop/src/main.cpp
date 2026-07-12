@@ -43,7 +43,7 @@ int main(int argc, char **argv)
     app.setOrganizationDomain(QStringLiteral("jarvis.local"));
 
     QCommandLineParser parser;
-    parser.setApplicationDescription(QStringLiteral("Jarvis desktop app"));
+    parser.setApplicationDescription(QStringLiteral("Orin desktop app"));
     parser.addHelpOption();
     QCommandLineOption toggleOpt(QStringLiteral("toggle"),
                                  QStringLiteral("Toggle a running instance, else show."));

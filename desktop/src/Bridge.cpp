@@ -1684,8 +1684,8 @@ void Bridge::notify(const QString &title, const QString &body)
     if (!hasExecutable(QStringLiteral("notify-send")))
         return;
     QStringList args;
-    args << QStringLiteral("-a") << QStringLiteral("Jarvis")
-         << (title.isEmpty() ? QStringLiteral("Jarvis") : title)
+    args << QStringLiteral("-a") << QStringLiteral("Orin")
+         << (title.isEmpty() ? QStringLiteral("Orin") : title)
          << body;
     QProcess::startDetached(QStringLiteral("notify-send"), args);
 }
@@ -3821,7 +3821,7 @@ void Bridge::onTextMessageReceived(const QString &message)
                    evMap.value(QStringLiteral("summary")).toString());
         } else if (kind == QStringLiteral("final")) {
             notify(QStringLiteral("Task complete"),
-                   QStringLiteral("Jarvis finished a turn."));
+                   QStringLiteral("Orin finished a turn."));
             // The model's turn ended — drop the auto-armed take-over overlay now
             // (it stays up for the WHOLE turn while the model drives the real
             // screen, then clears here). Explicit take-overs aren't auto-armed, so

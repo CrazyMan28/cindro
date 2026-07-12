@@ -67,7 +67,7 @@ GitResult GitOps::revertFile(const QString &workdir, const QString &path)
 GitResult GitOps::commit(const QString &workdir, const QString &message)
 {
     const QString msg = message.trimmed().isEmpty()
-        ? QStringLiteral("jarvis: apply reviewed changes")
+        ? QStringLiteral("orin: apply reviewed changes")
         : message.trimmed();
     return git(workdir, {QStringLiteral("commit"), QStringLiteral("-m"), msg});
 }

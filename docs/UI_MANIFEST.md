@@ -45,7 +45,7 @@ Every page in `pages[]` has an `id`, `title`, `section`, and `kind`:
 |---|---|---|
 | `"table"` | generic — **zero per-feature frontend code** | a list page: one `data` verb + `columns[]` + row/page/input actions. A frontend renders it with ONE generic table-page component (`TablePage` on the TUI). Today: Sessions, Memory, Skills, Agents, Queue, Schedules, Activity, MCP, Plugins, SSH. |
 | `"bespoke"` | hand-built on each frontend | a page with real custom UI (Home, Chat, Voice, Computer, Browser, Canvas, Widgets, Phone, Memory Graph, Replay, Settings). The manifest still owns its `id`/`title`/`section` so navigation, palettes, and `/commands` stay in sync across frontends even though the page body isn't generic. |
-| `"log"` \| `"table"`\* \| `"markdown"` \| `"widget"` \| `"list"` | generic, **custom-page only** | the declarative content kinds a Jarvis-authored custom page (`tui_add_page`/`tui_edit_page`, i.e. `TuiLayoutStore`) can be — see below. |
+| `"log"` \| `"table"`\* \| `"markdown"` \| `"widget"` \| `"list"` | generic, **custom-page only** | the declarative content kinds an Orin-authored custom page (`tui_add_page`/`tui_edit_page`, i.e. `TuiLayoutStore`) can be — see below. |
 
 \* a custom page's own `"table"` kind is a *static* table (fixed `columns`/
 `rows` in its `config`), distinct from the builtin `"table"` kind above (which
@@ -110,7 +110,7 @@ at all: just an entry in `kBaseManifest`.
 
 ## Custom pages and custom commands (`source: "custom"`)
 
-Two independent Jarvis-authored mechanisms merge into the same manifest at
+Two independent Orin-authored mechanisms merge into the same manifest at
 request time, both tagged `"source": "custom"` so frontends know not to treat
 them as part of the fixed builtin set:
 
@@ -122,7 +122,7 @@ them as part of the fixed builtin set:
   `CustomPage.tsx` renders whichever kind it is; these pages also show up as
   live, sparkle-marked (`✦`) tabs in the top bar (`manifest.customPages()`
   in `app.tsx`), not just as popup routes.
-- **Custom commands** — Jarvis- or user-authored slash commands
+- **Custom commands** — Orin- or user-authored slash commands
   (`create_slash_command`, backed by `CommandStore`), merged into
   `commands[]` with `kind` one of `prompt` (returns text to send as a chat
   turn), `mcp_tool`, or `shell` (both executed daemon-side via

@@ -148,7 +148,7 @@ class LockGateScreen(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="lock-box"):
             yield ArcReactorWidget(size=13, thinking=True, id="lock-reactor")
-            yield Static("JARVIS LOCKED", id="lock-title")
+            yield Static("ORIN LOCKED", id="lock-title")
             yield Static("", id="lock-message")
             with Vertical(id="lock-pin-row"):
                 yield Static("OR UNLOCK WITH YOUR PIN", id="lock-pin-label")

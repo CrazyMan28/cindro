@@ -20,7 +20,7 @@ Window {
     minimumHeight: 560
     visible: false               // shown by WindowController per persisted mode
     color: "transparent"
-    title: "JARVIS"
+    title: "ORIN"
     flags: Qt.Window | Qt.FramelessWindowHint
 
     // ---- the one shared content panel (initially parented to floatContainer) ----
@@ -206,7 +206,7 @@ Window {
         height: 1080
         visible: false
         color: "transparent"
-        title: "JARVIS"
+        title: "ORIN"
 
         Rectangle {
             anchors.fill: parent
@@ -308,7 +308,7 @@ Window {
             visible: false
             color: "transparent"
             flags: Qt.FramelessWindowHint
-            title: "JARVIS DRIVING"
+            title: "ORIN DRIVING"
             // Pass the output NAME + INDEX (plain values) so C++ can resolve the
             // real QScreen and pin this surface to its own monitor.
             Component.onCompleted: WindowController.configureOverlay(

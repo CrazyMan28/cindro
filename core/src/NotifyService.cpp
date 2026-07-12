@@ -32,7 +32,7 @@ bool NotifyService::notify(const QString &title, const QString &body, Urgency ur
         return false;
 
     QStringList args;
-    args << QStringLiteral("--app-name=Jarvis")
+    args << QStringLiteral("--app-name=Orin")
          << QStringLiteral("--urgency=") + urgencyString(urgency);
     if (!category.isEmpty())
         args << QStringLiteral("--category=") + category;
@@ -48,17 +48,17 @@ bool NotifyService::notify(const QString &title, const QString &body, Urgency ur
 bool NotifyService::approvalNeeded(const QString &summary, const QString &sessionId) const
 {
     QString body = summary.isEmpty()
-                       ? QStringLiteral("Jarvis needs your approval")
+                       ? QStringLiteral("Orin needs your approval")
                        : summary;
     if (!sessionId.isEmpty())
         body += QStringLiteral("\nSession: ") + sessionId;
-    return notify(QStringLiteral("Jarvis: approval needed"), body, Urgency::Critical,
+    return notify(QStringLiteral("Orin: approval needed"), body, Urgency::Critical,
                   QStringLiteral("jarvis.approval"));
 }
 
 bool NotifyService::scheduleDone(const QString &name) const
 {
-    return notify(QStringLiteral("Jarvis: scheduled task ran"),
+    return notify(QStringLiteral("Orin: scheduled task ran"),
                   name.isEmpty() ? QStringLiteral("A scheduled job fired.")
                                  : name,
                   Urgency::Normal, QStringLiteral("jarvis.schedule"));
@@ -66,7 +66,7 @@ bool NotifyService::scheduleDone(const QString &name) const
 
 bool NotifyService::taskDone(const QString &summary) const
 {
-    return notify(QStringLiteral("Jarvis: task done"),
+    return notify(QStringLiteral("Orin: task done"),
                   summary.isEmpty() ? QStringLiteral("A session finished its turn.")
                                     : summary,
                   Urgency::Normal, QStringLiteral("jarvis.done"));

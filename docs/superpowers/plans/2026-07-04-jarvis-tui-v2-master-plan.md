@@ -1,4 +1,4 @@
-# Jarvis TUI v2 (TypeScript/OpenTUI) — Master Plan
+# Orin TUI v2 (TypeScript/OpenTUI) — Master Plan
 
 > **For agentic workers:** This is the MASTER plan (architecture + phases + parity contract).
 > Each phase gets its own bite-sized implementation plan (superpowers:writing-plans format,
@@ -15,7 +15,7 @@
 
 - **NEVER remove a feature.** Every feature in the current GUI *and* the current Python TUI must exist in TUI v2 (Appendix A is the checklist). Terminal-impossible features get a documented terminal translation, never silent omission.
 - **Arc reactor + HUD top bar stay** — and get BETTER (framebuffer renderable, full HudStatusStrip telemetry).
-- **Custom Jarvis-authored pages stay** (`tui.layout.list` + `tui.layout.changed` diff-reconciliation loop, kinds log/table/markdown/widget/list). This mechanism is load-bearing and must survive byte-for-byte in behavior.
+- **Custom Orin-authored pages stay** (`tui.layout.list` + `tui.layout.changed` diff-reconciliation loop, kinds log/table/markdown/widget/list). This mechanism is load-bearing and must survive byte-for-byte in behavior.
 - **Old Python TUI is not deleted** until the Appendix-A parity gate passes and the user signs off. It stays runnable as `jarvis tui --legacy`.
 - Widget DSL button actions remain strictly allow-listed (`{send}` or `{skill,args}` only — nothing eval'd); link nodes stay scheme-guarded (http/https).
 - Session-scoping discipline (session_id filters on every event consumer) is a hard invariant — one session's content must never leak into another's view.
@@ -98,7 +98,7 @@ Highlights that close today's worst gaps:
 
 **4b. Everything the current Python TUI has** that the GUI doesn't: custom pages (tui.layout.*), F3 mode cycle, ASCII QR pairing, `call_degrading` graceful-degrade UX, ctrl+c press-again quit guard, MockDaemon-style test harness (ported).
 
-**4c. Stolen from Claude Code / OpenCode (curated for Jarvis, no daemon changes unless noted):**
+**4c. Stolen from Claude Code / OpenCode (curated for Orin, no daemon changes unless noted):**
 - Composer: inline `/` popup done right, `@` mentions (sessions/skills/agents/memories via fuzzysort + frecency), prompt history (↑/↓ at buffer edges) + stash, `Ctrl+G` $EDITOR round-trip, big-paste collapse chip, image paste → attachment (daemon permitting).
 - Command layer: `Ctrl+K` global fuzzy palette, leader key (default `ctrl+x`) + **which-key overlay**, fully remappable `~/.config/jarvis/tui.json` keybinds, Escape closes any popup — always.
 - Transcript: collapsible thinking + tool outputs, QUEUED badge, compaction divider, jump-to-message timeline, copy/export transcript (markdown), `Ctrl+O`-style detail toggle.

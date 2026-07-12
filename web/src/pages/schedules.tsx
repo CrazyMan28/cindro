@@ -333,7 +333,7 @@ function Schedules() {
           <ArcReactor size={72} />
           <div class="sched-empty-title">NO SCHEDULES</div>
           <div class="sched-empty-body">
-            Create a cron job and Jarvis will spin up a session and run your prompt on cadence.
+            Create a cron job and Orin will spin up a session and run your prompt on cadence.
           </div>
         </div>
       </Show>

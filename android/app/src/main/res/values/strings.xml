@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Jarvis</string>
+    <string name="app_name">Orin</string>
 
-    <string name="pair_title">Pair with Jarvis</string>
-    <string name="pair_subtitle">Open the Jarvis sidebar on your laptop, choose “Pair a device”, then scan the QR or type the host and 6-digit code shown.</string>
+    <string name="pair_title">Pair with Orin</string>
+    <string name="pair_subtitle">Open the Orin sidebar on your laptop, choose “Pair a device”, then scan the QR or type the host and 6-digit code shown.</string>
     <string name="pair_host_label">Host : Port</string>
     <string name="pair_host_hint">127.0.0.1:8796</string>
     <string name="pair_code_label">Pairing code</string>
@@ -17,5 +17,5 @@
     <string name="nav_queue">Queue</string>
     <string name="nav_settings">Settings</string>
 
-    <string name="widget_description">A live Jarvis canvas/widget on your home screen.</string>
+    <string name="widget_description">A live Orin canvas/widget on your home screen.</string>
 </resources>

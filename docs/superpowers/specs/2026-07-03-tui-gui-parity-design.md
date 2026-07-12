@@ -5,9 +5,9 @@
 The `jarvis` TUI (cli/) currently mirrors 7 of the desktop app's 18 pages, and
 explicitly punts on Canvas/Widgets ("use the desktop app or `jarvis web
 start`"). This closes that gap completely, adds a way for the user to ask
-Jarvis to reshape the TUI's own pages live (add/remove/edit — no code, just an
+Orin to reshape the TUI's own pages live (add/remove/edit — no code, just an
 MCP tool), and adds a Claude-Code-style `/` command menu that both the user
-and Jarvis can extend with real tool/script-backed commands.
+and Orin can extend with real tool/script-backed commands.
 
 One combined effort → one PR into `main` (confirmed with user). Sonnet-only
 subagents for every implementation step (no Opus, no Fable).
@@ -78,7 +78,7 @@ the existing `widget.*` / `schedule.*` verb style), persisted at
 TUI client hot-reloads (mount/unmount) its custom pages live — same pattern
 already used for live widget leases. The 18 built-in pages are reserved IDs
 and cannot be removed or overwritten through this tool — only user-defined
-extra pages are mutable. This means Jarvis can add/edit/remove pages when
+extra pages are mutable. This means Orin can add/edit/remove pages when
 the user asks ("add me a page that tails the error log") without ever
 touching Python source.
 
@@ -93,7 +93,7 @@ Full script/tool-backed commands (per your choice), not just canned prompts:
   card), or `prompt` (send a canned prompt).
 - New Contract-A verbs: `command.list / command.create / command.remove /
   command.invoke`.
-- Jarvis gets a matching MCP tool `create_slash_command` (same trust model
+- Orin gets a matching MCP tool `create_slash_command` (same trust model
   as the existing `create_skill` tool: the agent authors the file, the user
   sees what ran) so it can register new `/` commands for itself when asked.
 - TUI: typing `/` in the chat input opens a popup overlay (built-ins +

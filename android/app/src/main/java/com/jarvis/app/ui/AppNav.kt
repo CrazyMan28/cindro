@@ -156,7 +156,7 @@ fun AppNav(
                 notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
             PushRegistrar.syncCurrentToken(context)
-            // Resume the "Hey Jarvis" wake service if the user left it enabled.
+            // Resume the "Hey Orin" wake service if the user left it enabled.
             val micOk = ContextCompat.checkSelfPermission(
                 context, Manifest.permission.RECORD_AUDIO,
             ) == PackageManager.PERMISSION_GRANTED
@@ -164,7 +164,7 @@ fun AppNav(
         }
     }
 
-    // Deep-link from an FCM tap or a "Hey Jarvis" wake into a session's chat.
+    // Deep-link from an FCM tap or a "Hey Orin" wake into a session's chat.
     LaunchedEffect(deepLinkSessionId, deepLinkWake) {
         val sid = deepLinkSessionId ?: return@LaunchedEffect
         if (app.pairingStore.isPaired) {
@@ -181,7 +181,7 @@ fun AppNav(
     // session.opened whose tap deep-links into chat (deepLinkSessionId above). So
     // there is deliberately NO auto-navigation collector here.
 
-    // Deep-link from a tapped "Unlock Jarvis" push into the Approve screen (the
+    // Deep-link from a tapped "Unlock Orin" push into the Approve screen (the
     // phone leg of the 2FA + fingerprint cross-device unlock).
     LaunchedEffect(deepLinkAuthChallenge) {
         val cid = deepLinkAuthChallenge ?: return@LaunchedEffect
@@ -281,7 +281,7 @@ fun AppNav(
 
         composable(Routes.CHAT) { entry ->
             // The app-open fingerprint gate must hold on EVERY path into chat —
-            // a notification tap / "Hey Jarvis" wake deep-links straight here, so
+            // a notification tap / "Hey Orin" wake deep-links straight here, so
             // without this check anyone could read private chat history from the
             // lock screen while SHELL was still gated underneath. Gate the chat
             // route itself (same GateScreen as SHELL) so no entry bypasses it.

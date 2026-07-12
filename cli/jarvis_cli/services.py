@@ -82,7 +82,7 @@ def cmd_start() -> int:
 
     binary = _daemon_binary()
     if binary is None:
-        console.print("[red]jarvisd not found[/red] — install Jarvis first "
+        console.print("[red]jarvisd not found[/red] — install Orin first "
                       "(packaging/install.sh on Linux, Jarvis-Setup.exe on Windows)")
         return 1
     creation = {}
@@ -200,7 +200,7 @@ def cmd_web(action: str) -> int:
 
     web = _web_dir()
     if web is None:
-        console.print("[red]web/ not found[/red] — run from a Jarvis checkout or "
+        console.print("[red]web/ not found[/red] — run from an Orin checkout or "
                       "set JARVIS_WEB_DIR")
         return 1
     bun = shutil.which("bun")

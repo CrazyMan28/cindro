@@ -43,7 +43,7 @@ fun GateScreen(
         scope.launch {
             val ok = Biometric.authenticate(
                 activity,
-                title = "Unlock Jarvis",
+                title = "Unlock Orin",
                 subtitle = "Confirm it's you",
             )
             if (ok) onUnlocked() else failed = true
@@ -62,7 +62,7 @@ fun GateScreen(
         if (!failed) {
             CircularProgressIndicator(color = JarvisPalette.Accent)
             Text(
-                text = "Confirm your fingerprint to open Jarvis",
+                text = "Confirm your fingerprint to open Orin",
                 color = JarvisPalette.TextSecondary,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(top = 18.dp),

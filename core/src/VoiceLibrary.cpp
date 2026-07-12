@@ -174,7 +174,7 @@ void VoiceLibrary::seedFromDisk()
             e.source = QStringLiteral("seed");
             e.raw = false;
             e.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-            e.name = (base == kJarvice) ? QStringLiteral("Jarvis") : base;
+            e.name = (base == kJarvice) ? QStringLiteral("Orin") : base;
             m_voices.push_back(e);
             found = true;
         }

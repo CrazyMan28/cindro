@@ -67,7 +67,7 @@ Item {
             PageHeader {
                 Layout.fillWidth: true
                 title: "Skills"
-                subtitle: "Reusable playbooks Jarvis can run — and author for itself. /invoke drops one into Chat."
+                subtitle: "Reusable playbooks Orin can run — and author for itself. /invoke drops one into Chat."
             }
             Widgets.PillButton {
                 label: "+ New Skill"
@@ -106,7 +106,7 @@ Item {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
-                    text: "Author a skill to teach Jarvis a repeatable task once. It saves a SKILL.md and the skill becomes invokable from Chat."
+                    text: "Author a skill to teach Orin a repeatable task once. It saves a SKILL.md and the skill becomes invokable from Chat."
                     color: Theme.textFaint
                     font.family: Theme.fontSans
                     font.pixelSize: 13

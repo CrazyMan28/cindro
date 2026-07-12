@@ -47,7 +47,7 @@ from jarvis_cli.tui.voice_mode import VoiceModeScreen
 
 
 class JarvisTui(App):
-    TITLE = "JARVIS"
+    TITLE = "ORIN"
 
     CSS = """
     Screen {
@@ -276,7 +276,7 @@ class JarvisTui(App):
     # -- header ----------------------------------------------------------------
     def _set_topbar(self) -> None:
         state = "[green]●[/green]" if self.client.connected else "[red]●[/red]"
-        bar = (f"[bold cyan]◉ JARVIS[/bold cyan] "
+        bar = (f"[bold cyan]◉ ORIN[/bold cyan] "
                f"[bright_black]terminal v{__version__}[/bright_black]  "
                f"{state} {self._daemon_line}  "
                f"[bright_black]·[/bright_black] mode: [cyan]{self._agent_mode}[/cyan]")

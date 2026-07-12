@@ -512,7 +512,7 @@ class SettingsPane(TablePane):
     # (key, [values...], description) — cycled in order.
     KNOBS: list[tuple[str, list[Any], str]] = [
         ("agent_mode", ["coworker", "plan", "build"], "how autonomous each turn is"),
-        ("permission_level", ["medium", "high", "low"], "how often Jarvis asks first"),
+        ("permission_level", ["medium", "high", "low"], "how often Orin asks first"),
         ("self_improve", ["off", "on"], "learn ONE reusable fact after each turn"),
         ("auto_continue", ["off", "capped", "on"], "re-wake until the goal is done"),
         ("skill_archive_days", [30, 0, 14, 90], "archive unused skills after N days (0=never)"),

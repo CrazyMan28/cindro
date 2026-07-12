@@ -145,7 +145,7 @@ Item {
 
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: "JARVIS LOCKED"
+            text: "ORIN LOCKED"
             color: Theme.accent
             font.family: Theme.fontDisplay
             font.pixelSize: 18

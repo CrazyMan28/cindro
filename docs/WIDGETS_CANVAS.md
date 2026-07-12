@@ -1,6 +1,6 @@
 # Canvas & Widgets — the generative UI system
 
-Jarvis can render real, interactive UI from a small **safe JSON DSL** (never code).
+Orin can render real, interactive UI from a small **safe JSON DSL** (never code).
 Two concepts:
 
 - **Canvas** — an *ad-hoc* thing the model draws once (a duck, a chart, a status
@@ -79,7 +79,7 @@ spec    = {"type":"column","gap":4,"children":[
 Windows — so a Linux-only pipeline (`top`/`awk`/`grep`) silently produces no
 `{{value}}` on Windows ("no data"). The co-work system prompt
 (`ControlServer.cpp`) picks the right example per-platform at compile time; if
-you hand-write a `widget_live` command, pick the one for the OS Jarvis is
+you hand-write a `widget_live` command, pick the one for the OS Orin is
 actually running on.
 
 Jobs are tracked in `~/.local/share/jarvis/widget_jobs/<id>.json` and survive the

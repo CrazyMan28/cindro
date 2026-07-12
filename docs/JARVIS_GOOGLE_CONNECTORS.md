@@ -1,19 +1,19 @@
-# Jarvis — Google connectors (Calendar / Docs / Drive / Gmail)
+# Orin — Google connectors (Calendar / Docs / Drive / Gmail)
 
 Status: **framework ready, needs YOUR Google OAuth credentials to activate.**
 
-Jarvis reaches Google services the same way it reaches any tool: as **MCP servers**
+Orin reaches Google services the same way it reaches any tool: as **MCP servers**
 the brain can call. Because the now-default isolation strips the CLI's own MCP
-servers, you add Google as **Jarvis** MCP servers (Settings → MCP → paste config,
+servers, you add Google as **Orin** MCP servers (Settings → MCP → paste config,
 or the CLI-toggle list), and they're injected — with auth — into both brains.
 
 ## Why this needs you (honest limitation)
 A Google connector needs an **OAuth app** (client id + secret + consented scopes)
 that only the account owner can create — I can't make a Google Cloud project on your
-behalf. Once you have creds, wiring it into Jarvis is one paste / one script.
+behalf. Once you have creds, wiring it into Orin is one paste / one script.
 
 ## One-time: create the OAuth app (5 min)
-1. https://console.cloud.google.com → new project "Jarvis".
+1. https://console.cloud.google.com → new project "Orin".
 2. **APIs & Services → Enable APIs**: Google Calendar API, Drive API, Docs API,
    Gmail API (enable the ones you want).
 3. **OAuth consent screen** → External → add yourself as a test user; scopes:
@@ -22,9 +22,9 @@ behalf. Once you have creds, wiring it into Jarvis is one paste / one script.
 4. **Credentials → Create OAuth client ID → Desktop app**. Save the client id +
    secret (and download the JSON).
 
-## Wire it into Jarvis (pick one)
+## Wire it into Orin (pick one)
 **A. A Google MCP server (recommended).** Use an MCP server that speaks Google APIs
-(several community ones exist, typically run via `npx`). In Jarvis → **MCP → Add /
+(several community ones exist, typically run via `npx`). In Orin → **MCP → Add /
 Paste config**, add it as a **stdio** server, passing your creds via env, e.g.:
 ```json
 { "mcpServers": { "google-calendar": {
@@ -37,7 +37,7 @@ The first run does the OAuth consent in your browser and caches a refresh token.
 Once enabled it's injected into codex + claude (isolated), so you can say
 "what's on my calendar tomorrow" / "summarize this Google Doc".
 
-**B. Tokens as secrets.** Keep the client secret / refresh token in Jarvis's secret
+**B. Tokens as secrets.** Keep the client secret / refresh token in Orin's secret
 store (`~/.config/jarvis/secrets.json`, 0600) — NEVER in git. The MCP `token`/`env`
 fields reference them.
 

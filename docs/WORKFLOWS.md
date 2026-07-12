@@ -1,6 +1,6 @@
 # Workflows & Agent-Scoped Memory
 
-Two thin extensions to Jarvis's existing memory + scheduler.
+Two thin extensions to Orin's existing memory + scheduler.
 
 ## Agent-scoped memory
 

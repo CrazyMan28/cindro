@@ -1,11 +1,11 @@
-# Proxmox Workload Manager — an always-on Jarvis agent on the Proxmox host
+# Proxmox Workload Manager — an always-on Orin agent on the Proxmox host
 
 An always-on agent that lives directly ON a Proxmox host, checks up on VM
 resource usage every few minutes, and bumps CPU cores / RAM on congested VMs
 within safe limits — **it never restarts, stops, or starts a VM on its own.**
 It survives the user's laptop being off (its brain is Mistral via the direct
 API, not the Claude Code CLI), keeps its own durable memory of every decision,
-and enrolls as a visible agent via Project Tracker so the user's local Jarvis
+and enrolls as a visible agent via Project Tracker so the user's local Orin
 can check in on it and ask for a report.
 
 It is deployed and managed as a first-class Outpost feature — installed onto
@@ -70,7 +70,7 @@ Local daemon (the user's laptop)
      host, including the ONLY restart path (proxmox.restart_vm).
  └─ new computer_use_mcp chat tools — proxmox_check_status/get_report/
      give_direction/agent_checkin — so a plain chat ("check up on proxmox")
-     has something to reach for. These live in Jarvis's OWN built-in MCP
+     has something to reach for. These live in Orin's OWN built-in MCP
      server (already registered/on for every session) — this is NOT a
      separate MCP server that needs its own registration step.
 ```
@@ -163,7 +163,7 @@ opted into per-session).
    ```
 4. **Install also opens a LIVE scout+interview chat (2026-07-10).** Beyond
    the recurring headless tick above, `outpost.install_workload` creates a
-   normal, interactive Jarvis session — routed at the proxmox-mcp MCP
+   normal, interactive Orin session — routed at the proxmox-mcp MCP
    endpoint the same way the tick is (`scheduleTargetRef="proxmox-<machine>"`)
    — and sends it a one-time prompt: introduce itself, scout the fleet live
    (reusing whatever the install-time sweep already started), narrate what it
@@ -210,7 +210,7 @@ opted into per-session).
 | `proxmox_list_vm_profiles` | `() -> {profiles:[{vmid,has_purpose,stale,...}]}` | Drives re-scout + interview decisions. |
 | `proxmox_ask_user` | `(question, vmid=0, options=[]) -> {ok,qid}` | Non-blocking interview question (max 3 pending, deduped) — answered from the Outpost page. |
 | `proxmox_get_answers` | `() -> {answers:[...]}` | Consume answers at the start of every tick; write them into profiles. |
-| `proxmox_get_tasks` / `proxmox_reply` | `() -> {tasks}` / `(rid, text) -> {ok}` | Asks/tasks from the user's main Jarvis (`proxmox.ask_agent`); reply lands back in the user's chat. |
+| `proxmox_get_tasks` / `proxmox_reply` | `() -> {tasks}` / `(rid, text) -> {ok}` | Asks/tasks from the user's main Orin (`proxmox.ask_agent`); reply lands back in the user's chat. |
 | `proxmox_get_due_pinged` / `proxmox_record_pinged` | `() -> {rules}` / `(rule_id, fired, result="") -> {ok}` | Watch rules due this tick; ALWAYS record, fired or not (that's what stops a daily rule re-firing all day). |
 | `proxmox_guest_service` | `(vmid, service, verb) -> exec result` | verb ∈ {start, restart, status} — see the safety invariant above. |
 
@@ -228,7 +228,7 @@ opted into per-session).
 | `proxmox_ask_agent` | `(machine, text, kind="ask", wait_sec=90)` | **Talk directly to the pve agent**: queues the ask/task, kicks `schedule.run_now` via the host-side `proxmox-agent-kick` helper, then polls for the reply. Timeout → `{pending:true, rid}` (reply lands ≤5 min via the tick). |
 | `proxmox_pinged_list` / `proxmox_pinged_add` / `proxmox_pinged_remove` | see docstrings | Manage watch rules from chat. |
 
-These ship inside Jarvis's own built-in MCP server — no separate server to
+These ship inside Orin's own built-in MCP server — no separate server to
 register, no "only visible to Claude Code" gap.
 
 ## VM scout, JARVIS.md profiles, questions, tasks & Pinged (2026-07-09)
@@ -268,7 +268,7 @@ install. Re-scout policy is manual + agent-judged: no profile, `stale`
 `proxmox_machines.json` every 5 minutes for new questions + fired pinged
 events, dedupes forever via `proxmox_seen_notifications.json`
 (`machine:qid|eid` keys, pruned when gone), and notifies through the phone
-proxy (`notify_user` → Jarvis inbox on every surface). No `phone.env` → the
+proxy (`notify_user` → Orin inbox on every surface). No `phone.env` → the
 poll silently skips; the Outpost page still shows everything. Opening the
 Outpost page marks what you saw as seen, so you don't get pinged for
 questions you already answered.
@@ -281,7 +281,7 @@ viewer. TUI keys: `o` scout, `q` questions, `i` profile, `n` pinged, plus
 input commands `answer <qid> <text>` and
 `pinged add <name> | <HH:MM or condition> | <action> [| vmid]`.
 
-**Security model** (unchanged in kind): the main Jarvis reaches the pve
+**Security model** (unchanged in kind): the main Orin reaches the pve
 agent ONLY through MCP tools → daemon Contract-A RPCs (loopback control
 socket; the phone/device channel blocks `proxmox.*` outright) → the
 token-authed Outpost relay → files on the host. proxmox-mcp itself stays

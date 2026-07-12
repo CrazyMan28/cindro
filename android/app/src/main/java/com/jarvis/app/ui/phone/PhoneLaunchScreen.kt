@@ -32,14 +32,14 @@ import androidx.compose.ui.unit.sp
 import com.jarvis.app.ui.theme.JarvisPalette
 
 /**
- * Jarvis's Phone tab. The full Agent Phone app is vendored verbatim into this one
+ * Orin's Phone tab. The full Agent Phone app is vendored verbatim into this one
  * APK under [com.agentphone] — every screen, setting and flow. Rather than re-skin
  * or reimplement any of it, the Phone tab simply launches the real
  * [com.agentphone.MainActivity], which renders the original `AppRoot()` (Calls /
  * Inbox / Agents / HUD / Settings + setup wizard + call screens) full-screen.
  *
  * It opens automatically the first time the tab is shown, and the button reopens it
- * after the user backs out — the Jarvis bottom nav stays visible here so this is
+ * after the user backs out — the Orin bottom nav stays visible here so this is
  * never a dead end.
  */
 @Composable
@@ -84,7 +84,7 @@ fun PhoneLaunchScreen() {
         )
         Spacer(Modifier.height(10.dp))
         Text(
-            "Calls, inbox, agents, HUD, screening and every phone setting — the full Agent Phone, inside Jarvis.",
+            "Calls, inbox, agents, HUD, screening and every phone setting — the full Agent Phone, inside Orin.",
             color = JarvisPalette.TextSecondary,
             fontSize = 14.sp,
             textAlign = TextAlign.Center,

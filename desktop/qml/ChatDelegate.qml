@@ -785,7 +785,7 @@ Item {
                 spacing: 11
 
                 Text {
-                    text: "❔ JARVIS IS ASKING"
+                    text: "❔ ORIN IS ASKING"
                     color: Theme.accent
                     font.weight: Font.DemiBold
                     font.letterSpacing: Theme.trackMid

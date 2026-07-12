@@ -69,7 +69,7 @@ class JarvisConnectionService : Service() {
         val notif = NotificationCompat.Builder(this, JarvisNotifier.CHANNEL_WAKE)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setColor(0xFF34D8FF.toInt())
-            .setContentTitle("Jarvis connected")
+            .setContentTitle("Orin connected")
             .setContentText("Listening for notifications")
             .setOngoing(true)
             .setContentIntent(open)
@@ -119,21 +119,21 @@ class JarvisConnectionService : Service() {
                 JarvisNotifier.notify(
                     applicationContext,
                     kind = "file_offer",
-                    title = "File from Jarvis",
+                    title = "File from Orin",
                     body = f.name,
                     sessionId = f.sessionId,
                 )
             }
         }
         // An unlock challenge (desktop or Chrome) over the WS -> high-priority
-        // "Unlock Jarvis" notification that deep-links into the Approve screen. This
+        // "Unlock Orin" notification that deep-links into the Approve screen. This
         // is the no-Firebase path for 2FA + the Chrome lock.
         scope.launch {
             app.repository.authChallenges.collect { ch ->
                 JarvisNotifier.notify(
                     applicationContext,
                     kind = "auth",
-                    title = if (ch.origin == "extension") "Unlock Jarvis (Chrome)" else "Unlock Jarvis",
+                    title = if (ch.origin == "extension") "Unlock Orin (Chrome)" else "Unlock Orin",
                     body = "Approve sign-in with your fingerprint",
                     sessionId = null,
                     challengeId = ch.challengeId,

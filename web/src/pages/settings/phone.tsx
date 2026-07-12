@@ -312,7 +312,7 @@ function PhoneTwilioSettings() {
       <div>
         <div class="hud-label sph-title">Phone / Twilio</div>
         <p class="sph-desc">
-          Configure the Jarvis phone server (call/SMS agent) and its Twilio integration for real inbound/outbound
+          Configure the Orin phone server (call/SMS agent) and its Twilio integration for real inbound/outbound
           calls and texts. Tokens and Twilio credentials are write-only — the daemon never sends a saved value
           back, only whether one is set. Saving restarts the phone server automatically on Linux; on Windows,
           restart it yourself to apply changes.

@@ -341,7 +341,7 @@ function MemoryGraph() {
           <ArcReactor size={84} tint="var(--violet)" />
           <div class="jw-graph-empty-title">GRAPH EMPTY</div>
           <div class="jw-graph-empty-sub">
-            As you save memories, Jarvis auto-extracts people, projects, and topics and links them here.
+            As you save memories, Orin auto-extracts people, projects, and topics and links them here.
           </div>
         </div>
       </Show>

@@ -82,7 +82,7 @@ async function getConfig() {
 function setConnected(on) {
   connected = on;
   els.dot.classList.toggle("ok", on);
-  els.dot.title = on ? "connected to Jarvis daemon" : "disconnected from Jarvis daemon";
+  els.dot.title = on ? "connected to Orin daemon" : "disconnected from Orin daemon";
 }
 
 async function connect() {
@@ -92,7 +92,7 @@ async function connect() {
     setConnected(false);
     if (!warnedNoToken) {  // show ONCE, not on every reconnect tick
       warnedNoToken = true;
-      addSys("No Jarvis control token set — open the extension Options and paste it.");
+      addSys("No Orin control token set — open the extension Options and paste it.");
     }
     return;
   }
@@ -177,7 +177,7 @@ function ensureAuthGate() {
     "font-family:Inter,'Noto Sans',sans-serif;";
   gate.innerHTML =
     '<div style="font-family:Orbitron,Rajdhani,sans-serif;font-size:16px;' +
-    'letter-spacing:2px;color:#29E7FF;font-weight:600;">JARVIS LOCKED</div>' +
+    'letter-spacing:2px;color:#29E7FF;font-weight:600;">ORIN LOCKED</div>' +
     '<div id="authGateMsg" style="font-size:13px;color:#8DA6C4;max-width:280px;' +
     'line-height:1.5;">Requesting unlock…</div>' +
     '<button id="authGateRetry" style="display:none;margin-top:6px;padding:8px 22px;' +
@@ -261,7 +261,7 @@ function onAuthState(challengeId, state) {
 function rpc(method, params) {
   return new Promise((resolve, reject) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
-      reject(new Error("not connected to Jarvis daemon"));
+      reject(new Error("not connected to Orin daemon"));
       return;
     }
     const id = nextRpcId++;
@@ -1418,7 +1418,7 @@ async function doSend() {
   if (turnInFlight) return;
   const text = els.input.value.trim();
   if (!text && pendingImages.length === 0) return;
-  if (!connected) { addError("Not connected to the Jarvis daemon — check the control token in Options."); return; }
+  if (!connected) { addError("Not connected to the Orin daemon — check the control token in Options."); return; }
 
   // Slash command? Consume it (dispatch a subagent / list agents / invoke skill).
   if (text.startsWith("/")) {
@@ -3479,7 +3479,7 @@ function initPhonePanel() {
 // ----------------------------------------------------------------- boot
 async function init() {
   initPhonePanel();
-  addSys("Jarvis co-worker ready. Type a request to drive this browser.");
+  addSys("Orin co-worker ready. Type a request to drive this browser.");
   await refreshTabs();
   await connect();
   // Light heartbeat to recover the connection if it silently drops.

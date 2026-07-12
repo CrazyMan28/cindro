@@ -70,7 +70,7 @@ object WidgetCatalog {
                 val o = JsonParser.parseString(v).asJsonObject
                 CatalogEntry(
                     id = o.get("id").asString,
-                    title = o.get("title")?.asString ?: "Jarvis",
+                    title = o.get("title")?.asString ?: "Orin",
                     specJson = o.get("spec").asString,
                     ts = o.get("ts")?.asLong ?: 0L,
                 )
