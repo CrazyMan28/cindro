@@ -52,7 +52,9 @@ int main()
 
     const QByteArray dummy("\x52\x49\x46\x46 not-real-audio-but-fine-for-store-test", 44);
 
-    // --- 1) Seed from disk: a pre-existing jarvice_ref.mp3 becomes "Jarvis" ----
+    // --- 1) Seed from disk: a pre-existing jarvice_ref.mp3 becomes "Orin" ----
+    // (the on-disk slug stays "jarvice" for back-compat; only the user-facing
+    // display name follows the product rebrand.)
     {
         writeClip(QStringLiteral("jarvice_ref.mp3"), dummy);
         jarvis::VoiceLibrary lib;
@@ -61,8 +63,8 @@ int main()
         check(voices.size() == 1, "seed: exactly one voice discovered on disk");
         check(!voices.isEmpty() && voices.front().slug == QStringLiteral("jarvice"),
               "seed: discovered slug is jarvice");
-        check(!voices.isEmpty() && voices.front().name == QStringLiteral("Jarvis"),
-              "seed: jarvice gets the display name 'Jarvis'");
+        check(!voices.isEmpty() && voices.front().name == QStringLiteral("Orin"),
+              "seed: jarvice gets the display name 'Orin'");
         check(lib.defaultSlug() == QStringLiteral("jarvice"),
               "seed: jarvice is the default");
         check(QFile::exists(lib.manifestPath()),
