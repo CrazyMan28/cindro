@@ -257,16 +257,16 @@ fun SettingsScreen(
             //   The daemon side (settings.get/set auto_update + update.check/apply)
             //   already exists; this is only the Android surface.
 
-            // --- Let Jarvis use a computer/browser (auto-spawn) ---
+            // --- Let Orin use a computer/browser (auto-spawn) ---
             GlowCard(modifier = Modifier.fillMaxWidth()) {
                 ToggleRow(
-                    title = "Let Jarvis use a computer/browser",
+                    title = "Let Orin use a computer/browser",
                     subtitle = "When on, any chat can open apps and drive Chrome on its own isolated desktop on demand — no \"Computer\" tab needed.",
                     checked = state.letJarvisUseComputer,
                     onChange = { on ->
                         scope.launch {
                             if (Biometric.authenticate(
-                                    activity, "Let Jarvis use a computer",
+                                    activity, "Let Orin use a computer",
                                     if (on) "Enable" else "Disable")) {
                                 viewModel.setLetJarvisUseComputer(on)
                             }
@@ -281,7 +281,7 @@ fun SettingsScreen(
                     Text("Permissions", style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextPrimary)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "How cautious Jarvis is before risky actions. Tools are auto-ranked: HIGH = irreversible / your real world (delete files, your real screen, ssh, installs, sending things out), MEDIUM = reversible / agent-scoped (edit files, memory), LOW = read-only.",
+                        "How cautious Orin is before risky actions. Tools are auto-ranked: HIGH = irreversible / your real world (delete files, your real screen, ssh, installs, sending things out), MEDIUM = reversible / agent-scoped (edit files, memory), LOW = read-only.",
                         style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary,
                     )
                     Spacer(Modifier.height(10.dp))
@@ -335,7 +335,7 @@ fun SettingsScreen(
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Jarvis calls ask_user (you approve here or on the laptop) before any action above your line. It's a policy, not the sandbox.",
+                        "Orin calls ask_user (you approve here or on the laptop) before any action above your line. It's a policy, not the sandbox.",
                         style = MaterialTheme.typography.bodySmall, color = JarvisPalette.TextSecondary,
                     )
                 }
@@ -401,7 +401,7 @@ fun SettingsScreen(
                     optionRows(
                         "Background wake notifications",
                         listOf(
-                            Triple("silent", "Silent", "Wake Jarvis only"),
+                            Triple("silent", "Silent", "Wake Orin only"),
                             Triple("ping", "Ping", "Notify phone for long jobs"),
                             Triple("always", "Always", "Notify on every wake"),
                         ),
@@ -689,7 +689,7 @@ fun SettingsScreen(
                     Text("Voice (Mistral Voxtral)", style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextPrimary)
                     Spacer(Modifier.height(10.dp))
                     ToggleRow(
-                        title = "\"Hey Jarvis\" wake",
+                        title = "\"Hey Orin\" wake",
                         subtitle = "Foreground mic service with a visible notification",
                         checked = state.wakeEnabled,
                         onChange = { on ->
@@ -723,7 +723,7 @@ fun SettingsScreen(
                     Spacer(Modifier.height(14.dp))
                     Text("Default voice", style = MaterialTheme.typography.titleSmall, color = JarvisPalette.TextPrimary)
                     Text(
-                        "Record your own or upload a clip, name it, and set it as default — used everywhere Jarvis speaks, including phone calls (when it calls you and when it answers).",
+                        "Record your own or upload a clip, name it, and set it as default — used everywhere Orin speaks, including phone calls (when it calls you and when it answers).",
                         style = MaterialTheme.typography.bodySmall,
                         color = JarvisPalette.TextSecondary,
                     )
@@ -828,7 +828,7 @@ fun SettingsScreen(
             GlowCard(modifier = Modifier.fillMaxWidth()) {
                 ToggleRow(
                     title = "Require fingerprint to open",
-                    subtitle = "Ask for your fingerprint each time you open Jarvis. Approving a desktop sign-in always requires it. Fails open if no screen lock is set.",
+                    subtitle = "Ask for your fingerprint each time you open Orin. Approving a desktop sign-in always requires it. Fails open if no screen lock is set.",
                     checked = state.fingerprintGateEnabled,
                     onChange = viewModel::setFingerprintGateEnabled,
                 )

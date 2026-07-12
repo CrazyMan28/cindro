@@ -100,7 +100,7 @@ interface VoiceEntry {
  * from PhoneAgentsTab.qml:121-138 (matches the agent-phone Android app). */
 const DEFAULT_VOICES: VoiceEntry[] = [
   { vid: "", vname: "Default", speaker: "Default", emotion: "Default" },
-  { vid: "jarvis-od", vname: "Jarvis (on-device)", speaker: "Jarvis", emotion: "Jarvis" },
+  { vid: "jarvis-od", vname: "Orin (on-device)", speaker: "Orin", emotion: "Orin" },
   { vid: "paul-cheerful", vname: "Paul - Cheerful", speaker: "Paul", emotion: "Cheerful" },
   { vid: "paul-sad", vname: "Paul - Sad", speaker: "Paul", emotion: "Sad" },
   { vid: "paul-angry", vname: "Paul - Angry", speaker: "Paul", emotion: "Angry" },

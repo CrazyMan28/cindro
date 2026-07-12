@@ -1,7 +1,7 @@
 # Outpost — Remote Machine Pairing & Control
 
-Outpost pairs a remote Windows/Linux/macOS machine with Jarvis using a
-one-line install command; once paired, Jarvis can run shell commands and
+Outpost pairs a remote Windows/Linux/macOS machine with Orin using a
+one-line install command; once paired, Orin can run shell commands and
 grab screenshots on that machine by name. It replaces the old SSH tab's
 allow-list + exec console with a dial-out WebSocket relay, so there's no
 inbound firewall/NAT change needed on the target and pairing survives the

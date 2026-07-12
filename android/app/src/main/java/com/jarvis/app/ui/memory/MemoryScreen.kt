@@ -148,7 +148,7 @@ private fun AddMemoryDialog(onDismiss: () -> Unit, onAdd: (String) -> Unit) {
             OutlinedTextField(
                 value = content,
                 onValueChange = { content = it },
-                label = { Text("Jarvis should remember…") },
+                label = { Text("Orin should remember…") },
                 modifier = Modifier.fillMaxWidth(),
                 maxLines = 4,
             )

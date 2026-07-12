@@ -57,7 +57,7 @@ Item {
             PageHeader {
                 Layout.fillWidth: true
                 title: "Plugins"
-                subtitle: "Install MCP tools and skills to extend what Jarvis can do."
+                subtitle: "Install MCP tools and skills to extend what Orin can do."
             }
             Widgets.PillButton {
                 label: "Refresh"

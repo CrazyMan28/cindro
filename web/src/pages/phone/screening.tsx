@@ -220,7 +220,7 @@ export function PhoneScreeningTab() {
         <div class="card phscr-offline">
           <div class="hud-label" style={{ color: "var(--amber)", "font-size": "9px" }}>OFFLINE</div>
           <div style={{ color: "var(--text-muted)", "font-size": "11px" }}>
-            Connect to the Jarvis daemon to enable screening view.
+            Connect to the Orin daemon to enable screening view.
           </div>
         </div>
       </Show>

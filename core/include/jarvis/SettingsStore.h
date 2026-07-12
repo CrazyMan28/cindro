@@ -47,7 +47,7 @@ public:
 
     // First-launch SETUP WIZARD state. setup_complete defaults FALSE so a fresh
     // install shows the wizard once; the wizard's Finish sets it true. The
-    // assistant's friendly name (default "Jarvis") is chosen in the wizard and
+    // assistant's friendly name (default "Orin") is chosen in the wizard and
     // shown across the UI. Both round-trip in config.toml as flat keys
     // `setup_complete = true|false` / `assistant_name = "..."`.
     bool setupComplete() const { return m_setupComplete; }
@@ -55,7 +55,7 @@ public:
     QString assistantName() const { return m_assistantName; }
     void setAssistantName(const QString &n)
     {
-        m_assistantName = n.trimmed().isEmpty() ? QStringLiteral("Jarvis") : n.trimmed();
+        m_assistantName = n.trimmed().isEmpty() ? QStringLiteral("Orin") : n.trimmed();
     }
     // The human's name, collected in the wizard. Unlike the assistant name there
     // is NO default — empty just means "not provided". Round-trips in config.toml
@@ -275,7 +275,7 @@ private:
     QString m_sttProvider = QStringLiteral("voxtral"); // STT provider id
     QString m_ttsProvider = QStringLiteral("voxtral"); // TTS provider id
     bool m_setupComplete = false;       // first-launch wizard done? (default: no)
-    QString m_assistantName = QStringLiteral("Jarvis"); // friendly assistant name
+    QString m_assistantName = QStringLiteral("Orin"); // friendly assistant name
     QString m_userName;                                 // the human's name ("" = unset)
     bool m_autoUpdate = true;           // periodic auto update-check (default ON)
     bool m_autoUpdateApply = false;     // AND install automatically (default OFF)

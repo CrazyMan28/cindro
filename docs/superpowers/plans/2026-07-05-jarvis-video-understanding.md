@@ -1,15 +1,15 @@
-# Jarvis Video Understanding — all claude-video-vision features, implemented natively (no copied code)
+# Orin Video Understanding — all claude-video-vision features, implemented natively (no copied code)
 
 > Canonical repo location once approved: `docs/superpowers/plans/2026-07-05-jarvis-video-understanding.md` (alongside the other superpowers plans).
 
 ## Context
 
-Issac wants Jarvis to **watch and understand videos**: paste a YouTube URL (or local file path) into chat, say "watch this video", and Jarvis sees the frames as images and hears the audio as a timestamped transcript. The reference for the *feature set* is the `claude-video-vision` Claude Code plugin — Jarvis gets **every feature it has**, but the code is **written fresh in Jarvis's own idioms** (Python, Jarvis conventions). **We studied the reference to understand it; we do not copy its code.** Default transcription = **local faster-whisper, model large-v3** (user-confirmed; 60GB RAM + RTX 4070 → CUDA with CPU fallback). Settings editable in a new **"Video Understanding" section** (desktop QML + TUI), **skills teach Jarvis the video workflow**, and it must work on the **Windows build** too.
+Issac wants Orin to **watch and understand videos**: paste a YouTube URL (or local file path) into chat, say "watch this video", and Orin sees the frames as images and hears the audio as a timestamped transcript. The reference for the *feature set* is the `claude-video-vision` Claude Code plugin — Orin gets **every feature it has**, but the code is **written fresh in Orin's own idioms** (Python, Orin conventions). **We studied the reference to understand it; we do not copy its code.** Default transcription = **local faster-whisper, model large-v3** (user-confirmed; 60GB RAM + RTX 4070 → CUDA with CPU fallback). Settings editable in a new **"Video Understanding" section** (desktop QML + TUI), **skills teach Orin the video workflow**, and it must work on the **Windows build** too.
 
 ## No-copy methodology (user requirement)
 
 - During exploration we produced a **complete behavior spec** of the reference (tools, parameters, defaults, algorithms like the auto-fps table and caption-fallback rules, storage layout, skill workflow). That spec — captured in this plan — is what implementation works from.
-- **Implementation subagents get the spec, never the reference source files.** No porting, no transliterating TS to Python. Naming, structure, error handling, and style follow existing Jarvis modules (`tools_desktop.py`, `tools_jarvis_ops.py`, `VoiceProvider` fallback idiom), not the reference's layout.
+- **Implementation subagents get the spec, never the reference source files.** No porting, no transliterating TS to Python. Naming, structure, error handling, and style follow existing Orin modules (`tools_desktop.py`, `tools_jarvis_ops.py`, `VoiceProvider` fallback idiom), not the reference's layout.
 - Algorithm-level facts (e.g. "fps auto: <60s→2, <300s→1, <900s→0.5, <3600s→0.2, else 0.1", "captions fall back to whisper when coverage <50% on ≥30s videos") are behavior we replicate; expressing them in our own code is not copying.
 - The reference clone at `/tmp/claude-1000/-home-kihi2024-projects-computer-use/dc83c791-ece6-4217-962a-afed67f950c2/scratchpad/claude-video-vision` is **deleted at the end** (user requirement). It may be consulted read-only only to answer "what does the feature do?" questions the spec missed — never as a source to lift code from.
 
@@ -44,9 +44,9 @@ storage  → ~/.local/share/jarvis/video/{downloads,sessions,models}  (data_dir(
 - **YouTube**: yt-dlp download (no playlists, mp4 merge, hash-prefixed filenames, expiring downloads cache), metadata (title/channel/duration/views/description), **captions-first transcripts** — manual subs > auto captions > whisper fallback when captions missing/empty/<50% coverage — with `transcription_source` provenance; SRT/VTT parsing with tag/entity stripping.
 - **Audio backends**: local **faster-whisper (default)** in-process with HF auto-download and device auto (cuda→cpu); whisper.cpp (`whisper-cli`, ggml + Silero VAD model download with SHA-256 verification); openai-whisper CLI; **Gemini API** (audio-only upload, poll until file ACTIVE, structured JSON with transcription + non-speech audio_tags); **OpenAI whisper API** (segment timestamps). **Chunking** for >20min audio: ~10min chunks with silence-aligned boundaries (±30s tolerance, looser-threshold retry, hard-cut warnings), parallel transcription with per-chunk retry, warnings surfaced to the model.
 - **Sessions/caching** (`enable_index`): video identity = hash of first 64KB + file size; per-video manifest of extracted frames keyed by resolution/format; timestamp-dedup merge preferring highest resolution; frames stored per format/resolution; age-based expiry sweeps at engine startup; manual clear.
-- **Skills/commands**: builtin `video` skill (workflow: info → analyze required for >30s → plan per-segment fps from scene/silence/transcript data → watch → detail drill-down → reuse manifest on follow-ups; question-type → analyzer-selection table; low-fps-by-default token guidance), `/watch-video` and `/setup-video-vision` slash commands (the latter a one-question-at-a-time wizard writing through `video_configure`), and a **frame-describer** mode: when `frame_mode=descriptions`, frames go to a Jarvis subagent (`agents.dispatch`, one dispatch carrying all frame paths; system prompt: factual 1–3 sentence per-frame descriptions, no interpretation) so the main context stays image-free; graceful fallback to raw images on failure/timeout.
+- **Skills/commands**: builtin `video` skill (workflow: info → analyze required for >30s → plan per-segment fps from scene/silence/transcript data → watch → detail drill-down → reuse manifest on follow-ups; question-type → analyzer-selection table; low-fps-by-default token guidance), `/watch-video` and `/setup-video-vision` slash commands (the latter a one-question-at-a-time wizard writing through `video_configure`), and a **frame-describer** mode: when `frame_mode=descriptions`, frames go to an Orin subagent (`agents.dispatch`, one dispatch carrying all frame paths; system prompt: factual 1–3 sentence per-frame descriptions, no interpretation) so the main context stays image-free; graceful fallback to raw images on failure/timeout.
 
-## Phases & files (all code original, Jarvis-idiomatic)
+## Phases & files (all code original, Orin-idiomatic)
 
 ### Phase 1 — Core video library + tests
 New package `computer-use/computer_use_mcp/video/`: `types.py`, `timestamps.py`, `platform_info.py`, `frames.py`, `audio.py`, `audio_chunker.py`, `analyzers.py`. Tests in **`computer-use/tests/video/`** (name `tests/test_video_source.py` is taken by an unrelated screen-capture test) with an ffmpeg-generated fixture video (session-scoped conftest fixture: known scene cut + tone/silence; no committed binaries).
@@ -58,7 +58,7 @@ New package `computer-use/computer_use_mcp/video/`: `types.py`, `timestamps.py`,
 `video/backends/`: `faster_whisper_backend.py` (default; device auto cuda→cpu, compute type auto, **default model large-v3**), `whisper_cpp_backend.py`, `openai_whisper_backend.py`, plus chunked-transcription orchestration. Unit tests mock the heavy parts; one slow real-audio integration test on the fixture.
 
 ### Phase 4 — Cloud backends
-`gemini_api_backend.py` + `openai_api_backend.py`, optional-extra deps, gated on API keys already stored in Jarvis's API-keys settings.
+`gemini_api_backend.py` + `openai_api_backend.py`, optional-extra deps, gated on API keys already stored in Orin's API-keys settings.
 
 ### Phase 5 — Session/cache layer
 `video/session/` (manager + manifest); expiry sweeps run in `server.py` lifespan next to `live_widgets.ensure_supervisor()`.
@@ -77,12 +77,12 @@ New package `computer-use/computer_use_mcp/video/`: `types.py`, `timestamps.py`,
 - Optional: `settings_sections` entry in `core/src/UiManifest.cpp` for manifest parity.
 
 ### Phase 9 — Skills & commands
-Skill/command text ships as constants in `computer_use_mcp/video/skill_seed.py`, **written by us for Jarvis** (the workflow knowledge from the spec, phrased for Jarvis's tool surface and settings), **idempotently seeded at engine startup** via daemon `skills.create` / `commands.*` (verified: `builtin/phone` was self-authored at runtime; there is no repo seeding mechanism — engine-side seeding also makes Windows installs get the skills automatically). Seeds: `builtin/video` skill, `/watch-video`, `/setup-video-vision`.
+Skill/command text ships as constants in `computer_use_mcp/video/skill_seed.py`, **written by us for Orin** (the workflow knowledge from the spec, phrased for Orin's tool surface and settings), **idempotently seeded at engine startup** via daemon `skills.create` / `commands.*` (verified: `builtin/phone` was self-authored at runtime; there is no repo seeding mechanism — engine-side seeding also makes Windows installs get the skills automatically). Seeds: `builtin/video` skill, `/watch-video`, `/setup-video-vision`.
 
 ### Phase 10 — Windows
 - Deps in **both** `computer-use/pyproject.toml` (faster-whisper, yt-dlp, huggingface-hub; openai+google-genai as a `cloud-video` extra) **and** `windows/engine/requirements-windows.txt` (Windows build installs the package `--no-deps`).
 - `windows/scripts/build.ps1` PyInstaller flags: `--collect-all faster_whisper --collect-all ctranslate2 --collect-all av --collect-data huggingface_hub --copy-metadata huggingface_hub --copy-metadata tokenizers --collect-submodules yt_dlp --collect-data yt_dlp` (AGENTS.md:381 collect-data gotcha), plus an early `& $venvPy -c "import faster_whisper, ctranslate2, av, yt_dlp"` smoke probe so bad wheels fail before the freeze.
-- ffmpeg stays an external binary: `video_setup` Windows guidance = `winget install Gyan.FFmpeg` + "restart Jarvis after installing so PATH updates". yt-dlp needs nothing (frozen in).
+- ffmpeg stays an external binary: `video_setup` Windows guidance = `winget install Gyan.FFmpeg` + "restart Orin after installing so PATH updates". yt-dlp needs nothing (frozen in).
 - Verify via Windows CI build (`windows-build.yml` on the self-hosted runner, triggers on PR to main) + winlab/testlab manual pass (frozen-exe `shutil.which("ffmpeg")`, first-run HF model download, CUDA→CPU degrade).
 
 ### Phase 11 — Verification, review, cleanup

@@ -200,7 +200,7 @@ Item {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
-                    text: "Create a cron job and Jarvis will spin up a session and run your prompt on cadence."
+                    text: "Create a cron job and Orin will spin up a session and run your prompt on cadence."
                     color: Theme.textFaint
                     font.family: Theme.fontSans; font.pixelSize: 13; lineHeight: 1.3
                 }

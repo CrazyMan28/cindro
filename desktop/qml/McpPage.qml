@@ -333,7 +333,7 @@ Item {
             }
             Text {
                 Layout.fillWidth: true
-                text: "These are your codex/claude CLI's own MCP servers. Off = isolated (default). Toggle on to let Jarvis use one."
+                text: "These are your codex/claude CLI's own MCP servers. Off = isolated (default). Toggle on to let Orin use one."
                 color: Theme.textMuted
                 font.family: Theme.fontSans
                 font.pixelSize: 11

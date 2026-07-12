@@ -130,7 +130,7 @@ fun ChatScreen(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> micGranted = granted }
 
-    // "Hey Jarvis" wake deep-link: start a push-to-talk capture on entry.
+    // "Hey Orin" wake deep-link: start a push-to-talk capture on entry.
     LaunchedEffect(autoStartVoice) {
         if (autoStartVoice && micGranted) viewModel.startRecording()
     }
@@ -388,7 +388,7 @@ private fun selectedText(state: ChatUiState): String =
 private fun copyToClipboard(context: Context, text: String) {
     if (text.isBlank()) return
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
-    cm.setPrimaryClip(ClipData.newPlainText("Jarvis chat", text))
+    cm.setPrimaryClip(ClipData.newPlainText("Orin chat", text))
 }
 
 @Composable
@@ -507,7 +507,7 @@ private fun InputRow(
                 value = draft,
                 onValueChange = onDraftChange,
                 modifier = Modifier.weight(1f),
-                placeholder = { Text("Message Jarvis…") },
+                placeholder = { Text("Message Orin…") },
                 maxLines = 5,
                 shape = RoundedCornerShape(14.dp),
                 colors = TextFieldDefaults.colors(
@@ -562,7 +562,7 @@ private fun ChatEmptyState(modifier: Modifier = Modifier) {
         )
         androidx.compose.foundation.layout.Spacer(Modifier.height(8.dp))
         Text(
-            "Ask anything, attach a photo, or have Jarvis use its computer.",
+            "Ask anything, attach a photo, or have Orin use its computer.",
             color = JarvisPalette.TextSecondary,
             fontSize = 13.sp,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,

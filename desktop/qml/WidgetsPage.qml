@@ -71,7 +71,7 @@ Item {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
-                    text: "On the Canvas, tap ★ on a widget to save it here — or ask Jarvis to ‘save this as a widget’."
+                    text: "On the Canvas, tap ★ on a widget to save it here — or ask Orin to ‘save this as a widget’."
                     color: Theme.textFaint
                     font.family: Theme.fontSans
                     font.pixelSize: 12

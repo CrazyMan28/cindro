@@ -243,7 +243,7 @@ private fun QrScanSheet(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                text = "Point at the Jarvis pairing QR",
+                text = "Point at the Orin pairing QR",
                 color = JarvisPalette.TextPrimary,
                 style = MaterialTheme.typography.titleMedium,
             )

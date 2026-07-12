@@ -1346,7 +1346,7 @@ Item {
                     TextArea {
                         id: inputArea
                         placeholderText: bridge.sessionId.length > 0
-                                         ? "Message Jarvis…"
+                                         ? "Message Orin…"
                                          : "Type to start a session…"
                         placeholderTextColor: Theme.textFaint
                         color: Theme.text
@@ -1668,7 +1668,7 @@ Item {
                 Rectangle { Layout.alignment: Qt.AlignVCenter; width: 6; height: 6; radius: 3
                     color: bridge.driving ? Theme.danger
                            : (panel.showDesktop ? Theme.success : Theme.accent) }
-                Text { text: bridge.driving ? "Jarvis is driving"
+                Text { text: bridge.driving ? "Orin is driving"
                              : (panel.showDesktop ? "Agent desktop"
                                 : (panel.hasSubagents && !panel.hasPlan ? "Subagents" : "Plan"))
                     color: Theme.text; font.family: Theme.fontDisplay; font.pixelSize: 11; font.weight: Font.DemiBold }

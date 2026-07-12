@@ -264,7 +264,7 @@ class JarvisRepository(
         timeoutMs = 60_000,
     ).orThrow()
 
-    /** Make a voice the default everywhere Jarvis speaks (also propagates to calls). */
+    /** Make a voice the default everywhere Orin speaks (also propagates to calls). */
     suspend fun voiceSetDefault(voice: String): JsonObject =
         client.request("voice.set_default", Params.of("voice" to voice)).orThrow()
 
@@ -362,7 +362,7 @@ class JarvisRepository(
 
     // --- CLI MCP servers (per brain) ---------------------------------------
     // The codex/claude CLI's OWN MCP servers. Off = brain runs isolated (default);
-    // toggling on imports the server into the Jarvis registry so it's injected.
+    // toggling on imports the server into the Orin registry so it's injected.
 
     suspend fun cliListMcp(): List<CliMcp> {
         val r = client.request("mcp.cli_list").orThrow()

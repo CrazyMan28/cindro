@@ -1,6 +1,6 @@
 # Scheduled / sequential work — how it works
 
-How a Jarvis scheduled job (cron/at) runs, where its output goes, and how the user
+How an Orin scheduled job (cron/at) runs, where its output goes, and how the user
 is told. Implemented in `Scheduler` (fires) + `ControlServer::fireScheduledJob`
 (runs) + `DeviceServer` (notifies).
 

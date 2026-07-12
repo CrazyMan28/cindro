@@ -72,7 +72,7 @@ fun FilesScreen(app: JarvisApp) {
         Box(Modifier.fillMaxSize().padding(padding)) {
             if (files.isEmpty()) {
                 Text(
-                    "No files yet. Jarvis can push files here from the laptop.",
+                    "No files yet. Orin can push files here from the laptop.",
                     color = JarvisPalette.TextSecondary,
                     modifier = Modifier.align(Alignment.Center).padding(32.dp),
                 )

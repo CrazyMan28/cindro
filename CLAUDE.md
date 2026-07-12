@@ -11,7 +11,7 @@ files before making your first edit. Pair both with [`README.md`](README.md) and
 
 ## Repository layout
 
-This is a monorepo for **Jarvis**, an AI co-worker with a desktop app, Android app, Chrome
+This is a monorepo for **Orin**, an AI co-worker with a desktop app, Android app, Chrome
 extension, terminal client, and web dashboard, all driven by one daemon:
 
 | Dir | Language/stack | What it is |

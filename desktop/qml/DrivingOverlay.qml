@@ -164,7 +164,7 @@ Item {
                 // primary label
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "Jarvis is using your computer"
+                    text: "Orin is using your computer"
                     color: Theme.text
                     font.family: Theme.fontSans
                     font.pixelSize: 15

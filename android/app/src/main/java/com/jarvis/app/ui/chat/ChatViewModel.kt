@@ -141,7 +141,7 @@ class ChatViewModel(
         viewModelScope.launch {
             repo.eventsFor(_uiState.value.sessionId).collect(::fold)
         }
-        // Files Jarvis sends (jarvis_send_file -> file.offer) land in THIS chat when
+        // Files Orin sends (jarvis_send_file -> file.offer) land in THIS chat when
         // they target this session (or carry no session id). Shown only when the model
         // actually sends one.
         viewModelScope.launch {
@@ -360,7 +360,7 @@ class ChatViewModel(
                 ChatItem.Approval(
                     id = nextId(),
                     approvalId = ev.approvalId ?: nextId(),
-                    summary = ev.summary ?: "Jarvis needs approval",
+                    summary = ev.summary ?: "Orin needs approval",
                     risk = ev.risk ?: "medium",
                 ),
             )

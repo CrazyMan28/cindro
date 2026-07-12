@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the SSH tab (allow-list + exec console) with "Outpost": a one-line-install pairing system that registers any Windows/Linux/macOS machine with Jarvis over a token exchange, after which Jarvis can run shell commands and grab screenshots on that machine by name.
+**Goal:** Replace the SSH tab (allow-list + exec console) with "Outpost": a one-line-install pairing system that registers any Windows/Linux/macOS machine with Orin over a token exchange, after which Orin can run shell commands and grab screenshots on that machine by name.
 
 **Architecture:** A new standalone MCP service `outpost-mcp` (port 8798, cloned from `jarvis-mcp/`'s layout) owns pairing, a per-machine token registry, and a persistent WebSocket relay. The remote machine runs a small **Go** `outpost-agent` binary that **dials OUT** to `outpost-mcp` and holds a WebSocket; exec/screenshot requests are relayed over that held socket (no inbound firewall/NAT change on the target, survives roaming). `outpost-mcp` exposes both MCP tools (for external agents) and a loopback REST surface. The jarvisd daemon proxies six thin `outpost.*` control verbs to that REST surface (mirroring its existing `phone.http`/`phone.mcp` loopback pattern), and the web dashboard, TUI v2, and legacy Python TUI drive those verbs. The old SSH code (daemon handlers, `SshAllowList` core class, and every UI surface) is deleted last, after Outpost is fully wired.
 

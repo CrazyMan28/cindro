@@ -108,6 +108,47 @@ function ConnectorsSection() {
     }
   }
 
+  // One-click flow: the daemon opens a loopback listener + returns the Google
+  // consent URL; we open it, then poll oauth_status until the daemon has caught
+  // the redirect and stored the refresh token (no manual OAuth-playground steps).
+  const connectGoogle = async (entry: CatalogEntry) => {
+    setBusy(entry.service)
+    try {
+      const res = await app.client.call("connectors.oauth_start", { service: entry.service }, 15000)
+      const url = String(res.auth_url || "")
+      if (!url) throw new Error("no auth URL returned")
+      window.open(url, "_blank", "noopener")
+      app.notify(`Opening Google sign-in for ${entry.label}…`)
+      const deadline = Date.now() + 5 * 60 * 1000
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 2000))
+        if (Date.now() > deadline) throw new Error("timed out — try again")
+        const st = await app.client.call("connectors.oauth_status", { service: entry.service }, 15000)
+        if (st.error) throw new Error(String(st.error))
+        if (st.connected) break
+      }
+      app.notify(`${entry.label} connected.`)
+      await load()
+    } catch (e) {
+      app.notify(`Connect failed: ${String(e)}`, "error")
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const disconnect = async (entry: CatalogEntry) => {
+    setBusy(entry.service)
+    try {
+      await app.client.call("connectors.remove", { service: entry.service }, 15000)
+      app.notify(`${entry.label} disconnected.`)
+      await load()
+    } catch (e) {
+      app.notify(`Disconnect failed: ${String(e)}`, "error")
+    } finally {
+      setBusy(null)
+    }
+  }
+
   return (
     <div class="scn-page">
       <style>{`
@@ -218,14 +259,38 @@ function ConnectorsSection() {
                         {isOn() ? "Connected" : "Added (no creds)"}
                       </span>
                     </Show>
-                    <button
-                      type="button"
-                      class="scn-connect-btn"
-                      disabled={added()}
-                      onClick={() => toggleConnect(entry.service)}
+                    <Show
+                      when={added()}
+                      fallback={
+                        <>
+                          <button
+                            type="button"
+                            class="scn-connect-btn"
+                            disabled={busy() === entry.service}
+                            onClick={() => void connectGoogle(entry)}
+                          >
+                            {busy() === entry.service ? "Connecting…" : "Connect with Google"}
+                          </button>
+                          <button
+                            type="button"
+                            class="scn-help-toggle"
+                            title="Enter Client ID / secret / refresh token by hand"
+                            onClick={() => toggleConnect(entry.service)}
+                          >
+                            {expanded() === entry.service ? "cancel" : "manual"}
+                          </button>
+                        </>
+                      }
                     >
-                      {added() ? "Added" : expanded() === entry.service ? "Cancel" : "Connect"}
-                    </button>
+                      <button
+                        type="button"
+                        class="scn-connect-btn"
+                        disabled={busy() === entry.service}
+                        onClick={() => void disconnect(entry)}
+                      >
+                        {busy() === entry.service ? "…" : "Disconnect"}
+                      </button>
+                    </Show>
                   </div>
 
                   <Show when={expanded() === entry.service && !added()}>

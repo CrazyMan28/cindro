@@ -1,4 +1,4 @@
-# Jarvis — Project Status
+# Orin — Project Status
 
 Single source of truth for **where this project actually is**. Honest about done vs.
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
@@ -12,8 +12,8 @@ _Last updated: 2026-07-11._
 
 The codex/claude model lists shown in every picker (chat, Settings default
 model, `/model` in the terminal) were a hardcoded array in the daemon —
-frozen at whatever Jarvis version last shipped, so a new OpenAI/Anthropic
-model release never showed up until a Jarvis code change caught up. Both CLI
+frozen at whatever Orin version last shipped, so a new OpenAI/Anthropic
+model release never showed up until an Orin code change caught up. Both CLI
 brains now get a real, live catalog merged in on top of the same static
 floor, fetched async and cached (never blocking a `model.list` call):
 
@@ -76,7 +76,7 @@ keyboard focus with a rules-based fallback for headless runs.
 ## 🆕 Install opens a live scout+interview chat; tick schedule auto-seeded (2026-07-10)
 
 Clicking "Install Proxmox Workload Manager" no longer just kicks a silent
-background job — it opens a real, interactive Jarvis chat that scouts the
+background job — it opens a real, interactive Orin chat that scouts the
 fleet live, narrates findings VM by VM, and asks the user directly in the
 conversation about any VM with no recorded Purpose, saving answers as it
 goes. All three UIs (desktop, web, TUI) auto-navigate the triggering client
@@ -95,7 +95,7 @@ schedule" step is now folded into install itself (detached, idempotent).
   excluded `scheduleTargetRef`-routed (headless/scheduled) sessions, so
   ANY session routed that way — including every 5-minute tick — would
   auto-provision the same expensive nested desktop whenever a user's global
-  "let Jarvis use a computer" setting was on. Now gated on
+  "let Orin use a computer" setting was on. Now gated on
   `scheduleTargetRef.isEmpty()`.
 - The schedule-seed exec was awaited for up to 25s for a result nothing
   downstream needed — detached, matching the existing scout-kick pattern.
@@ -116,7 +116,7 @@ schedule" step is now folded into install itself (detached, idempotent).
 
 The always-on Proxmox workload manager can now see INSIDE the guests — with
 zero per-VM agent installs (QEMU guest agent for Linux+Windows VMs, `pct
-exec` for LXC) — and the user can talk to it directly from any Jarvis chat.
+exec` for LXC) — and the user can talk to it directly from any Orin chat.
 
 - **Scout**: one marker-delimited command battery per guest (services listed
   from cgroup dirs — `systemctl` stays denylisted), fleet scans run detached
@@ -161,7 +161,7 @@ Four field-reported Windows-only bugs, all root-caused against the Linux referen
 behavior and fixed on `dev` (zero behavior change on Linux — every fix is additive
 `#ifdef Q_OS_WIN`/platform-guarded):
 
-- **"Jarvis is using your computer" banner + glowing cursor never appeared on
+- **"Orin is using your computer" banner + glowing cursor never appeared on
   Windows.** Root cause: `windows/engine/backend_windows.py`'s `move`/`click`/
   `drag`/`scroll` reimplement the Linux `input.py` primitives via Win32
   `SendInput`, but never published to `agent_bus` (`agent_pointer.jsonl`) the way
@@ -303,7 +303,7 @@ items, the image-paste bonus, and the root-cause fix for the long-standing
 - **LSP diagnostics** — `lsp_diagnostics(path)` engine tool: raw JSON-RPC to one
   live language server per language (pull + push diagnostics, idle-reaped),
   graceful "not installed" degrade. 55 tests.
-- **ACP editor bridge** — new `acp-bridge/`: Zed/JetBrains drive Jarvis as a
+- **ACP editor bridge** — new `acp-bridge/`: Zed/JetBrains drive Orin as a
   native Agent Client Protocol agent (streamed turns, tool cards, in-editor
   permission prompts) over Contract A. 10 tests + Zed snippet in its README.
 - **Multi-profile isolation** — `JARVIS_CONFIG_DIR` + `JARVIS_DATA_DIR` give a
@@ -421,9 +421,9 @@ verified against the code) and fixed on `dev`:
   registry config** for claude (+`bypassPermissions`), codex, and api sessions — the v1
   real-screen contract. Covers the resume path; Linux behavior unchanged.
 - **Windows: skills never reached Claude Code** (`/internal_docs` "not available") when
-  claude/codex was installed **after** Jarvis: mirrors only happened at skill creation and
+  claude/codex was installed **after** Orin: mirrors only happened at skill creation and
   skip a missing `~/.claude`. New `SkillStore::syncMirrorsToCli()` re-mirrors every skill
-  at daemon start — one Jarvis restart after installing a CLI heals it.
+  at daemon start — one Orin restart after installing a CLI heals it.
 - **Windows: codex died with `stream did not contain valid UTF-8` (exit 1)** on every turn.
   `ensureIsolatedHome()` used `QFile::link` for `auth.json` — on Windows that writes a
   binary IShellLink `.lnk` payload INTO the file, which codex `read_to_string`s at startup.
@@ -559,9 +559,9 @@ validated on the VM (no SLAT exposed → Sandbox can't run; daemon falls back to
 
 The single hard-wired `jarvice` clone is now a **managed library of named voices** on every
 surface. Record your own voice or upload a clip, name it, and **set one as the default** —
-used everywhere Jarvis speaks: desktop TTS / voice mode, the phone app's spoken replies, and
+used everywhere Orin speaks: desktop TTS / voice mode, the phone app's spoken replies, and
 **phone calls** (when it calls you and when it answers). **Nothing removed:** `jarvice` is
-seeded as the default "Jarvis" voice; every prior picker/behavior stays.
+seeded as the default "Orin" voice; every prior picker/behavior stays.
 
 - **Daemon owns the library** (`~/.config/jarvis/voices/` clips + a `voices.json` manifest):
   new core `VoiceLibrary` (CRUD, slug, seed-from-disk, optional ffmpeg clean/trim;
@@ -572,7 +572,7 @@ seeded as the default "Jarvis" voice; every prior picker/behavior stays.
   the daemon rewrites `MISTRAL_TTS_REF_AUDIO_FILE` in `phone.env` and **restarts
   `jarvis-phone.service`** (~1–2 s; vendored server otherwise untouched on the global path).
 - **UI in both places:** a "Default Voice" card in **Settings → Voice** on desktop
-  (`SettingsPage.qml` + `Bridge` `pw-record`/upload) and the **Jarvis Android app** (v0.12.0,
+  (`SettingsPage.qml` + `Bridge` `pw-record`/upload) and the **Orin Android app** (v0.12.0,
   `SettingsScreen.kt` + `AudioRecorder`/SAF) — list (default · name · source · Preview / Set
   default / Delete), name, Record/Upload, Auto-clean toggle, Save. **Plus** the vendored
   agent-phone per-agent picker now sees the named voices (`cloneVoices.ts` → `/api/voices`;
@@ -590,7 +590,7 @@ seeded as the default "Jarvis" voice; every prior picker/behavior stays.
 - **Device (ext 100) now stays online in the background.** The vendored agent-phone
   foreground service (holds the device WS so the phone can receive in-app/VOIP calls) only
   started when the user opened the Phone *tab* — so the device was offline and never rang.
-  Jarvis's `MainActivity.onCreate` now starts it on **every** launch (any tab) + re-enables
+  Orin's `MainActivity.onCreate` now starts it on **every** launch (any tab) + re-enables
   the boot receiver (**v0.11.2**). Verified: ext 100 connected, and a test `call_user` **rang
   the app — the user answered ("Hello?")**.
 - **Outbound real-phone calls + the Twilio TRIAL account.** With the device offline,
@@ -606,7 +606,7 @@ seeded as the default "Jarvis" voice; every prior picker/behavior stays.
 
 ## Calls answer + speak (custom voice), brain can call/text, desktop+Chrome parity (2026-06-29)
 
-Inbound calls to the Twilio number now reach Jarvis and **talk back in the user's own
+Inbound calls to the Twilio number now reach Orin and **talk back in the user's own
 cloned voice**; the brain can call/text; and the desktop/Chrome phone UIs gained the
 missing call features. All shipped today.
 
@@ -617,7 +617,7 @@ missing call features. All shipped today.
   every TTS failed mid-call. Removed `speed` from `phone/server/src/mistral/tts.ts`.
 - **Custom cloned voice** → calls send the user's reference clip as `ref_audio` (zero-shot
   clone) via `MISTRAL_TTS_REF_AUDIO_FILE`, instead of the stock voice.
-- **Greets by name** → the adapter says "Jarvis here", not "Codex here" (`AGENT_PHONE_NAME`).
+- **Greets by name** → the adapter says "Orin here", not "Codex here" (`AGENT_PHONE_NAME`).
 - `:8801` now runs as a managed **`jarvis-phone.service`** (journald + auto-restart).
 
 **Brain can call/text** — the brain is isolated (only sees computer-use), so the phone
@@ -636,21 +636,21 @@ Call screening. **`scripts/phone_smoke_test.py`** covers the call-path invariant
 
 ---
 
-## Android = the original phone app verbatim + Jarvis answers inbound (2026-06-29)
+## Android = the original phone app verbatim + Orin answers inbound (2026-06-29)
 
-- **Verbatim Android port (Jarvis v0.11.0).** The **entire** original agent-phone Android app
+- **Verbatim Android port (Orin v0.11.0).** The **entire** original agent-phone Android app
   — all 60 files / ~11,882 lines, package `com.agentphone.*` — is copied **byte-for-byte** into
-  the one Jarvis APK; nothing reimplemented or removed. The **Phone tab launches the real
+  the one Orin APK; nothing reimplemented or removed. The **Phone tab launches the real
   `com.agentphone.MainActivity`**, so every original screen/setting/button/flow is present
   (Calls · Inbox · Agents · HUD · Settings, setup wizard, agent config, call screening, SMS
   agent, diagnostics, history, enroll, relay puck, call activities/services, on-device sherpa
   TTS). The earlier reimplemented phone UI was deleted. Build green (`assembleDebug`).
-- **Jarvis answers when you call OR text.** Ext **101** is the inbound **and** SMS agent; the
-  phone server spawns Jarvis's brain adapter **headlessly** on inbound and bridges voice (call)
+- **Orin answers when you call OR text.** Ext **101** is the inbound **and** SMS agent; the
+  phone server spawns Orin's brain adapter **headlessly** on inbound and bridges voice (call)
   or a text reply (SMS). SMS agent enabled → 101; replies go out free via the **device SIM**
-  (Twilio toll-free SMS is A2P-gated). Jarvis can **call/text back mid-conversation**.
-- **Jarvis is now THE one for the number.** The app default server URL is repointed `:8799` →
-  **`:8801`** (Jarvis), and the Tailscale funnel `/twilio` is repointed to `:8801` so inbound
+  (Twilio toll-free SMS is A2P-gated). Orin can **call/text back mid-conversation**.
+- **Orin is now THE one for the number.** The app default server URL is repointed `:8799` →
+  **`:8801`** (Orin), and the Tailscale funnel `/twilio` is repointed to `:8801` so inbound
   calls/texts hit Jarvis (ext 101), not the original. The **original `:8799` is left running,
   untouched** (it just no longer receives the Twilio webhook).
 - **Tools + skill + docs.** All **~56** phone tools reach the brain (`seedPhoneMcp`). A builtin
@@ -663,10 +663,10 @@ See [`PHONE.md`](PHONE.md).
 
 ## Full phone UI parity on all 3 surfaces (2026-06-28)
 
-The entire **agent-phone app UI** is now embedded in Jarvis — no new app. A full-screen
+The entire **agent-phone app UI** is now embedded in Orin — no new app. A full-screen
 **Phone section** (Calls · Inbox · Agents · HUD · Settings) ships on all three surfaces:
 **desktop QML**, **Android Compose (v0.10.6+)**, and **Chrome MV3**. Android hides
-Jarvis's main bottom nav while inside Phone (full-screen), restoring it on back.
+Orin's main bottom nav while inside Phone (full-screen), restoring it on back.
 
 Feature coverage:
 - **Calls** — real dialpad (12-key + `*`/`#`) with extension-chip shortcuts, live call
@@ -701,7 +701,7 @@ Android/Chrome is in progress.**
 
 - **Native phone subsystem** — the entire agent-phone server (55 MCP tools, ~16k lines)
   vendored verbatim into `phone/server` (its 168 tests pass), runs on `:8801` from a
-  Jarvis-managed env (`~/.config/jarvis/phone.env`), wired to the brain via
+  Orin-managed env (`~/.config/jarvis/phone.env`), wired to the brain via
   `seedPhoneMcp()` and to every UI via the `phone.mcp` Contract A proxy. **Verified live:
   a real Twilio voice call (Mistral TTS) was placed and answered.** Toll-free SMS is gated
   by A2P (the 2019 law) → use the voice path or verify the number. ([PHONE.md](PHONE.md))
@@ -1018,7 +1018,7 @@ A big pass on the generative-UI system — see [`WIDGETS_CANVAS.md`](WIDGETS_CAN
   scoped to the session and **replayed on reopen** (was lost before).
 - **Live canvases** — `widget_live(id,command,spec,interval)` re-renders from ANY
   command's output on a cadence; verified live (a CPU/GPU widget updating in a real
-  Jarvis chat).
+  Orin chat).
 - **Settings QR pairing** fixed (ms-vs-seconds → int overflow → instant "Expired").
 - **Phone widget renderer (v0.6.0)** — the Android app now draws canvases/widgets:
   the daemon (DeviceServer) tails the bus and forwards `widget.render/remove/clear`
@@ -1045,7 +1045,7 @@ A big pass on the generative-UI system — see [`WIDGETS_CANVAS.md`](WIDGETS_CAN
 
 ## What even is this?
 
-**Jarvis** is one AI co-worker you can drive from your **Linux desktop**, your **Android
+**Orin** is one AI co-worker you can drive from your **Linux desktop**, your **Android
 phone**, and a **Chrome extension** — all talking to one local daemon. It chats, **drives
 your computer** (its own nested desktop or your real screen, with a glowing cursor +
 consent), **talks** (hands-free voice), pops up **custom widgets**, runs **scheduled** tasks,
@@ -1078,7 +1078,7 @@ Verified = unit tests pass, live WS check, and/or exercised on the running daemo
     shows in the desktop"):** the daemon used to **broadcast every session's `session.event` to
     every connected control client**, leaving each client to filter client-side — so a Chrome
     co-work transcript reached the desktop and could linger (the desktop is a singleton; "opening"
-    Jarvis just toggles the same process, so stale page content survived). Now a client declares the
+    Orin just toggles the same process, so stale page content survived). Now a client declares the
     session ids it is viewing via **`session.subscribe {session_ids}`** and the daemon fans
     `session.event` **only** for those ids to it (`m_scopedClients` + `m_subscriptions` in
     `ControlServer`). The desktop subscribes to its current chat + coworker + voice sessions on

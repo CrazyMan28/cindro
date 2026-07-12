@@ -994,7 +994,7 @@ QString MemoryStore::renderPromptBlock(const QVector<MemoryRow> &memories)
     if (memories.isEmpty())
         return QString();
     QString block = QStringLiteral(
-        "## Relevant memory (Jarvis long-term memory)\n"
+        "## Relevant memory (Orin long-term memory)\n"
         "These are facts you have previously saved. Use them if relevant; do not "
         "repeat them verbatim unless asked.\n");
     for (const MemoryRow &m : memories) {

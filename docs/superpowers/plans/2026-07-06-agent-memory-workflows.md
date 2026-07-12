@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Extend Jarvis's existing memory + scheduling subsystems so memories can be scoped to a named agent/machine and recalled by that scope, and so recurring/conditional/webhook-triggered jobs can be persisted and managed as first-class "Workflows".
+**Goal:** Extend Orin's existing memory + scheduling subsystems so memories can be scoped to a named agent/machine and recalled by that scope, and so recurring/conditional/webhook-triggered jobs can be persisted and managed as first-class "Workflows".
 
 **Architecture:** Two thin, additive extensions to code that already exists. (1) The SQLite-backed `MemoryStore` (C++ core) gains an `agent` scope + `entity_ref` column, surfaced through the daemon's `memory.add`/`memory.search` Contract-A RPCs and the `remember`/`recall` MCP tools. (2) The `Scheduler` (C++ core) gains three additive columns (`target_ref`, `report_thread`, `webhook_token`) and a `webhook` trigger kind that never fires on a timer; new `workflow_*` MCP tools wrap the existing `schedule.create`/`schedule.list`/`schedule.remove` RPCs, and a new FastAPI `POST /workflows/webhook/<id>` endpoint fires a webhook workflow through the SAME `schedule.run_now` → `Scheduler::runNow` → `fireScheduledJob` path the cron scheduler uses. No new subsystems; no new LLM-provider work.
 
@@ -1437,7 +1437,7 @@ Create `docs/WORKFLOWS.md`:
 ````markdown
 # Workflows & Agent-Scoped Memory
 
-Two thin extensions to Jarvis's existing memory + scheduler.
+Two thin extensions to Orin's existing memory + scheduler.
 
 ## Agent-scoped memory
 

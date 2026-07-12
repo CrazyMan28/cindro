@@ -24,8 +24,8 @@ Item {
 
     // ---- wizard state ------------------------------------------------------
     property int step: 0
-    readonly property int stepCount: 4
-    property string assistantName: "Jarvis"
+    readonly property int stepCount: 5
+    property string assistantName: "Orin"
     property string userName: ""                  // the human's name — saved as a memory
     property string ttsVoice: ""                 // "" => daemon default voice
     property var voiceList: []                    // [{id,label}] from voice.list_voices
@@ -35,6 +35,11 @@ Item {
     property bool mistralKeySet: false             // a Mistral key already exists
     property string mistralKey: ""                 // key typed in step (iii)
     property bool saving: false
+    // Optional Phone & Twilio step (v) — all blank => skipped. Persisted via
+    // phone.config set (separate from settings.set) on finish.
+    property string phoneSid: ""                   // Twilio Account SID (secret)
+    property string phoneAuth: ""                  // Twilio Auth Token (secret)
+    property string phoneFrom: ""                  // Twilio From Number
 
     function load() {
         if (!bridge || !bridge.connected) return
@@ -91,7 +96,7 @@ Item {
         var name = wiz.assistantName.trim()
         var patch = {
             "setup_complete": true,
-            "assistant_name": name.length ? name : "Jarvis",
+            "assistant_name": name.length ? name : "Orin",
             "user_name": wiz.userName.trim(),
             "tts_voice": wiz.ttsVoice,
             "permission_level": wiz.permissionLevel,
@@ -104,6 +109,16 @@ Item {
             patch["api_keys"] = { "mistral": wiz.mistralKey.trim() }
         if (bridge && bridge.connected)
             bridge.saveSettings(patch)
+        // Optional Phone & Twilio (step v) — phone.config is a SEPARATE control
+        // method from settings.set, so send it on its own. Only include a secret
+        // when the user actually typed one; all-blank => nothing sent (skipped).
+        if (bridge && bridge.connected) {
+            var pp = {}
+            if (wiz.phoneSid.trim().length > 0)  pp["twilio_account_sid"] = wiz.phoneSid.trim()
+            if (wiz.phoneAuth.trim().length > 0) pp["twilio_auth_token"]  = wiz.phoneAuth.trim()
+            if (wiz.phoneFrom.trim().length > 0) pp["twilio_from_number"] = wiz.phoneFrom.trim()
+            if (Object.keys(pp).length > 0) bridge.phoneConfigSet(pp)
+        }
         wiz.finished()
     }
 
@@ -168,7 +183,7 @@ Item {
                         font.weight: Font.DemiBold
                     }
                     Text {
-                        text: [ "Welcome", "Voice", "Brain", "Permissions" ][wiz.step]
+                        text: [ "Welcome", "Voice", "Brain", "Permissions", "Phone" ][wiz.step]
                         color: Theme.text
                         font.family: Theme.fontDisplay
                         font.pixelSize: 20
@@ -214,7 +229,7 @@ Item {
                         id: nameField
                         Layout.fillWidth: true
                         text: wiz.assistantName
-                        placeholder: "Jarvis"
+                        placeholder: "Orin"
                         onTextChanged: wiz.assistantName = text
                     }
                     Text {
@@ -255,7 +270,7 @@ Item {
                     spacing: 14
                     Text {
                         Layout.fillWidth: true
-                        text: "Pick the voice " + (wiz.assistantName.length ? wiz.assistantName : "Jarvis") + " speaks with."
+                        text: "Pick the voice " + (wiz.assistantName.length ? wiz.assistantName : "Orin") + " speaks with."
                         color: Theme.textMuted
                         font.family: Theme.fontSans
                         font.pixelSize: 13
@@ -334,8 +349,8 @@ Item {
                             visible: !wiz.mistralKeySet
                             Layout.fillWidth: true
                             text: wiz.hasCli
-                                  ? "Powers spoken replies + voice input (Voxtral) and image understanding. Skip it and Jarvis still chats via your CLI."
-                                  : "Add a Mistral API key and Jarvis works right away — chat, voice, vision, and computer use via the function-calling loop."
+                                  ? "Powers spoken replies + voice input (Voxtral) and image understanding. Skip it and Orin still chats via your CLI."
+                                  : "Add a Mistral API key and Orin works right away — chat, voice, vision, and computer use via the function-calling loop."
                             color: Theme.textMuted
                             font.family: Theme.fontSans
                             font.pixelSize: 12
@@ -379,7 +394,7 @@ Item {
                     spacing: 12
                     Text {
                         Layout.fillWidth: true
-                        text: "How cautious should Jarvis be before risky actions?"
+                        text: "How cautious should Orin be before risky actions?"
                         color: Theme.text
                         font.family: Theme.fontSans
                         font.pixelSize: 13
@@ -450,7 +465,7 @@ Item {
                             Layout.fillWidth: true
                             spacing: 2
                             Text {
-                                text: "Keep Jarvis up to date automatically"
+                                text: "Keep Orin up to date automatically"
                                 color: Theme.text
                                 font.family: Theme.fontSans
                                 font.pixelSize: 13
@@ -468,6 +483,76 @@ Item {
                         Widgets.StyledSwitch {
                             checked: wiz.autoUpdate
                             onToggled: function(v) { wiz.autoUpdate = v }
+                        }
+                    }
+                    Item { Layout.fillHeight: true }
+                }
+
+                // (v) Phone & Twilio (optional) ------------------------------
+                ColumnLayout {
+                    spacing: 12
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Connect a Twilio number so " + (wiz.assistantName.length ? wiz.assistantName : "Orin")
+                              + " can screen calls and text you. Optional — skip and set it up later in Phone → Settings."
+                        color: Theme.textMuted
+                        font.family: Theme.fontSans
+                        font.pixelSize: 13
+                        wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        text: "Twilio Account SID"
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 13
+                    }
+                    Widgets.StyledField {
+                        Layout.fillWidth: true
+                        masked: true
+                        placeholder: "ACxxxxxxxx…  (optional)"
+                        onTextChanged: wiz.phoneSid = text
+                    }
+                    Text {
+                        text: "Twilio Auth Token"
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 13
+                    }
+                    Widgets.StyledField {
+                        Layout.fillWidth: true
+                        masked: true
+                        placeholder: "Auth token  (optional)"
+                        onTextChanged: wiz.phoneAuth = text
+                    }
+                    Text {
+                        text: "Twilio From Number"
+                        color: Theme.text
+                        font.family: Theme.fontSans
+                        font.pixelSize: 13
+                    }
+                    Widgets.StyledField {
+                        Layout.fillWidth: true
+                        placeholder: "+1XXXXXXXXXX  (optional)"
+                        onTextChanged: wiz.phoneFrom = text
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Stored locally in ~/.config/jarvis/phone.env (0600), never in git."
+                        color: Theme.textFaint
+                        font.family: Theme.fontSans
+                        font.pixelSize: 11
+                        wrapMode: Text.WordWrap
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Get credentials at twilio.com/console →"
+                        color: Theme.accent
+                        font.family: Theme.fontSans
+                        font.pixelSize: 12
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: Qt.openUrlExternally("https://www.twilio.com/console")
                         }
                     }
                     Item { Layout.fillHeight: true }

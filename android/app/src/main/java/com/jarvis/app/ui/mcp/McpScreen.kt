@@ -119,7 +119,7 @@ fun McpScreen(viewModel: McpViewModel, activity: FragmentActivity) {
                                 )
                                 Text(
                                     "These are your codex/claude CLI's own MCP servers. " +
-                                        "Off = isolated (default). Toggle on to let Jarvis use one.",
+                                        "Off = isolated (default). Toggle on to let Orin use one.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = JarvisPalette.TextSecondary,
                                 )

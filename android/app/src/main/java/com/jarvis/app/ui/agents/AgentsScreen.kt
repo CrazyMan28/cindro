@@ -93,13 +93,13 @@ fun AgentsScreen(viewModel: AgentsViewModel, activity: FragmentActivity, onOpenC
             }
 
             Text(
-                "Custom subagents — you define what each does + when to call it. Jarvis dispatches them; they report back in Chat.",
+                "Custom subagents — you define what each does + when to call it. Orin dispatches them; they report back in Chat.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = JarvisPalette.TextSecondary,
             )
 
             if (state.agents.isEmpty()) {
-                Text("No agents yet — create a specialist Jarvis can delegate to.", color = JarvisPalette.TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                Text("No agents yet — create a specialist Orin can delegate to.", color = JarvisPalette.TextSecondary, style = MaterialTheme.typography.bodyMedium)
             } else {
                 state.agents.forEach { agent ->
                     AgentRow(

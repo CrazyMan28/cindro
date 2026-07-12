@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================================
-rem  Jarvis Windows launcher - starts the WHOLE stack (no systemd on Windows).
+rem  Orin Windows launcher - starts the WHOLE stack (no systemd on Windows).
 rem
 rem  On Linux these run as systemd user services; on Windows this one launcher
 rem  brings them all up so EVERY feature works:

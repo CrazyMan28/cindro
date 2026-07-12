@@ -54,7 +54,7 @@ int main(int argc, char **argv)
     app.setOrganizationDomain(QStringLiteral("jarvis.local"));
 
     QCommandLineParser parser;
-    parser.setApplicationDescription(QStringLiteral("Jarvis desktop app"));
+    parser.setApplicationDescription(QStringLiteral("Orin desktop app"));
     parser.addHelpOption();
     QCommandLineOption toggleOpt(QStringLiteral("toggle"),
                                  QStringLiteral("Toggle a running instance, else show."));
@@ -143,9 +143,9 @@ int main(int argc, char **argv)
         // Windows: a silent exit looks like "nothing happened". Surface it.
         // (windows.h / MessageBoxW come from the force-included posix_compat.h.)
         ::MessageBoxW(nullptr,
-            L"Jarvis UI failed to load (QML).\n\nThis usually means a missing Qt "
+            L"Orin UI failed to load (QML).\n\nThis usually means a missing Qt "
             L"plugin/DLL next to jarvis-sidebar.exe. Please report it.",
-            L"Jarvis", MB_OK | MB_ICONERROR);
+            L"Orin", MB_OK | MB_ICONERROR);
         return -1;
     }
 
@@ -209,12 +209,12 @@ int main(int argc, char **argv)
             if (cmd == "toggle") {
                 if (windowController->mode() == QStringLiteral("hidden")) {
                     windowController->dock();
-                    bridge->requestNewChat();   // opening Jarvis -> fresh chat
+                    bridge->requestNewChat();   // opening Orin -> fresh chat
                 } else if (windowController->docked()) {
                     windowController->hideDock();
                 } else {
                     windowController->undock(); // re-show floating
-                    bridge->requestNewChat();   // opening Jarvis -> fresh chat
+                    bridge->requestNewChat();   // opening Orin -> fresh chat
                 }
             }
             conn->disconnectFromServer();

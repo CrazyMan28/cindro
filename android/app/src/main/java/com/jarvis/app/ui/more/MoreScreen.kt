@@ -42,12 +42,12 @@ data class MoreEntry(val route: String, val label: String, val subtitle: String,
 @Composable
 fun MoreScreen(onBack: () -> Unit, onOpen: (String) -> Unit) {
     val entries = listOf(
-        MoreEntry("skills", "Skills", "Browse + invoke Jarvis skills", Icons.Filled.AutoAwesome),
+        MoreEntry("skills", "Skills", "Browse + invoke Orin skills", Icons.Filled.AutoAwesome),
         MoreEntry("agents", "Agents", "Define + dispatch custom subagents", Icons.Filled.SmartToy),
-        MoreEntry("queue", "Queue", "Schedule tasks for Jarvis", Icons.Filled.Schedule),
+        MoreEntry("queue", "Queue", "Schedule tasks for Orin", Icons.Filled.Schedule),
         MoreEntry("mcp", "MCP servers", "Add, test, enable MCP tools", Icons.Filled.Hub),
         MoreEntry("plugins", "Plugins", "Install from the catalog", Icons.Filled.Extension),
-        MoreEntry("memory", "Memory", "What Jarvis remembers", Icons.Filled.Psychology),
+        MoreEntry("memory", "Memory", "What Orin remembers", Icons.Filled.Psychology),
         MoreEntry("files", "Files", "Files pushed from the laptop", Icons.Filled.Folder),
     )
 

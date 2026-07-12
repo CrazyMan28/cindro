@@ -1,4 +1,4 @@
-# Jarvis — Architecture
+# Orin — Architecture
 
 Concise architecture overview derived from `docs/BUILD_SPEC.md` (the source of
 truth). This document describes how the components fit together, the shared
@@ -6,7 +6,7 @@ contracts they speak, the network ports in play, and the end-to-end data flow.
 
 ## Product in one line
 
-Jarvis is a unified AI co-worker: a native Linux sidebar (Sway + KDE) backed by
+Orin is a unified AI co-worker: a native Linux sidebar (Sway + KDE) backed by
 a headless daemon, a Python computer-use engine, an Android app, and a Chrome
 bridge. It runs in two profiles — **coder** and **co-worker** — over a
 **hybrid brain**: Codex CLI (default), Claude CLI, or a direct provider API.

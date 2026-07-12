@@ -144,7 +144,7 @@ Item {
             PageHeader {
                 Layout.fillWidth: true
                 title: "Computer"
-                subtitle: "Let Jarvis drive a nested desktop, or take over your real screen."
+                subtitle: "Let Orin drive a nested desktop, or take over your real screen."
             }
             // DRIVING state beacon
             Rectangle {
@@ -358,8 +358,8 @@ Item {
                                 horizontalAlignment: Text.AlignHCenter
                                 wrapMode: Text.WordWrap
                                 text: page.hasLiveDesktop
-                                      ? "Streaming the nested desktop. Jarvis is driving a distinct cursor here, not your screen."
-                                      : "Open a chat and have Jarvis use its computer, or start a co-worker session, to watch it work here."
+                                      ? "Streaming the nested desktop. Orin is driving a distinct cursor here, not your screen."
+                                      : "Open a chat and have Orin use its computer, or start a co-worker session, to watch it work here."
                                 color: Theme.textFaint
                                 font.family: Theme.fontSans
                                 font.pixelSize: 12
@@ -428,7 +428,7 @@ Item {
                                 }
                                 Text {
                                     anchors.verticalCenter: parent.verticalCenter
-                                    text: "Jarvis is using this desktop"
+                                    text: "Orin is using this desktop"
                                     color: Theme.text
                                     font.family: Theme.fontSans
                                     font.pixelSize: 13
@@ -588,8 +588,8 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     wrapMode: Text.WordWrap
-                    text: "Jarvis will drive your ACTUAL desktop with a distinct cursor and a "
-                          + "“JARVIS IS DRIVING” overlay. This requires biometric approval on a "
+                    text: "Orin will drive your ACTUAL desktop with a distinct cursor and a "
+                          + "“ORIN IS DRIVING” overlay. This requires biometric approval on a "
                           + "paired device. You can release control at any time."
                     color: Theme.text
                     font.family: Theme.fontSans

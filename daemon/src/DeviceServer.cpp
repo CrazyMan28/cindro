@@ -1309,14 +1309,14 @@ void DeviceServer::onSessionEvent(const QString &sessionId, const NormalizedBrai
         wantPush = true;
         msg.title = QStringLiteral("Approval needed");
         msg.body = ev.fields.value(QStringLiteral("summary")).toString(
-            QStringLiteral("Jarvis needs your approval"));
+            QStringLiteral("Orin needs your approval"));
         msg.data.insert(QStringLiteral("kind"), QStringLiteral("approval"));
         msg.data.insert(QStringLiteral("approval_id"),
                         ev.fields.value(QStringLiteral("approval_id")));
     } else if (ev.kind == NormalizedBrainEvent::Kind::Final) {
         wantPush = true;
         msg.title = QStringLiteral("Task done");
-        msg.body = QStringLiteral("A Jarvis session finished its turn.");
+        msg.body = QStringLiteral("An Orin session finished its turn.");
         msg.data.insert(QStringLiteral("kind"), QStringLiteral("done"));
     } else if (ev.kind == NormalizedBrainEvent::Kind::Diff) {
         wantPush = true;
@@ -1429,7 +1429,7 @@ void DeviceServer::onSessionOpened(const QString &sessionId, const QString &titl
     if (m_control && m_control->fcm()) {
         PushMessage msg;
         msg.title = QStringLiteral("New session");
-        msg.body = title.isEmpty() ? QStringLiteral("A Jarvis chat opened") : title;
+        msg.body = title.isEmpty() ? QStringLiteral("An Orin chat opened") : title;
         msg.data.insert(QStringLiteral("kind"), QStringLiteral("session_opened"));
         msg.data.insert(QStringLiteral("session_id"), sessionId);
         for (const PushTokenRow &t : m_control->store().listPushTokens())

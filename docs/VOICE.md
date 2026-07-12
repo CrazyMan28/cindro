@@ -1,10 +1,10 @@
-# Jarvis Voice — Mistral Voxtral (STT + TTS)
+# Orin Voice — Mistral Voxtral (STT + TTS)
 
 User directive: **use Mistral for TTS and STT.** Key validated (GET /v1/models -> 200; account has the
 voxtral-mini-tts + voxtral realtime/transcribe models).
 
 ## Credentials
-- Key file: `~/.config/jarvis/mistral_api_key` (mode 0600, NOT in git). Also register it in the Jarvis
+- Key file: `~/.config/jarvis/mistral_api_key` (mode 0600, NOT in git). Also register it in the Orin
   SettingsStore as the `mistral` secret so `settings.get` reports it set. Bearer auth:
   `Authorization: Bearer <key>`. Base URL `https://api.mistral.ai`.
 
@@ -13,7 +13,7 @@ voxtral-mini-tts + voxtral realtime/transcribe models).
   `model=voxtral-mini-latest`; `voxtral-small-latest` for higher accuracy). Features: speaker
   diarization, word-level timestamps, context biasing, 13 languages. ~$0.003/min.
 - Low-latency / live: `voxtral-mini-transcribe-realtime-*` / `voxtral-mini-realtime-*` via Mistral's
-  realtime (streaming) API — use for "Hey Jarvis" continuous listening; otherwise push-to-talk +
+  realtime (streaming) API — use for "Hey Orin" continuous listening; otherwise push-to-talk +
   one-shot transcription is fine for v1.
 - Docs: https://docs.mistral.ai/api/endpoint/audio/transcriptions , https://docs.mistral.ai/studio-api/audio/speech_to_text
 
@@ -51,10 +51,10 @@ call and it clones the timbre on the fly.
 ## Named voice library — record/upload your own + "set as default" (2026-06-29)
 
 `jarvice` generalized into a **managed library of named voices**. Record your own voice
-(mic) or upload a clip, name it, and **set one as the default** — used everywhere Jarvis
+(mic) or upload a clip, name it, and **set one as the default** — used everywhere Orin
 speaks (desktop TTS / voice mode, the phone app's spoken replies, and **phone calls** — when
 it calls you and when it answers). Nothing was removed: `jarvice` is seeded as the initial
-default "Jarvis" voice and all prior behavior/pickers stay.
+default "Orin" voice and all prior behavior/pickers stay.
 
 - **Storage (daemon-owned, single source of truth):** clips stay at
   `~/.config/jarvis/voices/<slug>_ref.<ext>` (the existing resolver) plus a manifest
@@ -72,7 +72,7 @@ default "Jarvis" voice and all prior behavior/pickers stay.
   `~/.config/jarvis/phone.env` (or clears it for a stock default) and **restarts
   `jarvis-phone.service`** so the phone server clones the new default.
 - **UI:** a **"Default Voice"** card in **Settings → Voice** on desktop (`SettingsPage.qml`
-  + `Bridge` record via `pw-record` / upload via `FileDialog`) and the **Jarvis Android app**
+  + `Bridge` record via `pw-record` / upload via `FileDialog`) and the **Orin Android app**
   (`SettingsScreen.kt` + `AudioRecorder` / SAF upload) — list (default dot · name · source ·
   Preview / Set default / Delete), name field, Record/Upload, an Auto-clean toggle, Save.
 - **"Both places" (phone):** the vendored agent-phone per-agent picker also sees the named
@@ -82,12 +82,12 @@ default "Jarvis" voice and all prior behavior/pickers stay.
   specific clone can be assigned to a specific agent, not just the global default.
 - Live-verified: `scripts/voice_library_smoke.py` (throwaway daemon round-trip).
 
-## How Jarvis uses it
+## How Orin uses it
 - **Daemon-proxied (recommended): the key stays on the laptop.** Add Contract C (device WS) + Contract A
   methods: `voice.stt{audio_b64, lang?} -> {text, words?}` and `voice.tts{text, voice?, format?} ->
   {audio_b64}` (or a streamed binary frame for PCM). jarvisd reads `~/.config/jarvis/mistral_api_key`
   and calls Mistral; phone/desktop just send audio / receive audio.
-- **Android (#18):** "Hey Jarvis" wake (foreground service + notification) OR push-to-talk mic ->
+- **Android (#18):** "Hey Orin" wake (foreground service + notification) OR push-to-talk mic ->
   record -> `voice.stt` -> send as the chat message; assistant reply -> `voice.tts` -> stream-play PCM.
 - **Desktop (#10):** a push-to-talk hotkey dictation into the input via `voice.stt`; optional TTS
   read-back of replies via `voice.tts`. Mic capture via PipeWire/pw-record or Qt Multimedia.
@@ -105,7 +105,7 @@ while a clip is still playing. The desktop **queues** these clips and plays them
   the next clip starts only when the current one fires `QMediaPlayer`'s `EndOfMedia` — not the
   transient `StoppedState` that source-swapping passes through.
 - Hands-free **resume-listening / orb-idle happens once**, when the queue drains — not after every
-  clip — so Jarvis never starts listening (and capturing its own TTS tail) mid-reply.
+  clip — so Orin never starts listening (and capturing its own TTS tail) mid-reply.
 - Ending the conversation (Space / leaving the page) is a barge-in: `stopConversation()` clears the
   queue and stops the player.
 

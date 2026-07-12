@@ -1,6 +1,6 @@
-# Jarvis — packaging & install
+# Orin — packaging & install
 
-This directory makes Jarvis launchable like a real desktop app: it builds the
+This directory makes Orin launchable like a real desktop app: it builds the
 C++ superbuild, drops the `jarvisd` daemon and `jarvis-sidebar` UI into
 `~/.local/bin`, registers an app icon + launcher, installs a `systemd --user`
 unit for the daemon, and adds a Sway keybind to toggle the sidebar.
@@ -57,16 +57,16 @@ The daemon serves the Contract A control WebSocket on
 `~/.config/jarvis/control_token` on first start. It runs under
 `QT_QPA_PLATFORM=offscreen` (no GUI).
 
-## KDE — pin Jarvis to the taskbar
+## KDE — pin Orin to the taskbar
 
-After installing, Jarvis shows up in the KDE application launcher
+After installing, Orin shows up in the KDE application launcher
 (Kickoff / Application Menu):
 
-1. Open the launcher and search for **Jarvis**.
-2. **Right-click** the Jarvis entry.
+1. Open the launcher and search for **Orin**.
+2. **Right-click** the Orin entry.
 3. Choose **Pin to Task Manager** (icons-only taskbar) or **Add to Panel ▸ Add
    Widgets** style **Pin to Task Manager** — the exact wording depends on your
-   Plasma version. Either keeps the Jarvis icon permanently on the taskbar so a
+   Plasma version. Either keeps the Orin icon permanently on the taskbar so a
    single click launches the sidebar.
 
 Clicking the icon launches `~/.local/bin/jarvis-sidebar`, which anchors itself

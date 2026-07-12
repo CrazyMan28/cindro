@@ -87,7 +87,7 @@ fun SkillsScreen(viewModel: SkillsViewModel) {
             Text("Self-authored skills", style = MaterialTheme.typography.titleMedium, color = JarvisPalette.TextPrimary)
 
             if (state.skills.isEmpty()) {
-                Text("No skills yet — create one Jarvis can run on command.", color = JarvisPalette.TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                Text("No skills yet — create one Orin can run on command.", color = JarvisPalette.TextSecondary, style = MaterialTheme.typography.bodyMedium)
             } else {
                 state.skills.forEach { skill ->
                     SkillRow(

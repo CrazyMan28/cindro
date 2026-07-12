@@ -94,7 +94,7 @@
       });
       chip.innerHTML =
         `<span style="font-size:14px;line-height:1">⚡</span>` +
-        `<span>Jarvis is controlling Chrome</span>`;
+        `<span>Orin is controlling Chrome</span>`;
       root.appendChild(chip);
 
       // keyframes for the halo pulse (scoped style node)

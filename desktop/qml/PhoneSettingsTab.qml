@@ -40,6 +40,50 @@ Item {
             var cb = tab._pending[callId]
             if (cb) { delete tab._pending[callId]; cb(result) }
         }
+        // phone.config get -> seed state + fields (secrets stay masked as SET/NOT SET).
+        function onPhoneConfigLoaded(cfg) {
+            tab.cfgLoaded         = true
+            tab.cfgConfigured     = cfg.configured === true
+            tab.cfgServerPort     = "" + (cfg.server_port || "")
+            tab.cfgServerUrl      = "" + (cfg.server_url || "")
+            tab.cfgHasAdminToken  = cfg.has_admin_token  === true
+            tab.cfgHasDeviceToken = cfg.has_device_token === true
+            tab.cfgHasAgentToken  = cfg.has_agent_token  === true
+            var tw = cfg.twilio || {}
+            tab.cfgTwHasSid       = tw.has_account_sid === true
+            tab.cfgTwHasAuth      = tw.has_auth_token  === true
+            tab.cfgTwFromNumber   = "" + (tw.from_number || "")
+            tab.cfgTwPublicUrl    = "" + (tw.public_base_url || "")
+            tab.cfgTwInboundExt   = "" + (tw.inbound_extension || "")
+            tab.cfgTwScreeningExt = "" + (tw.screening_extension || "")
+            tab.cfgTwConfigured   = tw.configured === true
+            // Seed the plain (non-secret) fields with their loaded values so a Save
+            // that leaves them untouched sends nothing for them. Secret fields stay
+            // empty — the placeholder shows SET / NOT SET instead of any value.
+            _cfgPortField.text      = tab.cfgServerPort
+            _cfgServerUrlField.text = tab.cfgServerUrl
+            _cfgFromField.text      = tab.cfgTwFromNumber
+            _cfgTwUrlField.text     = tab.cfgTwPublicUrl
+            _cfgInboundField.text   = tab.cfgTwInboundExt
+            _cfgScreeningField.text = tab.cfgTwScreeningExt
+            _cfgSidField.text = ""; _cfgAuthField.text = ""
+            _cfgAdminField.text = ""; _cfgDeviceField.text = ""; _cfgAgentField.text = ""
+        }
+        function onPhoneConfigSaved(ok, restarted, note) {
+            tab.cfgSaveNote = ok
+                ? (note && note.length ? note : (restarted ? "Saved — phone server restarted"
+                                                            : "Saved — restart the phone server to apply"))
+                : ("Save failed: " + (note && note.length ? note : "unknown error"))
+            // Reload so the has_* booleans + non-secret values reflect what stuck and
+            // any typed secrets are cleared from the fields.
+            if (ok) tab.loadConfig()
+        }
+        function onPhoneConfigTested(reachable, twilioConfigured) {
+            tab.cfgTesting = false
+            tab.cfgTestResult = reachable
+                ? ("Reachable" + (twilioConfigured ? " · Twilio ready" : " · Twilio not configured"))
+                : "Unreachable — is the phone server running?"
+        }
     }
 
     // ---- state ----------------------------------------------------------------
@@ -81,8 +125,67 @@ Item {
     // active sub-screen: "" | "history" | "diagnostics"
     property string subScreen: ""
 
+    // ---- Phone server / Twilio config (Contract A phone.config) ----------------
+    // The REAL editor for ~/.config/jarvis/phone.env, wired to phone.config
+    // get/set/test on the control WS. Secrets are shown as SET / NOT SET from the
+    // has_* booleans and only sent when the user types a new value. Loaded values
+    // seed the fields; saveConfig() sends ONLY the fields the user changed.
+    property bool   cfgLoaded:         false
+    property bool   cfgConfigured:     false
+    property string cfgServerPort:     ""
+    property string cfgServerUrl:      ""
+    property bool   cfgHasAdminToken:  false
+    property bool   cfgHasDeviceToken: false
+    property bool   cfgHasAgentToken:  false
+    property bool   cfgTwHasSid:       false
+    property bool   cfgTwHasAuth:      false
+    property string cfgTwFromNumber:   ""
+    property string cfgTwPublicUrl:    ""
+    property string cfgTwInboundExt:   ""
+    property string cfgTwScreeningExt: ""
+    property bool   cfgTwConfigured:   false
+    // Save / test feedback lines.
+    property string cfgSaveNote:       ""
+    property bool   cfgTesting:        false
+    property string cfgTestResult:     ""
+
+    // ---- phone.config (server/Twilio env editor) ------------------------------
+    function loadConfig() {
+        if (!bridge.connected) return
+        bridge.phoneConfigGet()
+    }
+    function saveConfig() {
+        tab.cfgSaveNote = ""
+        var patch = {}
+        // Plain (non-secret) values: send only when changed from the loaded value.
+        // An emptied field sends "" which clears that key (daemon contract). The
+        // server URL field seeds from the derived server_url, so leaving it untouched
+        // never writes a bogus public_base_url.
+        if (_cfgPortField.text.trim()      !== tab.cfgServerPort)     patch.server_port                = _cfgPortField.text.trim()
+        if (_cfgServerUrlField.text.trim() !== tab.cfgServerUrl)      patch.public_base_url            = _cfgServerUrlField.text.trim()
+        if (_cfgFromField.text.trim()      !== tab.cfgTwFromNumber)   patch.twilio_from_number         = _cfgFromField.text.trim()
+        if (_cfgTwUrlField.text.trim()     !== tab.cfgTwPublicUrl)    patch.twilio_public_base_url      = _cfgTwUrlField.text.trim()
+        if (_cfgInboundField.text.trim()   !== tab.cfgTwInboundExt)   patch.twilio_inbound_extension    = _cfgInboundField.text.trim()
+        if (_cfgScreeningField.text.trim() !== tab.cfgTwScreeningExt) patch.twilio_screening_extension  = _cfgScreeningField.text.trim()
+        // Secrets: ONLY when the user actually typed a new value — never echo back a
+        // masked secret, so an unchanged one is left intact.
+        if (_cfgSidField.text.length    > 0) patch.twilio_account_sid = _cfgSidField.text.trim()
+        if (_cfgAuthField.text.length   > 0) patch.twilio_auth_token  = _cfgAuthField.text.trim()
+        if (_cfgAdminField.text.length  > 0) patch.admin_token        = _cfgAdminField.text.trim()
+        if (_cfgDeviceField.text.length > 0) patch.device_token       = _cfgDeviceField.text.trim()
+        if (_cfgAgentField.text.length  > 0) patch.agent_token        = _cfgAgentField.text.trim()
+        if (Object.keys(patch).length === 0) { tab.cfgSaveNote = "No changes to save"; return }
+        bridge.phoneConfigSet(patch)
+    }
+    function testConfig() {
+        tab.cfgTesting = true
+        tab.cfgTestResult = ""
+        bridge.phoneConfigTest()
+    }
+
     // ---- functions ------------------------------------------------------------
     function refresh() {
+        tab.loadConfig()
         tab.callTool("twilio_status", {}, function(r) {
             if (!r.error) {
                 var d = r.data || {}
@@ -528,6 +631,208 @@ Item {
                                 if (_scr === "history") tab.loadHistory()
                                 else if (_scr === "diagnostics") tab.runDiagnostics()
                             }
+                        }
+                    }
+                }
+
+                // ── Phone server & Twilio setup (REAL phone.config editor) ────
+                Text { text: "PHONE SERVER & TWILIO SETUP"; color: Theme.textFaint; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: 2.0; font.weight: Font.DemiBold }
+                Rectangle {
+                    Layout.fillWidth: true; height: _cfgCard.implicitHeight + 24
+                    color: Theme.surface; radius: Theme.radiusSm; border.color: Theme.hairlineSoft; border.width: 1
+                    ColumnLayout {
+                        id: _cfgCard
+                        anchors { left: parent.left; right: parent.right; top: parent.top; margins: 12 }
+                        spacing: 10
+
+                        // status summary row
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 8
+                            Text { text: "Server:"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11 }
+                            Text {
+                                text: tab.cfgConfigured ? "configured" : "not set up"
+                                color: tab.cfgConfigured ? Theme.success : Theme.danger
+                                font.family: Theme.fontMono; font.pixelSize: 11
+                            }
+                            Item { Layout.fillWidth: true }
+                            Text {
+                                text: "Twilio: " + (tab.cfgTwConfigured ? "configured" : "not configured")
+                                color: tab.cfgTwConfigured ? Theme.success : Theme.textFaint
+                                font.family: Theme.fontMono; font.pixelSize: 11
+                            }
+                        }
+                        Text {
+                            visible: tab.cfgServerUrl.length > 0
+                            text: tab.cfgServerUrl; color: Theme.textFaint; font.family: Theme.fontMono; font.pixelSize: 10
+                            elide: Text.ElideRight; Layout.fillWidth: true
+                        }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairlineSoft }
+
+                        // TWILIO credentials ------------------------------------
+                        Text { text: "TWILIO"; color: Theme.textMuted; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: 1.5; font.weight: Font.DemiBold }
+
+                        // Account SID (secret, write-only)
+                        ColumnLayout { Layout.fillWidth: true; spacing: 4
+                            RowLayout { Layout.fillWidth: true; spacing: 8
+                                Text { text: "Account SID"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11; Layout.fillWidth: true }
+                                Text { text: tab.cfgTwHasSid ? "SET" : "NOT SET"; color: tab.cfgTwHasSid ? Theme.success : Theme.textFaint; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: 1.0 }
+                            }
+                            TextField {
+                                id: _cfgSidField; Layout.fillWidth: true; echoMode: TextInput.Password
+                                placeholderText: tab.cfgTwHasSid ? "•••• set — type to replace" : "ACxxxxxxxx… (not set)"
+                                background: Rectangle { color: Theme.surfaceInput; radius: Theme.radiusXs; border.color: _cfgSidField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1 }
+                                color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 12; leftPadding: 10; height: 32
+                            }
+                        }
+                        // Auth Token (secret, write-only)
+                        ColumnLayout { Layout.fillWidth: true; spacing: 4
+                            RowLayout { Layout.fillWidth: true; spacing: 8
+                                Text { text: "Auth Token"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11; Layout.fillWidth: true }
+                                Text { text: tab.cfgTwHasAuth ? "SET" : "NOT SET"; color: tab.cfgTwHasAuth ? Theme.success : Theme.textFaint; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: 1.0 }
+                            }
+                            TextField {
+                                id: _cfgAuthField; Layout.fillWidth: true; echoMode: TextInput.Password
+                                placeholderText: tab.cfgTwHasAuth ? "•••• set — type to replace" : "auth token (not set)"
+                                background: Rectangle { color: Theme.surfaceInput; radius: Theme.radiusXs; border.color: _cfgAuthField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1 }
+                                color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 12; leftPadding: 10; height: 32
+                            }
+                        }
+                        // From Number (plain)
+                        ColumnLayout { Layout.fillWidth: true; spacing: 4
+                            Text { text: "From Number"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11 }
+                            TextField {
+                                id: _cfgFromField; Layout.fillWidth: true; placeholderText: "+1XXXXXXXXXX"
+                                background: Rectangle { color: Theme.surfaceInput; radius: Theme.radiusXs; border.color: _cfgFromField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1 }
+                                color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 12; leftPadding: 10; height: 32
+                            }
+                        }
+                        // Twilio public base URL (plain) — where Twilio reaches your webhooks
+                        ColumnLayout { Layout.fillWidth: true; spacing: 4
+                            Text { text: "Public Base URL (Twilio webhooks)"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11 }
+                            TextField {
+                                id: _cfgTwUrlField; Layout.fillWidth: true; placeholderText: "https://your-tunnel.example.com"
+                                background: Rectangle { color: Theme.surfaceInput; radius: Theme.radiusXs; border.color: _cfgTwUrlField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1 }
+                                color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 12; leftPadding: 10; height: 32
+                            }
+                        }
+                        // inbound + screening extensions (plain, side by side)
+                        RowLayout { Layout.fillWidth: true; spacing: 8
+                            ColumnLayout { Layout.fillWidth: true; spacing: 4
+                                Text { text: "Inbound extension"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11 }
+                                TextField {
+                                    id: _cfgInboundField; Layout.fillWidth: true; placeholderText: "101"
+                                    background: Rectangle { color: Theme.surfaceInput; radius: Theme.radiusXs; border.color: _cfgInboundField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1 }
+                                    color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 12; leftPadding: 10; height: 32
+                                }
+                            }
+                            ColumnLayout { Layout.fillWidth: true; spacing: 4
+                                Text { text: "Screening extension"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11 }
+                                TextField {
+                                    id: _cfgScreeningField; Layout.fillWidth: true; placeholderText: "(optional)"
+                                    background: Rectangle { color: Theme.surfaceInput; radius: Theme.radiusXs; border.color: _cfgScreeningField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1 }
+                                    color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 12; leftPadding: 10; height: 32
+                                }
+                            }
+                        }
+
+                        Rectangle { Layout.fillWidth: true; height: 1; color: Theme.hairlineSoft }
+
+                        // PHONE SERVER (port + tokens) --------------------------
+                        Text { text: "PHONE SERVER"; color: Theme.textMuted; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: 1.5; font.weight: Font.DemiBold }
+
+                        // Port + server public base URL
+                        RowLayout { Layout.fillWidth: true; spacing: 8
+                            ColumnLayout { Layout.preferredWidth: 90; spacing: 4
+                                Text { text: "Port"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11 }
+                                TextField {
+                                    id: _cfgPortField; Layout.fillWidth: true; placeholderText: "8801"
+                                    inputMethodHints: Qt.ImhDigitsOnly
+                                    background: Rectangle { color: Theme.surfaceInput; radius: Theme.radiusXs; border.color: _cfgPortField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1 }
+                                    color: Theme.text; font.family: Theme.fontMono; font.pixelSize: 12; leftPadding: 10; height: 32
+                                }
+                            }
+                            ColumnLayout { Layout.fillWidth: true; spacing: 4
+                                Text { text: "Server public base URL"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11 }
+                                TextField {
+                                    id: _cfgServerUrlField; Layout.fillWidth: true; placeholderText: "http://127.0.0.1:8801"
+                                    background: Rectangle { color: Theme.surfaceInput; radius: Theme.radiusXs; border.color: _cfgServerUrlField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1 }
+                                    color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 12; leftPadding: 10; height: 32
+                                }
+                            }
+                        }
+                        // Admin / Device / Agent tokens (secret, write-only)
+                        ColumnLayout { Layout.fillWidth: true; spacing: 4
+                            RowLayout { Layout.fillWidth: true; spacing: 8
+                                Text { text: "Admin token"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11; Layout.fillWidth: true }
+                                Text { text: tab.cfgHasAdminToken ? "SET" : "NOT SET"; color: tab.cfgHasAdminToken ? Theme.success : Theme.textFaint; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: 1.0 }
+                            }
+                            TextField {
+                                id: _cfgAdminField; Layout.fillWidth: true; echoMode: TextInput.Password
+                                placeholderText: tab.cfgHasAdminToken ? "•••• set — type to replace" : "not set"
+                                background: Rectangle { color: Theme.surfaceInput; radius: Theme.radiusXs; border.color: _cfgAdminField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1 }
+                                color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 12; leftPadding: 10; height: 32
+                            }
+                        }
+                        ColumnLayout { Layout.fillWidth: true; spacing: 4
+                            RowLayout { Layout.fillWidth: true; spacing: 8
+                                Text { text: "Device token"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11; Layout.fillWidth: true }
+                                Text { text: tab.cfgHasDeviceToken ? "SET" : "NOT SET"; color: tab.cfgHasDeviceToken ? Theme.success : Theme.textFaint; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: 1.0 }
+                            }
+                            TextField {
+                                id: _cfgDeviceField; Layout.fillWidth: true; echoMode: TextInput.Password
+                                placeholderText: tab.cfgHasDeviceToken ? "•••• set — type to replace" : "not set"
+                                background: Rectangle { color: Theme.surfaceInput; radius: Theme.radiusXs; border.color: _cfgDeviceField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1 }
+                                color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 12; leftPadding: 10; height: 32
+                            }
+                        }
+                        ColumnLayout { Layout.fillWidth: true; spacing: 4
+                            RowLayout { Layout.fillWidth: true; spacing: 8
+                                Text { text: "Agent token"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11; Layout.fillWidth: true }
+                                Text { text: tab.cfgHasAgentToken ? "SET" : "NOT SET"; color: tab.cfgHasAgentToken ? Theme.success : Theme.textFaint; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: 1.0 }
+                            }
+                            TextField {
+                                id: _cfgAgentField; Layout.fillWidth: true; echoMode: TextInput.Password
+                                placeholderText: tab.cfgHasAgentToken ? "•••• set — type to replace" : "not set"
+                                background: Rectangle { color: Theme.surfaceInput; radius: Theme.radiusXs; border.color: _cfgAgentField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1 }
+                                color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 12; leftPadding: 10; height: 32
+                            }
+                        }
+
+                        Text {
+                            text: "Secrets are stored in ~/.config/jarvis/phone.env (0600) and never shown here — type a new value to replace one."
+                            color: Theme.textFaint; font.family: Theme.fontSans; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true
+                        }
+
+                        // Save + Test row
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 8
+                            Rectangle {
+                                height: 32; implicitWidth: _cfgSaveLbl.implicitWidth + 24; radius: Theme.radiusXs
+                                color: _cfgSaveMa.containsMouse ? Theme.accent : Theme.accentDim
+                                Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                                Text { id: _cfgSaveLbl; anchors.centerIn: parent; text: "SAVE"; color: Theme.inkOnAccent; font.family: Theme.fontDisplay; font.pixelSize: 10; font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold }
+                                MouseArea { id: _cfgSaveMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: tab.saveConfig() }
+                            }
+                            Rectangle {
+                                height: 32; implicitWidth: _cfgTestLbl.implicitWidth + 24; radius: Theme.radiusXs
+                                color: _cfgTestMa.containsMouse ? Theme.accentDim : "transparent"
+                                border.color: Theme.accent; border.width: 1
+                                Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                                Text { id: _cfgTestLbl; anchors.centerIn: parent; text: tab.cfgTesting ? "TESTING…" : "TEST"; color: Theme.accent; font.family: Theme.fontDisplay; font.pixelSize: 10; font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold }
+                                MouseArea { id: _cfgTestMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; enabled: !tab.cfgTesting; onClicked: tab.testConfig() }
+                            }
+                            Item { Layout.fillWidth: true }
+                        }
+                        Text {
+                            visible: tab.cfgSaveNote.length > 0
+                            text: tab.cfgSaveNote; color: Theme.textMuted; font.family: Theme.fontMono; font.pixelSize: 10
+                            wrapMode: Text.WordWrap; Layout.fillWidth: true
+                        }
+                        Text {
+                            visible: tab.cfgTestResult.length > 0
+                            text: tab.cfgTestResult
+                            color: tab.cfgTestResult.indexOf("Unreachable") === 0 ? Theme.danger : Theme.success
+                            font.family: Theme.fontMono; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true
                         }
                     }
                 }

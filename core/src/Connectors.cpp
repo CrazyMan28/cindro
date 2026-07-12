@@ -53,6 +53,21 @@ QString Connectors::riskFor(const QString &service)
     return QStringLiteral("medium");
 }
 
+QString Connectors::scopesFor(const QString &service)
+{
+    // Minimal scope per service so consent asks for only what the connector uses.
+    // Docs are Drive files (the gdrive MCP reads/exports them) -> drive.readonly.
+    if (service == QStringLiteral("calendar"))
+        return QStringLiteral("https://www.googleapis.com/auth/calendar");
+    if (service == QStringLiteral("drive"))
+        return QStringLiteral("https://www.googleapis.com/auth/drive");
+    if (service == QStringLiteral("docs"))
+        return QStringLiteral("https://www.googleapis.com/auth/drive.readonly");
+    if (service == QStringLiteral("gmail"))
+        return QStringLiteral("https://www.googleapis.com/auth/gmail.modify");
+    return QString();
+}
+
 QString Connectors::serverName(const QString &service)
 {
     return QStringLiteral("google-") + service;

@@ -203,7 +203,7 @@ bool PluginRegistry::seedSamples(const QString &catalogDir, QString *err)
     };
     const Sample samples[] = {
         {"github-mcp.toml",
-         "# Jarvis plugin manifest (sample, signed-ish)\n"
+         "# Orin plugin manifest (sample, signed-ish)\n"
          "id = \"github-mcp\"\n"
          "name = \"GitHub MCP\"\n"
          "author = \"jarvis-labs\"\n"
@@ -215,7 +215,7 @@ bool PluginRegistry::seedSamples(const QString &catalogDir, QString *err)
          "description = \"Browse repos, issues, and PRs via the GitHub MCP server.\"\n"
          "signature = \"ed25519:PLACEHOLDER\"\n"},
         {"weather-skill.toml",
-         "# Jarvis plugin manifest (sample, signed-ish)\n"
+         "# Orin plugin manifest (sample, signed-ish)\n"
          "id = \"weather-skill\"\n"
          "name = \"Weather Skill\"\n"
          "author = \"jarvis-labs\"\n"
@@ -225,7 +225,7 @@ bool PluginRegistry::seedSamples(const QString &catalogDir, QString *err)
          "description = \"A skill that answers weather questions for a location.\"\n"
          "signature = \"ed25519:PLACEHOLDER\"\n"},
         {"shell-runner.toml",
-         "# Jarvis plugin manifest (sample, signed-ish)\n"
+         "# Orin plugin manifest (sample, signed-ish)\n"
          "id = \"shell-runner\"\n"
          "name = \"Shell Runner\"\n"
          "author = \"jarvis-labs\"\n"

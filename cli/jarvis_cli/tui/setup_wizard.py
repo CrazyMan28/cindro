@@ -1,24 +1,39 @@
 """SetupWizardScreen — the terminal analog of desktop/qml/SetupWizard.qml.
 
-Same four steps, same ``settings.get``/``settings.set``/``voice.list_voices``
-calls, and — critically — the SAME first-run flag: ``settings.get``'s
-``setup_complete`` boolean (ControlServer.cpp's ``handleSettingsGet``/
-``handleSettingsSet``, persisted via ``SettingsStore::setupComplete()``).
-There is deliberately NO separate TUI-only "have I onboarded" marker: finishing
-the wizard in either front-end persists ``setup_complete=true`` on the shared
-daemon, so completing it in the GUI skips it in the TUI and vice versa — they
-can never desync.
+Same four core steps, same ``settings.get``/``settings.set``/
+``voice.list_voices`` calls, and — critically — the SAME first-run flag:
+``settings.get``'s ``setup_complete`` boolean (ControlServer.cpp's
+``handleSettingsGet``/``handleSettingsSet``, persisted via
+``SettingsStore::setupComplete()``). There is deliberately NO separate
+TUI-only "have I onboarded" marker: finishing the wizard in either front-end
+persists ``setup_complete=true`` on the shared daemon, so completing it in
+the GUI skips it in the TUI and vice versa — they can never desync.
+
+The TUI ADDS a 5th step SetupWizard.qml doesn't have: Phone/Twilio, backed by
+the daemon's ``phone.config`` control verb (``ControlServer.cpp``'s
+``handlePhoneConfig`` — see ``phone_pane.py``'s module docstring for why this
+is a control-channel verb, not an HTTP/MCP proxy call like ``phone.mcp``/
+``phone.http``). Entirely optional — skip it and phone calling just stays
+unconfigured, same as never touching ``phone_pane.py``'s Config tab.
 
 Steps (mirrors SetupWizard.qml's ``[ "Welcome", "Voice", "Brain",
-"Permissions" ][wiz.step]``):
+"Permissions" ][wiz.step]``, plus the TUI-only 5th):
   0. assistant name + the user's own name (``Input`` fields)
   1. TTS voice (a ``ListView`` populated from ``voice.list_voices``)
   2. brain/key status + an optional Mistral API key (``Input``, masked)
   3. permission level (``ListView``) + the auto-update toggle (``Switch``)
+  4. Twilio Account SID / Auth Token (``Input``, masked) + From Number +
+     inbound/screening extensions, plus a "Test connection" button that
+     calls ``phone.config`` ``action:"test"`` (a real reachability probe,
+     not a fake always-success)
 
 "Next" advances (Enter in a text ``Input`` does the same); the last step's
 button reads "Finish" and calls ``settings.set`` with the exact patch shape
-SetupWizard.qml's own ``finish()`` builds, then dismisses.
+SetupWizard.qml's own ``finish()`` builds, then — if the Twilio fields were
+actually touched — a SEPARATE ``phone.config`` ``action:"set"`` call (a
+failure there is non-fatal: Twilio setup is optional and can always be
+retried from ``phone_pane.py``'s Config tab, so it must never block
+finishing onboarding the way a failed ``settings.set`` does), then dismisses.
 """
 
 from __future__ import annotations
@@ -35,7 +50,7 @@ from jarvis_cli.control import ControlClient
 from jarvis_cli.tui.arc_reactor import ArcReactorWidget
 from jarvis_cli.tui.modal_base import modal_box_css, modal_screen_css
 
-STEP_TITLES = ["Welcome", "Voice", "Brain", "Permissions"]
+STEP_TITLES = ["Welcome", "Voice", "Brain", "Permissions", "Phone"]
 STEP_COUNT = len(STEP_TITLES)
 
 PERMISSION_OPTIONS = [
@@ -86,6 +101,29 @@ class SetupWizardScreen(ModalScreen[None]):
         height: auto;
         margin-top: 1;
     }
+    SetupWizardScreen #twilio-status {
+        color: #9fb3c8;
+        margin-top: 1;
+    }
+    SetupWizardScreen #twilio-ext-row {
+        height: auto;
+        margin-top: 1;
+    }
+    SetupWizardScreen #twilio-ext-row Input {
+        width: 1fr;
+        margin-top: 0;
+    }
+    SetupWizardScreen #twilio-ext-row Input:first-of-type {
+        margin-right: 1;
+    }
+    SetupWizardScreen #twilio-test-row {
+        height: auto;
+        margin-top: 1;
+    }
+    SetupWizardScreen #twilio-test-result {
+        color: #9fb3c8;
+        margin-top: 1;
+    }
     SetupWizardScreen #wizard-progress {
         color: #7f8ea0;
         width: 100%;
@@ -103,7 +141,7 @@ class SetupWizardScreen(ModalScreen[None]):
         self.client = client
 
         self.step = 0
-        self.assistant_name = "Jarvis"
+        self.assistant_name = "Orin"
         self.user_name = ""
         self.tts_voice = ""
         self.voice_list: list[dict] = []
@@ -113,6 +151,27 @@ class SetupWizardScreen(ModalScreen[None]):
         self.mistral_key_set = False
         self.mistral_key = ""
         self.saving = False
+
+        # -- Phone/Twilio (step 4) -- see the "phone.config" calls in _load()/
+        # _finish()/_test_twilio() below. from_number/inbound_extension/
+        # screening_extension are NOT secrets (phone.config echoes them back
+        # directly on "get"); account_sid/auth_token ARE (only has_* booleans
+        # come back, matching every other masked-secret field in this file).
+        self.twilio_account_sid = ""
+        self.twilio_auth_token = ""
+        self.twilio_from_number = ""
+        self.twilio_inbound_extension = ""
+        self.twilio_screening_extension = ""
+        self.twilio_has_account_sid = False
+        self.twilio_has_auth_token = False
+        self.twilio_configured = False
+        # Snapshot of the non-secret fields AS LOADED — _build_phone_patch
+        # only resends one of these if it was actually edited, so finishing
+        # the wizard without touching step 4 never fires a no-op phone.config
+        # set (e.g. re-sending the daemon's own "101" inbound-extension
+        # default right back at it).
+        self._twilio_loaded = {"from_number": "", "inbound_extension": "",
+                               "screening_extension": ""}
 
     # -- layout ----------------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -125,7 +184,7 @@ class SetupWizardScreen(ModalScreen[None]):
             with Vertical(id="step-0"):
                 yield Static("Let's get you set up. This only takes a moment.")
                 yield Static("What should I call myself?")
-                yield Input(placeholder="Jarvis", id="name-field")
+                yield Input(placeholder="Orin", id="name-field")
                 yield Static("And what should I call you? (optional)")
                 yield Input(placeholder="Your name", id="username-field")
 
@@ -140,11 +199,27 @@ class SetupWizardScreen(ModalScreen[None]):
                            password=True, id="mistral-key-field")
 
             with Vertical(id="step-3"):
-                yield Static("How cautious should Jarvis be before risky actions?")
+                yield Static("How cautious should Orin be before risky actions?")
                 yield ListView(id="permission-list")
                 with Horizontal(id="auto-update-row"):
-                    yield Static("Keep Jarvis up to date automatically  ")
+                    yield Static("Keep Orin up to date automatically  ")
                     yield Switch(id="auto-update-switch")
+
+            with Vertical(id="step-4"):
+                yield Static("Set up phone calling with Twilio (optional — skip anytime).")
+                yield Static("", id="twilio-status")
+                yield Input(placeholder="Twilio Account SID", password=True,
+                           id="twilio-sid-field")
+                yield Input(placeholder="Twilio Auth Token", password=True,
+                           id="twilio-auth-field")
+                yield Input(placeholder="From number, e.g. +15551234567",
+                           id="twilio-from-field")
+                with Horizontal(id="twilio-ext-row"):
+                    yield Input(placeholder="Inbound ext (101)", id="twilio-inbound-field")
+                    yield Input(placeholder="Screening ext", id="twilio-screening-field")
+                with Horizontal(id="twilio-test-row"):
+                    yield Button("Test connection", id="twilio-test-btn")
+                yield Static("", id="twilio-test-result")
 
             yield Static("", id="wizard-progress")
             with Horizontal(id="wizard-footer"):
@@ -159,16 +234,20 @@ class SetupWizardScreen(ModalScreen[None]):
     # -- daemon round-trips (mirrors SetupWizard.qml's load()/onSettingsLoaded/
     # onVoicesListed) -------------------------------------------------------------
     async def _load(self) -> None:
-        # Neither call depends on the other's result -- fire them
+        # None of the three calls depends on another's result -- fire them
         # concurrently. Each has its own independent fallback (settings
-        # failing must not blank the voice list, and vice versa), so
-        # return_exceptions=True is required here -- unlike a plain
-        # gather(), it keeps one call's failure from cancelling/aborting
-        # the other and lets each branch handle its own error exactly as
-        # it did when the two awaits were sequential.
-        settings_result, voices_result = await asyncio.gather(
+        # failing must not blank the voice list, phone.config failing must
+        # not touch either), so return_exceptions=True is required here --
+        # unlike a plain gather(), it keeps one call's failure from
+        # cancelling/aborting the others and lets each branch handle its own
+        # error exactly as it did when the awaits were sequential. phone.config
+        # is deliberately allowed to fail quietly (unknown_method on an older
+        # daemon, or any transport error) -- step 4 is optional, so a daemon
+        # that predates it must not break the rest of onboarding.
+        settings_result, voices_result, phone_result = await asyncio.gather(
             self.client.call("settings.get", {}, timeout=15),
             self.client.call("voice.list_voices", {}, timeout=15),
+            self.client.call("phone.config", {"action": "get"}, timeout=15),
             return_exceptions=True,
         )
 
@@ -196,6 +275,24 @@ class SetupWizardScreen(ModalScreen[None]):
         else:
             self.voice_list = voices_result.get("voices") or []
         self._populate_voice_list()
+
+        pres = None if isinstance(phone_result, Exception) else phone_result
+        if pres is not None:
+            tw = pres.get("twilio") or {}
+            self.twilio_has_account_sid = bool(tw.get("has_account_sid"))
+            self.twilio_has_auth_token = bool(tw.get("has_auth_token"))
+            self.twilio_configured = bool(tw.get("configured"))
+            self.twilio_from_number = str(tw.get("from_number") or "")
+            self.twilio_inbound_extension = str(tw.get("inbound_extension") or "")
+            self.twilio_screening_extension = str(tw.get("screening_extension") or "")
+            self._twilio_loaded = {
+                "from_number": self.twilio_from_number,
+                "inbound_extension": self.twilio_inbound_extension,
+                "screening_extension": self.twilio_screening_extension,
+            }
+            self._apply_phone_values_to_inputs()
+        self._update_twilio_status()
+
         self._update_step_display()
 
     def _apply_loaded_values_to_inputs(self) -> None:
@@ -209,6 +306,46 @@ class SetupWizardScreen(ModalScreen[None]):
             pass
         try:
             self.query_one("#auto-update-switch", Switch).value = self.auto_update
+        except Exception:
+            pass
+
+    def _apply_phone_values_to_inputs(self) -> None:
+        # account_sid/auth_token are secrets -- only has_* comes back from
+        # phone.config, so the ONLY thing loading can do to those two fields
+        # is repaint their placeholder (never their value, per the "never a
+        # real value" rule). from_number/the extensions are NOT secrets
+        # (phone.config echoes them back directly), so those get their real
+        # current value prefilled, same as name-field/username-field above.
+        try:
+            self.query_one("#twilio-sid-field", Input).placeholder = (
+                "•••• set — leave blank to keep" if self.twilio_has_account_sid
+                else "Twilio Account SID")
+        except Exception:
+            pass
+        try:
+            self.query_one("#twilio-auth-field", Input).placeholder = (
+                "•••• set — leave blank to keep" if self.twilio_has_auth_token
+                else "Twilio Auth Token")
+        except Exception:
+            pass
+        try:
+            self.query_one("#twilio-from-field", Input).value = self.twilio_from_number
+        except Exception:
+            pass
+        try:
+            self.query_one("#twilio-inbound-field", Input).value = self.twilio_inbound_extension
+        except Exception:
+            pass
+        try:
+            self.query_one("#twilio-screening-field", Input).value = self.twilio_screening_extension
+        except Exception:
+            pass
+
+    def _update_twilio_status(self) -> None:
+        try:
+            self.query_one("#twilio-status", Static).update(
+                "✓ Twilio already configured" if self.twilio_configured
+                else "Optional — add Twilio credentials to enable phone calling")
         except Exception:
             pass
 
@@ -249,9 +386,21 @@ class SetupWizardScreen(ModalScreen[None]):
             self.user_name = event.value
         elif event.input.id == "mistral-key-field":
             self.mistral_key = event.value
+        elif event.input.id == "twilio-sid-field":
+            self.twilio_account_sid = event.value
+        elif event.input.id == "twilio-auth-field":
+            self.twilio_auth_token = event.value
+        elif event.input.id == "twilio-from-field":
+            self.twilio_from_number = event.value
+        elif event.input.id == "twilio-inbound-field":
+            self.twilio_inbound_extension = event.value
+        elif event.input.id == "twilio-screening-field":
+            self.twilio_screening_extension = event.value
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id in ("name-field", "username-field", "mistral-key-field"):
+        if event.input.id in ("name-field", "username-field", "mistral-key-field",
+                              "twilio-sid-field", "twilio-auth-field", "twilio-from-field",
+                              "twilio-inbound-field", "twilio-screening-field"):
             await self.action_next()
 
     def on_switch_changed(self, event: Switch.Changed) -> None:
@@ -273,6 +422,36 @@ class SetupWizardScreen(ModalScreen[None]):
             self.action_back()
         elif event.button.id == "wizard-next-btn":
             self.run_worker(self.action_next())
+        elif event.button.id == "twilio-test-btn":
+            self.run_worker(self._test_twilio())
+
+    async def _test_twilio(self) -> None:
+        """A REAL connectivity probe (phone.config action:"test" -> the
+        daemon actually calls the phone server), not a fake always-success —
+        mirrors what phone_pane.py's Config tab wires up for the same verb."""
+        try:
+            result = self.query_one("#twilio-test-result", Static)
+        except Exception:
+            result = None
+        if result is not None:
+            result.update("Testing…")
+        try:
+            res = await self.client.call("phone.config", {"action": "test"}, timeout=15)
+        except Exception as exc:
+            msg = f"Error: {exc}"
+            if result is not None:
+                result.update(msg)
+            else:
+                self.notify(msg, severity="error")
+            return
+        reachable = bool(res.get("reachable"))
+        tw_ok = bool(res.get("twilio_configured"))
+        msg = (("✓ phone server reachable" if reachable else "✗ phone server unreachable")
+               + ("  ·  Twilio configured" if tw_ok else "  ·  Twilio not configured"))
+        if result is not None:
+            result.update(msg)
+        else:
+            self.notify(msg)
 
     # -- step navigation ------------------------------------------------------
     async def action_next(self) -> None:
@@ -296,7 +475,7 @@ class SetupWizardScreen(ModalScreen[None]):
         name = self.assistant_name.strip()
         patch = {
             "setup_complete": True,
-            "assistant_name": name if name else "Jarvis",
+            "assistant_name": name if name else "Orin",
             "user_name": self.user_name.strip(),
             "tts_voice": self.tts_voice,
             "permission_level": self.permission_level,
@@ -314,7 +493,42 @@ class SetupWizardScreen(ModalScreen[None]):
             self._update_step_display()
             self.notify(f"setup failed: {exc}", severity="error")
             return
+
+        phone_patch = self._build_phone_patch()
+        if phone_patch:
+            try:
+                await self.client.call(
+                    "phone.config", {"action": "set", "patch": phone_patch}, timeout=20)
+            except Exception as exc:
+                # Phone/Twilio setup is OPTIONAL, unlike the settings.set
+                # above -- a failure here must not block finishing onboarding.
+                # The user can always retry from phone_pane.py's Config tab.
+                self.notify(f"phone setup not saved: {exc}", severity="warning")
         self.dismiss()
+
+    def _build_phone_patch(self) -> dict:
+        """Only includes a key the user actually changed: account_sid/
+        auth_token (secrets) are sent whenever typed — unlike the Mistral key
+        above, Twilio credentials are allowed to overwrite an already-set one
+        (rotating a token is a normal thing to do), so there's no
+        already-set gate, just "was something typed". The three non-secret
+        fields are compared against ``_twilio_loaded`` (the value phone.config
+        get returned) so leaving step 4 untouched never resends the daemon's
+        own defaults back at it as a no-op write."""
+        patch: dict[str, str] = {}
+        if self.twilio_account_sid.strip():
+            patch["twilio_account_sid"] = self.twilio_account_sid.strip()
+        if self.twilio_auth_token.strip():
+            patch["twilio_auth_token"] = self.twilio_auth_token.strip()
+        if self.twilio_from_number.strip() != self._twilio_loaded.get("from_number", ""):
+            patch["twilio_from_number"] = self.twilio_from_number.strip()
+        if (self.twilio_inbound_extension.strip()
+                != self._twilio_loaded.get("inbound_extension", "")):
+            patch["twilio_inbound_extension"] = self.twilio_inbound_extension.strip()
+        if (self.twilio_screening_extension.strip()
+                != self._twilio_loaded.get("screening_extension", "")):
+            patch["twilio_screening_extension"] = self.twilio_screening_extension.strip()
+        return patch
 
     # -- rendering ----------------------------------------------------------------
     def _update_step_display(self) -> None:

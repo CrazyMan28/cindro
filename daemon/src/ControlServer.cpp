@@ -25,6 +25,7 @@
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QHostAddress>
+#include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -35,7 +36,10 @@
 #include <QProcess>
 #include <QRandomGenerator>
 #include <QSaveFile>
+#include <QSharedPointer>
 #include <QSet>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTextStream>
 #include <QTimer>
 #include <QUrl>
@@ -254,7 +258,7 @@ bool ControlServer::start()
     // automatically (the user confirms via Settings → "Check for updates").
     connect(&m_updater, &Updater::updateAvailable, this,
             [this](const UpdateStatus &st) {
-                m_notify.notify(QStringLiteral("Jarvis update available"),
+                m_notify.notify(QStringLiteral("Orin update available"),
                                 QStringLiteral("A newer version is on main (%1). "
                                                "Open Settings → Updates to update.")
                                     .arg(st.latest.left(12)),
@@ -274,9 +278,9 @@ bool ControlServer::start()
         if (updated) {
             const bool needsRestart =
                 r.value(QStringLiteral("restart_required")).toBool();
-            m_notify.notify(QStringLiteral("Jarvis updated"),
+            m_notify.notify(QStringLiteral("Orin updated"),
                             needsRestart
-                                ? QStringLiteral("Updated to %1 — restart Jarvis to "
+                                ? QStringLiteral("Updated to %1 — restart Orin to "
                                                  "finish.").arg(to)
                                 : QStringLiteral("Updated to %1.").arg(to),
                             NotifyService::Urgency::Normal,
@@ -524,6 +528,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handlePhoneMcp(req);
     else if (m == QStringLiteral("phone.http"))
         resp = handlePhoneHttp(req);
+    else if (m == QStringLiteral("phone.config"))
+        resp = handlePhoneConfig(req);
     else if (m == QStringLiteral("session.subscribe"))
         resp = handleSessionSubscribe(client, req);
     else if (m == QStringLiteral("widget.viewing"))
@@ -552,6 +558,14 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleConnectorsList(req);
     else if (m == QStringLiteral("connectors.add"))
         resp = handleConnectorsAdd(req);
+    else if (m == QStringLiteral("connectors.set_client"))
+        resp = handleConnectorsSetClient(req);
+    else if (m == QStringLiteral("connectors.oauth_start"))
+        resp = handleConnectorsOAuthStart(req);
+    else if (m == QStringLiteral("connectors.oauth_status"))
+        resp = handleConnectorsOAuthStatus(req);
+    else if (m == QStringLiteral("connectors.remove"))
+        resp = handleConnectorsRemove(req);
     else if (m == QStringLiteral("plugins.catalog"))
         resp = handlePluginsCatalog(req);
     else if (m == QStringLiteral("plugins.install"))
@@ -1466,6 +1480,15 @@ struct PhoneEnv {
     QString deviceToken;
     QString agentToken;
     QString port = QStringLiteral("8801");
+    // Non-secret Twilio / server config surfaced by phone.config (secrets are
+    // reported only as has_* booleans, never echoed).
+    QString twilioAccountSid;
+    QString twilioAuthToken;
+    QString twilioFromNumber;
+    QString twilioPublicBaseUrl;
+    QString twilioInboundExtension;
+    QString twilioScreeningExtension;
+    QString publicBaseUrl;
 };
 
 PhoneEnv readPhoneEnv()
@@ -1476,18 +1499,115 @@ PhoneEnv readPhoneEnv()
         return env;
     const QList<QByteArray> lines = f.readAll().split('\n');
     f.close();
+    const auto val = [](const QString &line, const char *key) {
+        return line.mid(int(qstrlen(key))).trimmed();
+    };
     for (const QByteArray &raw : lines) {
         const QString line = QString::fromUtf8(raw).trimmed();
         if (line.startsWith(QStringLiteral("ADMIN_TOKEN=")))
-            env.adminToken = line.mid(QStringLiteral("ADMIN_TOKEN=").size()).trimmed();
+            env.adminToken = val(line, "ADMIN_TOKEN=");
         else if (line.startsWith(QStringLiteral("DEVICE_TOKEN=")))
-            env.deviceToken = line.mid(QStringLiteral("DEVICE_TOKEN=").size()).trimmed();
+            env.deviceToken = val(line, "DEVICE_TOKEN=");
         else if (line.startsWith(QStringLiteral("AGENT_TOKEN=")))
-            env.agentToken = line.mid(QStringLiteral("AGENT_TOKEN=").size()).trimmed();
+            env.agentToken = val(line, "AGENT_TOKEN=");
         else if (line.startsWith(QStringLiteral("SERVER_PORT=")))
-            env.port = line.mid(QStringLiteral("SERVER_PORT=").size()).trimmed();
+            env.port = val(line, "SERVER_PORT=");
+        else if (line.startsWith(QStringLiteral("TWILIO_ACCOUNT_SID=")))
+            env.twilioAccountSid = val(line, "TWILIO_ACCOUNT_SID=");
+        else if (line.startsWith(QStringLiteral("TWILIO_AUTH_TOKEN=")))
+            env.twilioAuthToken = val(line, "TWILIO_AUTH_TOKEN=");
+        else if (line.startsWith(QStringLiteral("TWILIO_FROM_NUMBER=")))
+            env.twilioFromNumber = val(line, "TWILIO_FROM_NUMBER=");
+        else if (line.startsWith(QStringLiteral("TWILIO_PUBLIC_BASE_URL=")))
+            env.twilioPublicBaseUrl = val(line, "TWILIO_PUBLIC_BASE_URL=");
+        else if (line.startsWith(QStringLiteral("TWILIO_INBOUND_EXTENSION=")))
+            env.twilioInboundExtension = val(line, "TWILIO_INBOUND_EXTENSION=");
+        else if (line.startsWith(QStringLiteral("TWILIO_SCREENING_EXTENSION=")))
+            env.twilioScreeningExtension = val(line, "TWILIO_SCREENING_EXTENSION=");
+        else if (line.startsWith(QStringLiteral("PUBLIC_BASE_URL=")))
+            env.publicBaseUrl = val(line, "PUBLIC_BASE_URL=");
     }
     return env;
+}
+
+// Rewrite ~/.config/jarvis/phone.env, setting each provided key (preserving all
+// other lines), 0600. Empty value clears the key. Creates the file if absent.
+// Returns false only on a real write failure. Shared by propagateDefaultVoice
+// and phone.config so the file format never drifts.
+bool writePhoneEnvKeys(const QMap<QString, QString> &kv, QString *err = nullptr)
+{
+    const QString envPath = Config::configDir() + QStringLiteral("/phone.env");
+    QDir().mkpath(QFileInfo(envPath).absolutePath());
+    QStringList out;
+    QSet<QString> written;
+    QFile f(envPath);
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QList<QByteArray> lines = f.readAll().split('\n');
+        f.close();
+        for (const QByteArray &raw : lines) {
+            const QString line = QString::fromUtf8(raw);
+            const QString trimmed = line.trimmed();
+            bool handled = false;
+            for (auto it = kv.constBegin(); it != kv.constEnd(); ++it) {
+                if (trimmed.startsWith(it.key() + QLatin1Char('='))) {
+                    handled = true;
+                    if (!it.value().isEmpty()) {
+                        out << it.key() + QLatin1Char('=') + it.value();
+                        written.insert(it.key());
+                    } // else drop (clear)
+                    break;
+                }
+            }
+            if (!handled)
+                out << line;
+        }
+    }
+    for (auto it = kv.constBegin(); it != kv.constEnd(); ++it) {
+        if (!it.value().isEmpty() && !written.contains(it.key()))
+            out << it.key() + QLatin1Char('=') + it.value();
+    }
+    QString body = out.join(QLatin1Char('\n'));
+    while (body.endsWith(QStringLiteral("\n\n")))
+        body.chop(1);
+    if (!body.endsWith(QLatin1Char('\n')))
+        body += QLatin1Char('\n');
+    QSaveFile sf(envPath);
+    if (!sf.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        if (err) *err = sf.errorString();
+        return false;
+    }
+    // Lock the file to 0600 BEFORE the secret bytes are written (phone.env holds
+    // Twilio creds + admin/device/agent bearer tokens), so it never exists
+    // group/world-readable even briefly — the temp file's mode is preserved
+    // across commit()'s atomic rename.
+    sf.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    sf.write(body.toUtf8());
+    if (!sf.commit()) {
+        if (err) *err = sf.errorString();
+        return false;
+    }
+    // Belt-and-suspenders: re-assert 0600 on the committed file and WARN (don't
+    // silently return ok) if the lock-down fails, matching SettingsStore.
+    if (!QFile::setPermissions(envPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner))
+        qWarning("jarvisd: could not chmod 0600 phone.env (secrets may be readable)");
+    return true;
+}
+
+// Best-effort restart of the phone subsystem so it re-reads phone.env. Returns
+// true if the restart was LAUNCHED (non-blocking — never wait on the daemon's
+// single event loop, which would freeze every client + live chat). On
+// non-systemd platforms (Windows) the change applies on the phone server's next
+// start (caller surfaces that).
+bool restartPhoneService()
+{
+#if defined(Q_OS_LINUX)
+    return QProcess::startDetached(
+        QStringLiteral("systemctl"),
+        {QStringLiteral("--user"), QStringLiteral("restart"),
+         QStringLiteral("jarvis-phone.service")});
+#else
+    return false;
+#endif
 }
 } // namespace
 
@@ -1630,6 +1750,137 @@ void ControlServer::schedulePhoneWsReconnect(int delayMs)
         m_phoneWsReconnectPending = false;
         connectPhoneWs();
     });
+}
+
+// phone.config{action:"get"|"set"|"test"} — read/write the Jarvis-managed phone
+// server config (~/.config/jarvis/phone.env: Twilio credentials, server tokens,
+// port). Control (loopback) channel ONLY — it is deliberately absent from
+// isConfigMethod() so it never reaches the phone/device channel, since it writes
+// live secrets. Secrets are never echoed back on "get" (only has_* booleans).
+Response ControlServer::handlePhoneConfig(const Request &req)
+{
+    const QString action = req.params.value(QStringLiteral("action")).toString(QStringLiteral("get"));
+    const PhoneEnv penv = readPhoneEnv();
+
+    if (action == QStringLiteral("get")) {
+        QJsonObject tw;
+        tw.insert(QStringLiteral("has_account_sid"), !penv.twilioAccountSid.isEmpty());
+        tw.insert(QStringLiteral("has_auth_token"), !penv.twilioAuthToken.isEmpty());
+        tw.insert(QStringLiteral("from_number"), penv.twilioFromNumber);
+        tw.insert(QStringLiteral("public_base_url"), penv.twilioPublicBaseUrl);
+        tw.insert(QStringLiteral("inbound_extension"),
+                  penv.twilioInboundExtension.isEmpty() ? QStringLiteral("101")
+                                                        : penv.twilioInboundExtension);
+        tw.insert(QStringLiteral("screening_extension"), penv.twilioScreeningExtension);
+        // Matches the phone server's own twilio.enabled gate (config.ts), which
+        // requires all FOUR — incl. the public base URL — so the UI's green
+        // "configured" can't disagree with what actually enables calls.
+        tw.insert(QStringLiteral("configured"),
+                  !penv.twilioAccountSid.isEmpty() && !penv.twilioAuthToken.isEmpty()
+                      && !penv.twilioFromNumber.isEmpty()
+                      && !penv.twilioPublicBaseUrl.isEmpty());
+        QJsonObject r;
+        r.insert(QStringLiteral("configured"),
+                 !penv.adminToken.isEmpty() || !penv.agentToken.isEmpty());
+        r.insert(QStringLiteral("server_port"), penv.port);
+        r.insert(QStringLiteral("server_url"),
+                 penv.publicBaseUrl.isEmpty()
+                     ? (QStringLiteral("http://127.0.0.1:") + penv.port)
+                     : penv.publicBaseUrl);
+        r.insert(QStringLiteral("has_admin_token"), !penv.adminToken.isEmpty());
+        r.insert(QStringLiteral("has_device_token"), !penv.deviceToken.isEmpty());
+        r.insert(QStringLiteral("has_agent_token"), !penv.agentToken.isEmpty());
+        r.insert(QStringLiteral("twilio"), tw);
+        return Response::success(req.id, r);
+    }
+
+    if (action == QStringLiteral("set")) {
+        const QJsonObject patch = req.params.value(QStringLiteral("patch")).toObject();
+        // Friendly patch key -> phone.env key. Only keys present in the patch are
+        // touched; an empty value clears that key. A get->set round-trip that keeps
+        // a masked secret unchanged simply omits it, so secrets aren't wiped.
+        static const QVector<QPair<QString, QString>> keymap = {
+            {QStringLiteral("server_port"), QStringLiteral("SERVER_PORT")},
+            {QStringLiteral("admin_token"), QStringLiteral("ADMIN_TOKEN")},
+            {QStringLiteral("device_token"), QStringLiteral("DEVICE_TOKEN")},
+            {QStringLiteral("agent_token"), QStringLiteral("AGENT_TOKEN")},
+            {QStringLiteral("twilio_account_sid"), QStringLiteral("TWILIO_ACCOUNT_SID")},
+            {QStringLiteral("twilio_auth_token"), QStringLiteral("TWILIO_AUTH_TOKEN")},
+            {QStringLiteral("twilio_from_number"), QStringLiteral("TWILIO_FROM_NUMBER")},
+            {QStringLiteral("twilio_public_base_url"), QStringLiteral("TWILIO_PUBLIC_BASE_URL")},
+            {QStringLiteral("twilio_inbound_extension"), QStringLiteral("TWILIO_INBOUND_EXTENSION")},
+            {QStringLiteral("twilio_screening_extension"), QStringLiteral("TWILIO_SCREENING_EXTENSION")},
+            {QStringLiteral("public_base_url"), QStringLiteral("PUBLIC_BASE_URL")},
+        };
+        QMap<QString, QString> kv;
+        for (const auto &m : keymap) {
+            if (!patch.contains(m.first))
+                continue;
+            const QJsonValue v = patch.value(m.first);
+            // Only a string value may reach the writer. toString() coerces a
+            // null/number/bool to "" which writePhoneEnvKeys treats as "clear the
+            // key" — so a mistyped non-string could silently wipe a saved secret.
+            if (!v.isString())
+                return Response::failure(req.id, QStringLiteral("bad_request"),
+                                         QStringLiteral("value for ") + m.first
+                                             + QStringLiteral(" must be a string"));
+            kv.insert(m.second, v.toString().trimmed());
+        }
+        if (kv.isEmpty())
+            return Response::failure(req.id, QStringLiteral("bad_request"),
+                                     QStringLiteral("patch has no recognized phone config keys"));
+        QString err;
+        if (!writePhoneEnvKeys(kv, &err))
+            return Response::failure(req.id, QStringLiteral("write_error"),
+                                     QStringLiteral("cannot write phone.env: ") + err);
+        m_audit.record(QStringLiteral("phone.config"), true, QStringLiteral("high"),
+                       QStringLiteral("updated %1 phone config key(s)").arg(kv.size()),
+                       QString());
+        const bool restarted = restartPhoneService();
+        QJsonObject r;
+        r.insert(QStringLiteral("ok"), true);
+        r.insert(QStringLiteral("restarted"), restarted);
+        r.insert(QStringLiteral("note"),
+                 restarted ? QStringLiteral("phone.env updated; phone server restart requested")
+                           : QStringLiteral("phone.env updated; restart the phone server to apply"));
+        return Response::success(req.id, r);
+    }
+
+    if (action == QStringLiteral("test")) {
+        if (penv.adminToken.isEmpty() && penv.deviceToken.isEmpty()
+            && penv.agentToken.isEmpty())
+            return Response::failure(req.id, QStringLiteral("phone_not_configured"),
+                                     QStringLiteral("no phone.env tokens set yet"));
+        // Real connectivity check: read the voice catalog (a lightweight GET any
+        // valid token can reach). Reuse handlePhoneHttp so the bearer stays here.
+        Request probe;
+        probe.id = req.id;
+        probe.method = QStringLiteral("phone.http");
+        QJsonObject pp;
+        pp.insert(QStringLiteral("method"), QStringLiteral("GET"));
+        pp.insert(QStringLiteral("path"), QStringLiteral("/api/voices"));
+        probe.params = pp;
+        const Response hr = handlePhoneHttp(probe);
+        // handlePhoneHttp reports ok even for a non-2xx HTTP status (it returns
+        // the body + status), so a 401/403 from a wrong/stale bearer would read
+        // as "reachable". Gate on the real HTTP status: only 2xx/3xx is healthy;
+        // surface auth_failed distinctly so the UI can say "token rejected".
+        const int status = hr.result.value(QStringLiteral("status")).toInt();
+        {
+            QJsonObject r;
+            r.insert(QStringLiteral("reachable"), hr.ok && status >= 200 && status < 400);
+            r.insert(QStringLiteral("http_status"), status);
+            r.insert(QStringLiteral("auth_failed"), status == 401 || status == 403);
+            r.insert(QStringLiteral("twilio_configured"),
+                     !penv.twilioAccountSid.isEmpty() && !penv.twilioAuthToken.isEmpty()
+                         && !penv.twilioFromNumber.isEmpty()
+                         && !penv.twilioPublicBaseUrl.isEmpty());
+            return Response::success(req.id, r);
+        }
+    }
+
+    return Response::failure(req.id, QStringLiteral("bad_request"),
+                             QStringLiteral("action must be get|set|test"));
 }
 
 void ControlServer::onPhoneWsMessage(const QString &raw)
@@ -2312,9 +2563,9 @@ QString ControlServer::memorySystemBlock()
 {
     // ApiBrain has no CLI system prompt of its own; seed it with recent memory.
     if (!m_memory.isOpen())
-        return QStringLiteral("You are Jarvis, a helpful AI co-worker.");
+        return QStringLiteral("You are Orin, a helpful AI co-worker.");
     QString block = QStringLiteral(
-        "You are Jarvis, a helpful AI co-worker. You have persistent memory.\n");
+        "You are Orin, a helpful AI co-worker. You have persistent memory.\n");
     const QString mem = MemoryStore::renderPromptBlock(m_memory.prefetch(QString(), 8));
     if (!mem.isEmpty())
         block += QStringLiteral("\n") + mem;
@@ -3073,10 +3324,10 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
     "\"top -bn1 | awk '/Cpu/{print 100-$8}'\", "
 #endif
         guide = QStringLiteral(
-            "[Jarvis co-work — READ FIRST] You have TWO separate computer-use tool "
+            "[Orin co-work — READ FIRST] You have TWO separate computer-use tool "
             "sets, plus ask_user, schedule_task, remember/recall/forget, create_skill.\n"
             "  * The \"real_screen\" tools operate the USER'S REAL screen + windows "
-            "(what they physically see). A glowing \"Jarvis is using this computer\" "
+            "(what they physically see). A glowing \"Orin is using this computer\" "
             "banner appears while you act there.\n"
             "  * The \"computer_use\" tools operate YOUR OWN private agent desktop (a "
             "separate screen the user watches on the Computer page). This is the DEFAULT.\n"
@@ -3120,9 +3371,9 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "it — and edit_memory / forget to keep it current. Use recall / list_memories "
             "to check what you already know before asking again.\n"
             "SKILLS: when you work out a repeatable procedure the user may want again, "
-            "save it as a Jarvis skill — but you MUST use the create_skill MCP TOOL "
+            "save it as an Orin skill — but you MUST use the create_skill MCP TOOL "
             "(NOT your own CLI's skill files / not by writing to ~/.codex/skills or "
-            "~/.claude/skills yourself). Only create_skill registers it in Jarvis so it "
+            "~/.claude/skills yourself). Only create_skill registers it in Orin so it "
             "shows in the Skills tab and is invokable everywhere; a file you write "
             "directly will NOT appear. Use create_skill(name, description, body), "
             "edit_skill to refine, list_skills / get_skill to inspect, remove_skill to "
@@ -4117,6 +4368,270 @@ Response ControlServer::handleConnectorsAdd(const Request &req)
     return Response::success(req.id, result);
 }
 
+// --- "Connect Google" OAuth (loopback authorization-code flow + PKCE) -------
+namespace {
+QString b64url(const QByteArray &b)
+{
+    return QString::fromLatin1(
+        b.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
+}
+QString randToken(int nbytes)
+{
+    QByteArray b(nbytes, Qt::Uninitialized);
+    for (int i = 0; i < nbytes; ++i)
+        b[i] = char(QRandomGenerator::system()->bounded(256));
+    return b64url(b);
+}
+const QLatin1String kGoogleClientIdKey("google_oauth:client_id");
+const QLatin1String kGoogleClientSecretKey("google_oauth:client_secret");
+} // namespace
+
+Response ControlServer::handleConnectorsSetClient(const Request &req)
+{
+    const QString clientId = req.params.value(QStringLiteral("client_id")).toString().trimmed();
+    const QString clientSecret =
+        req.params.value(QStringLiteral("client_secret")).toString().trimmed();
+    if (clientId.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("client_id is required"));
+    m_settings.setApiKey(QString(kGoogleClientIdKey), clientId);
+    if (!clientSecret.isEmpty())
+        m_settings.setApiKey(QString(kGoogleClientSecretKey), clientSecret);
+    m_settings.saveSecrets();
+    QJsonObject r;
+    r.insert(QStringLiteral("ok"), true);
+    r.insert(QStringLiteral("has_client_id"), true);
+    r.insert(QStringLiteral("has_client_secret"),
+             m_settings.hasApiKey(QString(kGoogleClientSecretKey)));
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleConnectorsOAuthStart(const Request &req)
+{
+    const QString service = req.params.value(QStringLiteral("service")).toString();
+    if (!Connectors::isKnownService(service))
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("unknown Google connector service: ") + service);
+    const QString clientId = m_settings.apiKey(QString(kGoogleClientIdKey));
+    const QString clientSecret = m_settings.apiKey(QString(kGoogleClientSecretKey));
+    if (clientId.isEmpty() || clientSecret.isEmpty())
+        return Response::failure(
+            req.id, QStringLiteral("no_client"),
+            QStringLiteral("set your Google OAuth client first (connectors.set_client)"));
+
+    // One flow at a time; tear down any stale listener first.
+    if (m_oauth) {
+        if (m_oauth->server) m_oauth->server->deleteLater();
+        delete m_oauth;
+        m_oauth = nullptr;
+    }
+    auto *server = new QTcpServer(this);
+    if (!server->listen(QHostAddress::LocalHost, 0)) {
+        server->deleteLater();
+        return Response::failure(
+            req.id, QStringLiteral("listen_failed"),
+            QStringLiteral("could not open a loopback port for the OAuth redirect"));
+    }
+    const quint16 port = server->serverPort();
+    m_oauth = new PendingOAuth{service, randToken(16), randToken(48),
+                               QStringLiteral("http://127.0.0.1:") + QString::number(port),
+                               clientId, clientSecret, server};
+    m_oauth->id = ++m_oauthSeq;
+    const quint64 flowId = m_oauth->id;
+    connect(server, &QTcpServer::newConnection, this, &ControlServer::onOAuthRedirect);
+    // 5-min wall so an abandoned consent never leaks the listener. Guard on the
+    // flow GENERATION (not the server pointer, which can be reused at the same
+    // address after a deleteLater) so a stale timer never aborts a newer flow.
+    QTimer::singleShot(5 * 60 * 1000, this, [this, flowId]() {
+        if (m_oauth && m_oauth->id == flowId)
+            finishOAuth(false, QStringLiteral("timed out"), QString());
+    });
+
+    const QByteArray challenge =
+        QCryptographicHash::hash(m_oauth->verifier.toLatin1(), QCryptographicHash::Sha256);
+    QUrl url(QStringLiteral("https://accounts.google.com/o/oauth2/v2/auth"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("client_id"), clientId);
+    q.addQueryItem(QStringLiteral("redirect_uri"), m_oauth->redirectUri);
+    q.addQueryItem(QStringLiteral("response_type"), QStringLiteral("code"));
+    q.addQueryItem(QStringLiteral("scope"), Connectors::scopesFor(service));
+    q.addQueryItem(QStringLiteral("access_type"), QStringLiteral("offline"));
+    q.addQueryItem(QStringLiteral("prompt"), QStringLiteral("consent"));
+    q.addQueryItem(QStringLiteral("state"), m_oauth->state);
+    q.addQueryItem(QStringLiteral("code_challenge"), b64url(challenge));
+    q.addQueryItem(QStringLiteral("code_challenge_method"), QStringLiteral("S256"));
+    url.setQuery(q);
+
+    m_oauthResult = QJsonObject{{QStringLiteral("pending"), true},
+                                {QStringLiteral("service"), service}};
+    QJsonObject r;
+    r.insert(QStringLiteral("auth_url"), url.toString());
+    r.insert(QStringLiteral("service"), service);
+    return Response::success(req.id, r);
+}
+
+void ControlServer::onOAuthRedirect()
+{
+    if (!m_oauth || !m_oauth->server) return;
+    QTcpSocket *sock = m_oauth->server->nextPendingConnection();
+    if (!sock) return;
+    auto buf = QSharedPointer<QByteArray>::create();
+    connect(sock, &QTcpSocket::readyRead, this, [this, sock, buf]() {
+        buf->append(sock->readAll());
+        if (buf->size() > 8192) {   // a redirect GET line is tiny; cap the read
+            sock->abort();
+            return;
+        }
+        const int eol = buf->indexOf("\r\n");
+        if (eol < 0)
+            return;                 // wait until the full request line arrives
+        // First request line: "GET /?code=...&state=... HTTP/1.1"
+        const QString line = QString::fromLatin1(buf->left(eol));
+        const int sp1 = line.indexOf(QLatin1Char(' '));
+        const int sp2 = line.indexOf(QLatin1Char(' '), sp1 + 1);
+        const QString target =
+            (sp1 >= 0 && sp2 > sp1) ? line.mid(sp1 + 1, sp2 - sp1 - 1) : QString();
+        const QUrlQuery q(QUrl(QStringLiteral("http://x") + target).query());
+        const QString code = q.queryItemValue(QStringLiteral("code"));
+        const QString state = q.queryItemValue(QStringLiteral("state"));
+        const QString err = q.queryItemValue(QStringLiteral("error"));
+        const bool stateOk = m_oauth && state == m_oauth->state;
+
+        const QString bodyHtml =
+            stateOk && err.isEmpty() && !code.isEmpty()
+                ? QStringLiteral("<h2>Connected.</h2><p>You can close this tab and return to Orin.</p>")
+                : QStringLiteral("<h2>Sign-in failed.</h2><p>Return to Orin and try again.</p>");
+        const QByteArray html = bodyHtml.toUtf8();
+        sock->write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+                    "Connection: close\r\nContent-Length: "
+                    + QByteArray::number(html.size()) + "\r\n\r\n" + html);
+        sock->flush();
+        sock->disconnectFromHost();
+
+        if (!stateOk)
+            return; // stray/mismatched request — keep waiting for the real one
+        if (!err.isEmpty() || code.isEmpty()) {
+            finishOAuth(false, err.isEmpty() ? QStringLiteral("no authorization code") : err,
+                        QString());
+            return;
+        }
+        exchangeOAuthCode(code);
+    });
+}
+
+void ControlServer::exchangeOAuthCode(const QString &code)
+{
+    if (!m_oauth) return;
+    const quint64 flowId = m_oauth->id;
+    QUrlQuery form;
+    form.addQueryItem(QStringLiteral("code"), code);
+    form.addQueryItem(QStringLiteral("client_id"), m_oauth->clientId);
+    form.addQueryItem(QStringLiteral("client_secret"), m_oauth->clientSecret);
+    form.addQueryItem(QStringLiteral("redirect_uri"), m_oauth->redirectUri);
+    form.addQueryItem(QStringLiteral("grant_type"), QStringLiteral("authorization_code"));
+    form.addQueryItem(QStringLiteral("code_verifier"), m_oauth->verifier);
+
+    auto *nam = new QNetworkAccessManager(this);
+    QNetworkRequest rq(QUrl(QStringLiteral("https://oauth2.googleapis.com/token")));
+    rq.setHeader(QNetworkRequest::ContentTypeHeader,
+                 QStringLiteral("application/x-www-form-urlencoded"));
+    QNetworkReply *reply = nam->post(rq, form.toString(QUrl::FullyEncoded).toUtf8());
+    connect(reply, &QNetworkReply::finished, this, [this, reply, nam, flowId]() {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        nam->deleteLater();
+        // A newer Connect flow may have superseded this exchange while Google was
+        // replying — bail so we never store a token under the wrong service.
+        if (!m_oauth || m_oauth->id != flowId)
+            return;
+        const QJsonObject o = QJsonDocument::fromJson(body).object();
+        const QString refresh = o.value(QStringLiteral("refresh_token")).toString();
+        if (refresh.isEmpty())
+            finishOAuth(false,
+                        o.value(QStringLiteral("error_description"))
+                            .toString(o.value(QStringLiteral("error"))
+                                          .toString(QStringLiteral("no refresh_token returned"))),
+                        QString());
+        else
+            finishOAuth(true, QString(), refresh);
+    });
+}
+
+void ControlServer::finishOAuth(bool ok, const QString &error, const QString &refreshToken)
+{
+    if (!m_oauth) return;
+    const QString service = m_oauth->service;
+    const QString clientId = m_oauth->clientId;
+    const QString clientSecret = m_oauth->clientSecret;
+    if (m_oauth->server) m_oauth->server->deleteLater();
+    delete m_oauth;
+    m_oauth = nullptr;
+
+    if (!ok) {
+        m_oauthResult = QJsonObject{{QStringLiteral("pending"), false},
+                                    {QStringLiteral("connected"), false},
+                                    {QStringLiteral("service"), service},
+                                    {QStringLiteral("error"), error}};
+        m_audit.record(QStringLiteral("connectors.oauth"), false, QStringLiteral("medium"),
+                       QStringLiteral("google ") + service + QStringLiteral(": ") + error,
+                       QString());
+        return;
+    }
+    // Remove any prior row for this service (so re-connect doesn't duplicate),
+    // then materialize + enable via the existing connectors.add wiring.
+    Request rm;
+    rm.id = 0;
+    rm.method = QStringLiteral("connectors.remove");
+    rm.params = QJsonObject{{QStringLiteral("service"), service}};
+    handleConnectorsRemove(rm);
+    Request add;
+    add.id = 0;
+    add.method = QStringLiteral("connectors.add");
+    add.params = QJsonObject{{QStringLiteral("service"), service},
+                             {QStringLiteral("client_id"), clientId},
+                             {QStringLiteral("client_secret"), clientSecret},
+                             {QStringLiteral("refresh_token"), refreshToken}};
+    handleConnectorsAdd(add);
+    m_oauthResult = QJsonObject{{QStringLiteral("pending"), false},
+                                {QStringLiteral("connected"), true},
+                                {QStringLiteral("service"), service}};
+    m_audit.record(QStringLiteral("connectors.oauth"), true, QStringLiteral("medium"),
+                   QStringLiteral("google ") + service + QStringLiteral(" connected"), QString());
+}
+
+Response ControlServer::handleConnectorsOAuthStatus(const Request &req)
+{
+    return Response::success(req.id, m_oauthResult);
+}
+
+Response ControlServer::handleConnectorsRemove(const Request &req)
+{
+    const QString service = req.params.value(QStringLiteral("service")).toString();
+    const QString rid = req.params.value(QStringLiteral("id")).toString();
+    if (service.isEmpty() && rid.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("service or id is required"));
+    int removed = 0;
+    const QVector<McpServerRow> rows = m_mcp->list();
+    for (const McpServerRow &row : rows) {
+        const QString svc = Connectors::serviceFromServerName(row.name);
+        if (svc.isEmpty())
+            continue;
+        if ((!service.isEmpty() && svc == service) || (!rid.isEmpty() && row.id == rid)) {
+            m_settings.setApiKey(Connectors::secretKey(row.id, QStringLiteral("client_id")), QString());
+            m_settings.setApiKey(Connectors::secretKey(row.id, QStringLiteral("client_secret")), QString());
+            m_settings.setApiKey(Connectors::secretKey(row.id, QStringLiteral("refresh_token")), QString());
+            m_mcp->remove(row.id);
+            ++removed;
+        }
+    }
+    if (removed)
+        m_settings.saveSecrets();
+    QJsonObject r;
+    r.insert(QStringLiteral("removed"), removed);
+    return Response::success(req.id, r);
+}
+
 // --- Contract A v2: plugins marketplace (delegates to PluginRegistry) ------
 
 Response ControlServer::handlePluginsCatalog(const Request &req)
@@ -4523,7 +5038,7 @@ bool ControlServer::requestTakeOver(const QString &sessionId, QString *err,
         *approvalIdOut = approvalId;
     NormalizedBrainEvent ev = NormalizedBrainEvent::approval(
         approvalId,
-        QStringLiteral("Allow Jarvis to drive your REAL screen?"),
+        QStringLiteral("Allow Orin to drive your REAL screen?"),
         QStringLiteral("high"));
     onBrainEvent(sessionId, ev);
     return true;
@@ -4649,7 +5164,7 @@ Response ControlServer::handleAuthRequest(const Request &req)
     // runs BiometricPrompt, and calls auth.approve over its authed device WS.
     if (m_fcm) {
         PushMessage msg;
-        msg.title = QStringLiteral("Unlock Jarvis");
+        msg.title = QStringLiteral("Unlock Orin");
         msg.body = QStringLiteral("Approve sign-in on your phone");
         msg.data.insert(QStringLiteral("kind"), QStringLiteral("auth"));
         msg.data.insert(QStringLiteral("challenge_id"), ch.id);
@@ -5176,9 +5691,9 @@ void ControlServer::seedInternalDocsSkill()
     const QString body = QStringLiteral(
         "[catalog v4] When the user asks what you can do, your features, how to do "
         "something with you, or you're unsure you're capable of something, use THIS as "
-        "the source of truth for Jarvis's capabilities. Tell them what fits + offer to "
+        "the source of truth for Orin's capabilities. Tell them what fits + offer to "
         "do it.\n\n"
-        "# Jarvis — what you can do\n\n"
+        "# Orin — what you can do\n\n"
         "**Computer use** — drive mouse/keyboard/screen on KDE & Sway. You work on your "
         "OWN nested agent desktop by default (the user watches it live in chat / on the "
         "Computer page), or take over the user's REAL screen on request (consent-gated, "
@@ -5239,14 +5754,14 @@ void ControlServer::seedInternalDocsSkill()
         "gated shell commands + screenshots on it by name.\n"
         "**Connectors** — a Google connectors framework (Gmail / Calendar / Drive etc.) "
         "the user can enable. (docs/JARVIS_GOOGLE_CONNECTORS.md)\n"
-        "**Security / unlock** — optional 2FA: open Jarvis by approving on the paired "
+        "**Security / unlock** — optional 2FA: open Orin by approving on the paired "
         "phone with a fingerprint, with a local PIN fallback (no-brick fail-open).\n"
         "**Brains** — you can run on Codex, Claude, or a direct API brain; the user picks "
         "the brain + model per session.\n"
         "**Cross-surface** — one daemon behind a desktop sidebar, an Android app, and a "
         "Chrome extension; cross-device biometric unlock. (README.md, docs/ARCHITECTURE.md)\n");
     m_skills.create(QStringLiteral("internal_docs"),
-                    QStringLiteral("Jarvis's own feature/capability catalog — load this "
+                    QStringLiteral("Orin's own feature/capability catalog — load this "
                                    "when asked what you can do or when unsure."),
                     body, QStringLiteral("builtin"));
 }
@@ -5272,7 +5787,7 @@ void ControlServer::seedPhoneSkill()
         "[phone skill v1] Use this when calling/texting the user, when they call or text "
         "you, or when working with the phone subsystem.\n\n"
         "# Phone — call & text the user, and answer when they reach you\n\n"
-        "Jarvis has a NATIVE phone subsystem (vendored in the repo; MCP gateway on :8801). "
+        "Orin has a NATIVE phone subsystem (vendored in the repo; MCP gateway on :8801). "
         "You have ~56 phone tools (server `phone`). Use them to reach the user on their REAL "
         "phone, and you ANSWER when they call or text the Twilio number.\n\n"
         "## Reach the user (outbound)\n"
@@ -5305,7 +5820,7 @@ void ControlServer::seedPhoneSkill()
         "- `store_memory` / `search_memory` — phone memory that persists across calls AND texts.\n"
         "- `twilio_allowlist_add/list/remove` — only allow-listed numbers connect; `twilio_set_user_number`.\n\n"
         "## Surfaces\n"
-        "The same phone lives in the Jarvis Android app (Phone tab = the full app: dialer, inbox, "
+        "The same phone lives in the Orin Android app (Phone tab = the full app: dialer, inbox, "
         "agents, HUD, settings, screening), the desktop sidebar (Phone hub: Dialer · Agents · Inbox "
         "· HUD · Settings · Screening), and the Chrome side panel. See docs/PHONE.md.\n");
     m_skills.create(QStringLiteral("phone"),
@@ -6565,7 +7080,7 @@ QString ControlServer::fireScheduledJob(const ScheduleRow &row)
     if (!row.reportThread.isEmpty()) {
         prompt += QStringLiteral(
             "\n\n[Workflow report] When you finish this task, post a concise "
-            "summary of the outcome to the user's Jarvis inbox by calling the "
+            "summary of the outcome to the user's Orin inbox by calling the "
             "notify_user tool with title=\"%1\". Keep it to a few lines.")
             .arg(row.reportThread);
     }
@@ -6578,7 +7093,7 @@ QString ControlServer::fireScheduledJob(const ScheduleRow &row)
     if (m_fcm) {
         PushMessage msg;
         msg.title = QStringLiteral("Scheduled task started");
-        msg.body = row.name.isEmpty() ? QStringLiteral("A scheduled Jarvis task is running")
+        msg.body = row.name.isEmpty() ? QStringLiteral("A scheduled Orin task is running")
                                        : row.name;
         msg.data.insert(QStringLiteral("kind"), QStringLiteral("schedule_fired"));
         msg.data.insert(QStringLiteral("session_id"), sid);
@@ -7523,7 +8038,7 @@ Response ControlServer::handleOutpostInstallWorkload(const Request &req)
         "WantedBy=multi-user.target\n");
     const QByteArray jarvisdUnit = QByteArrayLiteral(
         "[Unit]\n"
-        "Description=Jarvis daemon \xE2\x80\x94 Proxmox workload-manager profile (headless, Mistral/ApiBrain)\n"
+        "Description=Orin daemon \xE2\x80\x94 Proxmox workload-manager profile (headless, Mistral/ApiBrain)\n"
         "After=network.target proxmox-mcp.service\n"
         "Requires=proxmox-mcp.service\n\n"
         "[Service]\n"
@@ -8705,7 +9220,7 @@ void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrain
     if (ev.kind == NormalizedBrainEvent::Kind::Approval) {
         m_notify.approvalNeeded(
             ev.fields.value(QStringLiteral("summary")).toString(
-                QStringLiteral("Jarvis needs your approval")),
+                QStringLiteral("Orin needs your approval")),
             sessionId);
         // Audit the brain-emitted approval (computer-use / take-over etc.).
         m_audit.record(QStringLiteral("approval"), true,

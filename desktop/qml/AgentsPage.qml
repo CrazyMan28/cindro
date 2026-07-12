@@ -61,7 +61,7 @@ Item {
             PageHeader {
                 Layout.fillWidth: true
                 title: "Agents"
-                subtitle: "Custom subagents Jarvis can dispatch — you define what each does + when to call it. Type / in Chat to dispatch."
+                subtitle: "Custom subagents Orin can dispatch — you define what each does + when to call it. Type / in Chat to dispatch."
             }
             Widgets.PillButton {
                 label: "+ New Agent"
@@ -100,7 +100,7 @@ Item {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
-                    text: "Define a specialist agent (research, code review, summarizing…) with a role + when to use it. Jarvis can then dispatch tasks to it, and it reports back in Chat."
+                    text: "Define a specialist agent (research, code review, summarizing…) with a role + when to use it. Orin can then dispatch tasks to it, and it reports back in Chat."
                     color: Theme.textFaint
                     font.family: Theme.fontSans
                     font.pixelSize: 13

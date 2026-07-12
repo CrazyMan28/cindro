@@ -149,7 +149,7 @@ function ModeAutonomySection() {
 
       <Show when={!loading()} fallback={<div class="sma-loading">Loading…</div>}>
         <div>
-          <p class="sma-desc">How cautious Jarvis is before risky actions</p>
+          <p class="sma-desc">How cautious Orin is before risky actions</p>
           <p class="sma-sub">
             Tools are auto-ranked by risk. HIGH = irreversible / touches your real world (delete files, destructive
             shell, your real screen, ssh, installs, sending things out). MEDIUM = reversible / scoped to the agent
@@ -174,7 +174,7 @@ function ModeAutonomySection() {
             </For>
           </div>
           <p class="sma-footnote">
-            Jarvis calls ask_user (tap to approve on your phone or here) before any action above your chosen line.
+            Orin calls ask_user (tap to approve on your phone or here) before any action above your chosen line.
             This is a policy, not the sandbox — capability limits still apply.
           </p>
         </div>

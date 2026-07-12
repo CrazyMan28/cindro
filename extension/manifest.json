@@ -3,9 +3,9 @@
   "name": "Computer Use Bridge",
   "version": "0.5.3",
   "action": {
-    "default_title": "JARVIS — Chrome co-worker"
+    "default_title": "ORIN — Chrome co-worker"
   },
-  "description": "Connects this browser to the local computer-use MCP server so AI agents can drive it, and opens a Jarvis co-worker chat side panel.",
+  "description": "Connects this browser to the local computer-use MCP server so AI agents can drive it, and opens a Orin co-worker chat side panel.",
   "permissions": ["tabs", "scripting", "storage", "alarms", "debugger", "sidePanel"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "sw.js" },

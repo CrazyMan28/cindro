@@ -71,7 +71,7 @@ def cmd_status() -> int:
     snap = asyncio.run(_daemon_snapshot())
     settings = snap.get("settings", {})
 
-    t = Table(title="Jarvis status", title_justify="left",
+    t = Table(title="Orin status", title_justify="left",
               header_style="bold cyan", border_style="bright_black")
     t.add_column("component")
     t.add_column("state")

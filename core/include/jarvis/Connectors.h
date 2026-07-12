@@ -34,6 +34,10 @@ QString displayNameFor(const QString &service);
 // The suggested risk tier for `service` ("medium" fallback if unknown).
 QString riskFor(const QString &service);
 
+// The space-separated Google OAuth scope(s) to request for `service` (empty if
+// unknown). Used by the "Connect Google" consent flow.
+QString scopesFor(const QString &service);
+
 // The MCP server name for a connector service ("google-<service>").
 QString serverName(const QString &service);
 

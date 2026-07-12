@@ -1628,6 +1628,36 @@ void Bridge::phoneHttp(const QString &callId, const QString &method,
     request(QStringLiteral("phone.http"), params, callId);
 }
 
+// ---- Phone/Twilio config (Contract A phone.config, CONTROL channel) --------
+// All three actions land back in handleResponse tagged with ctx = the action, so
+// the reply can be routed to the right signal without sniffing the result shape.
+
+void Bridge::phoneConfigGet()
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("action"), QStringLiteral("get"));
+    request(QStringLiteral("phone.config"), params, QStringLiteral("get"));
+}
+
+void Bridge::phoneConfigSet(const QVariantMap &patch)
+{
+    // Callers must only include secret keys (twilio_account_sid / twilio_auth_token
+    // / admin_token / device_token / agent_token) when the user typed a NEW value,
+    // so an unchanged masked secret is never wiped. The daemon writes only the keys
+    // present in the patch.
+    QVariantMap params;
+    params.insert(QStringLiteral("action"), QStringLiteral("set"));
+    params.insert(QStringLiteral("patch"), patch);
+    request(QStringLiteral("phone.config"), params, QStringLiteral("set"));
+}
+
+void Bridge::phoneConfigTest()
+{
+    QVariantMap params;
+    params.insert(QStringLiteral("action"), QStringLiteral("test"));
+    request(QStringLiteral("phone.config"), params, QStringLiteral("test"));
+}
+
 // ---- Notifications ---------------------------------------------------------
 
 void Bridge::setNotificationsEnabled(bool enabled)
@@ -1654,8 +1684,8 @@ void Bridge::notify(const QString &title, const QString &body)
     if (!hasExecutable(QStringLiteral("notify-send")))
         return;
     QStringList args;
-    args << QStringLiteral("-a") << QStringLiteral("Jarvis")
-         << (title.isEmpty() ? QStringLiteral("Jarvis") : title)
+    args << QStringLiteral("-a") << QStringLiteral("Orin")
+         << (title.isEmpty() ? QStringLiteral("Orin") : title)
          << body;
     QProcess::startDetached(QStringLiteral("notify-send"), args);
 }
@@ -3791,7 +3821,7 @@ void Bridge::onTextMessageReceived(const QString &message)
                    evMap.value(QStringLiteral("summary")).toString());
         } else if (kind == QStringLiteral("final")) {
             notify(QStringLiteral("Task complete"),
-                   QStringLiteral("Jarvis finished a turn."));
+                   QStringLiteral("Orin finished a turn."));
             // The model's turn ended — drop the auto-armed take-over overlay now
             // (it stays up for the WHOLE turn while the model drives the real
             // screen, then clears here). Explicit take-overs aren't auto-armed, so
@@ -3958,6 +3988,19 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             QVariantMap r;
             r.insert(QStringLiteral("error"), error);
             emit phoneHttpResult(ctx, r);
+            return;
+        }
+        // phone.config errors: surface through the config signals so the panel
+        // shows the reason inline (a failed test -> reachable:false; a set
+        // write_error -> its note; a get -> an empty config = "not set up"). Also
+        // degrades an older daemon that predates phone.config (unknown_method).
+        if (method == QStringLiteral("phone.config")) {
+            if (ctx == QStringLiteral("set"))
+                emit phoneConfigSaved(false, false, msg.isEmpty() ? code : msg);
+            else if (ctx == QStringLiteral("test"))
+                emit phoneConfigTested(false, false);
+            else
+                emit phoneConfigLoaded(QVariantMap());
             return;
         }
         // Outpost exec/screenshot can fail with the daemon's pairing / gating
@@ -4561,6 +4604,18 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         // Echo the result back to QML tagged with the caller's callId (ctx).
         // result shape: {status:int, data:<obj|array>, text?}.
         emit phoneHttpResult(ctx, result);
+    } else if (method == QStringLiteral("phone.config")) {
+        // ctx is the action ("get"|"set"|"test") we tagged the request with.
+        if (ctx == QStringLiteral("set")) {
+            emit phoneConfigSaved(result.value(QStringLiteral("ok")).toBool(),
+                                  result.value(QStringLiteral("restarted")).toBool(),
+                                  result.value(QStringLiteral("note")).toString());
+        } else if (ctx == QStringLiteral("test")) {
+            emit phoneConfigTested(result.value(QStringLiteral("reachable")).toBool(),
+                                   result.value(QStringLiteral("twilio_configured")).toBool());
+        } else {
+            emit phoneConfigLoaded(result);
+        }
     }
     // ping / session.send / session.cancel / approval.respond: ack only.
 }
