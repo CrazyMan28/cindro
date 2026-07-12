@@ -34,20 +34,20 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" \
          "$APPDIR/usr/share/icons/hicolor/scalable/apps"
 install -m755 "$BUILD/daemon/jarvisd"         "$APPDIR/usr/bin/jarvisd"
 install -m755 "$BUILD/desktop/cindro-sidebar" "$APPDIR/usr/bin/cindro-sidebar"
-install -m644 "$REPO/packaging/jarvis.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/jarvis.svg"
-cp "$REPO/packaging/jarvis.svg" "$APPDIR/jarvis.svg"   # top-level icon AppImage wants
+install -m644 "$REPO/packaging/cindro.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/cindro.svg"
+cp "$REPO/packaging/cindro.svg" "$APPDIR/cindro.svg"   # top-level icon AppImage wants
 
-cat > "$APPDIR/usr/share/applications/jarvis.desktop" <<'EOF'
+cat > "$APPDIR/usr/share/applications/cindro.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=Jarvis
+Name=Cindro
 Comment=One AI co-worker for your Linux desktop
 Exec=AppRun
-Icon=jarvis
+Icon=cindro
 Categories=Utility;Development;
 Terminal=false
 EOF
-cp "$APPDIR/usr/share/applications/jarvis.desktop" "$APPDIR/jarvis.desktop"
+cp "$APPDIR/usr/share/applications/cindro.desktop" "$APPDIR/cindro.desktop"
 
 # 3. Python computer-use engine (PyInstaller one-dir; optional/non-fatal) -------
 say "Bundling the computer-use engine (PyInstaller)..."
@@ -201,7 +201,7 @@ say "Running linuxdeploy (bundling Qt + LayerShellQt + deps)..."
 "$LD" --appdir "$APPDIR" --plugin qt \
   --executable "$APPDIR/usr/bin/jarvisd" \
   --executable "$APPDIR/usr/bin/cindro-sidebar" \
-  --desktop-file "$APPDIR/jarvis.desktop" --icon-file "$APPDIR/jarvis.svg"
+  --desktop-file "$APPDIR/cindro.desktop" --icon-file "$APPDIR/cindro.svg"
 
 # Prune host-provided libs. linuxdeploy-plugin-qt over-bundles Qt's transitive deps,
 # including libs that MUST come from the host: client libs that talk to a running host
