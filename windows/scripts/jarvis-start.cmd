@@ -5,10 +5,11 @@ rem
 rem  On Linux these run as systemd user services; on Windows this one launcher
 rem  brings them all up so EVERY feature works:
 rem    1. computer-use engine (jarvis-engine.exe)  -> 127.0.0.1:8794  (all MCP tools)
-rem    2. phone server (bundled node + phone-server) -> 127.0.0.1:8801 (calls/SMS), if configured
-rem    3. jarvisd.exe (the daemon: sessions, skills, schedules, subagents, hooks,
+rem    2. outpost-mcp.exe -> 127.0.0.1:8798 (pair/exec/screenshot remote machines)
+rem    3. phone server (bundled node + phone-server) -> 127.0.0.1:8801 (calls/SMS), if configured
+rem    4. jarvisd.exe (the daemon: sessions, skills, schedules, subagents, hooks,
 rem       memory, voice, plugins, connectors, phone proxy, device/pairing channel)
-rem    4. jarvis-sidebar.exe (the UI; first run shows the setup wizard)
+rem    5. jarvis-sidebar.exe (the UI; first run shows the setup wizard)
 rem
 rem  Installed to {app}\ ; the Start-menu shortcut + autostart point here.
 rem  The engine auto-creates %USERPROFILE%\.computer-use\config.yaml (random
@@ -34,6 +35,15 @@ rem 1. computer-use engine (real-screen Win32 backend; serves ALL MCP tools).
 rem    PyInstaller one-dir nests it: engine\jarvis-engine\jarvis-engine.exe
 if exist "engine\jarvis-engine\jarvis-engine.exe" (
   start "jarvis-engine" /b "engine\jarvis-engine\jarvis-engine.exe"
+)
+
+rem 1b. outpost-mcp (pair/exec/screenshot remote machines) -> 127.0.0.1:8798.
+rem     No systemd on Windows, so this is the only thing that ever starts it.
+rem     OUTPOST_AGENT_BIN_DIR points at the Go agent binaries staged as a
+rem     sibling of the PyInstaller one-dir bundle (outpost\agent-bin\).
+if exist "outpost\outpost-mcp\outpost-mcp.exe" (
+  set "OUTPOST_AGENT_BIN_DIR=%~dp0outpost\agent-bin"
+  start "outpost-mcp" /b "outpost\outpost-mcp\outpost-mcp.exe"
 )
 
 rem 2. phone server - only if the user configured it (phone.env present)

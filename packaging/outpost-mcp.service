@@ -5,12 +5,16 @@ Wants=network-online.target
 
 [Service]
 # Auto-generates ~/.config/jarvis/outpost_mcp_token (0600) on first start and
-# binds 0.0.0.0:8798 (tailnet bearer model). Serves the Go agent binaries from
-# outpost-mcp/agent-bin/. Run from the project's uv venv; PYTHONPATH is unset
-# because the host exports a 3.14 PYTHONPATH that breaks venvs.
-WorkingDirectory=%h/projects/computer_use/outpost-mcp
+# binds 0.0.0.0:8798 (tailnet bearer model). Runs from the venv install.sh
+# creates at ~/.local/share/jarvis/outpost-venv (NOT `uv run` from a source
+# checkout — a hardcoded source WorkingDirectory only ever worked on the
+# original dev box's exact clone path). Serves the Go agent binaries staged at
+# install time to ~/.local/share/jarvis/outpost-agent-bin/, independent of
+# where (or whether) the repo checkout still exists. PYTHONPATH is unset
+# because the host exports a 3.14 PYTHONPATH that breaks 3.12 venvs.
 Environment=PYTHONPATH=
-ExecStart=/usr/bin/env -u PYTHONPATH %h/.local/bin/uv run outpost-mcp
+Environment=OUTPOST_AGENT_BIN_DIR=%h/.local/share/jarvis/outpost-agent-bin
+ExecStart=/usr/bin/env -u PYTHONPATH %h/.local/bin/outpost-mcp
 Restart=on-failure
 RestartSec=2
 

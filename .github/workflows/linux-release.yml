@@ -61,12 +61,11 @@ jobs:
             echo "version=0.0.0-$(echo "${GITHUB_SHA}" | cut -c1-7)" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build the AppImage
-        run: packaging/build-appimage.sh "${{ steps.ver.outputs.version }}"
-
       # The outpost-agent binaries (outpost-mcp/agent-bin/) are gitignored and
       # were never shipped, so a fresh outpost hub 404'd every pairing. Cross-
-      # compile all 6 targets here and attach them to the Release so a binary
+      # compile all 6 targets here — BEFORE the AppImage step, which bundles
+      # whatever's in agent-bin/ into the AppImage itself (packaging/build-
+      # appimage.sh step 3b) — and also attach them to the Release so a binary
       # install (no Go toolchain) still gets them.
       - name: Build outpost-agent binaries
         run: |
@@ -79,6 +78,9 @@ jobs:
           else
             echo "go toolchain absent on the runner; skipping outpost-agent build"
           fi
+
+      - name: Build the AppImage
+        run: packaging/build-appimage.sh "${{ steps.ver.outputs.version }}"
 
       # Gate: the AppImage MUST load the full UI (offscreen) or we don't ship it.
       # Catches the "bundled libs segfault" class of failures before release.

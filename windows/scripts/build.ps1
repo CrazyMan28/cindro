@@ -301,6 +301,106 @@ if ($relayExe) {
   Write-Warning "jarvis-relay.exe not found under $build -- the sandbox reverse tunnel will be unavailable."
 }
 
+# 3c. outpost-agent binaries (Go, cross-compiled for every target) -------------
+# outpost-agent/build.sh does this on Linux/macOS, but it's a bash script and
+# this runner has no git-bash on PATH (see windows-build.yml) — reimplemented
+# natively here. Self-heals a missing Go toolchain (mirrors the Qt self-heal
+# above) by pulling the current stable Windows zip from go.dev's release JSON,
+# so a runner that hasn't been re-provisioned with setup-runner-buildtools.ps1
+# yet still produces working binaries. Non-fatal like the phone server below:
+# without these, pairing 404s with agent_binary_unavailable but everything else
+# still builds — a broken Go toolchain must not block the whole installer.
+Write-Host "==> staging outpost-agent binaries (Go, cross-compiled)" -ForegroundColor Cyan
+try {
+  $goCmd = Get-Command go -ErrorAction SilentlyContinue
+  if (-not $goCmd) {
+    Write-Host "    go not found on PATH — self-heal: fetching a portable Go toolchain…" -ForegroundColor Yellow
+    $goRoot = "C:\go-portable"
+    $goExe = Join-Path $goRoot "go\bin\go.exe"
+    if (-not (Test-Path $goExe)) {
+      $release = Invoke-RestMethod -Uri "https://go.dev/dl/?mode=json"
+      $file = $release[0].files | Where-Object { $_.os -eq "windows" -and $_.arch -eq "amd64" -and $_.kind -eq "archive" } | Select-Object -First 1
+      if (-not $file) { throw "could not resolve a windows-amd64 Go archive from go.dev" }
+      $goZip = Join-Path $build $file.filename
+      Invoke-WebRequest -Uri "https://go.dev/dl/$($file.filename)" -OutFile $goZip
+      New-Item -ItemType Directory -Force -Path $goRoot | Out-Null
+      Expand-Archive -Force $goZip $goRoot
+    }
+    if (Test-Path $goExe) {
+      $env:Path = "$goRoot\go\bin;$env:Path"
+      $goCmd = Get-Command go -ErrorAction SilentlyContinue
+    }
+  }
+  if ($goCmd) {
+    $agentBinDir = Join-Path $repo "outpost-mcp\agent-bin"
+    New-Item -ItemType Directory -Force -Path $agentBinDir | Out-Null
+    Push-Location (Join-Path $repo "outpost-agent")
+    try {
+      $env:CGO_ENABLED = "0"
+      foreach ($target in @(
+        @{goos="linux";   goarch="amd64"; ext=""},
+        @{goos="linux";   goarch="arm64"; ext=""},
+        @{goos="darwin";  goarch="amd64"; ext=""},
+        @{goos="darwin";  goarch="arm64"; ext=""},
+        @{goos="windows"; goarch="amd64"; ext=".exe"},
+        @{goos="windows"; goarch="386";   ext=".exe"}
+      )) {
+        $env:GOOS = $target.goos; $env:GOARCH = $target.goarch
+        $out = Join-Path $agentBinDir "outpost-agent-$($target.goos)-$($target.goarch)$($target.ext)"
+        & go build -trimpath -ldflags="-s -w" -o $out .
+        if ($LASTEXITCODE -ne 0) { throw "go build failed for $($target.goos)/$($target.goarch)" }
+      }
+      Remove-Item Env:\GOOS, Env:\GOARCH, Env:\CGO_ENABLED -ErrorAction SilentlyContinue
+      Write-Host "    outpost-agent binaries built into $agentBinDir" -ForegroundColor Green
+    } finally { Pop-Location }
+  } else {
+    Write-Warning "Go toolchain unavailable (self-heal failed) — outpost-agent binaries NOT built; pairing will 404 until the server builds one on demand or the runner is re-provisioned."
+  }
+} catch {
+  Write-Warning "outpost-agent build skipped ($_). Pairing will 404 until agent-bin/ is populated."
+}
+
+# 3d. outpost-mcp (PyInstaller one-folder) --------------------------------------
+# Same rationale as the phone server below: resilient, not a hard build
+# requirement — a broken pyinstaller/mcp wheel on this runner must not block
+# jarvisd/jarvis-sidebar/engine, which already work today. Without this stage
+# the Outpost UI panel fails every call with outpost_unreachable (nothing ever
+# listens on :8798 on a fresh Windows install — see docs/OUTPOST.md).
+Write-Host "==> bundling outpost-mcp" -ForegroundColor Cyan
+try {
+  $outpostVenv = Join-Path $win "outpost\.venv-win"
+  $outpostVenvPy = Join-Path $outpostVenv "Scripts\python.exe"
+  if (-not (Test-Path $outpostVenv)) { python -m venv $outpostVenv }
+  & $outpostVenvPy -m pip install --upgrade pip pyinstaller
+  if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed" }
+  & $outpostVenvPy -m pip install (Join-Path $repo "outpost-mcp")
+  if ($LASTEXITCODE -ne 0) { throw "pip install outpost-mcp failed" }
+  # NOT --collect-all mcp: it pulls in the optional mcp.cli submodule, which
+  # imports `typer` (not a dependency here — outpost-mcp only uses
+  # mcp.server.fastmcp / mcp.server.transport_security) and hard-fails the
+  # freeze. --copy-metadata mcp alone is the same choice the engine bundling
+  # above already makes, and is enough for mcp's importlib.metadata lookups.
+  & (Join-Path $outpostVenv "Scripts\pyinstaller.exe") --noconfirm --name outpost-mcp `
+    --distpath (Join-Path $payload "outpost") --workpath (Join-Path $build "pyi-outpost") `
+    --collect-all uvicorn --collect-all fastapi --collect-all starlette `
+    --collect-submodules mcp.server --copy-metadata mcp `
+    (Join-Path $win "outpost\run_outpost_mcp.py")
+  if ($LASTEXITCODE -ne 0) { throw "PyInstaller (outpost-mcp) failed" }
+  # agent-bin staged NEXT TO the one-folder bundle (not inside it) — the
+  # launcher points OUTPOST_AGENT_BIN_DIR there explicitly, so exact nesting
+  # doesn't matter, but keeping it outside avoids PyInstaller re-signing/
+  # touching it on a rebuild.
+  $outpostAgentBinSrc = Join-Path $repo "outpost-mcp\agent-bin"
+  $outpostAgentBinDst = Join-Path $payload "outpost\agent-bin"
+  if (Test-Path $outpostAgentBinSrc) {
+    New-Item -ItemType Directory -Force -Path $outpostAgentBinDst | Out-Null
+    Copy-Item (Join-Path $outpostAgentBinSrc "*") $outpostAgentBinDst -Force -ErrorAction SilentlyContinue
+  }
+  Write-Host "    outpost-mcp bundled." -ForegroundColor Green
+} catch {
+  Write-Warning "outpost-mcp bundling skipped ($_). The installer ships without Outpost; it can be added later."
+}
+
 # 4. Node phone server (OPTIONAL) ----------------------------------------------
 # Resilient: better-sqlite3 native builds can be finicky on CI. If it fails the
 # installer still ships every other feature; the phone subsystem can be added later.
