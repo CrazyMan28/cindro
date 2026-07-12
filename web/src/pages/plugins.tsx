@@ -138,7 +138,7 @@ function PluginsPage() {
           <div class="hud-label" style={{ color: "var(--accent-bright)", "font-size": "16px" }}>
             PLUGINS
           </div>
-          <div class="plg-subtitle">Install MCP tools and skills to extend what Orin can do.</div>
+          <div class="plg-subtitle">Install MCP tools and skills to extend what Cindro can do.</div>
         </div>
         <button type="button" class="plg-btn" onClick={() => void loadCatalog()}>
           Refresh

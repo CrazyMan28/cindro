@@ -145,7 +145,7 @@ fun HomeContent(
                         Text(greeting, style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.ExtraBold, color = JarvisPalette.TextPrimary)
                         Text(
-                            if (online) "Orin is on your laptop & ready." else "Connecting to Orin…",
+                            if (online) "Cindro is on your laptop & ready." else "Connecting to Cindro…",
                             style = MaterialTheme.typography.bodyMedium, color = JarvisPalette.TextSecondary,
                         )
                     }
@@ -243,7 +243,7 @@ private fun LiveWidgetCard(canvas: CanvasItem?) {
                 }
             } else {
                 Text(
-                    "No live widgets yet — ask Orin to show you a chart or a status card, and it'll appear here.",
+                    "No live widgets yet — ask Cindro to show you a chart or a status card, and it'll appear here.",
                     style = MaterialTheme.typography.bodyMedium, color = JarvisPalette.TextSecondary,
                 )
             }

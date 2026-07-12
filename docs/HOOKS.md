@@ -1,6 +1,6 @@
 # Hooks — Claude-Code-style lifecycle hooks
 
-User-configured shell commands that fire at Orin lifecycle events. The config
+User-configured shell commands that fire at Cindro lifecycle events. The config
 schema matches Claude Code's `settings.json` `hooks` block, so existing CC hook
 scripts are reusable.
 
@@ -33,7 +33,7 @@ The command receives a JSON event on **stdin** (`session_id`, `hook_event_name`,
 - **exit 2** — hard block; stderr is the reason fed back to the model.
 - **other** — non-blocking error (stderr collected, not fatal).
 
-## Where Orin fires them (and what's enforceable)
+## Where Cindro fires them (and what's enforceable)
 `HookStore::run()` is a **no-op fast path** when an event has no hooks, so fire points
 cost ~nothing by default (`core/src/HookStore.cpp`; `daemon/src/ControlServer.cpp`):
 - **UserPromptSubmit** — can **block** the turn or **inject** context. (Fully enforced.)

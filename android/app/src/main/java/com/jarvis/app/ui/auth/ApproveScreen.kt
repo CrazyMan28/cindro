@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
 /**
  * 2FA + fingerprint cross-device unlock — the phone leg.
  *
- * Opened when the user taps the "Unlock Orin" FCM notification (challenge id in
+ * Opened when the user taps the "Unlock Cindro" FCM notification (challenge id in
  * the intent extra). Immediately runs BiometricPrompt (the second factor — the
  * already-authed device WS is the possession factor). On success it calls
  * [JarvisRepository.approveAuth], flipping the desktop's lock to unlocked. On
@@ -52,7 +52,7 @@ fun ApproveScreen(
         scope.launch {
             val ok = Biometric.authenticate(
                 activity,
-                title = "Unlock Orin",
+                title = "Unlock Cindro",
                 subtitle = "Confirm it's you to sign in on your computer",
             )
             if (!ok) {
@@ -70,7 +70,7 @@ fun ApproveScreen(
             if (res.isSuccess) {
                 phase = "approved"
             } else {
-                errorText = res.exceptionOrNull()?.message ?: "Could not reach Orin."
+                errorText = res.exceptionOrNull()?.message ?: "Could not reach Cindro."
                 phase = "error"
             }
         }

@@ -178,7 +178,7 @@ def gate(tool: str) -> None:
               " Permissions."
         )
     # ask
-    q = f"Orin wants to run tool '{tool}'"
+    q = f"Cindro wants to run tool '{tool}'"
     if app:
         q += f" on {app.split('|')[0] or app}"
     if note:
@@ -316,7 +316,7 @@ def _scan_tui_layout(tool: str, arguments: Any) -> None:
     path = _tui_log_path(arguments)
     if not path or path in _approved_log_paths:
         return
-    q = f"Orin wants to add/edit a TUI page that tails local file: {path}. Allow?"
+    q = f"Cindro wants to add/edit a TUI page that tails local file: {path}. Allow?"
     try:
         res = ask_bus.ask(q, ["Allow", "Deny"], timeout=_ASK_TIMEOUT)
         answer = str((res or {}).get("answer", "")).strip().lower()

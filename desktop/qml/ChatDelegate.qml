@@ -402,7 +402,7 @@ Item {
                     color: del.isUser ? Theme.amber : Theme.accent
                 }
                 Text {
-                    text: del.isUser ? "OPERATOR" : "J.A.R.V.I.S"
+                    text: del.isUser ? "OPERATOR" : "CINDRO"
                     color: del.isUser ? Theme.amber : Theme.accent
                     opacity: 0.8
                     font.family: Theme.fontDisplay
@@ -785,7 +785,7 @@ Item {
                 spacing: 11
 
                 Text {
-                    text: "❔ ORIN IS ASKING"
+                    text: "❔ CINDRO IS ASKING"
                     color: Theme.accent
                     font.weight: Font.DemiBold
                     font.letterSpacing: Theme.trackMid

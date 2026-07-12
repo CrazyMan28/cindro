@@ -1,9 +1,9 @@
-# Hermes-derived features to build into Orin (spec for the memory/skills + co-worker waves)
+# Hermes-derived features to build into Cindro (spec for the memory/skills + co-worker waves)
 
 Source studied: `~/.hermes/hermes-agent/` (Python agent) + `~/projects/mcp/hermes-phone-mcp-bridge/`
 (Android body) + `~/projects/mcp/agent_tts-stt/`. Adopt the FEATURES below (not Hermes' look).
-These sit at the **Orin level** (jarvisd), applied for ALL brains — and especially the ApiBrain path
-(CodexBrain/ClaudeBrain already have their own memory/skills; Orin memory is injected on top).
+These sit at the **Cindro level** (jarvisd), applied for ALL brains — and especially the ApiBrain path
+(CodexBrain/ClaudeBrain already have their own memory/skills; Cindro memory is injected on top).
 
 ## 1. Memory (adopt — task #17)
 MemoryProvider pattern (from `agent/memory_manager.py` + `memory_provider.py`):
@@ -13,7 +13,7 @@ MemoryProvider pattern (from `agent/memory_manager.py` + `memory_provider.py`):
 - Writes via `on_memory_write(action, target, content, metadata)` — action ∈ add|replace|remove,
   target ∈ memory|user, metadata = provenance (session_id, tool_name, origin).
 - Storage: SQLite + FTS5 full-text search. One active external provider at a time (avoid schema bloat).
-- Orin impl: builtin SQLite provider at `~/.local/share/jarvis/jarvis.db` (tables `memories`,
+- Cindro impl: builtin SQLite provider at `~/.local/share/jarvis/jarvis.db` (tables `memories`,
   `memories_fts`). jarvisd calls prefetch before spawning/sending to the brain and injects results;
   sync_turn after. Expose memory tools (`memory.add/replace/remove/search`) so the model self-curates.
 
@@ -25,8 +25,8 @@ From `agent/skill_commands.py` + `skill_utils.py` + `~/.hermes/skills/`:
   path + resolved config, and inserts the skill content as a user message before the next model call.
 - Skills expose NO tools themselves; the agent uses its file/shell/computer-use tools to run bundled scripts.
 - SELF-AUTHORING: give the agent a `skill.create(name, description, body, scripts?)` tool that writes a
-  new `SKILL.md` to the skills dir; Orin indexes it and it becomes invokable. Orin can thus learn a
-  repeatable task once and save it as a skill. (Codex/Claude CLIs also read a skills dir — Orin can
+  new `SKILL.md` to the skills dir; Cindro indexes it and it becomes invokable. Cindro can thus learn a
+  repeatable task once and save it as a skill. (Codex/Claude CLIs also read a skills dir — Cindro can
   drop the SKILL.md where the active CLI brain picks it up too.)
 
 ## 3. Agent loop (adopt for ApiBrain — task #4)
@@ -78,7 +78,7 @@ approval (the approval cards already in the desktop UI). Keep last ~100 entries;
   exposed over the device WS via `ControlServer::dispatchOpsMethod(remote=true)`. `ssh.exec` and
   `schedule.create` are **biometric** tier; the audit log records `remote=true` for device-initiated ops.
 
-## 6. Voice STT/TTS + "Hey Orin" wake (adopt — Android, task #7/#10)
+## 6. Voice STT/TTS + "Hey Cindro" wake (adopt — Android, task #7/#10)
 Android `SpeechRecognizer` (push-to-talk + foreground wake phrase) + `TextToSpeech`. Async input,
 sync TTS output. Wake phrase only while a foreground service + notification is visible (no silent bg listen).
 

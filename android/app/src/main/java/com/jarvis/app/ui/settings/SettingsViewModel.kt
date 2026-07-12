@@ -38,7 +38,7 @@ data class SettingsUiState(
     val canDrive: Map<String, Boolean> = emptyMap(),
     val models: List<ModelInfo> = emptyList(),
     val modelsBrain: String = "codex",
-    // "Let Orin use a computer/browser" (daemon pref; default ON). When on,
+    // "Let Cindro use a computer/browser" (daemon pref; default ON). When on,
     // every chat can drive a computer/Chrome on demand with no manual co-work.
     val letJarvisUseComputer: Boolean = true,
     val permissionLevel: String = "medium", // ask-before-risky: high|medium|low
@@ -249,7 +249,7 @@ class SettingsViewModel(
         }
     }
 
-    /** "Let Orin use a computer/browser" daemon pref. Biometric-gated patch. */
+    /** "Let Cindro use a computer/browser" daemon pref. Biometric-gated patch. */
     fun setLetJarvisUseComputer(enabled: Boolean) {
         patch(JsonObject().apply { addProperty("let_jarvis_use_computer", enabled) }) {
             _uiState.update { it.copy(letJarvisUseComputer = enabled) }

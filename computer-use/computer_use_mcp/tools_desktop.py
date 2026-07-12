@@ -73,7 +73,7 @@ def register(mcp: FastMCP) -> None:
     def ask_user(question: str, options: list[str] | None = None,
                  timeout_seconds: float = 180.0) -> str:
         """Ask the USER a question and wait for their answer (a card with tappable
-        options appears in the Orin chat / phone). Use this whenever you need a
+        options appears in the Cindro chat / phone). Use this whenever you need a
         decision only the user can make — e.g. "Drive your REAL screen, or work on
         my own agent desktop?", "Which file?", "OK to proceed?". Pass `options` for
         tappable choices (the user can also type a custom answer). Returns JSON

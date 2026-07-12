@@ -81,7 +81,7 @@ def _cmd_version() -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jarvis",
-        description="The Orin terminal — a full agent in your shell. "
+        description="The Cindro terminal — a full agent in your shell. "
                     "Run with no arguments for the TUI.")
     sub = parser.add_subparsers(dest="cmd")
 

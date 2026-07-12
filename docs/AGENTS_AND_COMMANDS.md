@@ -1,4 +1,4 @@
-# Orin — "/" Command Palette + Custom Agents (Subagents)
+# Cindro — "/" Command Palette + Custom Agents (Subagents)
 
 How the slash-command palette and the custom-agent (subagent) system work across
 the desktop, the phone, and the Chrome extension. Pair with
@@ -91,7 +91,7 @@ finishes and returns its summary (the simplest pattern: `agent_start` then
 the moment it finishes (no polling needed either way).
 
 There's a built-in **`internal_docs`** skill (seeded on daemon start) that lists all
-of Orin's features + docs; the preamble tells the model to `skill_load("internal_docs")`
+of Cindro's features + docs; the preamble tells the model to `skill_load("internal_docs")`
 when the user asks what it can do or it's unsure of its capabilities. The co-work preamble tells the model to
 actually CALL `agent_start` (not narrate delegation), consult each agent's
 `when_to_use`, and review the `[SUBAGENT DONE]` summary it gets back.

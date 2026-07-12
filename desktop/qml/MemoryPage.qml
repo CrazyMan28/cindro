@@ -74,7 +74,7 @@ Item {
         PageHeader {
             Layout.fillWidth: true
             title: "Memory"
-            subtitle: "Long-term recall injected into every session. Search, add, or prune what Orin remembers."
+            subtitle: "Long-term recall injected into every session. Search, add, or prune what Cindro remembers."
         }
 
         // ---- search + add composer ----------------------------------------
@@ -166,7 +166,7 @@ Item {
                     wrapMode: Text.WordWrap
                     text: page.searching
                           ? "No stored memory matches that query."
-                          : "Anything you ask Orin to remember — or that it self-curates — shows up here and is recalled across sessions."
+                          : "Anything you ask Cindro to remember — or that it self-curates — shows up here and is recalled across sessions."
                     color: Theme.textFaint
                     font.family: Theme.fontSans
                     font.pixelSize: 13

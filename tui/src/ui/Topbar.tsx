@@ -75,7 +75,7 @@ export function Topbar() {
     >
       <ArcReactor size={5} thinking={!connected} />
       <text fg={theme.accentBright} attributes={TextAttributes.BOLD} selectable={false}>
-        J.A.R.V.I.S
+        CINDRO
       </text>
       <Show
         when={status()}

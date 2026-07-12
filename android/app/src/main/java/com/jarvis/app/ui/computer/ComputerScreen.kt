@@ -92,7 +92,7 @@ fun ComputerScreen(
             // Session selector
             if (state.sessions.isEmpty()) {
                 Text(
-                    state.error ?: "No sessions yet. Open a chat and have Orin use its computer, then come back here to watch it live.",
+                    state.error ?: "No sessions yet. Open a chat and have Cindro use its computer, then come back here to watch it live.",
                     color = if (state.error != null) JarvisPalette.Error else JarvisPalette.TextSecondary,
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -212,7 +212,7 @@ fun ComputerScreen(
                         val ok = Biometric.authenticate(
                             activity,
                             title = "Take over the screen",
-                            subtitle = "Orin will control your real laptop screen",
+                            subtitle = "Cindro will control your real laptop screen",
                         )
                         if (ok) viewModel.takeOver { _, _ -> }
                     }

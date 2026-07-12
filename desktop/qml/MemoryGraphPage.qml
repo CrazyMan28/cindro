@@ -237,7 +237,7 @@ Item {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
-                    text: "As you save memories, Orin auto-extracts people, projects, and topics and links them here."
+                    text: "As you save memories, Cindro auto-extracts people, projects, and topics and links them here."
                     color: Theme.textFaint
                     font.family: Theme.fontSans
                     font.pixelSize: 13

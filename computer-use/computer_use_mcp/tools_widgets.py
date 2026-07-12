@@ -54,7 +54,7 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool()
     def render_widget(spec: dict, title: str = "", id: str = "",
                       target: str = "canvas") -> str:
-        r"""Render a CUSTOM widget on the Orin Canvas (and optionally in chat).
+        r"""Render a CUSTOM widget on the Cindro Canvas (and optionally in chat).
 
         Use this whenever the user asks you to SHOW, DRAW, or DISPLAY something
         visual ("show me a duck", "draw a bar chart", "make a card that says…").
@@ -162,7 +162,7 @@ def register(mcp: FastMCP) -> None:
     # ----- Canvas management (the ad-hoc, drawn-once items) -----------------
     @mcp.tool()
     def canvas_list() -> str:
-        """List the canvases currently on the Orin Canvas tab (id, title, spec,
+        """List the canvases currently on the Cindro Canvas tab (id, title, spec,
         target), newest first. Use before editing or deleting one so you know what
         is there."""
         return json.dumps({"ok": True, "canvases": widgets_bus.list_canvases()})

@@ -28,7 +28,7 @@ export function NavRail(props: { current: () => string; onNavigate: (id: string)
     <nav class="nav-rail">
       <div class="nav-rail-brand">
         <ArcReactor size={30} />
-        <span class="hud-label">J.A.R.V.I.S</span>
+        <span class="hud-label">CINDRO</span>
       </div>
       <div class="nav-rail-divider" />
       <div class="nav-rail-list">

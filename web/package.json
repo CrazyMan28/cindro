@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Orin web dashboard — SolidJS console over the jarvisd control websocket, matching the desktop GUI's page set and Arc Reactor HUD theme",
+  "description": "Cindro web dashboard — SolidJS console over the jarvisd control websocket, matching the desktop GUI's page set and Arc Reactor HUD theme",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

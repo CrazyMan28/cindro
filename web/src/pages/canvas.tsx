@@ -157,7 +157,7 @@ function CanvasPage() {
       <div class="jc-header">
         <div class="hud-label jc-title">CANVAS</div>
         <div class="jc-subtitle">
-          Widgets Orin renders for you. Ask it to draw or show something visual.
+          Widgets Cindro renders for you. Ask it to draw or show something visual.
           <Show when={!connected()}> · connecting to the daemon…</Show>
         </div>
       </div>
@@ -174,7 +174,7 @@ function CanvasPage() {
               <NavIcon glyph="canvas" color={theme.accent} glow />
             </div>
             <div class="jc-empty-title">No widgets yet</div>
-            <div class="jc-empty-sub">Orin-rendered widgets appear here live. Try: "show me a duck".</div>
+            <div class="jc-empty-sub">Cindro-rendered widgets appear here live. Try: "show me a duck".</div>
           </div>
         }
       >

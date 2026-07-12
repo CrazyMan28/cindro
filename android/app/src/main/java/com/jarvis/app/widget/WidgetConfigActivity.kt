@@ -25,7 +25,7 @@ import androidx.compose.ui.unit.dp
 import com.jarvis.app.ui.theme.JarvisTheme
 
 /**
- * Configuration screen shown when an Orin widget is added from the home-screen
+ * Configuration screen shown when a Cindro widget is added from the home-screen
  * widget picker (the in-app "pin to home" button skips this via a pending bind).
  * Lists widgets the phone has recently seen rendered; picking one binds this
  * appWidget instance to it and pins it.
@@ -69,7 +69,7 @@ private fun ConfigScreen(entries: List<CatalogEntry>, onPick: (CatalogEntry) -> 
             verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Pick a widget to pin", style = MaterialTheme.typography.titleMedium)
             if (entries.isEmpty()) {
-                Text("No widgets yet. Open Orin and render a canvas, then add the widget again.",
+                Text("No widgets yet. Open Cindro and render a canvas, then add the widget again.",
                     style = MaterialTheme.typography.bodyMedium)
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {

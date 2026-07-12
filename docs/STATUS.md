@@ -1,4 +1,4 @@
-# Orin — Project Status
+# Cindro — Project Status
 
 Single source of truth for **where this project actually is**. Honest about done vs.
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)

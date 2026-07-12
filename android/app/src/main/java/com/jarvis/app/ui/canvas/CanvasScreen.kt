@@ -107,7 +107,7 @@ fun CanvasScreen(viewModel: CanvasViewModel) {
                                 Spacer(Modifier.weight(1f))
                                 PinChip {
                                     val ok = WidgetPinHelper.pinToHome(
-                                        context, item.id, item.specJson, item.title.ifBlank { "Orin" })
+                                        context, item.id, item.specJson, item.title.ifBlank { "Cindro" })
                                     Toast.makeText(
                                         context,
                                         if (ok) "Confirm to add the widget to your home screen"
@@ -174,7 +174,7 @@ private fun EmptyCanvas(modifier: Modifier) {
             color = JarvisPalette.TextPrimary)
         Spacer(Modifier.height(6.dp))
         Text(
-            "Ask Orin to draw or show you something — a chart, a status card, a live dashboard. It appears here and can be pinned to your home screen.",
+            "Ask Cindro to draw or show you something — a chart, a status card, a live dashboard. It appears here and can be pinned to your home screen.",
             style = MaterialTheme.typography.bodyMedium,
             color = JarvisPalette.TextSecondary,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,

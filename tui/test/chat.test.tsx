@@ -126,7 +126,7 @@ test("send flow + streaming assistant reply renders", async () => {
   })
   await sleep(200)
   const frame = await setup.waitForFrame((f) => f.includes("All systems nominal."))
-  expect(frame).toContain("J.A.R.V.I.S")
+  expect(frame).toContain("CINDRO")
 }, 15000)
 
 test("approval event docks + y approves with decision allow", async () => {

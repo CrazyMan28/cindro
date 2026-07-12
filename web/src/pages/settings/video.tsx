@@ -235,7 +235,7 @@ function VideoSettings() {
       <div>
         <div class="hud-label setvid-section-title">// VIDEO UNDERSTANDING</div>
         <div class="setvid-subtitle">
-          How Orin watches videos — frames become images it sees, audio becomes a timestamped transcript it
+          How Cindro watches videos — frames become images it sees, audio becomes a timestamped transcript it
           reads. Paste a YouTube URL or a video path into chat and ask it to watch.
         </div>
       </div>
@@ -315,7 +315,7 @@ function VideoSettings() {
             <label class="setvid-field">
               <span class="setvid-field-label">Frame mode</span>
               <select class="setvid-select" value={form().video_frame_mode} onChange={(e) => set("video_frame_mode", e.currentTarget.value)}>
-                <option value="images">Images (Orin sees frames)</option>
+                <option value="images">Images (Cindro sees frames)</option>
                 <option value="descriptions">Descriptions (token-saving)</option>
               </select>
             </label>

@@ -70,7 +70,7 @@ fun QueueScreen(viewModel: QueueViewModel) {
                     value = draft,
                     onValueChange = { draft = it },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("Queue a task for Orin…") },
+                    placeholder = { Text("Queue a task for Cindro…") },
                     maxLines = 3,
                 )
                 Spacer(Modifier.height(0.dp))

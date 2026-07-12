@@ -531,7 +531,7 @@ function VoiceSettings() {
       <div>
         <div class="hud-label setv-section-title">// VOICE</div>
         <div class="setv-subtitle">
-          Which engine Orin uses to hear (STT) and speak (TTS), and the default voice.
+          Which engine Cindro uses to hear (STT) and speak (TTS), and the default voice.
         </div>
       </div>
 
@@ -601,7 +601,7 @@ function VoiceSettings() {
         <div>
           <div class="hud-label setv-section-title">SAVED VOICES — RECORD YOUR OWN OR UPLOAD A CLIP</div>
           <div class="setv-subtitle">
-            The default voice is used everywhere Orin speaks — read-back, voice mode, and phone calls.
+            The default voice is used everywhere Cindro speaks — read-back, voice mode, and phone calls.
           </div>
         </div>
 

@@ -1,4 +1,4 @@
-' Orin Windows launcher (HIDDEN) - no terminal window.
+' Cindro Windows launcher (HIDDEN) - no terminal window.
 '
 ' The Start-menu/desktop shortcuts + autostart run THIS (via wscript) instead of
 ' the .cmd, so jarvisd + the engine (console apps) start HIDDEN (window style 0)

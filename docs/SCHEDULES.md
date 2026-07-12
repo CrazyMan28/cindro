@@ -1,6 +1,6 @@
 # Scheduled / sequential work — how it works
 
-How an Orin scheduled job (cron/at) runs, where its output goes, and how the user
+How a Cindro scheduled job (cron/at) runs, where its output goes, and how the user
 is told. Implemented in `Scheduler` (fires) + `ControlServer::fireScheduledJob`
 (runs) + `DeviceServer` (notifies).
 

@@ -26,7 +26,7 @@ Window {
 
     flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
     color: "transparent"
-    title: widgetTitle.length > 0 ? widgetTitle : "Orin widget"
+    title: widgetTitle.length > 0 ? widgetTitle : "Cindro widget"
     visible: true
 
     // A popped-out live widget is a VIEWER: hold a lease while this window is open

@@ -3,7 +3,7 @@ package com.jarvis.app.data
 import android.content.Context
 
 /**
- * Local voice preferences (not secret): "Hey Orin" wake on/off, spoken read-back of
+ * Local voice preferences (not secret): "Hey Cindro" wake on/off, spoken read-back of
  * assistant replies on/off, and the Mistral Voxtral TTS voice id to request. STT/TTS
  * themselves are daemon-proxied (the Mistral key never leaves the laptop).
  */

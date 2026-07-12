@@ -121,7 +121,7 @@ function ExtensionSection() {
       <div class="sext-head">
         <div class="hud-label sext-title">Browser Extension</div>
         <p class="sext-desc">
-          Pair a new browser (another tab, profile, or the Orin Chrome/Edge extension) with one code — no
+          Pair a new browser (another tab, profile, or the Cindro Chrome/Edge extension) with one code — no
           copying a token by hand. Single-use, expires in 5 minutes.
         </p>
       </div>
@@ -155,10 +155,10 @@ function ExtensionSection() {
       </Show>
 
       <div class="sext-hint">
-        <b>On the new browser:</b> open this dashboard, and at the "CONNECT TO ORIN" screen paste this code
+        <b>On the new browser:</b> open this dashboard, and at the "CONNECT TO CINDRO" screen paste this code
         into the <b>Pairing code</b> field.
         <br />
-        <b>For the Orin extension:</b> open its Options page and paste this code into "Pair with a code" —
+        <b>For the Cindro extension:</b> open its Options page and paste this code into "Pair with a code" —
         it fills in both tokens for you.
       </div>
     </div>

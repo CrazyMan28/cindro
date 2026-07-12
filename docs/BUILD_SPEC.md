@@ -1,10 +1,10 @@
-# Orin — BUILD SPEC (source of truth for all build agents)
+# Cindro — BUILD SPEC (source of truth for all build agents)
 
 Read this fully before writing code. It defines the stack, layout, and the **shared contracts** that
 let parallel agents build matching pieces. Do not invent alternative protocols/ports/paths.
 
 ## Product
-"Orin": a unified AI co-worker. Native Linux sidebar (Sway + KDE) + headless daemon, a Python
+"Cindro": a unified AI co-worker. Native Linux sidebar (Sway + KDE) + headless daemon, a Python
 computer-use engine, a new Android app, a Chrome bridge, and a plugin system. Two modes: **coder** and
 **co-worker**. Brain is **hybrid**: Codex CLI (default), Claude CLI, or direct API.
 

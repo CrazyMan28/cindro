@@ -147,7 +147,7 @@ Item {
                     wrapMode: Text.WordWrap
                     text: page.riskFilter !== "all"
                           ? "No logged actions at this risk level."
-                          : "As Orin runs tools, each action is logged here with its risk."
+                          : "As Cindro runs tools, each action is logged here with its risk."
                     color: Theme.textFaint
                     font.family: Theme.fontSans; font.pixelSize: 13; lineHeight: 1.3
                 }

@@ -357,7 +357,7 @@ def register(mcp: FastMCP) -> None:
                 if plat["frozen"]:
                     lines.append("  note: frozen builds can't self-update yt-dlp — a stale "
                                  "version is the usual cause of YouTube download failures; "
-                                 "update Orin to refresh it.")
+                                 "update Cindro to refresh it.")
             except Exception as exc:  # noqa: BLE001
                 lines.append(f"- yt-dlp: MISSING ({exc}) — YouTube URLs won't work")
             lines.append("")
@@ -403,7 +403,7 @@ def register(mcp: FastMCP) -> None:
     # ---- CONFIGURE ----------------------------------------------------------
     @mcp.tool()
     def video_configure(settings_json: str = "", clear_sessions: bool = False) -> str:
-        """Read or change video-understanding settings (they live in Orin
+        """Read or change video-understanding settings (they live in Cindro
         Settings → Video Understanding; this tool edits the same values).
 
         `settings_json` is a JSON object of the keys to change; call with no

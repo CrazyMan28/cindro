@@ -112,7 +112,7 @@ Item {
             Text {
                 Layout.alignment: Qt.AlignVCenter
                 Layout.fillWidth: true
-                text: "J.A.R.V.I.S"
+                text: "CINDRO"
                 color: Theme.text
                 font.family: Theme.fontDisplay
                 font.pixelSize: 12
