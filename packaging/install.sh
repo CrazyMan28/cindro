@@ -59,6 +59,17 @@ log "Installing systemd --user unit into ${SYSTEMD_USER_DIR}..."
 mkdir -p "${SYSTEMD_USER_DIR}"
 install -m 0644 "${PKG_DIR}/jarvisd.service" "${SYSTEMD_USER_DIR}/jarvisd.service"
 
+# --- 5b. Install the outpost-mcp systemd --user unit -------------------------
+# Without this, outpost-mcp never runs on a fresh install (only the hand-rolled
+# dev box that followed docs/OUTPOST.md manually has it) and the Outpost UI
+# panel fails every call with outpost_unreachable (daemon proxies outpost.* to
+# 127.0.0.1:8798). Installed alongside jarvisd.service, same "enable when ready"
+# convention — see the "Next steps" output below.
+if [ -f "${PKG_DIR}/outpost-mcp.service" ]; then
+  log "Installing outpost-mcp systemd --user unit into ${SYSTEMD_USER_DIR}..."
+  install -m 0644 "${PKG_DIR}/outpost-mcp.service" "${SYSTEMD_USER_DIR}/outpost-mcp.service"
+fi
+
 # --- 6. Install the Sway keybind snippet ------------------------------------
 # We only DROP a file into config.d — we never touch the user's main sway
 # config. A sway config that `include`s config.d/* picks this up on reload.
@@ -123,6 +134,29 @@ if [ -x "${REPO_ROOT}/outpost-agent/build.sh" ] && command -v go >/dev/null 2>&1
     || log "WARNING: outpost-agent build failed; the server will build on demand"
 fi
 
+# --- 6.6 Install outpost-mcp into its own venv -------------------------------
+# Own venv under the data dir (same pattern as the CLI above), fully independent
+# of this checkout's path — packaging/outpost-mcp.service previously hardcoded
+# the original dev machine's personal clone path (~/projects/computer_use/...)
+# and `uv run` from source, so it only ever worked on that one box. Installing
+# the package + staging agent-bin at stable, source-independent paths means a
+# fresh clone (any location) or a clone that later moves/gets deleted still has
+# a working service.
+OUTPOST_VENV="${HOME}/.local/share/jarvis/outpost-venv"
+OUTPOST_AGENT_BIN_DIR="${HOME}/.local/share/jarvis/outpost-agent-bin"
+if [ -d "${REPO_ROOT}/outpost-mcp" ]; then
+  log "Installing outpost-mcp into ${OUTPOST_VENV}..."
+  if env -u PYTHONPATH python3 -m venv "${OUTPOST_VENV}" 2>/dev/null; then
+    env -u PYTHONPATH "${OUTPOST_VENV}/bin/pip" install -q --upgrade "${REPO_ROOT}/outpost-mcp" \
+      && ln -sf "${OUTPOST_VENV}/bin/outpost-mcp" "${BIN_DIR}/outpost-mcp" \
+      || log "WARNING: outpost-mcp install failed (pip); skipping"
+  else
+    log "WARNING: python3 -m venv unavailable; skipping outpost-mcp"
+  fi
+  mkdir -p "${OUTPOST_AGENT_BIN_DIR}"
+  cp -r "${REPO_ROOT}/outpost-mcp/agent-bin/." "${OUTPOST_AGENT_BIN_DIR}/" 2>/dev/null || true
+fi
+
 # --- 7. Next steps -----------------------------------------------------------
 cat <<EOF
 
@@ -133,6 +167,12 @@ Next steps:
        systemctl --user enable --now jarvisd
      (or from any terminal:  cindro start · cindro status · cindro doctor —
       and plain \`cindro\` opens the full terminal agent)
+
+  1b. Outpost (pair/exec/screenshot remote machines) needs its own service —
+      it's installed but NOT auto-started, same as jarvisd above:
+       systemctl --user enable --now outpost-mcp
+     Without this the Outpost page shows "outpost-mcp (:8798) unreachable"
+     for every action. See docs/OUTPOST.md for details.
 
   Chrome/Edge extension (optional — for the in-browser agent + side panel):
        open chrome://extensions  →  enable "Developer mode"  →  "Load unpacked"

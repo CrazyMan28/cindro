@@ -11,6 +11,10 @@ windows/
   engine/        Windows computer-use backend (Win32 SendInput + mss) + a startup
                  shim that monkeypatches the SHARED Python engine's primitives — so
                  computer-use/computer_use_mcp/ is never modified. Run: server_windows.py
+  outpost/       PyInstaller entry point (run_outpost_mcp.py) that freezes the SHARED
+                 outpost-mcp/ package as-is — no Win32 shim needed, it's a plain relay
+                 server. No systemd on Windows, so jarvis-launch.vbs/jarvis-start.cmd
+                 are what actually start the frozen outpost-mcp.exe.
   shell/         Native Windows Qt window controller (tray + global hotkey) that reuses
                  the existing ~60 desktop/qml/* pages (no LayerShellQt).
   installer/     Inno Setup script (jarvis.iss) -> Cindro-Setup-x.y.z.exe

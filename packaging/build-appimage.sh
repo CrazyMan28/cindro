@@ -84,6 +84,39 @@ else
   echo "!! engine bundling failed — shipping the app without a bundled engine (host computer-use-mcp still works)." >&2
 fi
 
+# 3b. outpost-mcp (PyInstaller one-dir; optional/non-fatal) --------------------
+# Without this the AppImage never listens on :8798 and the Outpost UI panel
+# fails every call with outpost_unreachable — outpost-mcp was previously only
+# ever started by hand-following docs/OUTPOST.md on the original dev box, so
+# no release artifact (AppImage or Cindro-Setup.exe) actually shipped it. Own
+# venv (the engine venv stays untouched, same as the CLI/outpost split in
+# install.sh). agent-bin is staged in here too if the caller (linux-release.yml)
+# already built it via outpost-agent/build.sh before calling this script.
+say "Bundling outpost-mcp (PyInstaller)..."
+if ( set -e
+     OUTPOST_VENV="$BUILD/appimg-outpost-venv"
+     env -u PYTHONPATH python3 -m venv "$OUTPOST_VENV"
+     env -u PYTHONPATH "$OUTPOST_VENV/bin/pip" install -q --upgrade pip pyinstaller
+     env -u PYTHONPATH "$OUTPOST_VENV/bin/pip" install -q "$REPO/outpost-mcp"
+     printf 'from outpost_mcp.server import main\nif __name__=="__main__":\n    main()\n' \
+        > "$BUILD/outpost_entry.py"
+     # NOT --collect-all mcp: it pulls in the optional mcp.cli submodule, which
+     # imports `typer` (not a dependency here) and hard-fails the freeze.
+     # --copy-metadata mcp alone is enough for mcp's importlib.metadata lookups
+     # (same choice the engine bundling above makes).
+     env -u PYTHONPATH "$OUTPOST_VENV/bin/pyinstaller" --noconfirm --name outpost-mcp \
+        --distpath "$APPDIR/usr/bin/outpost" --workpath "$BUILD/pyi-appimg-outpost" \
+        --collect-all uvicorn --collect-all fastapi --collect-all starlette \
+        --collect-submodules mcp.server --copy-metadata mcp \
+        "$BUILD/outpost_entry.py" >/dev/null
+     mkdir -p "$APPDIR/usr/bin/outpost/agent-bin"
+     cp "$REPO/outpost-mcp/agent-bin/"* "$APPDIR/usr/bin/outpost/agent-bin/" 2>/dev/null || true
+   ); then
+  say "outpost-mcp bundled."
+else
+  echo "!! outpost-mcp bundling failed — shipping the app without Outpost (pair/exec/screenshot remote machines will be unavailable)." >&2
+fi
+
 # 4. AppRun --------------------------------------------------------------------
 say "Writing AppRun..."
 cat > "$APPDIR/AppRun" <<'EOF'
@@ -100,6 +133,13 @@ L="$HERE/usr/lib"
 # global computer-use engine (:8794) — PyInstaller, brings its own libs.
 if [ -x "$HERE/usr/bin/engine/jarvis-engine" ] && ! pgrep -f computer_use_mcp >/dev/null 2>&1; then
   "$HERE/usr/bin/engine/jarvis-engine" >/dev/null 2>&1 &
+fi
+# outpost-mcp (:8798, pair/exec/screenshot remote machines) — PyInstaller,
+# self-contained. Its own bundled agent-bin/ (Go outpost-agent binaries for
+# pairing) sits next to it; point it there since the frozen exe can't derive
+# it from __file__ the way the source package does.
+if [ -x "$HERE/usr/bin/outpost/outpost-mcp/outpost-mcp" ] && ! pgrep -f outpost_mcp >/dev/null 2>&1; then
+  OUTPOST_AGENT_BIN_DIR="$HERE/usr/bin/outpost/agent-bin" "$HERE/usr/bin/outpost/outpost-mcp/outpost-mcp" >/dev/null 2>&1 &
 fi
 # daemon (bundled Qt/libsodium via per-command LD_LIBRARY_PATH; rpath also patched).
 if ! pgrep -x jarvisd >/dev/null 2>&1; then

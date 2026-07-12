@@ -4,7 +4,8 @@
 #   - Qt 6.10.3 win64_msvc2022_64 + qtwebsockets + qtmultimedia (via aqtinstall -> C:\Qt)
 #   - Ninja (CMake generator)
 #   - Node 20 (npm ci for the phone server)
-# and sets machine env: CMAKE_PREFIX_PATH + PATH (Qt\bin, ninja, node).
+#   - Go (latest stable, cross-compiles outpost-agent for all 6 pairing targets)
+# and sets machine env: CMAKE_PREFIX_PATH + PATH (Qt\bin, ninja, node, go\bin).
 # VS Build Tools, git, vcpkg(+libs), Inno, pwsh are already provisioned.
 # Idempotent. Run: powershell -ExecutionPolicy Bypass -File setup-runner-buildtools.ps1
 $ProgressPreference = 'SilentlyContinue'
@@ -70,11 +71,28 @@ if (-not (Test-Path $cmake)) {
 }
 if (Test-Path $cmake) { Log ("cmake OK: " + (& $cmake --version | Select-Object -First 1)) } else { Log "CMAKE INSTALL FAILED" }
 
+# ---- 4c. Go (cross-compiles outpost-agent for all 6 targets) --------------
+$goDir = "C:\go-portable"
+$goExe = "$goDir\go\bin\go.exe"
+if (-not (Test-Path $goExe)) {
+    Log "resolving latest stable Go release..."
+    $release = Invoke-RestMethod -Uri "https://go.dev/dl/?mode=json"
+    $file = $release[0].files | Where-Object { $_.os -eq "windows" -and $_.arch -eq "amd64" -and $_.kind -eq "archive" } | Select-Object -First 1
+    if ($file) {
+        $o = "$env:TEMP\$($file.filename)"
+        Log "downloading $($file.filename)..."
+        Invoke-WebRequest -Uri "https://go.dev/dl/$($file.filename)" -OutFile $o
+        New-Item -ItemType Directory -Force -Path $goDir | Out-Null
+        Expand-Archive -Force $o $goDir
+    } else { Log "could not resolve a windows-amd64 Go archive from go.dev" }
+}
+if (Test-Path $goExe) { Log ("Go OK: " + (& $goExe version)) } else { Log "GO INSTALL FAILED" }
+
 # ---- 5. machine env: CMAKE_PREFIX_PATH + PATH -----------------------------
 [Environment]::SetEnvironmentVariable("CMAKE_PREFIX_PATH", $qtDir, "Machine")
 [Environment]::SetEnvironmentVariable("Qt6_DIR", "$qtDir\lib\cmake\Qt6", "Machine")
 $machPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-foreach ($d in @("$qtDir\bin", $ninjaDir, $nodeDir, "C:\Program Files\CMake\bin", "C:\Program Files\Python312", "C:\Program Files\Python312\Scripts")) {
+foreach ($d in @("$qtDir\bin", $ninjaDir, $nodeDir, "C:\Program Files\CMake\bin", "C:\Program Files\Python312", "C:\Program Files\Python312\Scripts", "$goDir\go\bin")) {
     if ((Test-Path $d) -and ($machPath -notlike "*$d*")) { $machPath = "$machPath;$d"; Log "PATH += $d" }
 }
 [Environment]::SetEnvironmentVariable("Path", $machPath, "Machine")

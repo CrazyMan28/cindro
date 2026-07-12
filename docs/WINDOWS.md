@@ -26,6 +26,7 @@ platform guards; it never changes how Linux/Android build or run.
 | Agents / subagents, scheduler, memory, skills, hooks, modes, permissions | ✅ | ✅ | Core is cross-platform. |
 | Plugins (signed Ed25519, install) | ✅ | ✅ render/install; ⚠ sandbox | The Linux `systemd-run` sandbox has no Win32 equal → Windows uses a Job-Object/restricted-token sandbox (or runs with explicit consent). |
 | Phone subsystem (Node server, calls/SMS, screening) | ✅ | ✅ server + UI | Node runs on Windows. PSTN/SIM-SMS still ride Twilio + the paired Android SIM. |
+| Outpost (pair/exec/screenshot remote machines) | ✅ systemd | ✅ | `outpost-mcp` frozen with PyInstaller (`windows/outpost/`), launched by `jarvis-launch.vbs`/`jarvis-start.cmd` (no systemd on Windows to auto-start it) — see `docs/OUTPOST.md`. |
 | 2FA / biometric cross-device unlock + local PIN | ✅ | ✅ | Desktop side portable; the biometric approver stays the phone. |
 | Chrome extension (side-panel + in-page agent) | ✅ | ✅ | Loads in Chrome/Edge on Windows unchanged. |
 | First-launch setup wizard (name, voice, key) | ✅ | ✅ | Shared flow; see the installer. |

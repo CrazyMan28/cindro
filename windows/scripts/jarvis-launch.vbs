@@ -3,8 +3,9 @@
 ' The Start-menu/desktop shortcuts + autostart run THIS (via wscript) instead of
 ' the .cmd, so jarvisd + the engine (console apps) start HIDDEN (window style 0)
 ' and only cindro-sidebar.exe (the GUI) shows a window. Brings up the whole stack:
-'   engine (:8794, all MCP tools) -> phone server (:8801, if configured) ->
-'   jarvisd -> cindro-sidebar (UI; first run = setup wizard).
+'   engine (:8794, all MCP tools) -> outpost-mcp (:8798, remote pairing) ->
+'   phone server (:8801, if configured) -> jarvisd -> cindro-sidebar (UI; first
+'   run = setup wizard).
 Option Explicit
 Dim sh, fso, dir, p
 Set sh  = CreateObject("WScript.Shell")
@@ -40,6 +41,18 @@ End If
 '    engine\jarvis-engine\jarvis-engine.exe (with _internal\ beside it).
 p = dir & "\engine\jarvis-engine\jarvis-engine.exe"
 If fso.FileExists(p) Then sh.Run """" & p & """", 0, False
+
+' 1b. outpost-mcp (hidden) - pair/exec/screenshot remote machines, :8798.
+'     PyInstaller one-dir nests it: outpost\outpost-mcp\outpost-mcp.exe; the Go
+'     agent binaries it serves for pairing are staged as a sibling, outpost\agent-bin\
+'     (OUTPOST_AGENT_BIN_DIR, since the frozen exe can't derive it from __file__
+'     the way the source package does). No systemd on Windows, so this launcher
+'     is the only thing that ever starts it (see docs/OUTPOST.md).
+p = dir & "\outpost\outpost-mcp\outpost-mcp.exe"
+If fso.FileExists(p) Then
+    sh.Environment("Process")("OUTPOST_AGENT_BIN_DIR") = dir & "\outpost\agent-bin"
+    sh.Run """" & p & """", 0, False
+End If
 
 ' 2. phone server (hidden) - only if the user configured it (phone.env present)
 Dim node, server, phoneEnv
