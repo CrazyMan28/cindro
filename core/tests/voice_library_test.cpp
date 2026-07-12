@@ -9,6 +9,9 @@
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
 
 #include <cstdio>
@@ -152,7 +155,45 @@ int main()
               "stock default has no clip path (uses the named stock voice)");
     }
 
-    // --- 8) slug helper edge cases -------------------------------------------
+    // --- 8) load migrates a stale pre-rebrand seed name; leaves customs alone -
+    {
+        QJsonObject jarvice;
+        jarvice[QStringLiteral("slug")] = QStringLiteral("jarvice");
+        jarvice[QStringLiteral("name")] = QStringLiteral("Orin");
+        jarvice[QStringLiteral("ext")] = QStringLiteral("mp3");
+        QJsonObject custom;
+        custom[QStringLiteral("slug")] = QStringLiteral("custom_orin");
+        custom[QStringLiteral("name")] = QStringLiteral("Orin");
+        custom[QStringLiteral("ext")] = QStringLiteral("wav");
+        QJsonObject root;
+        root[QStringLiteral("default")] = QStringLiteral("jarvice");
+        root[QStringLiteral("voices")] = QJsonArray{jarvice, custom};
+
+        QDir().mkpath(voicesDir());
+        QFile mf(voicesDir() + QStringLiteral("/voices.json"));
+        check(mf.open(QIODevice::WriteOnly | QIODevice::Truncate),
+              "write a manifest with a pre-rebrand seed name");
+        mf.write(QJsonDocument(root).toJson());
+        mf.close();
+
+        jarvis::VoiceLibrary lib;
+        lib.load();
+        const auto voices = lib.list();
+        check(voices.size() == 2, "load reads both manifest entries (no reseed)");
+        bool sawSeedMigrated = false, sawCustomPreserved = false;
+        for (const auto &e : voices) {
+            if (e.slug == QStringLiteral("jarvice"))
+                sawSeedMigrated = (e.name == QStringLiteral("Cindro"));
+            if (e.slug == QStringLiteral("custom_orin"))
+                sawCustomPreserved = (e.name == QStringLiteral("Orin"));
+        }
+        check(sawSeedMigrated,
+              "stale seed name 'Orin' on the jarvice slug migrates to 'Cindro'");
+        check(sawCustomPreserved,
+              "a differently-slugged voice literally named 'Orin' is left untouched");
+    }
+
+    // --- 9) slug helper edge cases -------------------------------------------
     {
         check(jarvis::VoiceLibrary::slug(QStringLiteral("Dad's Voice")) ==
                   QStringLiteral("dads_voice"),

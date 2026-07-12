@@ -456,6 +456,12 @@ void SettingsStore::load()
                             ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
                              (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
                             v = v.mid(1, v.size() - 2);
+                        // Installs that ran setup under an earlier rebrand stage have this
+                        // stage's DEFAULT (not a user-chosen name) persisted to disk by an
+                        // old save(). Migrate those forward so already-set-up installs show
+                        // the current default too; a genuinely custom name is untouched.
+                        if (v == QStringLiteral("Orin") || v == QStringLiteral("Jarvis"))
+                            v.clear();
                         setAssistantName(v); // empty -> "Cindro"
                     }
                     continue;
