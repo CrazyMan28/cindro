@@ -192,14 +192,14 @@ Write-Output "installed v$ver"
 
 
 def cmd_launch(c, _):
-    # The installer puts Jarvis under %ProgramFiles%\Jarvis (per-machine) or
-    # %LocalAppData%\Programs\Jarvis (per-user). Find the launcher + run it IN the
+    # The installer puts Cindro under %ProgramFiles%\Cindro (per-machine) or
+    # %LocalAppData%\Programs\Cindro (per-user). Find the launcher + run it IN the
     # interactive session so the GUI appears on the real desktop (not session 0).
     script = r"""
-$cands = @("$env:ProgramFiles\Jarvis","${env:ProgramFiles(x86)}\Jarvis",
-           "$env:LocalAppData\Programs\Jarvis")
+$cands = @("$env:ProgramFiles\Cindro","${env:ProgramFiles(x86)}\Cindro",
+           "$env:LocalAppData\Programs\Cindro")
 $dir = $cands | Where-Object { Test-Path "$_\jarvis-launch.vbs" } | Select-Object -First 1
-if (-not $dir) { throw "Jarvis install not found in $($cands -join ', ')" }
+if (-not $dir) { throw "Cindro install not found in $($cands -join ', ')" }
 Write-Output "launching from $dir"
 Start-Process wscript.exe -ArgumentList "`"$dir\jarvis-launch.vbs`""
 """

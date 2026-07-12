@@ -47,7 +47,7 @@ def _daemon_binary() -> Path | None:
         for env in ("ProgramFiles", "LOCALAPPDATA"):
             base = os.environ.get(env)
             if base:
-                candidates.append(Path(base) / "Jarvis" / exe)
+                candidates.append(Path(base) / "Cindro" / exe)
     else:
         candidates.append(Path.home() / ".local" / "bin" / exe)
     found = shutil.which(exe)
