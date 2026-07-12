@@ -20,7 +20,7 @@ def test_initialize_handshake():
             assert caps["loadSession"] is True
             assert caps["promptCapabilities"]["image"] is False
             assert res["authMethods"] == []
-            assert res["agentInfo"]["name"] == "jarvis-acp"
+            assert res["agentInfo"]["name"] == "cindro-acp"
             # initialize verified the daemon is reachable via a Contract A ping.
             assert any(m == "ping" for m, _ in mock.calls)
             assert h.bridge.daemon_reachable is True

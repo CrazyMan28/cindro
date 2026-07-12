@@ -103,7 +103,7 @@ def _live_daemon_available() -> bool:
 @pytest.mark.skipif(not _live_daemon_available(),
                     reason="live jarvisd control WS (:8795) not reachable")
 async def test_live_mcp_initialize_and_tools_list():
-    """Full-stack: launch the real jarvis-mcp server in a subprocess on a test
+    """Full-stack: launch the real cindro-mcp server in a subprocess on a test
     port and connect over loopback with the real MCP streamable-http client —
     exactly how Claude Code / Codex connect. Asserts initialize + tools/list
     (jarvis_* present, computer-use re-exported as jarvis_cu_*) + one tools/call.
@@ -146,9 +146,9 @@ async def test_live_mcp_initialize_and_tools_list():
                     pass
                 await asyncio.sleep(0.25)
             else:
-                raise AssertionError("jarvis-mcp server did not become healthy")
+                raise AssertionError("cindro-mcp server did not become healthy")
             health = (await hc.get(f"{base}/health")).json()
-            assert health["service"] == "jarvis-mcp"
+            assert health["service"] == "cindro-mcp"
 
         async with streamablehttp_client(f"{base}/mcp", headers=headers) as (
                 read, write, _):

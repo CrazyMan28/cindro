@@ -1,9 +1,9 @@
 {
     "KPackageStructure": "Plasma/Applet",
     "KPlugin": {
-        "Id": "org.kde.jarvis",
-        "Name": "Jarvis",
-        "Description": "Quick access to the Jarvis AI co-worker: toggle the sidebar and start voice mode from an arc-reactor orb.",
+        "Id": "org.kde.cindro",
+        "Name": "Cindro",
+        "Description": "Quick access to the Cindro AI co-worker: toggle the sidebar and start voice mode from an arc-reactor orb.",
         "Icon": "im-jabber",
         "Category": "Utilities",
         "Authors": [

@@ -604,7 +604,7 @@ function VoicePage() {
       <div class="voice-header card">
         <div class="hud-label voice-title">VOICE MODE</div>
         <div class="voice-subtitle">
-          Tap the orb (or press Space) to talk — Orin listens, thinks, and replies out loud.
+          Tap the orb (or press Space) to talk — Cindro listens, thinks, and replies out loud.
         </div>
       </div>
 

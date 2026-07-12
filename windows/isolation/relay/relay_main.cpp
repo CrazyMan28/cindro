@@ -93,7 +93,7 @@ int main(int argc, char **argv)
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
-        "Orin Windows v2 reverse tunnel (dial: in-sandbox; host: standalone).");
+        "Cindro Windows v2 reverse tunnel (dial: in-sandbox; host: standalone).");
     parser.addHelpOption();
     parser.addPositionalArgument("mode", "dial | host");
     parser.addOptions({

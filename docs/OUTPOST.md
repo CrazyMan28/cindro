@@ -1,7 +1,7 @@
 # Outpost — Remote Machine Pairing & Control
 
-Outpost pairs a remote Windows/Linux/macOS machine with Orin using a
-one-line install command; once paired, Orin can run shell commands and
+Outpost pairs a remote Windows/Linux/macOS machine with Cindro using a
+one-line install command; once paired, Cindro can run shell commands and
 grab screenshots on that machine by name. It replaces the old SSH tab's
 allow-list + exec console with a dial-out WebSocket relay, so there's no
 inbound firewall/NAT change needed on the target and pairing survives the
@@ -18,7 +18,10 @@ agents.
 The Go `outpost-agent` binary is what runs ON the paired machine. It must be
 cross-compiled into `outpost-mcp/agent-bin/` before pairing can complete —
 `/agent/download/...` returns `404 {"error": "agent_binary_unavailable"}`
-until this has been run at least once:
+until this has been run at least once. `packaging/install.sh` (Linux) and
+`windows/scripts/build.ps1` (Windows) both do this automatically when a Go
+toolchain is present — a from-source dev checkout not run through either of
+those needs it done manually:
 
 ```bash
 cd outpost-agent
@@ -32,21 +35,29 @@ Re-run `build.sh` whenever `outpost-agent`'s Go source changes.
 
 ### 2. Start outpost-mcp
 
-Either run it directly:
+**Linux:** `packaging/install.sh` installs outpost-mcp into its own venv
+(`~/.local/share/jarvis/outpost-venv`, symlinked to `~/.local/bin/outpost-mcp`)
+and drops the systemd `--user` unit (`packaging/outpost-mcp.service`) into
+`~/.config/systemd/user/`, same as `jarvisd.service` — installed but **not**
+auto-started, so enable it once:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now outpost-mcp
+```
+
+Or run it directly from source for development:
 
 ```bash
 cd outpost-mcp
 uv run outpost-mcp
 ```
 
-or enable the systemd `--user` unit (`packaging/outpost-mcp.service`):
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp packaging/outpost-mcp.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now outpost-mcp.service
-```
+**Windows:** bundled and started automatically — `windows/scripts/build.ps1`
+freezes it with PyInstaller (`windows/outpost/run_outpost_mcp.py`) and
+`jarvis-launch.vbs`/`jarvis-start.cmd` launch it alongside the engine and
+daemon on every app start (there's no systemd on Windows, so this launcher is
+the only thing that ever starts it). No separate step needed.
 
 On first start it auto-generates an inbound bearer token at
 `~/.config/jarvis/outpost_mcp_token` (0600) and prints its path. The
@@ -183,7 +194,12 @@ If pairing or exec isn't working:
    curl http://127.0.0.1:8798/health
    ```
    Expect `{"status": "ok", "service": "outpost-mcp", ...}`. If this fails,
-   start the service (see "Bringing up outpost-mcp" above).
+   start the service (see "Bringing up outpost-mcp" above). On Linux this
+   usually means the systemd unit was never enabled (`systemctl --user status
+   outpost-mcp`). On Windows, check Task Manager for `outpost-mcp.exe` — if
+   it's absent, the installer's outpost-mcp bundling step was skipped (a
+   resilient, non-fatal step in `build.ps1` — check that build's log for
+   "outpost-mcp bundling skipped").
 2. **Confirm the agent binaries exist:**
    ```bash
    ls outpost-mcp/agent-bin/

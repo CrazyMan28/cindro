@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // Outpost page: pair remote Windows/Linux/macOS machines with a one-shot
 // install command (outpost.pair_start / pair_status), list paired machines

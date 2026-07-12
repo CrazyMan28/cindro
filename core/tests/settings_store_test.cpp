@@ -208,6 +208,33 @@ int main()
         check(s3.wakeNotify() == QStringLiteral("always"), "wake_notify=always round-trips");
     }
 
+    // --- assistant_name: migrates old rebrand defaults, keeps custom names -
+    {
+        writeConfig(QStringLiteral("assistant_name = \"Orin\"\n"));
+        jarvis::SettingsStore s;
+        s.load();
+        check(s.assistantName() == QStringLiteral("Cindro"),
+              "stored old default 'Orin' migrates to 'Cindro'");
+
+        writeConfig(QStringLiteral("assistant_name = \"Jarvis\"\n"));
+        jarvis::SettingsStore s2;
+        s2.load();
+        check(s2.assistantName() == QStringLiteral("Cindro"),
+              "stored old default 'Jarvis' migrates to 'Cindro'");
+
+        writeConfig(QStringLiteral("assistant_name = \"Buddy\"\n"));
+        jarvis::SettingsStore s3;
+        s3.load();
+        check(s3.assistantName() == QStringLiteral("Buddy"),
+              "genuinely custom assistant_name is preserved");
+
+        writeConfig(QStringLiteral("default_brain = \"codex\"\n"));
+        jarvis::SettingsStore s4;
+        s4.load();
+        check(s4.assistantName() == QStringLiteral("Cindro"),
+              "config missing assistant_name => default Cindro");
+    }
+
     // --- Video understanding (video_* map): defaults, normalize, round-trip -
     {
         writeConfig(QStringLiteral("default_brain = \"codex\"\n"));

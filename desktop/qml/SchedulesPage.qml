@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // SCHEDULES page: list the daemon's cron jobs (schedule.list), create a new one
 // (name + when|cron + prompt + brain/model), and enable / remove each. Fires due
@@ -200,7 +200,7 @@ Item {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
-                    text: "Create a cron job and Orin will spin up a session and run your prompt on cadence."
+                    text: "Create a cron job and Cindro will spin up a session and run your prompt on cadence."
                     color: Theme.textFaint
                     font.family: Theme.fontSans; font.pixelSize: 13; lineHeight: 1.3
                 }

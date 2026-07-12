@@ -1,5 +1,5 @@
 import QtQuick
-import JarvisSidebar
+import CindroSidebar
 
 // HudFrame — a reusable framed panel surface with:
 //   * glassy translucent fill + hairline border

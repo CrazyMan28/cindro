@@ -581,7 +581,7 @@ function AssistantMessage(props: { text: string; live: boolean }) {
         <Show when={!done()} fallback={<span class="chat-msg-dot" />}>
           <ArcReactor size={16} />
         </Show>
-        <span class="chat-msg-name">J.A.R.V.I.S</span>
+        <span class="chat-msg-name">CINDRO</span>
       </div>
       <div class="chat-msg-text">{displayText()}</div>
     </div>

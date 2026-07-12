@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // HUD tab — native QML ops dashboard (no WebEngine required).
 // Shows connection status, Twilio health, active calls, agent roster stats,

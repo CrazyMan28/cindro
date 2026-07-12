@@ -1,11 +1,11 @@
-# Using Orin without Codex or Claude (chat with Mistral)
+# Using Cindro without Codex or Claude (chat with Mistral)
 
-Orin's default brains are the **Codex** and **Claude** CLIs. If you have neither
-installed, Orin falls back to a **direct API brain** — and the recommended choice
+Cindro's default brains are the **Codex** and **Claude** CLIs. If you have neither
+installed, Cindro falls back to a **direct API brain** — and the recommended choice
 there is **Mistral**: fast, capable, multilingual, and the same provider that already
-powers Orin's voice (Voxtral STT/TTS).
+powers Cindro's voice (Voxtral STT/TTS).
 
-> **TL;DR** — paste a Mistral API key in **Settings → API keys**, and Orin works with
+> **TL;DR** — paste a Mistral API key in **Settings → API keys**, and Cindro works with
 > no CLI installed. New chats automatically use `mistral-large-latest`.
 
 ## What works with the Mistral (api) brain
@@ -27,9 +27,9 @@ models via the api brain remain chat-only for now — Anthropic uses a different
 ## Get a key + turn it on
 
 1. Create a key at <https://console.mistral.ai/>.
-2. Open Orin → **Settings → API keys** → paste it in the **Mistral** field → Save.
+2. Open Cindro → **Settings → API keys** → paste it in the **Mistral** field → Save.
    (Stored at `~/.config/jarvis/mistral_api_key`, mode 0600 — **never** in git.)
-3. Start a new chat. With no `codex`/`claude` on your `PATH`, Orin defaults the brain to
+3. Start a new chat. With no `codex`/`claude` on your `PATH`, Cindro defaults the brain to
    **api / `mistral-large-latest`** automatically. You can also pick it explicitly in the
    brain/model picker (it's listed first).
 

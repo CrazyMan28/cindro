@@ -31,8 +31,8 @@ web/
 ## Run it
 
 ```bash
-jarvis web start      # builds + serves on http://127.0.0.1:8788, prints the control token
-jarvis web stop
+cindro web start      # builds + serves on http://127.0.0.1:8788, prints the control token
+cindro web stop
 ```
 
 or directly:
@@ -49,11 +49,11 @@ cd web && bun run dev     # vite dev server on :8788
 
 Then open the URL and finish setup:
 
-1. **Pair with a code.** In the Jarvis desktop app open
+1. **Pair with a code.** In the Cindro desktop app open
    *Settings → Browser Extension → "Generate pairing code"*, paste the
    6-digit code into the web dashboard's Setup screen, and click **Pair with
-   code**. Jarvis fills in the control token for you.
-2. Or paste the control token yourself — `jarvis web start` prints it to the
+   code**. Cindro fills in the control token for you.
+2. Or paste the control token yourself — `cindro web start` prints it to the
    terminal, or read it from `~/.config/jarvis/control_token`.
 
 Tokens are kept in `localStorage`, scoped to this origin.

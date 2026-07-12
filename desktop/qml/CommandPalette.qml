@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // CommandPalette — the ⌘K "Search or jump…" quick-switcher. A dim backdrop + a
 // centered card with a search field and a filtered list of pages (and recent

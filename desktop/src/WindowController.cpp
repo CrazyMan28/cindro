@@ -33,7 +33,7 @@ void WindowController::registerWindows(QObject *floatWin, QObject *dockWin)
 // Install the wlr-layer-shell role on the dock window. Must run before the
 // surface is first shown. Follows spikes/RESULTS.md exactly: no useLayerShell();
 // accumulate Anchors with |=; LayerTop; anchor Top|Right|Bottom;
-// exclusiveZone=width; scope "jarvis-sidebar"; KeyboardInteractivityOnDemand.
+// exclusiveZone=width; scope "cindro-sidebar"; KeyboardInteractivityOnDemand.
 void WindowController::configureDockSurface()
 {
     if (m_dockConfigured || !m_dock)
@@ -54,7 +54,7 @@ void WindowController::configureDockSurface()
     w->setLayer(LayerShellQt::Window::LayerTop);
     w->setAnchors(anchors);
     w->setExclusiveZone(m_dockWidth);
-    w->setScope(QStringLiteral("jarvis-sidebar"));
+    w->setScope(QStringLiteral("cindro-sidebar"));
     w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
 
     m_dockConfigured = true;
@@ -62,7 +62,7 @@ void WindowController::configureDockSurface()
 
 // Install the wlr-layer-shell OVERLAY role on the distinct-cursor window. It is a
 // full-screen, input-transparent surface that draws the agent cursor + the
-// "JARVIS IS DRIVING" banner ON TOP of everything while a real-screen take-over
+// "CINDRO IS DRIVING" banner ON TOP of everything while a real-screen take-over
 // is live. Per the spike: no useLayerShell(); accumulate Anchors with |=. Crucial
 // difference from the dock: LayerOverlay, exclusiveZone 0 (reserves no space),
 // KeyboardInteractivityNone, and an EMPTY input region (QWindow::setMask with an
@@ -120,7 +120,7 @@ void WindowController::configureOverlay(QObject *overlayWin,
     w->setLayer(LayerShellQt::Window::LayerOverlay);
     w->setAnchors(anchors);
     w->setExclusiveZone(0);   // reserve NO space — float above the desktop
-    w->setScope(QStringLiteral("jarvis-driving-overlay"));
+    w->setScope(QStringLiteral("cindro-driving-overlay"));
     // GRAB THE KEYBOARD while driving so the user's Esc reaches the QML
     // Keys.onEscapePressed handler in DrivingOverlay.qml and STOPS the take-over.
     // This was previously KeyboardInteractivityNone because the OnDemand grab on the

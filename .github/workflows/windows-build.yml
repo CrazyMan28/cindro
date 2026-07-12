@@ -1,5 +1,5 @@
-# Builds the REAL Windows artifact: jarvisd.exe + jarvis-sidebar.exe, the bundled
-# computer-use engine + Node phone server, packaged into Jarvis-Setup-<ver>.exe.
+# Builds the REAL Windows artifact: jarvisd.exe + cindro-sidebar.exe, the bundled
+# computer-use engine + Node phone server, packaged into Cindro-Setup-<ver>.exe.
 #
 # Everything is driven by the self-contained windows/ build (windows/CMakeLists.txt
 # via windows/scripts/build.ps1) — the Linux dirs (core/daemon/desktop) are never
@@ -9,7 +9,7 @@ name: windows-build
 on:
   # Builds run ONLY for releases and PR validation — NEVER on a branch push. Day-to-day
   # work pushed to dev / qa / main triggers nothing here. A build fires on exactly two
-  # events: (1) a v* tag — the release: it builds AND attaches Jarvis-Setup.exe to the
+  # events: (1) a v* tag — the release: it builds AND attaches Cindro-Setup.exe to the
   # GitHub Release; (2) a pull_request into main — validates main-bound changes before
   # merge. A merge to main fires auto-release, which creates the v* tag -> case (1) builds
   # and attaches the installer.
@@ -19,7 +19,7 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-# Needed so the tag build can CREATE the GitHub Release + attach Jarvis-Setup.exe.
+# Needed so the tag build can CREATE the GitHub Release + attach Cindro-Setup.exe.
 permissions:
   contents: write
 
@@ -125,14 +125,27 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: Jarvis-Setup-${{ steps.ver.outputs.version }}
-          path: windows/dist/Jarvis-Setup-*.exe
+          name: Cindro-Setup-${{ steps.ver.outputs.version }}
+          path: windows/dist/Cindro-Setup-*.exe
           if-no-files-found: error
           retention-days: 7
 
-      # On a version tag, attach the installer to the Release.
+      # Transitional alias: installs from before this rebrand still run the OLD
+      # (already-compiled) Updater.cpp, whose asset glob is baked in as
+      # "Jarvis-Setup-*.exe" and can't be changed after the fact. Publish a copy
+      # under the old name too so those installs can still find this release and
+      # self-update (into the rebranded build, one time) instead of going stale.
+      # Drop this once no pre-rebrand installs remain in the wild.
+      - name: Create transitional Jarvis-Setup alias
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        run: Copy-Item "windows/dist/Cindro-Setup-${{ steps.ver.outputs.version }}.exe" "windows/dist/Jarvis-Setup-${{ steps.ver.outputs.version }}.exe"
+
+      # On a version tag, attach the installer (+ transitional alias) to the Release.
       - name: Attach to Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: windows/dist/Jarvis-Setup-*.exe
+          files: |
+            windows/dist/Cindro-Setup-*.exe
+            windows/dist/Jarvis-Setup-*.exe

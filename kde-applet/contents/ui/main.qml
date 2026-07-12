@@ -1,8 +1,8 @@
 /*
- * Jarvis plasmoid — Plasma 6 / KF6
+ * Cindro plasmoid — Plasma 6 / KF6
  *
  * Compact representation: a glowing cyan/blue "arc reactor" orb (QML Canvas).
- * Full representation: JARVIS popup with buttons that launch the desktop app.
+ * Full representation: CINDRO popup with buttons that launch the desktop app.
  */
 pragma ComponentBehavior: Bound
 
@@ -25,8 +25,8 @@ PlasmoidItem {
     // Prefer showing the compact orb; the popup opens on click.
     preferredRepresentation: compactRepresentation
 
-    toolTipMainText: "JARVIS"
-    toolTipSubText: "Click to open Jarvis controls"
+    toolTipMainText: "CINDRO"
+    toolTipSubText: "Click to open Cindro controls"
 
     // ---- Command runner (Plasma 6 executable engine) ------------------------
     P5Support.DataSource {
@@ -160,7 +160,7 @@ PlasmoidItem {
     }
 
     // ========================================================================
-    //  FULL REPRESENTATION — the JARVIS popup
+    //  FULL REPRESENTATION — the CINDRO popup
     // ========================================================================
     fullRepresentation: Item {
         id: fullRoot
@@ -210,7 +210,7 @@ PlasmoidItem {
                 }
 
                 PlasmaComponents.Label {
-                    text: "JARVIS"
+                    text: "CINDRO"
                     font.bold: true
                     font.pointSize: Math.round(Kirigami.Theme.defaultFont.pointSize * 1.6)
                     font.letterSpacing: 3
@@ -231,7 +231,7 @@ PlasmoidItem {
                 icon.name: "sidebar-expand-left-symbolic"
                 text: i18n("Open / Toggle Sidebar")
                 onClicked: {
-                    root.run("jarvis-sidebar")
+                    root.run("cindro-sidebar")
                     root.expanded = false
                 }
             }
@@ -241,7 +241,7 @@ PlasmoidItem {
                 icon.name: "audio-input-microphone-symbolic"
                 text: i18n("Voice Mode")
                 onClicked: {
-                    root.run("jarvis-sidebar --voice")
+                    root.run("cindro-sidebar --voice")
                     root.expanded = false
                 }
             }
@@ -272,7 +272,7 @@ PlasmoidItem {
                 }
 
                 PlasmaComponents.Label {
-                    text: i18n("Jarvis")
+                    text: i18n("Cindro")
                     color: Kirigami.Theme.textColor
                     Layout.fillWidth: true
                 }

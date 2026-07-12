@@ -1,4 +1,4 @@
-# AGENTS.md — for AI working on Orin
+# AGENTS.md — for AI working on Cindro
 
 Read this before editing. It captures the **vision**, **how the system fits together**, and the
 **rules and gotchas** that aren't obvious from the code. Pair it with [`README.md`](README.md) and
@@ -16,7 +16,7 @@ Design pillars:
    clients over the same protocol. Never put session logic in a client.
 2. **Pluggable brains.** Codex / Claude CLIs and a direct-API loop all normalize to one event stream.
    A feature should work regardless of which brain is active.
-3. **Visible & consent-gated computer use.** When Orin drives the *real* screen the user sees a
+3. **Visible & consent-gated computer use.** When Cindro drives the *real* screen the user sees a
    distinct cursor + banner and approves first; otherwise it works on a nested headless desktop.
 4. **Local-first, no hard cloud deps.** It must work without Firebase, without a service account,
    without an internet round-trip for core flows (notifications now ride the device WebSocket).
@@ -30,7 +30,7 @@ Design pillars:
 - **`daemon/`**: `ControlServer` (:8795 loopback, token) for the desktop + `DeviceServer` (:8796
   tailnet, ed25519 pairing) for the phone. Both speak **Contract A**. `ControlServer::createSession`
   is the single choke-point that fans out `session.opened` to every surface.
-- **`desktop/`**: `jarvis-sidebar`, QML + LayerShellQt. `Bridge` (C++) is the QML↔daemon client;
+- **`desktop/`**: `cindro-sidebar`, QML + LayerShellQt. `Bridge` (C++) is the QML↔daemon client;
   pages live in `desktop/qml/`. The panel is instantiated **once** and reparented between a float
   window and a docked layer-shell surface, so chat state survives mode changes.
 - **`computer-use/`**: the Python FastMCP engine. Tools are registered in `server.py`; key modules:
@@ -45,26 +45,26 @@ Design pillars:
 
 ## How to work on it
 
-- **Find the layer.** A bug in *what Orin decides* → `core`/brains. *How it's shown* → `desktop/qml`
+- **Find the layer.** A bug in *what Cindro decides* → `core`/brains. *How it's shown* → `desktop/qml`
   or `android/ui`. *How it acts* → `computer-use`. *How surfaces talk* → `daemon`.
 - **A feature usually spans 3+ surfaces.** Wire the daemon/core first, then desktop QML, then Android,
   then (if relevant) the extension. Keep the protocol identical across them.
 - **Verify with evidence, not self-report.** There are live WS scripts in `scripts/` (e.g.
   `session_opened_ws.py`, `voice_roundtrip_test.py`, `auth_gate_check.py`, `roadmap_live_verify.py`).
   Run them against a running `jarvisd`. For QML, do an offscreen smoke load:
-  `QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 build/desktop/jarvis-sidebar --demo`.
+  `QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 build/desktop/cindro-sidebar --demo`.
 - **Tests gate everything:** `ctest --test-dir build`, the engine `pytest`, Android `assembleDebug`.
 
 ## Hard rules / gotchas (learned the hard way)
 
 - Run **all** Python/builds with `env -u PYTHONPATH` — a user `PYTHONPATH` leaks system PIL and breaks
   the venv.
-- **Never** broad-kill `foot` / `sway` / `kwin` / a running `jarvis-sidebar`/`jarvisd`. Stop by
+- **Never** broad-kill `foot` / `sway` / `kwin` / a running `cindro-sidebar`/`jarvisd`. Stop by
   PID or systemd unit only.
 - Secrets live in `~/.config/jarvis/` (0600) — `control_token`, `mistral_api_key`, `secrets.json`,
   device keys — **never** in git. OAuth/refresh tokens for connectors go in `secrets.json`.
 - **MCP isolation is intentional:** codex runs `--ignore-user-config` with an isolated `CODEX_HOME`;
-  claude runs `--strict-mcp-config --mcp-config`. The brain only sees Orin's built-in computer-use
+  claude runs `--strict-mcp-config --mcp-config`. The brain only sees Cindro's built-in computer-use
   plus servers the user explicitly re-enables (CLI MCP toggles). Don't "helpfully" re-add user MCPs.
   Corollary: a **separate HTTP MCP server never reaches the isolated brain** — so the **phone tools
   live ON the computer-use engine** (`computer-use/computer_use_mcp/tools_phone.py`, proxied via
@@ -207,7 +207,7 @@ Design pillars:
 
 - **Phone is VENDORED, not rewritten.** `phone/server` is the agent-phone server copied
   byte-for-byte (`diff -rq` clean). The **original agent-phone repo is untouched and still
-  runs as its own separate process** — the Orin copy is a snapshot only. Don't hand-edit
+  runs as its own separate process** — the Cindro copy is a snapshot only. Don't hand-edit
   `phone/server` to "fix" things — re-vendor from the source if it must change. Secrets live
   in `~/.config/jarvis/phone.env` (0600, gitignored); never commit them.
 - **Jarvis is extension 101 on the phone server.** Codex = 102, Copilot = 103, Echo = 104,
@@ -224,8 +224,8 @@ Design pillars:
     (`/api/screening`), SMS agent (`/api/sms-agent`), voice catalog (`/api/voices`), call
     list (`/api/calls`). UI surfaces must NEVER hold the admin bearer themselves.
 - **Full-screen Phone UI on all three surfaces.** The entire agent-phone app UI is embedded
-  in Orin as a Phone section (Calls/Inbox/Agents/HUD/Settings nav). On Android the Phone
-  section hides Orin's main bottom nav (full-screen); backing out restores it. A new QML
+  in Cindro as a Phone section (Calls/Inbox/Agents/HUD/Settings nav). On Android the Phone
+  section hides Cindro's main bottom nav (full-screen); backing out restores it. A new QML
   page MUST be added to `desktop/CMakeLists.txt` `QML_FILES` or it loads as "X is not a
   type" (gui_selftest catches this).
 - **Background jobs wake via `session.wake`** (`bg_jobs.py` → daemon), the generalized form
@@ -285,7 +285,7 @@ Design pillars:
 
 ## New subsystems (2026-07-03 follow-up wave)
 
-- **`cli/` — the jarvis terminal** (own venv, like acp-bridge): `jarvis` = textual
+- **`cli/` — the cindro terminal** (own venv, like acp-bridge): `cindro` = textual
   TUI (Chat/Sessions/Memory/Skills/Agents/Queue/Settings over ONE streaming
   Contract A client); subcommands status/doctor/start/stop/web/ask/sessions/
   search/version. Tests use a threaded MockDaemon (`tests/harness.py
@@ -507,7 +507,7 @@ Design pillars:
   silently produces no `{{value}}` on Windows ("no data" widget). If you add
   another OS-specific example to that preamble, mirror this pattern — don't
   give the model a single-OS example it'll copy verbatim regardless of what
-  Orin is actually running on.
+  Cindro is actually running on.
 
 ## New subsystems (2026-07-09, Outpost re-pair + Proxmox deploy) — gotchas
 
@@ -576,7 +576,7 @@ test. When qa passes, open a **PR into `main`** and merge it. Never commit direc
   (or `sc.exe start …`); it does not always auto-start after a hard power cycle.
 - **Releases are automatic: merging to `main` = a new release.** `auto-release.yml` finds the
   highest `vX.Y.Z` tag, bumps the **patch**, and creates that tag → `windows-build` +
-  `linux-release` fire on the tag and attach `Jarvis-Setup-<ver>.exe` + the AppImage to a new
+  `linux-release` fire on the tag and attach `Cindro-Setup-<ver>.exe` + the AppImage to a new
   GitHub Release. **Do NOT hand-edit a version number** to cut a release. (Want a minor/major
   bump? cut the tag yourself, e.g. `gh release create v0.13.0`; auto-bump continues from it.)
   Requires the `RELEASE_PAT` repo secret — a `GITHUB_TOKEN`-created tag can't trigger the
@@ -678,7 +678,7 @@ the load-bearing truths:
 
 ## New subsystems (2026-07-10, live install chat + auto-seed) — gotchas
 
-`outpost.install_workload` now opens a live, interactive Orin chat (scout +
+`outpost.install_workload` now opens a live, interactive Cindro chat (scout +
 interview right in the conversation) and auto-seeds the tick schedule instead
 of leaving it a manual step. Found by directly reading `createSession`'s
 internals during review — not by trusting an earlier research pass that
@@ -698,7 +698,7 @@ missed both of these:
   `scheduleTargetRef.isEmpty()` added to the condition). Without this, ANY
   session routed via `scheduleTargetRef` — not just the new install-chat one,
   but the pre-existing recurring proxmox tick too — would auto-provision the
-  same expensive nested desktop whenever the user's global "let Orin use a
+  same expensive nested desktop whenever the user's global "let Cindro use a
   computer" setting happens to be on, since that setting alone was enough to
   trigger it for literally any session before this fix. If you add a new
   kind of `scheduleTargetRef`-routed session, this exclusion already covers

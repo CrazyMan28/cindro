@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // WIDGETS page: the REUSABLE widget library (saved_widgets.json), distinct from
 // the ad-hoc CANVAS. Save a canvas with its ★ button (or the widget_save MCP
@@ -71,7 +71,7 @@ Item {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
-                    text: "On the Canvas, tap ★ on a widget to save it here — or ask Orin to ‘save this as a widget’."
+                    text: "On the Canvas, tap ★ on a widget to save it here — or ask Cindro to ‘save this as a widget’."
                     color: Theme.textFaint
                     font.family: Theme.fontSans
                     font.pixelSize: 12

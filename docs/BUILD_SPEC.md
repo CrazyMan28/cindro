@@ -1,10 +1,10 @@
-# Orin — BUILD SPEC (source of truth for all build agents)
+# Cindro — BUILD SPEC (source of truth for all build agents)
 
 Read this fully before writing code. It defines the stack, layout, and the **shared contracts** that
 let parallel agents build matching pieces. Do not invent alternative protocols/ports/paths.
 
 ## Product
-"Orin": a unified AI co-worker. Native Linux sidebar (Sway + KDE) + headless daemon, a Python
+"Cindro": a unified AI co-worker. Native Linux sidebar (Sway + KDE) + headless daemon, a Python
 computer-use engine, a new Android app, a Chrome bridge, and a plugin system. Two modes: **coder** and
 **co-worker**. Brain is **hybrid**: Codex CLI (default), Claude CLI, or direct API.
 
@@ -17,17 +17,17 @@ gradle+java (sdkman), uv, node/npm. NO sudo available to agents. See spikes/RESU
 ## Monorepo layout (root = ~/jarvis, git branch main)
 - core/      C++20 static lib `jarvis-core`: SessionStore(SQLite), Brain iface + impls, protocol types, config.
 - daemon/    `jarvisd` exe (QCoreApplication): control WS server, device WS (phone, later), scheduler, push.
-- desktop/   `jarvis-sidebar` exe (QGuiApplication + QtQuick/QML + LayerShellQt): the sidebar UI.
+- desktop/   `cindro-sidebar` exe (QGuiApplication + QtQuick/QML + LayerShellQt): the sidebar UI.
 - computer-use/  Python FastMCP engine (copied from mcp/computer_use, upgraded).
 - extension/ Chrome MV3 bridge (copied from mcp/computer_use/extension, upgraded).
-- android/   New Kotlin/Compose app, package `com.jarvis.app`.
+- android/   New Kotlin/Compose app, package `com.cindro.app`.
 - plugins/   Plugin SDK + signed catalog.
 - kde-applet/ Plasma applet/tray that toggles the sidebar on KDE.
 - packaging/ systemd user units, sway keybind snippet, mako config, install.sh.
 - docs/, spikes/
 
 ## Build conventions
-- C++: one top-level CMake superbuild; targets jarvis-core(STATIC), jarvisd, jarvis-sidebar. CMAKE_AUTOMOC ON,
+- C++: one top-level CMake superbuild; targets jarvis-core(STATIC), jarvisd, cindro-sidebar. CMAKE_AUTOMOC ON,
   CMAKE_CXX_STANDARD 20. Build with `cmake -S . -B build -G Ninja && cmake --build build`. Tests via ctest.
 - Python (computer-use): `uv` + pytest; ALWAYS run python with `env -u PYTHONPATH` (host exports a 3.14
   PYTHONPATH that breaks venvs — see computer_use README).
@@ -41,7 +41,7 @@ Do NOT call `useLayerShell()` (deprecated/no-op since Qt 6.5). For the QWindow/Q
 auto *w = LayerShellQt::Window::get(window);
 LayerShellQt::Window::Anchors a; a|=AnchorTop; a|=AnchorRight; a|=AnchorBottom; // enums lack QFlags ops
 w->setLayer(LayerShellQt::Window::LayerTop);
-w->setAnchors(a); w->setExclusiveZone(width); w->setScope("jarvis-sidebar");
+w->setAnchors(a); w->setExclusiveZone(width); w->setScope("cindro-sidebar");
 w->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
 ```
 Force `QT_QPA_PLATFORM=wayland`. Anchoring + focus confirmed working on KWin 6 and (native) Sway.
@@ -101,8 +101,8 @@ call `http://127.0.0.1:8794/mcp`.
 2. `jarvisd` builds; serves control WS (Contract A); `session.create`+`session.send` spawn CodexBrain
    and stream NormalizedBrainEvents. ctest: parser fed `spikes/codex_jsonl_sample.jsonl` yields the
    expected normalized sequence.
-3. `jarvis-sidebar` builds; anchors right on KWin (proven pattern); shows a chat view that renders
+3. `cindro-sidebar` builds; anchors right on KWin (proven pattern); shows a chat view that renders
    session events + an input box + model picker; connects to control WS. Launches under QT_QPA_PLATFORM=wayland.
 4. `computer-use/` copied; `uv` env builds; imports OK; `docs/UPGRADES.md` lists the 4 upgrade points.
-5. `android/` skeleton builds `assembleDebug` (package com.jarvis.app) with a pairing screen stub.
+5. `android/` skeleton builds `assembleDebug` (package com.cindro.app) with a pairing screen stub.
 6. `packaging/` has jarvisd.service (systemd --user), a sway `bindsym $mod+j` snippet, mako config.

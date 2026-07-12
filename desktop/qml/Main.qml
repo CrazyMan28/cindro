@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Window
 import QtQuick.Controls.Basic
-import JarvisSidebar
+import CindroSidebar
 
 // Root = the FLOATING window (default launch mode): a frameless, MOVABLE /
 // MINIMIZABLE / RESIZABLE xdg-toplevel. A custom titlebar drives
@@ -20,7 +20,7 @@ Window {
     minimumHeight: 560
     visible: false               // shown by WindowController per persisted mode
     color: "transparent"
-    title: "ORIN"
+    title: "CINDRO"
     flags: Qt.Window | Qt.FramelessWindowHint
 
     // ---- the one shared content panel (initially parented to floatContainer) ----
@@ -206,7 +206,7 @@ Window {
         height: 1080
         visible: false
         color: "transparent"
-        title: "ORIN"
+        title: "CINDRO"
 
         Rectangle {
             anchors.fill: parent
@@ -283,7 +283,7 @@ Window {
     //  DRIVING OVERLAY WINDOW  (full-screen, click-through wlr-layer-shell
     //  OVERLAY; role + empty input region installed in C++ by
     //  WindowController.configureOverlay). Hosts the distinct agent cursor +
-    //  "JARVIS IS DRIVING" banner while a real-screen take-over is live.
+    //  "CINDRO IS DRIVING" banner while a real-screen take-over is live.
     // ====================================================================
     //  ONE overlay per monitor: the Instantiator spawns a full-screen,
     //  click-through wlr-layer-shell OVERLAY on EVERY screen while a real-screen
@@ -308,7 +308,7 @@ Window {
             visible: false
             color: "transparent"
             flags: Qt.FramelessWindowHint
-            title: "ORIN DRIVING"
+            title: "CINDRO DRIVING"
             // Pass the output NAME + INDEX (plain values) so C++ can resolve the
             // real QScreen and pin this surface to its own monitor.
             Component.onCompleted: WindowController.configureOverlay(

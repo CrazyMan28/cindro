@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // CANVAS page: model-rendered generative widgets. The model calls the engine's
 // render_widget MCP tool, which appends a {ts,title,spec} record to the widgets
@@ -102,7 +102,7 @@ Item {
         PageHeader {
             Layout.fillWidth: true
             title: "Canvas"
-            subtitle: "Widgets Orin renders for you. Ask it to draw or show something visual."
+            subtitle: "Widgets Cindro renders for you. Ask it to draw or show something visual."
         }
 
         // ---- empty state ---------------------------------------------------
@@ -127,7 +127,7 @@ Item {
                 Text {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
-                    text: "Orin-rendered widgets appear here. Try: ‘show me a duck’."
+                    text: "Cindro-rendered widgets appear here. Try: ‘show me a duck’."
                     color: Theme.textFaint
                     font.family: Theme.fontSans
                     font.pixelSize: 12

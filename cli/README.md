@@ -1,7 +1,7 @@
-# jarvis-cli — the Jarvis terminal
+# cindro-cli — the Cindro terminal
 
 A Claude-Code-style **terminal agent** plus the ops commands, speaking the same
-Contract A control WebSocket as every other Jarvis surface. Linux + Windows.
+Contract A control WebSocket as every other Cindro surface. Linux + Windows.
 
 > **This is the legacy TUI.** The Python/Textual TUI described below is kept
 > runnable, but is being superseded by the **TypeScript TUI v2** in
@@ -15,19 +15,19 @@ Contract A control WebSocket as every other Jarvis surface. Linux + Windows.
 > `doctor`, `start`, `web`, `ask`, …) below are unaffected and still live here.
 
 ```
-jarvis                  # the full-screen TUI agent (below)
-jarvis status           # one-glance health snapshot of every component
-jarvis doctor           # deep health check — tells you what's wrong AND the fix
-jarvis start | stop     # headless daemon (+engine) — no GUI needed anywhere
-jarvis web start|stop   # the browser dashboard (web/) on :8788
-jarvis ask "…"          # ONE streamed turn straight to stdout (great in scripts)
-jarvis ask --session ID "…"   # continue that conversation
-jarvis sessions         # recent sessions
-jarvis search "…"       # full-text search across ALL chat history
-jarvis version          # CLI + daemon versions
+cindro                  # the full-screen TUI agent (below)
+cindro status           # one-glance health snapshot of every component
+cindro doctor           # deep health check — tells you what's wrong AND the fix
+cindro start | stop     # headless daemon (+engine) — no GUI needed anywhere
+cindro web start|stop   # the browser dashboard (web/) on :8788
+cindro ask "…"          # ONE streamed turn straight to stdout (great in scripts)
+cindro ask --session ID "…"   # continue that conversation
+cindro sessions         # recent sessions
+cindro search "…"       # full-text search across ALL chat history
+cindro version          # CLI + daemon versions
 ```
 
-## The TUI (`jarvis` with no arguments)
+## The TUI (`cindro` with no arguments)
 
 Every GUI screen, in the terminal, over one streaming connection — full
 parity, including live Canvas/Widget rendering, first-run onboarding, the
@@ -203,13 +203,13 @@ terminal analog of the desktop's `PhoneCallOverlay.qml`.
 ## Install
 
 Linux: `packaging/install.sh` does it (own venv at
-`~/.local/share/jarvis/cli-venv`, `jarvis` symlinked into `~/.local/bin`).
+`~/.local/share/jarvis/cli-venv`, `cindro` symlinked into `~/.local/bin`).
 
 Anywhere (incl. Windows, any terminal with Python ≥3.10):
 
 ```
 pip install ./cli          # from a repo checkout
-jarvis doctor
+cindro doctor
 ```
 
 Pulls in `websockets`, `rich`, `textual`, `qrcode` (ASCII QR for the Phone

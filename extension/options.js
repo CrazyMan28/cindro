@@ -31,7 +31,7 @@ function pairWithCode() {
   const code = $("pairCode").value.trim();
   const port = parseInt($("pairPort").value, 10) || 8795;
   if (!/^\d{4,8}$/.test(code)) {
-    $("pairStatus").innerHTML = '<span class="bad">enter the code shown in the Orin app</span>';
+    $("pairStatus").innerHTML = '<span class="bad">enter the code shown in the Cindro app</span>';
     return;
   }
   $("pairStatus").textContent = "pairing…";
@@ -44,10 +44,10 @@ function pairWithCode() {
   try {
     ws = new WebSocket(`ws://127.0.0.1:${port}/control/pair?code=${encodeURIComponent(code)}`);
   } catch (e) {
-    fail("could not reach Orin: " + e);
+    fail("could not reach Cindro: " + e);
     return;
   }
-  const timer = setTimeout(() => fail("timed out — is the Orin app running?"), 5000);
+  const timer = setTimeout(() => fail("timed out — is the Cindro app running?"), 5000);
   ws.onmessage = async (ev) => {
     if (done) return; done = true;
     clearTimeout(timer);
@@ -75,7 +75,7 @@ function pairWithCode() {
     $("pairStatus").innerHTML = '<span class="ok">paired ✓ — connecting…</span>';
     setTimeout(refreshStatus, 1500);
   };
-  ws.onerror = () => fail("could not reach Orin on port " + port);
+  ws.onerror = () => fail("could not reach Cindro on port " + port);
   ws.onclose = () => { if (!done) fail("connection closed before pairing completed"); };
 }
 

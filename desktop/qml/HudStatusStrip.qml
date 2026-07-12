@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // HudStatusStrip — top telemetry bar: a reactor mini + tracked mono readouts
 // (CPU / RAM / NET up-down / MCP servers / ACTIVE agents) each with a tiny bar

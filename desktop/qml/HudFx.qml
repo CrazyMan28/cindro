@@ -1,5 +1,5 @@
 import QtQuick
-import JarvisSidebar
+import CindroSidebar
 
 // HudFx — app-wide ambient HUD layer that sits BEHIND content:
 //   * deep base gradient

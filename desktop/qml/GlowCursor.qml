@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // GlowCursor — a big, unmistakable cyan glowing pointer used wherever Jarvis is
 // driving: the real-screen take-over overlay, the nested agent-desktop video on

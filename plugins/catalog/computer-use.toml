@@ -1,8 +1,8 @@
-# Jarvis plugin manifest — catalog entry.
+# Cindro plugin manifest — catalog entry.
 # Parsed by jarvisd handlePluginsCatalog() (flat key=value + [section] TOML).
 id = "computer-use"
 name = "Computer Use"
-author = "Jarvis Core"
+author = "Cindro Core"
 version = "1.2.0"
 kind = "mcp"
 description = "Drive the real desktop: screenshots, mouse, keyboard, window control and a browser bridge over the computer-use MCP server."

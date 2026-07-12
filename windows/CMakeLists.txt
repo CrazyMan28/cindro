@@ -4,7 +4,7 @@
 #         -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake
 #   cmake --build build-win --config Release
 #
-# Produces build-win/jarvisd.exe (headless daemon) and build-win/jarvis-sidebar.exe
+# Produces build-win/jarvisd.exe (headless daemon) and build-win/cindro-sidebar.exe
 # (native Qt shell: tray + global hotkey, NO LayerShellQt).
 #
 # ── Isolation rule (HARD) ───────────────────────────────────────────────────
@@ -235,11 +235,11 @@ target_link_libraries(jarvis-relay PRIVATE Qt6::Core Qt6::Network)
 target_compile_features(jarvis-relay PRIVATE cxx_std_20)
 target_compile_options(jarvis-relay PRIVATE ${FORCE_INCLUDE_FLAGS})
 
-# ── jarvis-sidebar.exe (native Qt shell) ────────────────────────────────────
+# ── cindro-sidebar.exe (native Qt shell) ────────────────────────────────────
 # Sources: the windows/shell copies of main.cpp + WindowController.{h,cpp} PLUS
 # the read-only desktop Bridge + FrameProvider. The entire ~60-page UI is the
 # shared desktop/qml/*.qml referenced (NOT copied) via qt_add_qml_module.
-qt_add_executable(jarvis-sidebar
+qt_add_executable(cindro-sidebar
     ${SHELL_DIR}/main.cpp
     # Exe icon resource (Explorer/taskbar/window/shortcut all read it) —
     # both MSVC and windres compile .rc natively through CMake.
@@ -275,7 +275,7 @@ foreach(_q IN LISTS _jarvis_qml)
     else()
         configure_file("${_q}" "${_dst}" COPYONLY)
     endif()
-    # Same in-module path the Linux build uses, so loadFromModule("JarvisSidebar","Main") is identical.
+    # Same in-module path the Linux build uses, so loadFromModule("CindroSidebar","Main") is identical.
     set_source_files_properties("${_dst}" PROPERTIES QT_RESOURCE_ALIAS "qml/${_qn}")
     if(_qn STREQUAL "Theme.qml" OR _qn STREQUAL "Widgets.qml")
         set_source_files_properties("${_dst}" PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
@@ -284,9 +284,9 @@ foreach(_q IN LISTS _jarvis_qml)
 endforeach()
 
 # Reuse the shared UI verbatim — same URI + same files as the Linux build, now
-# AOT-compiled (NO_CACHEGEN removed). loadFromModule("JarvisSidebar","Main").
-qt_add_qml_module(jarvis-sidebar
-    URI JarvisSidebar
+# AOT-compiled (NO_CACHEGEN removed). loadFromModule("CindroSidebar","Main").
+qt_add_qml_module(cindro-sidebar
+    URI CindroSidebar
     VERSION 1.0
     QML_FILES ${_jarvis_qml_copied}
 )
@@ -295,7 +295,7 @@ qt_add_qml_module(jarvis-sidebar
 # basename (<Bridge.h>, <WindowController.h>, <FrameProvider.h>). windows/shell is
 # FIRST so WindowController.h resolves to the WINDOWS controller; desktop/src
 # supplies Bridge.h + FrameProvider.h.
-target_include_directories(jarvis-sidebar PRIVATE
+target_include_directories(cindro-sidebar PRIVATE
     ${SHELL_DIR}
     ${DESKTOP_DIR}/src
     # Header-only shared resolver jarvis/DataPaths.h — keeps the desktop's file-bus
@@ -303,14 +303,14 @@ target_include_directories(jarvis-sidebar PRIVATE
     ${CORE_DIR}/include
 )
 
-target_link_libraries(jarvis-sidebar PRIVATE
+target_link_libraries(cindro-sidebar PRIVATE
     Qt6::Core Qt6::Gui Qt6::Quick Qt6::Qml Qt6::QuickControls2
     Qt6::WebSockets Qt6::Network Qt6::Multimedia
     # GetIfTable2/FreeMibTable (Bridge::pollStats' Windows NET-stats path).
     iphlpapi)
-target_compile_features(jarvis-sidebar PRIVATE cxx_std_20)
-target_compile_options(jarvis-sidebar PRIVATE ${FORCE_INCLUDE_FLAGS})
+target_compile_features(cindro-sidebar PRIVATE cxx_std_20)
+target_compile_options(cindro-sidebar PRIVATE ${FORCE_INCLUDE_FLAGS})
 
 # GUI subsystem (no console window). qt_add_executable wires the Qt entry point so
 # WinMain -> main() works; WIN32_EXECUTABLE selects /SUBSYSTEM:WINDOWS.
-set_target_properties(jarvis-sidebar PROPERTIES WIN32_EXECUTABLE TRUE)
+set_target_properties(cindro-sidebar PROPERTIES WIN32_EXECUTABLE TRUE)

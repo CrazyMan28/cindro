@@ -100,7 +100,7 @@ def detect_platform() -> dict:
 def ffmpeg_install_hint() -> str:
     name = os_name()
     if name == "windows":
-        return ("winget install Gyan.FFmpeg  (then RESTART Orin — winget updates "
+        return ("winget install Gyan.FFmpeg  (then RESTART Cindro — winget updates "
                 "the user PATH, which running processes don't see; if it still "
                 "isn't found, log out and back in)")
     if name == "macos":

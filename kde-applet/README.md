@@ -1,16 +1,16 @@
-# Jarvis — KDE Plasma 6 widget
+# Cindro — KDE Plasma 6 widget
 
-A panel/desktop plasmoid for quick access to the Jarvis AI co-worker.
+A panel/desktop plasmoid for quick access to the Cindro AI co-worker.
 
 - **Compact:** a glowing cyan/blue **arc-reactor orb** (drawn in QML `Canvas`, subtle pulse). Click it to open the popup.
-- **Popup:** a `JARVIS` title plus:
-  1. **Open / Toggle Sidebar** — runs `jarvis-sidebar`
-  2. **Voice Mode** — runs `jarvis-sidebar --voice`
-  3. a **status line** (`Jarvis` + green "ready" dot)
+- **Popup:** a `CINDRO` title plus:
+  1. **Open / Toggle Sidebar** — runs `cindro-sidebar`
+  2. **Voice Mode** — runs `cindro-sidebar --voice`
+  3. a **status line** (`Cindro` + green "ready" dot)
 
 Commands are launched via the Plasma 6 executable engine
 (`org.kde.plasma.plasma5support` → `DataSource { engine: "executable" }`).
-`jarvis-sidebar` must be on `PATH` (it lives at `~/.local/bin/jarvis-sidebar`).
+`cindro-sidebar` must be on `PATH` (it lives at `~/.local/bin/cindro-sidebar`).
 
 ## Requirements
 
@@ -29,10 +29,10 @@ kpackagetool6 --type Plasma/Applet --install kde-applet
 kpackagetool6 --type Plasma/Applet --upgrade kde-applet
 
 # remove
-kpackagetool6 --type Plasma/Applet --remove org.kde.jarvis
+kpackagetool6 --type Plasma/Applet --remove org.kde.cindro
 ```
 
-This installs to `~/.local/share/plasma/plasmoids/org.kde.jarvis/`.
+This installs to `~/.local/share/plasma/plasmoids/org.kde.cindro/`.
 
 After installing you may need to restart plasmashell for it to appear in the
 widget list (on Wayland this is safe — it respawns):
@@ -44,7 +44,7 @@ kquitapp6 plasmashell && kstart plasmashell
 ## Add it to a panel or the desktop
 
 1. Right-click the panel (or desktop) → **Add Widgets…**
-2. Search for **Jarvis**.
+2. Search for **Cindro**.
 3. Drag it onto the panel or desktop.
 
 The arc-reactor orb is the compact icon; click it to open the controls.

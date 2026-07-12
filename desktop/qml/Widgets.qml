@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // Shared, fully-restyled HUD controls used by the multi-page shell. Exposed as
 // inline components on a single QML type so pages can do `Widgets.PillButton{}`.

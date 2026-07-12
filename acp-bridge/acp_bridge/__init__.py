@@ -1,8 +1,8 @@
-"""jarvis-acp — an Agent Client Protocol (ACP) bridge for Jarvis.
+"""cindro-acp — an Agent Client Protocol (ACP) bridge for Cindro.
 
 ACP (https://agentclientprotocol.com) is the protocol Zed and JetBrains use to
 drive external AI agents: newline-delimited JSON-RPC 2.0 over stdio, where the
-editor spawns the agent process. This package makes Jarvis one of those agents
+editor spawns the agent process. This package makes Cindro one of those agents
 by translating ACP to/from the jarvisd Contract A control WebSocket.
 
 - ``acp_bridge.control``  — async Contract A client (streaming, per-session queues).

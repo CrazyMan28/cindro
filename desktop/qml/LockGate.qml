@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
-import JarvisSidebar
+import CindroSidebar
 
 // LockGate — the full-bleed unlock overlay drawn ON TOP of the AppShell while the
 // desktop is locked (2FA + fingerprint cross-device unlock). It runs the two-
@@ -145,7 +145,7 @@ Item {
 
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: "ORIN LOCKED"
+            text: "CINDRO LOCKED"
             color: Theme.accent
             font.family: Theme.fontDisplay
             font.pixelSize: 18

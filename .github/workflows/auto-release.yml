@@ -8,7 +8,7 @@
 # New behavior: on every push to main (a merge), find the highest existing vX.Y.Z
 # tag, bump the PATCH (v0.12.7 -> v0.12.8), and create that tag. The pushed tag fires
 # windows-build + linux-release (their `on: push: tags: v*`) which build and ATTACH
-# Jarvis-Setup-<ver>.exe + the AppImage to a new GitHub Release. No version number to
+# Cindro-Setup-<ver>.exe + the AppImage to a new GitHub Release. No version number to
 # touch by hand — merging is the release. (Want a minor/major bump instead? cut the
 # tag yourself, e.g. `gh release create v0.13.0`; the next auto-bump continues from it.)
 #

@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // ACTIVITY / AUDIT page: every tool/action the daemon logged (audit.list) as
 // {ts,tool,ok,risk,summary}, with a risk filter and a desktop-notifications
@@ -147,7 +147,7 @@ Item {
                     wrapMode: Text.WordWrap
                     text: page.riskFilter !== "all"
                           ? "No logged actions at this risk level."
-                          : "As Orin runs tools, each action is logged here with its risk."
+                          : "As Cindro runs tools, each action is logged here with its risk."
                     color: Theme.textFaint
                     font.family: Theme.fontSans; font.pixelSize: 13; lineHeight: 1.3
                 }

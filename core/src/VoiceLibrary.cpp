@@ -130,6 +130,13 @@ void VoiceLibrary::load()
                 e.name = o.value(QStringLiteral("name")).toString();
                 if (e.name.isEmpty())
                     e.name = e.slug;
+                // The seeded reference voice's display name tracks the product's
+                // current default across rebrands; a voices.json written before a
+                // rebrand has the OLD default persisted here (not a user choice) —
+                // migrate it forward, same as SettingsStore's assistant_name.
+                if (e.slug == kJarvice &&
+                    (e.name == QStringLiteral("Orin") || e.name == QStringLiteral("Jarvis")))
+                    e.name = QStringLiteral("Cindro");
                 e.ext = o.value(QStringLiteral("ext")).toString();
                 e.source = o.value(QStringLiteral("source")).toString(QStringLiteral("upload"));
                 e.raw = o.value(QStringLiteral("raw")).toBool();
@@ -174,7 +181,7 @@ void VoiceLibrary::seedFromDisk()
             e.source = QStringLiteral("seed");
             e.raw = false;
             e.createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-            e.name = (base == kJarvice) ? QStringLiteral("Orin") : base;
+            e.name = (base == kJarvice) ? QStringLiteral("Cindro") : base;
             m_voices.push_back(e);
             found = true;
         }

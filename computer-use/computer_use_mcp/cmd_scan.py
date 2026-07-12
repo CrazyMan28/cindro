@@ -31,7 +31,7 @@ What it flags (unambiguous only):
   - credential-file exfil (``cat ~/.ssh/id_* | curl/nc``) and cred-file curl uploads
   - homograph / punycode (``xn--``) and lookalike-unicode URLs
   - broad-kill of this repo's protected processes (foot / sway / kwin / jarvisd /
-    jarvis-sidebar) — the NEVER-broad-kill rule
+    cindro-sidebar) — the NEVER-broad-kill rule
 
 Escape hatch: set env ``JARVIS_CMD_SCAN=0`` to disable command scanning entirely
 (the policy gate skips this module). Any other value (or unset) keeps it on.
@@ -60,7 +60,7 @@ _MAX_LEN = 8_192
 _SYS_DIRS = "etc|usr|bin|sbin|lib|lib64|boot|var|root|sys|proc|dev|opt|home|srv|run"
 
 # This repo's NEVER-broad-kill processes (see AGENTS.md hard rules).
-_PROTECTED = "foot|sway|kwin|jarvisd|jarvis-sidebar|jarvis-daemon|plasmashell"
+_PROTECTED = "foot|sway|kwin|jarvisd|cindro-sidebar|jarvis-daemon|plasmashell"
 
 
 @dataclass

@@ -10,7 +10,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import com.agentphone.MainActivity
-import com.jarvis.app.R
+import com.cindro.app.R
 
 class CallForegroundService : Service() {
     override fun onCreate() {

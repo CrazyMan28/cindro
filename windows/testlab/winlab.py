@@ -168,20 +168,20 @@ def cmd_pull(c, args):
 def cmd_release(c, args):
     ver = args[0] if args else ""
     tag = f"download/v{ver.lstrip('v')}" if ver else "latest/download"
-    name = f"Jarvis-Setup-{ver.lstrip('v')}.exe" if ver else None
+    name = f"Cindro-Setup-{ver.lstrip('v')}.exe" if ver else None
     # If no version: query the latest release asset name on the VM.
     print(f"==> downloading + installing {'v'+ver if ver else 'the latest release'} on the VM…")
     script = fr"""
 $ErrorActionPreference='Stop'
 $ver='{ver.lstrip('v')}'
 if ($ver) {{
-  $url="{REPO}/releases/download/v$ver/Jarvis-Setup-$ver.exe"
+  $url="{REPO}/releases/download/v$ver/Cindro-Setup-$ver.exe"
 }} else {{
   $j = Invoke-RestMethod "https://api.github.com/repos/CrazyMan28/jarvis/releases/latest" -Headers @{{'User-Agent'='winlab'}}
-  $url = ($j.assets | Where-Object {{ $_.name -like 'Jarvis-Setup-*.exe' }} | Select-Object -First 1).browser_download_url
+  $url = ($j.assets | Where-Object {{ $_.name -like 'Cindro-Setup-*.exe' }} | Select-Object -First 1).browser_download_url
   $ver = ($j.tag_name -replace '^v','')
 }}
-$exe="$env:TEMP\Jarvis-Setup-$ver.exe"
+$exe="$env:TEMP\Cindro-Setup-$ver.exe"
 Write-Output "downloading $url"
 Invoke-WebRequest $url -OutFile $exe -Headers @{{'User-Agent'='winlab'}}
 Write-Output "installing silently…"
@@ -192,14 +192,14 @@ Write-Output "installed v$ver"
 
 
 def cmd_launch(c, _):
-    # The installer puts Jarvis under %ProgramFiles%\Jarvis (per-machine) or
-    # %LocalAppData%\Programs\Jarvis (per-user). Find the launcher + run it IN the
+    # The installer puts Cindro under %ProgramFiles%\Cindro (per-machine) or
+    # %LocalAppData%\Programs\Cindro (per-user). Find the launcher + run it IN the
     # interactive session so the GUI appears on the real desktop (not session 0).
     script = r"""
-$cands = @("$env:ProgramFiles\Jarvis","${env:ProgramFiles(x86)}\Jarvis",
-           "$env:LocalAppData\Programs\Jarvis")
+$cands = @("$env:ProgramFiles\Cindro","${env:ProgramFiles(x86)}\Cindro",
+           "$env:LocalAppData\Programs\Cindro")
 $dir = $cands | Where-Object { Test-Path "$_\jarvis-launch.vbs" } | Select-Object -First 1
-if (-not $dir) { throw "Jarvis install not found in $($cands -join ', ')" }
+if (-not $dir) { throw "Cindro install not found in $($cands -join ', ')" }
 Write-Output "launching from $dir"
 Start-Process wscript.exe -ArgumentList "`"$dir\jarvis-launch.vbs`""
 """
@@ -207,7 +207,7 @@ Start-Process wscript.exe -ArgumentList "`"$dir\jarvis-launch.vbs`""
 
 
 def cmd_kill(c, _):
-    _run_ps(c, "Get-Process jarvisd,jarvis-sidebar,jarvis-engine -ErrorAction SilentlyContinue | "
+    _run_ps(c, "Get-Process jarvisd,cindro-sidebar,jarvis-engine -ErrorAction SilentlyContinue | "
                "Stop-Process -Force; Write-Output 'killed'", "kill")
 
 
@@ -244,7 +244,7 @@ def cmd_ci(c, args):
     cmd_build(c, [ref])
     # install whatever build.ps1 produced, then launch + shot
     _run_ps(c, fr"""
-$exe = Get-ChildItem "{bd}\windows\dist\Jarvis-Setup-*.exe" | Select-Object -First 1
+$exe = Get-ChildItem "{bd}\windows\dist\Cindro-Setup-*.exe" | Select-Object -First 1
 if (-not $exe) {{ throw "no installer produced" }}
 Start-Process -FilePath $exe.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
 """, "ci-install")
@@ -260,7 +260,7 @@ def cmd_logs(c, _):
     script = r"""
 $dst="$env:TEMP\jarvis-logs.txt"
 "=== jarvis processes ===" | Out-File $dst
-Get-Process jarvisd,jarvis-sidebar,jarvis-engine -ErrorAction SilentlyContinue |
+Get-Process jarvisd,cindro-sidebar,jarvis-engine -ErrorAction SilentlyContinue |
   Format-Table Name,Id,StartTime -Auto | Out-String | Add-Content $dst
 "=== %APPDATA%\jarvis ===" | Add-Content $dst
 Get-ChildItem "$env:APPDATA\jarvis" -Recurse -ErrorAction SilentlyContinue |

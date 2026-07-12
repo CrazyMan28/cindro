@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Jarvis installer — builds the C++ superbuild and installs the desktop app,
+# Cindro installer — builds the C++ superbuild and installs the desktop app,
 # daemon, icon, .desktop launcher, systemd --user unit, and a Sway keybind
 # snippet into the user's ~/.local and ~/.config trees.
 #
@@ -34,18 +34,21 @@ cmake --build "${BUILD_DIR}"
 log "Installing binaries into ${BIN_DIR}..."
 mkdir -p "${BIN_DIR}"
 install -m 0755 "${BUILD_DIR}/daemon/jarvisd"          "${BIN_DIR}/jarvisd"
-install -m 0755 "${BUILD_DIR}/desktop/jarvis-sidebar"  "${BIN_DIR}/jarvis-sidebar"
+install -m 0755 "${BUILD_DIR}/desktop/cindro-sidebar"  "${BIN_DIR}/cindro-sidebar"
+rm -f "${BIN_DIR}/jarvis-sidebar"  # stale pre-rebrand binary — doesn't self-clean
 
 # --- 3. Install the scalable icon -------------------------------------------
 log "Installing icon into ${ICON_DIR}..."
 mkdir -p "${ICON_DIR}"
-install -m 0644 "${PKG_DIR}/jarvis.svg" "${ICON_DIR}/jarvis.svg"
+install -m 0644 "${PKG_DIR}/cindro.svg" "${ICON_DIR}/cindro.svg"
+rm -f "${ICON_DIR}/jarvis.svg"  # stale pre-rebrand icon
 
 # --- 4. Install the .desktop launcher (substitute __HOME__) ------------------
 log "Installing desktop entry into ${APP_DIR}..."
 mkdir -p "${APP_DIR}"
-sed "s|__HOME__|${HOME}|g" "${PKG_DIR}/jarvis.desktop" > "${APP_DIR}/jarvis.desktop"
-chmod 0644 "${APP_DIR}/jarvis.desktop"
+sed "s|__HOME__|${HOME}|g" "${PKG_DIR}/cindro.desktop" > "${APP_DIR}/cindro.desktop"
+chmod 0644 "${APP_DIR}/cindro.desktop"
+rm -f "${APP_DIR}/jarvis.desktop"  # stale pre-rebrand launcher entry
 
 log "Refreshing desktop & icon caches (best-effort)..."
 update-desktop-database "${APP_DIR}" 2>/dev/null || true
@@ -56,14 +59,26 @@ log "Installing systemd --user unit into ${SYSTEMD_USER_DIR}..."
 mkdir -p "${SYSTEMD_USER_DIR}"
 install -m 0644 "${PKG_DIR}/jarvisd.service" "${SYSTEMD_USER_DIR}/jarvisd.service"
 
+# --- 5b. Install the outpost-mcp systemd --user unit -------------------------
+# Without this, outpost-mcp never runs on a fresh install (only the hand-rolled
+# dev box that followed docs/OUTPOST.md manually has it) and the Outpost UI
+# panel fails every call with outpost_unreachable (daemon proxies outpost.* to
+# 127.0.0.1:8798). Installed alongside jarvisd.service, same "enable when ready"
+# convention — see the "Next steps" output below.
+if [ -f "${PKG_DIR}/outpost-mcp.service" ]; then
+  log "Installing outpost-mcp systemd --user unit into ${SYSTEMD_USER_DIR}..."
+  install -m 0644 "${PKG_DIR}/outpost-mcp.service" "${SYSTEMD_USER_DIR}/outpost-mcp.service"
+fi
+
 # --- 6. Install the Sway keybind snippet ------------------------------------
 # We only DROP a file into config.d — we never touch the user's main sway
 # config. A sway config that `include`s config.d/* picks this up on reload.
 log "Installing Sway keybind snippet into ${SWAY_CONF_D}..."
 mkdir -p "${SWAY_CONF_D}"
-cat > "${SWAY_CONF_D}/90-jarvis.conf" <<'EOF'
-bindsym $mod+j exec ~/.local/bin/jarvis-sidebar --toggle
+cat > "${SWAY_CONF_D}/90-cindro.conf" <<'EOF'
+bindsym $mod+j exec ~/.local/bin/cindro-sidebar --toggle
 EOF
+rm -f "${SWAY_CONF_D}/90-jarvis.conf"  # stale pre-rebrand snippet
 
 # --- 6b. Install the Chrome/Edge extension (unpacked) -----------------------
 # Chrome blocks silent installs of unpacked extensions, so we stage it at a
@@ -75,7 +90,7 @@ mkdir -p "${EXT_DIR}"
 cp -r "${REPO_ROOT}/extension/." "${EXT_DIR}/"
 
 # --- 6c. Install the web console (Bun+Vite+SolidJS dashboard) ---------------
-# Stage it, then run it with: jarvis web start   (http://127.0.0.1:8788)
+# Stage it, then run it with: cindro web start   (http://127.0.0.1:8788)
 # rm -rf first (not just `cp -r` over the top): the dashboard was previously
 # plain static files (app.js/style.css/serve.py) — an old install left those
 # behind alongside the new src/ tree otherwise, which is confusing to debug.
@@ -84,26 +99,26 @@ log "Installing the web console into ${WEB_DIR}..."
 rm -rf "${WEB_DIR}"
 mkdir -p "${WEB_DIR}"
 cp -r "${REPO_ROOT}/web/." "${WEB_DIR}/"
-# Never ship a dev checkout's build artifacts — `jarvis web start` does its
+# Never ship a dev checkout's build artifacts — `cindro web start` does its
 # own `bun install`/`bun run build` fresh, and a stale/wrong-platform
 # node_modules copied in from the source machine could break that.
 rm -rf "${WEB_DIR}/node_modules" "${WEB_DIR}/dist"
 if ! command -v bun >/dev/null 2>&1; then
-  log "WARNING: bun not found on PATH — 'jarvis web start' needs it to build/serve the dashboard. Install from https://bun.sh"
+  log "WARNING: bun not found on PATH — 'cindro web start' needs it to build/serve the dashboard. Install from https://bun.sh"
 fi
 
-# --- 6d. Install the jarvis CLI (terminal agent + doctor/status) -------------
-# Own venv under the data dir (the engine venv stays untouched); `jarvis` goes
+# --- 6d. Install the cindro CLI (terminal agent + doctor/status) -------------
+# Own venv under the data dir (the engine venv stays untouched); `cindro` goes
 # on PATH next to jarvisd. Skipped gracefully when python3-venv is missing.
 CLI_VENV="${HOME}/.local/share/jarvis/cli-venv"
 if [ -d "${REPO_ROOT}/cli" ]; then
-  log "Installing the jarvis CLI into ${CLI_VENV}..."
+  log "Installing the cindro CLI into ${CLI_VENV}..."
   if env -u PYTHONPATH python3 -m venv "${CLI_VENV}" 2>/dev/null; then
     env -u PYTHONPATH "${CLI_VENV}/bin/pip" install -q --upgrade "${REPO_ROOT}/cli" \
-      && ln -sf "${CLI_VENV}/bin/jarvis" "${HOME}/.local/bin/jarvis" \
-      || log "WARNING: jarvis CLI install failed (pip); skipping"
+      && ln -sf "${CLI_VENV}/bin/cindro" "${HOME}/.local/bin/cindro" \
+      || log "WARNING: cindro CLI install failed (pip); skipping"
   else
-    log "WARNING: python3 -m venv unavailable; skipping the jarvis CLI"
+    log "WARNING: python3 -m venv unavailable; skipping the cindro CLI"
   fi
 fi
 
@@ -119,16 +134,45 @@ if [ -x "${REPO_ROOT}/outpost-agent/build.sh" ] && command -v go >/dev/null 2>&1
     || log "WARNING: outpost-agent build failed; the server will build on demand"
 fi
 
+# --- 6.6 Install outpost-mcp into its own venv -------------------------------
+# Own venv under the data dir (same pattern as the CLI above), fully independent
+# of this checkout's path — packaging/outpost-mcp.service previously hardcoded
+# the original dev machine's personal clone path (~/projects/computer_use/...)
+# and `uv run` from source, so it only ever worked on that one box. Installing
+# the package + staging agent-bin at stable, source-independent paths means a
+# fresh clone (any location) or a clone that later moves/gets deleted still has
+# a working service.
+OUTPOST_VENV="${HOME}/.local/share/jarvis/outpost-venv"
+OUTPOST_AGENT_BIN_DIR="${HOME}/.local/share/jarvis/outpost-agent-bin"
+if [ -d "${REPO_ROOT}/outpost-mcp" ]; then
+  log "Installing outpost-mcp into ${OUTPOST_VENV}..."
+  if env -u PYTHONPATH python3 -m venv "${OUTPOST_VENV}" 2>/dev/null; then
+    env -u PYTHONPATH "${OUTPOST_VENV}/bin/pip" install -q --upgrade "${REPO_ROOT}/outpost-mcp" \
+      && ln -sf "${OUTPOST_VENV}/bin/outpost-mcp" "${BIN_DIR}/outpost-mcp" \
+      || log "WARNING: outpost-mcp install failed (pip); skipping"
+  else
+    log "WARNING: python3 -m venv unavailable; skipping outpost-mcp"
+  fi
+  mkdir -p "${OUTPOST_AGENT_BIN_DIR}"
+  cp -r "${REPO_ROOT}/outpost-mcp/agent-bin/." "${OUTPOST_AGENT_BIN_DIR}/" 2>/dev/null || true
+fi
+
 # --- 7. Next steps -----------------------------------------------------------
 cat <<EOF
 
-$(log "Jarvis installed.")
+$(log "Cindro installed.")
 
 Next steps:
   1. Start the daemon (and enable it at login):
        systemctl --user enable --now jarvisd
-     (or from any terminal:  jarvis start · jarvis status · jarvis doctor —
-      and plain \`jarvis\` opens the full terminal agent)
+     (or from any terminal:  cindro start · cindro status · cindro doctor —
+      and plain \`cindro\` opens the full terminal agent)
+
+  1b. Outpost (pair/exec/screenshot remote machines) needs its own service —
+      it's installed but NOT auto-started, same as jarvisd above:
+       systemctl --user enable --now outpost-mcp
+     Without this the Outpost page shows "outpost-mcp (:8798) unreachable"
+     for every action. See docs/OUTPOST.md for details.
 
   Chrome/Edge extension (optional — for the in-browser agent + side panel):
        open chrome://extensions  →  enable "Developer mode"  →  "Load unpacked"

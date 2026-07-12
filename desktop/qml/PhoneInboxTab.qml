@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // INBOX tab — SMS/agent thread list with priority badges, thread detail view
 // (incl. response-option buttons, free-text reply bar, mark-read, delete),

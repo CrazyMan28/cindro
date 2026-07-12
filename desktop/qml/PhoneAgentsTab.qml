@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // AGENTS tab — live agent list with per-agent CONFIG panel:
 // voice picker (speaker groups + emotion chips + ▶ preview), speaking-rate
@@ -148,7 +148,7 @@ Item {
                 // built-in fallback voice set (matches agent-phone Android app)
                 var defaults = [
                     {vid:"",             vname:"Default",              speaker:"Default",  emotion:"Default"},
-                    {vid:"jarvis-od",    vname:"Jarvis (on-device)",   speaker:"Jarvis",   emotion:"Jarvis"},
+                    {vid:"jarvis-od",    vname:"Cindro (on-device)", speaker:"Cindro", emotion:"Cindro"},
                     {vid:"paul-cheerful",vname:"Paul - Cheerful",      speaker:"Paul",     emotion:"Cheerful"},
                     {vid:"paul-sad",     vname:"Paul - Sad",           speaker:"Paul",     emotion:"Sad"},
                     {vid:"paul-angry",   vname:"Paul - Angry",         speaker:"Paul",     emotion:"Angry"},

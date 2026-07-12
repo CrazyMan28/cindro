@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // SlashPalette — the Claude-Code-style "/" menu for the chat composer. Type "/"
 // and a scrollable, filterable, animated card rises ABOVE the input listing every

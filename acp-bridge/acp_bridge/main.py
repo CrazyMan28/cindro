@@ -1,4 +1,4 @@
-"""stdio JSON-RPC 2.0 peer + entry point for jarvis-acp.
+"""stdio JSON-RPC 2.0 peer + entry point for cindro-acp.
 
 ACP transport is **newline-delimited JSON-RPC 2.0 over stdio**: the editor spawns
 this process and speaks one JSON object per line on stdin/stdout (diagnostics go
@@ -223,7 +223,7 @@ async def _amain() -> None:
     logging.basicConfig(
         level=os.environ.get("JARVIS_ACP_LOG", "INFO").upper(),
         stream=sys.stderr,
-        format="%(asctime)s jarvis-acp %(levelname)s %(name)s: %(message)s",
+        format="%(asctime)s cindro-acp %(levelname)s %(name)s: %(message)s",
     )
     content_length = os.environ.get("JARVIS_ACP_FRAMING", "ndjson").lower() in (
         "content-length", "content_length", "lsp",

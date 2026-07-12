@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@jarvis/tui",
+      "name": "@cindro/tui",
       "dependencies": {
         "@opentui/core": "0.3.4",
         "@opentui/keymap": "0.3.4",

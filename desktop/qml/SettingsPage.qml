@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Dialogs
-import JarvisSidebar
+import CindroSidebar
 
 // Settings page: per-provider masked API-key fields (write-only; the saved/empty
 // badge comes from settings.get api_keys_set), a default-brain selector, a
@@ -19,7 +19,7 @@ Item {
         { id: "anthropic", label: "Anthropic API", hint: "Direct Anthropic API (api brain)" },
         { id: "mistral",   label: "Mistral API", hint: "Direct Mistral API (api brain) — mistral-large/small-latest" },
         { id: "ollama",    label: "Ollama",     hint: "Local Ollama endpoint / token (optional)" },
-        { id: "gemini",    label: "Google Gemini", hint: "Gemini API key (api brain, gemini-* models). Several keys? comma-separate them — Orin rotates on rate limits" },
+        { id: "gemini",    label: "Google Gemini", hint: "Gemini API key (api brain, gemini-* models). Several keys? comma-separate them — Cindro rotates on rate limits" },
         { id: "xai",       label: "xAI Grok",   hint: "xAI API key (api brain, grok-* models)" },
         { id: "deepseek",  label: "DeepSeek",   hint: "DeepSeek API key (api brain, deepseek-* models)" }
     ]
@@ -31,7 +31,7 @@ Item {
     property var availableBrains: ({})          // {codex:bool, claude:bool} from settings.get
     property string defaultBrain: "codex"
     property string defaultModel: ""
-    property string assistantName: "Orin"      // what the assistant calls itself (settings.get)
+    property string assistantName: "Cindro"      // what the assistant calls itself (settings.get)
     property string userName: ""                  // the human's name (settings.get; saved as memory)
     property string claudeAccount: "pro"        // "pro" (default) | "max"
     property var claudeAccounts: []              // [{id,email}] from settings.get claude_accounts
@@ -188,7 +188,7 @@ Item {
             page.defaultBrain = s.default_brain !== undefined ? s.default_brain : "codex"
             page.defaultModel = s.default_model !== undefined ? s.default_model : ""
             page.assistantName = (s.assistant_name !== undefined && ("" + s.assistant_name).trim().length)
-                                 ? ("" + s.assistant_name) : "Orin"
+                                 ? ("" + s.assistant_name) : "Cindro"
             page.userName = s.user_name !== undefined ? ("" + s.user_name) : ""
             page.claudeAccount = (s.claude_account === "max") ? "max" : "pro"
             page.claudeAccounts = s.claude_accounts !== undefined ? s.claude_accounts : []
@@ -314,7 +314,7 @@ Item {
             if (updated === true) {
                 page.updateBehind = false
                 page.updateStatus = "Updated to " + (to && to.length ? to : "latest")
-                    + " — Orin is restarting…"
+                    + " — Cindro is restarting…"
             } else {
                 page.updateStatus = (reason && reason.length) ? reason : "No update applied"
             }
@@ -448,7 +448,7 @@ Item {
     function save() {
         page.saving = true
         var patch = {
-            "assistant_name": page.assistantName.trim().length ? page.assistantName.trim() : "Orin",
+            "assistant_name": page.assistantName.trim().length ? page.assistantName.trim() : "Cindro",
             "user_name": page.userName.trim(),
             "default_brain": page.defaultBrain,
             "default_model": page.defaultModel,
@@ -553,7 +553,7 @@ Item {
                     Widgets.StyledField {
                         id: assistantNameField
                         Layout.fillWidth: true
-                        placeholder: "Orin"
+                        placeholder: "Cindro"
                         text: page.assistantName
                         onTextChanged: {
                             if (text !== page.assistantName) {
@@ -585,7 +585,7 @@ Item {
                     }
                     Text {
                         Layout.fillWidth: true
-                        text: "Saved as a memory so " + (page.assistantName.length ? page.assistantName : "Orin") + " can address you by name."
+                        text: "Saved as a memory so " + (page.assistantName.length ? page.assistantName : "Cindro") + " can address you by name."
                         color: Theme.textFaint
                         font.family: Theme.fontSans
                         font.pixelSize: 11
@@ -758,7 +758,7 @@ Item {
                 }
                 Text {
                     Layout.fillWidth: true
-                    text: "Which engine Orin uses to hear (STT) and speak (TTS), and the voice."
+                    text: "Which engine Cindro uses to hear (STT) and speak (TTS), and the voice."
                     color: Theme.textFaint
                     font.family: Theme.fontSans
                     font.pixelSize: 12
@@ -850,7 +850,7 @@ Item {
                 }
                 Text {
                     Layout.fillWidth: true
-                    text: "The default voice is used everywhere Orin speaks — read-back, voice mode, and phone calls (when it calls you and when it answers)."
+                    text: "The default voice is used everywhere Cindro speaks — read-back, voice mode, and phone calls (when it calls you and when it answers)."
                     color: Theme.textMuted
                     font.family: Theme.fontSans
                     font.pixelSize: 12
@@ -981,7 +981,7 @@ Item {
                 }
                 Text {
                     Layout.fillWidth: true
-                    text: "How Orin watches videos — frames become images it sees, audio becomes a timestamped transcript it reads. Paste a YouTube URL or a video path into chat and ask it to watch."
+                    text: "How Cindro watches videos — frames become images it sees, audio becomes a timestamped transcript it reads. Paste a YouTube URL or a video path into chat and ask it to watch."
                     color: Theme.textFaint
                     font.family: Theme.fontSans
                     font.pixelSize: 12
@@ -1107,7 +1107,7 @@ Item {
                             id: videoModeCombo
                             Layout.fillWidth: true
                             property var ids: ["images", "descriptions"]
-                            model: ["Images (Orin sees frames)", "Descriptions (token-saving)"]
+                            model: ["Images (Cindro sees frames)", "Descriptions (token-saving)"]
                             function syncFromState() {
                                 var i = ids.indexOf(page.videoFrameMode)
                                 currentIndex = i >= 0 ? i : 0
@@ -1317,7 +1317,7 @@ Item {
                         Layout.fillWidth: true
                         spacing: 2
                         Text {
-                            text: "Require phone + fingerprint to open Orin"
+                            text: "Require phone + fingerprint to open Cindro"
                             color: Theme.text
                             font.family: Theme.fontSans
                             font.pixelSize: 13
@@ -1393,7 +1393,7 @@ Item {
                     spacing: 12
 
                     Text {
-                        text: "How Orin works with you (also the HUD chip — click it to switch live)"
+                        text: "How Cindro works with you (also the HUD chip — click it to switch live)"
                         color: Theme.text
                         font.family: Theme.fontSans
                         font.pixelSize: 13
@@ -1478,7 +1478,7 @@ Item {
                         spacing: 8
                         Repeater {
                             model: [
-                                { key: "silent", name: "Silent", sub: "Wake Orin only" },
+                                { key: "silent", name: "Silent", sub: "Wake Cindro only" },
                                 { key: "ping",   name: "Ping",   sub: "Notify phone for long jobs" },
                                 { key: "always", name: "Always", sub: "Notify on every wake" }
                             ]
@@ -1626,7 +1626,7 @@ Item {
                     }
 
                     Text {
-                        text: "Auto-continue — while a session has an active goal (set_goal), Orin re-wakes itself after each turn until the goal is done"
+                        text: "Auto-continue — while a session has an active goal (set_goal), Cindro re-wakes itself after each turn until the goal is done"
                         color: Theme.text
                         font.family: Theme.fontSans
                         font.pixelSize: 13
@@ -1814,7 +1814,7 @@ Item {
                     spacing: 12
 
                     Text {
-                        text: "How cautious Orin is before risky actions"
+                        text: "How cautious Cindro is before risky actions"
                         color: Theme.text
                         font.family: Theme.fontSans
                         font.pixelSize: 13
@@ -1895,7 +1895,7 @@ Item {
                         }
                     }
                     Text {
-                        text: "Orin calls ask_user (tap to approve on your phone or here) before any action above your chosen line. This is a policy, not the sandbox — capability limits still apply."
+                        text: "Cindro calls ask_user (tap to approve on your phone or here) before any action above your chosen line. This is a policy, not the sandbox — capability limits still apply."
                         color: Theme.textMuted
                         font.family: Theme.fontSans
                         font.pixelSize: 10
@@ -2215,7 +2215,7 @@ Item {
                                 Layout.fillWidth: true
                             }
                             Text {
-                                text: "When a new release is found, download and install it without asking. Orin restarts itself on Windows; on Linux the update takes effect the next time you launch."
+                                text: "When a new release is found, download and install it without asking. Cindro restarts itself on Windows; on Linux the update takes effect the next time you launch."
                                 color: Theme.textMuted
                                 font.family: Theme.fontSans
                                 font.pixelSize: 11
@@ -2307,7 +2307,7 @@ Item {
                     spacing: 10
 
                     Text {
-                        text: "Add the Orin extension to Chrome or Edge for the in-browser agent + side panel. It ships with Orin at the folder below — Chrome blocks one-click installs of unpacked extensions, so load it once:"
+                        text: "Add the Cindro extension to Chrome or Edge for the in-browser agent + side panel. It ships with Cindro at the folder below — Chrome blocks one-click installs of unpacked extensions, so load it once:"
                         color: Theme.text
                         font.family: Theme.fontSans
                         font.pixelSize: 13
@@ -2613,7 +2613,7 @@ Item {
                             font.weight: Font.Medium
                         }
                         Text {
-                            text: "Scan the QR in the Orin app, or enter the code manually."
+                            text: "Scan the QR in the Cindro app, or enter the code manually."
                             color: Theme.textFaint
                             font.family: Theme.fontSans
                             font.pixelSize: 12

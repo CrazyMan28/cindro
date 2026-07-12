@@ -442,7 +442,7 @@ function Memory() {
             MEMORY
           </div>
           <div class="jw-mem-header-sub">
-            Long-term recall injected into every session. Search, add, or prune what Orin remembers.
+            Long-term recall injected into every session. Search, add, or prune what Cindro remembers.
           </div>
         </div>
       </div>
@@ -551,7 +551,7 @@ function Memory() {
               ? "This entity has no linked memories yet."
               : searching()
                 ? "No stored memory matches that query."
-                : "Anything you ask Orin to remember — or that it self-curates — shows up here and is recalled across sessions."}
+                : "Anything you ask Cindro to remember — or that it self-curates — shows up here and is recalled across sessions."}
           </div>
         </div>
       </Show>

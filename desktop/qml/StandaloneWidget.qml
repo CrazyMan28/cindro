@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Window
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // StandaloneWidget — a "popped out" generative widget hosted in its OWN frameless,
 // always-on-top desktop Window (NOT layer-shell, so it stays a normal movable
@@ -26,7 +26,7 @@ Window {
 
     flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
     color: "transparent"
-    title: widgetTitle.length > 0 ? widgetTitle : "Orin widget"
+    title: widgetTitle.length > 0 ? widgetTitle : "Cindro widget"
     visible: true
 
     // A popped-out live widget is a VIEWER: hold a lease while this window is open

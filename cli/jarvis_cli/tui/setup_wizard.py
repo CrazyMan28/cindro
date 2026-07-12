@@ -141,7 +141,7 @@ class SetupWizardScreen(ModalScreen[None]):
         self.client = client
 
         self.step = 0
-        self.assistant_name = "Orin"
+        self.assistant_name = "Cindro"
         self.user_name = ""
         self.tts_voice = ""
         self.voice_list: list[dict] = []
@@ -184,7 +184,7 @@ class SetupWizardScreen(ModalScreen[None]):
             with Vertical(id="step-0"):
                 yield Static("Let's get you set up. This only takes a moment.")
                 yield Static("What should I call myself?")
-                yield Input(placeholder="Orin", id="name-field")
+                yield Input(placeholder="Cindro", id="name-field")
                 yield Static("And what should I call you? (optional)")
                 yield Input(placeholder="Your name", id="username-field")
 
@@ -199,10 +199,10 @@ class SetupWizardScreen(ModalScreen[None]):
                            password=True, id="mistral-key-field")
 
             with Vertical(id="step-3"):
-                yield Static("How cautious should Orin be before risky actions?")
+                yield Static("How cautious should Cindro be before risky actions?")
                 yield ListView(id="permission-list")
                 with Horizontal(id="auto-update-row"):
-                    yield Static("Keep Orin up to date automatically  ")
+                    yield Static("Keep Cindro up to date automatically  ")
                     yield Switch(id="auto-update-switch")
 
             with Vertical(id="step-4"):
@@ -475,7 +475,7 @@ class SetupWizardScreen(ModalScreen[None]):
         name = self.assistant_name.strip()
         patch = {
             "setup_complete": True,
-            "assistant_name": name if name else "Orin",
+            "assistant_name": name if name else "Cindro",
             "user_name": self.user_name.strip(),
             "tts_voice": self.tts_voice,
             "permission_level": self.permission_level,

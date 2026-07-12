@@ -12,7 +12,7 @@
         android:name="android.hardware.camera"
         android:required="false" />
 
-    <!-- Voice: record audio for push-to-talk + "Hey Jarvis" wake. The wake listener
+    <!-- Voice: record audio for push-to-talk + "Hey Cindro" wake. The wake listener
          runs only while a foreground service + notification is visible. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -82,7 +82,7 @@
             </intent-filter>
         </service>
 
-        <!-- "Hey Jarvis" wake: foreground (microphone) service with a persistent
+        <!-- "Hey Cindro" wake: foreground (microphone) service with a persistent
              notification. No silent background listening — the notification is the
              user's visible signal that the mic is live. -->
         <service
@@ -104,7 +104,7 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.jarvis.app.WIDGET_PINNED" />
+                <action android:name="com.cindro.app.WIDGET_PINNED" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
@@ -117,7 +117,7 @@
         <receiver android:name=".widget.JarvisWidgetCompactProvider" android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.jarvis.app.WIDGET_PINNED" />
+                <action android:name="com.cindro.app.WIDGET_PINNED" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider"
                 android:resource="@xml/jarvis_appwidget_info_compact" />
@@ -125,7 +125,7 @@
         <receiver android:name=".widget.JarvisWidgetTallProvider" android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.jarvis.app.WIDGET_PINNED" />
+                <action android:name="com.cindro.app.WIDGET_PINNED" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider"
                 android:resource="@xml/jarvis_appwidget_info_tall" />
@@ -133,7 +133,7 @@
         <receiver android:name=".widget.JarvisWidgetXTallProvider" android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.jarvis.app.WIDGET_PINNED" />
+                <action android:name="com.cindro.app.WIDGET_PINNED" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider"
                 android:resource="@xml/jarvis_appwidget_info_xtall" />

@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // SCREENING tab — polls get_screening_status and renders a live caller/agent
 // transcript while a carrier call is being screened by the AI.
@@ -230,7 +230,7 @@ Item {
                 anchors { left: parent.left; right: parent.right; top: parent.top; margins: 10 }
                 spacing: 4
                 Text { text: "OFFLINE"; color: Theme.amber; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: 2.0 }
-                Text { text: "Connect to the Orin daemon to enable screening view."; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                Text { text: "Connect to the Cindro daemon to enable screening view."; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true }
             }
         }
 

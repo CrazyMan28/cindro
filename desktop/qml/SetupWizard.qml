@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
-import JarvisSidebar
+import CindroSidebar
 
 // SetupWizard — the first-launch flow shown by Main.qml while settings report
 // setup_complete=false. A modal full-cover overlay with four steps:
@@ -25,7 +25,7 @@ Item {
     // ---- wizard state ------------------------------------------------------
     property int step: 0
     readonly property int stepCount: 5
-    property string assistantName: "Orin"
+    property string assistantName: "Cindro"
     property string userName: ""                  // the human's name — saved as a memory
     property string ttsVoice: ""                 // "" => daemon default voice
     property var voiceList: []                    // [{id,label}] from voice.list_voices
@@ -96,7 +96,7 @@ Item {
         var name = wiz.assistantName.trim()
         var patch = {
             "setup_complete": true,
-            "assistant_name": name.length ? name : "Orin",
+            "assistant_name": name.length ? name : "Cindro",
             "user_name": wiz.userName.trim(),
             "tts_voice": wiz.ttsVoice,
             "permission_level": wiz.permissionLevel,
@@ -229,7 +229,7 @@ Item {
                         id: nameField
                         Layout.fillWidth: true
                         text: wiz.assistantName
-                        placeholder: "Orin"
+                        placeholder: "Cindro"
                         onTextChanged: wiz.assistantName = text
                     }
                     Text {
@@ -270,7 +270,7 @@ Item {
                     spacing: 14
                     Text {
                         Layout.fillWidth: true
-                        text: "Pick the voice " + (wiz.assistantName.length ? wiz.assistantName : "Orin") + " speaks with."
+                        text: "Pick the voice " + (wiz.assistantName.length ? wiz.assistantName : "Cindro") + " speaks with."
                         color: Theme.textMuted
                         font.family: Theme.fontSans
                         font.pixelSize: 13
@@ -349,8 +349,8 @@ Item {
                             visible: !wiz.mistralKeySet
                             Layout.fillWidth: true
                             text: wiz.hasCli
-                                  ? "Powers spoken replies + voice input (Voxtral) and image understanding. Skip it and Orin still chats via your CLI."
-                                  : "Add a Mistral API key and Orin works right away — chat, voice, vision, and computer use via the function-calling loop."
+                                  ? "Powers spoken replies + voice input (Voxtral) and image understanding. Skip it and Cindro still chats via your CLI."
+                                  : "Add a Mistral API key and Cindro works right away — chat, voice, vision, and computer use via the function-calling loop."
                             color: Theme.textMuted
                             font.family: Theme.fontSans
                             font.pixelSize: 12
@@ -394,7 +394,7 @@ Item {
                     spacing: 12
                     Text {
                         Layout.fillWidth: true
-                        text: "How cautious should Orin be before risky actions?"
+                        text: "How cautious should Cindro be before risky actions?"
                         color: Theme.text
                         font.family: Theme.fontSans
                         font.pixelSize: 13
@@ -465,7 +465,7 @@ Item {
                             Layout.fillWidth: true
                             spacing: 2
                             Text {
-                                text: "Keep Orin up to date automatically"
+                                text: "Keep Cindro up to date automatically"
                                 color: Theme.text
                                 font.family: Theme.fontSans
                                 font.pixelSize: 13
@@ -493,7 +493,7 @@ Item {
                     spacing: 12
                     Text {
                         Layout.fillWidth: true
-                        text: "Connect a Twilio number so " + (wiz.assistantName.length ? wiz.assistantName : "Orin")
+                        text: "Connect a Twilio number so " + (wiz.assistantName.length ? wiz.assistantName : "Cindro")
                               + " can screen calls and text you. Optional — skip and set it up later in Phone → Settings."
                         color: Theme.textMuted
                         font.family: Theme.fontSans

@@ -1,4 +1,4 @@
-# Orin × KWin multi-seat fork — notes & spec (DO NOT LOSE)
+# Cindro × KWin multi-seat fork — notes & spec (DO NOT LOSE)
 
 > Created 2026-06-23 on the user's explicit instruction: "fork KDE, add all the
 > features I wanted; first create notes on what the bug was and what I wanted so
@@ -47,7 +47,7 @@
   `~/projects/kwin-jarvis-fork/deploy-libkwin.sh` (backup + atomic rename —
   auto-mode blocked overwriting the live compositor lib, and the running
   session keeps the old mmap anyway) and loads on the **next login** into
-  "Plasma (Orin KWin fork)". After relogin, run the live smoke:
+  "Plasma (Cindro KWin fork)". After relogin, run the live smoke:
   `cd computer-use && env -u PYTHONPATH .venv/bin/python3 ../scripts/jarvis_seat_type_check.py`
   (types a mixed-case string + ctrl+d EOF into a scratch terminal via the
   jarvis seat only, then checks the file).
@@ -63,7 +63,7 @@
 
 ## STATUS (2026-06-26) — SHIPPED: agent drives the real KDE screen, clicks work
 
-- ✅ Fork is the **real session compositor** ("Plasma (Orin KWin fork)" session via
+- ✅ Fork is the **real session compositor** ("Plasma (Cindro KWin fork)" session via
   `~/.local/bin/jarvis-kwin-launch.sh`; stock "Plasma" = always-safe SDDM fallback).
 - ✅ Engine `input.py` real-screen path drives `org.kde.KWin.JarvisSeat` (move/click/
   type) on the independent `jarvis` seat — **never** the user's `seat0`.
@@ -100,7 +100,7 @@
 
 ## THE BUG (what's broken today)
 
-When the Orin agent drives the user's **real KDE screen**, its input **mixes with
+When the Cindro agent drives the user's **real KDE screen**, its input **mixes with
 the user's** because everything shares **one Wayland seat**:
 
 1. The agent's pointer/keyboard goes through a single `uinput` device that lands on
@@ -117,13 +117,13 @@ the user's** because everything shares **one Wayland seat**:
      text** — already fixed by making the overlay fully input-transparent + no
      keyboard, but the underlying one-seat problem remains.
 
-This is NOT an Orin bug — it's that **KWin only ever creates one `wl_seat`** and
+This is NOT a Cindro bug — it's that **KWin only ever creates one `wl_seat`** and
 its input pipeline is hardwired to it.
 
 ## ROOT CAUSE (the real reason, confirmed)
 
 - **wlroots (Sway)** supports **multiple seats** — a 2nd named seat gets its own
-  cursor + focus (wayvnc uses transient seats; the Orin nested agent desktop
+  cursor + focus (wayvnc uses transient seats; the Cindro nested agent desktop
   already gets a separate seat/cursor/keyboard this way → ZERO mixing there).
 - **KWin (KDE)** instantiates a **single `SeatInterface`**; `InputRedirection` is a
   singleton routing all input to that one seat; it renders one cursor. There is **no
@@ -144,7 +144,7 @@ KDE WAYLAND SCREEN**, fully independent of the user's:
 - Routing the user already chose: **"my screen" → real; "your own" → agent desktop;
   ambiguous → ask via `ask_user`.** (Already implemented in the daemon preamble +
   the `real_screen`/`computer_use` MCP servers.)
-- The glow **"⚡ Orin is using this computer"** banner + big blue cursor must
+- The glow **"⚡ Cindro is using this computer"** banner + big blue cursor must
   **stay on the whole turn** (until the model is done or the user stops) and track
   the AGENT's separate cursor. (Overlay stay-on + per-output + click-through already
   done; it must follow the NEW agent-seat cursor once the fork lands.)
@@ -207,7 +207,7 @@ Key insight: **leave seat0 (the user) completely alone**; ADD a parallel `jarvis
   `keyModifiers(...)`. The computer-use engine `input.py` real-screen path calls these via DBus
   instead of host `uinput`. (KWin already exposes DBus ifaces — see src/dbusinterface.* / the
   scripting + virtualkeyboard_dbus.*.)
-- **Agent cursor visual = the existing Orin glow overlay** (the blue cursor the sidebar already
+- **Agent cursor visual = the existing Cindro glow overlay** (the blue cursor the sidebar already
   draws), so KWin does NOT need to render a 2nd cursor. (Optional later: real KWin cursor via
   `Cursors::addCursor()`.)
 - **Engine change:** `computer-use/computer_use_mcp/input.py` real path → call the JarvisSeat DBus

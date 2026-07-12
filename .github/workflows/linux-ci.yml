@@ -1,5 +1,5 @@
 # Linux regression gate: build the UNTOUCHED root project (core + jarvisd +
-# jarvis-sidebar with LayerShellQt), run its ctest suite offscreen, and run the
+# cindro-sidebar with LayerShellQt), run its ctest suite offscreen, and run the
 # computer-use engine's pytest suite. Proves the Windows work left the Linux build green.
 #
 # Runs in a PREBUILT image (Qt 6.11 + layer-shell-qt 6.7, like the dev box —

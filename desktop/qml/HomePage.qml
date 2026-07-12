@@ -1,7 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // HOME — the desktop landing dashboard, rebuilt to the approved redesign mockup
 // (jarvis-desktop-redesign.html): a hero "active agent" card with an always-on
@@ -205,7 +205,7 @@ Item {
                     }
                 }
                 Text {
-                    text: (bridge.connected ? "Orin is online" : "Connecting to Orin…") +
+                    text: (bridge.connected ? "Cindro is online" : "Connecting to Cindro…") +
                           " · " + sessionModel.count + " sessions · " + widgetModel.count + " live widgets"
                     color: Theme.textMuted
                     font.pixelSize: 13
@@ -273,7 +273,7 @@ Item {
                             }
                             Text {
                                 Layout.fillWidth: true
-                                text: home.agentActive ? "Orin is on it" : "Orin is idle"
+                                text: home.agentActive ? "Cindro is on it" : "Cindro is idle"
                                 color: Theme.text; font.pixelSize: 15; font.weight: Font.DemiBold; elide: Text.ElideRight
                             }
                         }
@@ -281,7 +281,7 @@ Item {
                             Layout.fillWidth: true
                             text: home.agentActive
                                   ? "Working on its own desktop — watch it live on the left, or stop it."
-                                  : "Nothing running. Start a chat or have Orin take over to see it work here."
+                                  : "Nothing running. Start a chat or have Cindro take over to see it work here."
                             color: Theme.textMuted; font.pixelSize: 13; wrapMode: Text.Wrap; lineHeight: 1.3
                         }
                         RowLayout {
@@ -549,7 +549,7 @@ Item {
                         Text {
                             visible: widgetModel.count === 0
                             Layout.fillWidth: true
-                            text: "Nothing pinned yet. Pin any widget here from the Widgets tab, or just ask Orin: “add that widget to my home screen.”"
+                            text: "Nothing pinned yet. Pin any widget here from the Widgets tab, or just ask Cindro: “add that widget to my home screen.”"
                             color: Theme.textFaint; font.pixelSize: 11; wrapMode: Text.Wrap; lineHeight: 1.25
                         }
                         Repeater {

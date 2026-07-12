@@ -6,7 +6,7 @@
 // Never proxies the daemon control WebSocket — the browser connects DIRECTLY
 // to ws://127.0.0.1:<controlPort>/control/ws, same loopback-only model the
 // old serve.py documented. This process only serves static files and, on
-// start, prints the resolved control token so `jarvis web start` / `bun
+// start, prints the resolved control token so `cindro web start` / `bun
 // server.ts` gives you everything needed to open Setup and paste it in.
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"

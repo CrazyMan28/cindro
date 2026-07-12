@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // Plugins page: marketplace cards from plugins.catalog (name, author, version,
 // kind badge, description, permissions list) with Install / Enable toggle / Remove.
@@ -57,7 +57,7 @@ Item {
             PageHeader {
                 Layout.fillWidth: true
                 title: "Plugins"
-                subtitle: "Install MCP tools and skills to extend what Orin can do."
+                subtitle: "Install MCP tools and skills to extend what Cindro can do."
             }
             Widgets.PillButton {
                 label: "Refresh"

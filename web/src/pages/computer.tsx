@@ -267,7 +267,7 @@ function ComputerPage() {
         if (kind === "approval" && String(ev.approval_id ?? "").startsWith("takeover-")) {
           setPendingApproval({
             approvalId: String(ev.approval_id ?? ""),
-            summary: String(ev.summary ?? "Allow Orin to drive your real screen?"),
+            summary: String(ev.summary ?? "Allow Cindro to drive your real screen?"),
             risk: String(ev.risk ?? "high"),
             sessionId: info.sessionId,
           })
@@ -344,7 +344,7 @@ function ComputerPage() {
           <div class="hud-label" style={{ color: "var(--accent-bright)", "font-size": "16px" }}>
             COMPUTER
           </div>
-          <div class="computer-subtitle">Watch Orin drive a desktop, or hand it your real screen.</div>
+          <div class="computer-subtitle">Watch Cindro drive a desktop, or hand it your real screen.</div>
         </div>
         <Show when={driving()}>
           <div class="computer-driving-badge">
@@ -363,7 +363,7 @@ function ComputerPage() {
               NO ACTIVE SESSION
             </div>
             <p class="computer-empty-text">
-              Open a chat and have Orin use its computer, and this page will start watching it live.
+              Open a chat and have Cindro use its computer, and this page will start watching it live.
             </p>
             <button type="button" class="computer-btn primary" onClick={() => app.navigate("chat")}>
               Open Chat
@@ -396,7 +396,7 @@ function ComputerPage() {
                   }
                 >
                   <img class="computer-frame-img" src={frameUrl() ?? undefined} alt="Live agent desktop" />
-                  <div class="computer-live-banner">⚡ Orin is using this desktop</div>
+                  <div class="computer-live-banner">⚡ Cindro is using this desktop</div>
                 </Show>
               </div>
             </div>
@@ -404,7 +404,7 @@ function ComputerPage() {
             <div class="computer-side card">
               <span class="hud-label computer-preview-label">TAKE OVER</span>
               <p class="computer-side-text">
-                Orin will drive your ACTUAL desktop with a distinct cursor and a "ORIN IS DRIVING"
+                Cindro will drive your ACTUAL desktop with a distinct cursor and a "CINDRO IS DRIVING"
                 overlay. This requires approval, and you can release control at any time.
               </p>
 
@@ -476,7 +476,7 @@ function ComputerPage() {
               <span>⚠</span> TAKE OVER MY SCREEN
             </div>
             <p class="computer-side-text">
-              Orin will drive your ACTUAL desktop with a distinct cursor and a "ORIN IS DRIVING"
+              Cindro will drive your ACTUAL desktop with a distinct cursor and a "CINDRO IS DRIVING"
               overlay. This requires approval, and you can release control at any time.
             </p>
             <div class="computer-modal-actions">

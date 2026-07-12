@@ -1,7 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // AgentPeek — a compact LIVE view of what Jarvis is doing on its own nested desktop
 // (or a Chrome tab). Reused on the Home dashboard's "working" card and in the chat

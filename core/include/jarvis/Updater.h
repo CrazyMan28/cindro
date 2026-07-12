@@ -12,7 +12,7 @@
 //      old inode), and report restart_required. The read-only squashfs mount
 //      has no scripts, so this path never shells out.
 //   2. Windows packaged install (no repo scripts on disk): NATIVE release
-//      flow — download Jarvis-Setup-<ver>.exe to %TEMP%, verify the MZ magic,
+//      flow — download Cindro-Setup-<ver>.exe to %TEMP%, verify the MZ magic,
 //      and launch it detached with /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 //      /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS (Inno closes the running apps,
 //      installs, and relaunches them).
@@ -82,7 +82,7 @@ public:
     // segments compare as 0. Empty/unknown never counts as newer.
     static bool versionGreater(const QString &latest, const QString &current);
     // Parse a GitHub /releases/latest JSON body: returns {tag, url, name} for
-    // the FIRST asset whose name matches assetGlob (e.g. "Jarvis-Setup-*.exe",
+    // the FIRST asset whose name matches assetGlob (e.g. "Cindro-Setup-*.exe",
     // "*.AppImage"). Empty tag on parse failure / no matching asset.
     struct ReleaseAsset {
         QString tag;   // "0.13.2" (leading v stripped)

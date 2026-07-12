@@ -203,10 +203,10 @@ bool PluginRegistry::seedSamples(const QString &catalogDir, QString *err)
     };
     const Sample samples[] = {
         {"github-mcp.toml",
-         "# Orin plugin manifest (sample, signed-ish)\n"
+         "# Cindro plugin manifest (sample, signed-ish)\n"
          "id = \"github-mcp\"\n"
          "name = \"GitHub MCP\"\n"
-         "author = \"jarvis-labs\"\n"
+         "author = \"cindro-labs\"\n"
          "version = \"0.2.0\"\n"
          "kind = \"mcp\"\n"
          "transport = \"http\"\n"
@@ -215,20 +215,20 @@ bool PluginRegistry::seedSamples(const QString &catalogDir, QString *err)
          "description = \"Browse repos, issues, and PRs via the GitHub MCP server.\"\n"
          "signature = \"ed25519:PLACEHOLDER\"\n"},
         {"weather-skill.toml",
-         "# Orin plugin manifest (sample, signed-ish)\n"
+         "# Cindro plugin manifest (sample, signed-ish)\n"
          "id = \"weather-skill\"\n"
          "name = \"Weather Skill\"\n"
-         "author = \"jarvis-labs\"\n"
+         "author = \"cindro-labs\"\n"
          "version = \"1.0.0\"\n"
          "kind = \"skill\"\n"
          "permissions = [\"network\"]\n"
          "description = \"A skill that answers weather questions for a location.\"\n"
          "signature = \"ed25519:PLACEHOLDER\"\n"},
         {"shell-runner.toml",
-         "# Orin plugin manifest (sample, signed-ish)\n"
+         "# Cindro plugin manifest (sample, signed-ish)\n"
          "id = \"shell-runner\"\n"
          "name = \"Shell Runner\"\n"
-         "author = \"jarvis-labs\"\n"
+         "author = \"cindro-labs\"\n"
          "version = \"0.1.0\"\n"
          "kind = \"both\"\n"
          "transport = \"stdio\"\n"

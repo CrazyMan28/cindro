@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // Custom titlebar that works on KWin. The drag region calls
 // Window.startSystemMove() on press; the buttons drive the owning Window and the
@@ -64,7 +64,7 @@ Item {
                 RowLayout {
                     spacing: 8
                     Text {
-                        text: "ORIN"
+                        text: "CINDRO"
                         color: Theme.text
                         font.family: Theme.fontDisplay
                         font.pixelSize: 16

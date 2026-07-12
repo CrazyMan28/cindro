@@ -1,14 +1,14 @@
-# jarvis-acp — Agent Client Protocol bridge for Jarvis
+# cindro-acp — Agent Client Protocol bridge for Cindro
 
-Drive **Jarvis** from **Zed** (or any [Agent Client Protocol](https://agentclientprotocol.com)
-client — JetBrains, etc.) as a native agent. The editor spawns `jarvis-acp`, talks
+Drive **Cindro** from **Zed** (or any [Agent Client Protocol](https://agentclientprotocol.com)
+client — JetBrains, etc.) as a native agent. The editor spawns `cindro-acp`, talks
 **newline-delimited JSON-RPC 2.0 over stdio**, and this bridge translates every ACP
 call to/from the `jarvisd` **Contract A** control WebSocket
-(`ws://127.0.0.1:8795/control/ws`). You get real Jarvis sessions, streamed turns,
+(`ws://127.0.0.1:8795/control/ws`). You get real Cindro sessions, streamed turns,
 tool-call visibility, and permission prompts — inside your editor.
 
 ```
-Zed  ──ACP JSON-RPC (stdio)──▶  jarvis-acp  ──Contract A (loopback WS)──▶  jarvisd
+Zed  ──ACP JSON-RPC (stdio)──▶  cindro-acp  ──Contract A (loopback WS)──▶  jarvisd
         session/new/prompt/…         │  session.create/send/subscribe/…
         ◀── session/update ──────────┘  ◀── session.event {ev:{kind,…}} ──
 ```
@@ -37,31 +37,31 @@ shared control socket and fans events into per-session queues, so another chat's
 
 ## Install
 
-`jarvis-acp` depends only on `websockets`. Install it into an isolated environment:
+`cindro-acp` depends only on `websockets`. Install it into an isolated environment:
 
 ```bash
-# with pipx (recommended — gives you a stable `jarvis-acp` on PATH)
+# with pipx (recommended — gives you a stable `cindro-acp` on PATH)
 pipx install /path/to/computer_use/acp-bridge
 
 # or with uv
 uv tool install /path/to/computer_use/acp-bridge
 
 # or a plain venv
-python3 -m venv ~/.local/share/jarvis-acp-venv
-~/.local/share/jarvis-acp-venv/bin/pip install /path/to/computer_use/acp-bridge
-# -> binary at ~/.local/share/jarvis-acp-venv/bin/jarvis-acp
+python3 -m venv ~/.local/share/cindro-acp-venv
+~/.local/share/cindro-acp-venv/bin/pip install /path/to/computer_use/acp-bridge
+# -> binary at ~/.local/share/cindro-acp-venv/bin/cindro-acp
 ```
 
 ## Wire it into Zed
 
 Add an entry under `agent_servers` in Zed's `settings.json`
-(`~/.config/zed/settings.json`), then pick **Jarvis** in the agent panel:
+(`~/.config/zed/settings.json`), then pick **Cindro** in the agent panel:
 
 ```json
 {
   "agent_servers": {
-    "Jarvis": {
-      "command": "jarvis-acp",
+    "Cindro": {
+      "command": "cindro-acp",
       "args": [],
       "env": {}
     }
@@ -69,9 +69,9 @@ Add an entry under `agent_servers` in Zed's `settings.json`
 }
 ```
 
-If `jarvis-acp` isn't on Zed's PATH, use the absolute path from your install
-(e.g. `"command": "/home/you/.local/bin/jarvis-acp"` for pipx, or the venv's
-`bin/jarvis-acp`). Other ACP editors take the same `command` + `args` + `env`.
+If `cindro-acp` isn't on Zed's PATH, use the absolute path from your install
+(e.g. `"command": "/home/you/.local/bin/cindro-acp"` for pipx, or the venv's
+`bin/cindro-acp`). Other ACP editors take the same `command` + `args` + `env`.
 
 ## Auth notes
 

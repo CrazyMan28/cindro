@@ -1,6 +1,6 @@
 # Background jobs, monitor & sleep/wake
 
-Claude-Code-style background shell for Orin: start long work detached, then keep
+Claude-Code-style background shell for Cindro: start long work detached, then keep
 going (or sleep) and get **automatically woken** with the result. No babysitting a
 slow command.
 

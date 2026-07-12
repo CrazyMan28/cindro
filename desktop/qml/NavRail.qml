@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // Vertical HUD nav rail: a small arc-reactor logo at the top, glowing line-icons
 // with UPPERCASE tracked labels, an animated neon active-indicator bar that
@@ -112,7 +112,7 @@ Item {
             Text {
                 Layout.alignment: Qt.AlignVCenter
                 Layout.fillWidth: true
-                text: "J.A.R.V.I.S"
+                text: "CINDRO"
                 color: Theme.text
                 font.family: Theme.fontDisplay
                 font.pixelSize: 12

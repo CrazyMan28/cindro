@@ -7,7 +7,7 @@
 # Python, Node, and the Wayland computer-use runtime tools), sets up the Python
 # engine venv + the Node phone server, builds the C++ superbuild, and installs the
 # desktop app + daemon. After it finishes, `systemctl --user start jarvisd` and
-# launch `jarvis-sidebar` — the first run shows the setup wizard.
+# launch `cindro-sidebar` — the first run shows the setup wizard.
 #
 # Supports: Fedora/RHEL (dnf), Debian/Ubuntu (apt), Arch (pacman), openSUSE (zypper).
 # Re-runnable. Uses sudo ONLY for the system package install step.
@@ -92,6 +92,6 @@ cat <<EOF
 
 $(printf '\033[1;32m✓ Jarvis installed.\033[0m')
   start the daemon:   systemctl --user start jarvisd
-  launch the UI:      jarvis-sidebar         (first run = setup wizard)
+  launch the UI:      cindro-sidebar         (first run = setup wizard)
   no Codex/Claude CLI? paste a Mistral key in Settings → see docs/MISTRAL_SETUP.md
 EOF

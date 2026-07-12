@@ -1,5 +1,5 @@
 <#
-  Orin self-update (Windows). Called by the daemon's Updater (auto, on the
+  Cindro self-update (Windows). Called by the daemon's Updater (auto, on the
   auto_update interval) and by the manual "Check for updates" button.
 
     update.ps1 -Mode check          # prints JSON {current, latest, behind}
@@ -7,7 +7,7 @@
 
   A bare-machine Windows install has no build toolchain, so it can't rebuild from
   source. Instead it tracks the latest GitHub Release built from `main` (produced by
-  .github/workflows/windows-build.yml) and runs that Jarvis-Setup.exe. Only `main`
+  .github/workflows/windows-build.yml) and runs that Cindro-Setup.exe. Only `main`
   (production) is tracked, respecting dev -> qa -> main.
 #>
 param(
@@ -19,8 +19,8 @@ $ErrorActionPreference = "Stop"
 $api = "https://api.github.com/repos/$Repo/releases/latest"
 function Get-Latest {
   try {
-    $r = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "Jarvis-Updater" }
-    $asset = $r.assets | Where-Object { $_.name -like "Jarvis-Setup-*.exe" } | Select-Object -First 1
+    $r = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "Cindro-Updater" }
+    $asset = $r.assets | Where-Object { $_.name -like "Cindro-Setup-*.exe" } | Select-Object -First 1
     return [pscustomobject]@{ tag = $r.tag_name; url = $asset.browser_download_url; name = $asset.name }
   } catch { return $null }
 }
@@ -44,7 +44,7 @@ if (-not $behind -or -not $latest.url) {
 }
 $tmp = Join-Path $env:TEMP $latest.name
 Write-Host ">> downloading $($latest.name) …"
-Invoke-WebRequest -Uri $latest.url -OutFile $tmp -Headers @{ "User-Agent" = "Jarvis-Updater" }
+Invoke-WebRequest -Uri $latest.url -OutFile $tmp -Headers @{ "User-Agent" = "Cindro-Updater" }
 # Inno Setup silent install (replaces the install in place). The installer's [Run]
 # relaunches jarvisd + the UI, so we exit after handing off.
 Write-Host ">> installing $latestTag silently …"

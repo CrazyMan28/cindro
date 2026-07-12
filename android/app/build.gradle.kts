@@ -17,11 +17,11 @@ if (hasGoogleServices) {
 }
 
 android {
-    namespace = "com.jarvis.app"
+    namespace = "com.cindro.app"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.jarvis.app"
+        applicationId = "com.cindro.app"
         minSdk = 26
         targetSdk = 36
         versionCode = 48

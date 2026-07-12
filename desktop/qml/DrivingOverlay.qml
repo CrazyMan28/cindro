@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // DrivingOverlay — the visual content of the full-screen, click-through
 // wlr-layer-shell OVERLAY surface (role + empty pointer input region installed in
@@ -164,7 +164,7 @@ Item {
                 // primary label
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
-                    text: "Orin is using your computer"
+                    text: "Cindro is using your computer"
                     color: Theme.text
                     font.family: Theme.fontSans
                     font.pixelSize: 15

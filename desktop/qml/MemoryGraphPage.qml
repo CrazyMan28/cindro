@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // GRAPH page (jarvis#70 phase 1): a visual browser over the knowledge graph —
 // entities (people/projects/topics) auto-extracted from memory text/tags, and
@@ -237,7 +237,7 @@ Item {
                     Layout.fillWidth: true
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
-                    text: "As you save memories, Orin auto-extracts people, projects, and topics and links them here."
+                    text: "As you save memories, Cindro auto-extracts people, projects, and topics and links them here."
                     color: Theme.textFaint
                     font.family: Theme.fontSans
                     font.pixelSize: 13

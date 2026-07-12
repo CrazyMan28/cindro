@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Build a portable Jarvis .AppImage (Linux release artifact).
+# Build a portable Cindro .AppImage (Linux release artifact).
 #
-#   packaging/build-appimage.sh [version]      -> dist/Jarvis-<version>-x86_64.AppImage
+#   packaging/build-appimage.sh [version]      -> dist/Cindro-<version>-x86_64.AppImage
 #
-# Bundles jarvisd + jarvis-sidebar + Qt6 + LayerShellQt + libsodium (via
+# Bundles jarvisd + cindro-sidebar + Qt6 + LayerShellQt + libsodium (via
 # linuxdeploy-plugin-qt) and the Python computer-use engine (PyInstaller). The
 # AppRun starts the engine + daemon (background) then the UI. Runs on most modern
 # Linux. Computer-use still needs the host's Wayland tools (grim/spectacle, ydotool,
@@ -22,7 +22,7 @@ say(){ printf '\033[1;36m==> %s\033[0m\n' "$*" >&2; }   # stderr: never pollute 
 mkdir -p "$DIST" "$TOOLS"
 
 # 1. Build the C++ superbuild --------------------------------------------------
-say "Building jarvisd + jarvis-sidebar..."
+say "Building jarvisd + cindro-sidebar..."
 env -u PYTHONPATH cmake -S "$REPO" -B "$BUILD" -G Ninja >/dev/null
 env -u PYTHONPATH cmake --build "$BUILD"   # not silenced: build errors must surface in CI logs
 
@@ -33,21 +33,21 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" \
          "$APPDIR/usr/share/applications" \
          "$APPDIR/usr/share/icons/hicolor/scalable/apps"
 install -m755 "$BUILD/daemon/jarvisd"         "$APPDIR/usr/bin/jarvisd"
-install -m755 "$BUILD/desktop/jarvis-sidebar" "$APPDIR/usr/bin/jarvis-sidebar"
-install -m644 "$REPO/packaging/jarvis.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/jarvis.svg"
-cp "$REPO/packaging/jarvis.svg" "$APPDIR/jarvis.svg"   # top-level icon AppImage wants
+install -m755 "$BUILD/desktop/cindro-sidebar" "$APPDIR/usr/bin/cindro-sidebar"
+install -m644 "$REPO/packaging/cindro.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/cindro.svg"
+cp "$REPO/packaging/cindro.svg" "$APPDIR/cindro.svg"   # top-level icon AppImage wants
 
-cat > "$APPDIR/usr/share/applications/jarvis.desktop" <<'EOF'
+cat > "$APPDIR/usr/share/applications/cindro.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=Jarvis
+Name=Cindro
 Comment=One AI co-worker for your Linux desktop
 Exec=AppRun
-Icon=jarvis
+Icon=cindro
 Categories=Utility;Development;
 Terminal=false
 EOF
-cp "$APPDIR/usr/share/applications/jarvis.desktop" "$APPDIR/jarvis.desktop"
+cp "$APPDIR/usr/share/applications/cindro.desktop" "$APPDIR/cindro.desktop"
 
 # 3. Python computer-use engine (PyInstaller one-dir; optional/non-fatal) -------
 say "Bundling the computer-use engine (PyInstaller)..."
@@ -84,6 +84,39 @@ else
   echo "!! engine bundling failed — shipping the app without a bundled engine (host computer-use-mcp still works)." >&2
 fi
 
+# 3b. outpost-mcp (PyInstaller one-dir; optional/non-fatal) --------------------
+# Without this the AppImage never listens on :8798 and the Outpost UI panel
+# fails every call with outpost_unreachable — outpost-mcp was previously only
+# ever started by hand-following docs/OUTPOST.md on the original dev box, so
+# no release artifact (AppImage or Cindro-Setup.exe) actually shipped it. Own
+# venv (the engine venv stays untouched, same as the CLI/outpost split in
+# install.sh). agent-bin is staged in here too if the caller (linux-release.yml)
+# already built it via outpost-agent/build.sh before calling this script.
+say "Bundling outpost-mcp (PyInstaller)..."
+if ( set -e
+     OUTPOST_VENV="$BUILD/appimg-outpost-venv"
+     env -u PYTHONPATH python3 -m venv "$OUTPOST_VENV"
+     env -u PYTHONPATH "$OUTPOST_VENV/bin/pip" install -q --upgrade pip pyinstaller
+     env -u PYTHONPATH "$OUTPOST_VENV/bin/pip" install -q "$REPO/outpost-mcp"
+     printf 'from outpost_mcp.server import main\nif __name__=="__main__":\n    main()\n' \
+        > "$BUILD/outpost_entry.py"
+     # NOT --collect-all mcp: it pulls in the optional mcp.cli submodule, which
+     # imports `typer` (not a dependency here) and hard-fails the freeze.
+     # --copy-metadata mcp alone is enough for mcp's importlib.metadata lookups
+     # (same choice the engine bundling above makes).
+     env -u PYTHONPATH "$OUTPOST_VENV/bin/pyinstaller" --noconfirm --name outpost-mcp \
+        --distpath "$APPDIR/usr/bin/outpost" --workpath "$BUILD/pyi-appimg-outpost" \
+        --collect-all uvicorn --collect-all fastapi --collect-all starlette \
+        --collect-submodules mcp.server --copy-metadata mcp \
+        "$BUILD/outpost_entry.py" >/dev/null
+     mkdir -p "$APPDIR/usr/bin/outpost/agent-bin"
+     cp "$REPO/outpost-mcp/agent-bin/"* "$APPDIR/usr/bin/outpost/agent-bin/" 2>/dev/null || true
+   ); then
+  say "outpost-mcp bundled."
+else
+  echo "!! outpost-mcp bundling failed — shipping the app without Outpost (pair/exec/screenshot remote machines will be unavailable)." >&2
+fi
+
 # 4. AppRun --------------------------------------------------------------------
 say "Writing AppRun..."
 cat > "$APPDIR/AppRun" <<'EOF'
@@ -101,13 +134,20 @@ L="$HERE/usr/lib"
 if [ -x "$HERE/usr/bin/engine/jarvis-engine" ] && ! pgrep -f computer_use_mcp >/dev/null 2>&1; then
   "$HERE/usr/bin/engine/jarvis-engine" >/dev/null 2>&1 &
 fi
+# outpost-mcp (:8798, pair/exec/screenshot remote machines) — PyInstaller,
+# self-contained. Its own bundled agent-bin/ (Go outpost-agent binaries for
+# pairing) sits next to it; point it there since the frozen exe can't derive
+# it from __file__ the way the source package does.
+if [ -x "$HERE/usr/bin/outpost/outpost-mcp/outpost-mcp" ] && ! pgrep -f outpost_mcp >/dev/null 2>&1; then
+  OUTPOST_AGENT_BIN_DIR="$HERE/usr/bin/outpost/agent-bin" "$HERE/usr/bin/outpost/outpost-mcp/outpost-mcp" >/dev/null 2>&1 &
+fi
 # daemon (bundled Qt/libsodium via per-command LD_LIBRARY_PATH; rpath also patched).
 if ! pgrep -x jarvisd >/dev/null 2>&1; then
   LD_LIBRARY_PATH="$L${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$HERE/usr/bin/jarvisd" >/dev/null 2>&1 &
   sleep 1
 fi
 # the UI (foreground).
-exec env LD_LIBRARY_PATH="$L${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$HERE/usr/bin/jarvis-sidebar" "$@"
+exec env LD_LIBRARY_PATH="$L${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$HERE/usr/bin/cindro-sidebar" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 
@@ -119,7 +159,7 @@ fetch(){ # name url
 }
 LD="$(fetch linuxdeploy "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${ARCH}.AppImage")"
 LDQT="$(fetch linuxdeploy-plugin-qt "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${ARCH}.AppImage")"
-export OUTPUT="Jarvis-${VER}-${ARCH}.AppImage"
+export OUTPUT="Cindro-${VER}-${ARCH}.AppImage"
 export QML_SOURCES_PATHS="$REPO/desktop/qml"
 export VERSION="$VER"
 # By default linuxdeploy-plugin-qt bundles only xcb. This app runs on WAYLAND
@@ -160,8 +200,8 @@ say "Running linuxdeploy (bundling Qt + LayerShellQt + deps)..."
 # Bundle into the AppDir but DON'T package yet (no --output): we must prune first.
 "$LD" --appdir "$APPDIR" --plugin qt \
   --executable "$APPDIR/usr/bin/jarvisd" \
-  --executable "$APPDIR/usr/bin/jarvis-sidebar" \
-  --desktop-file "$APPDIR/jarvis.desktop" --icon-file "$APPDIR/jarvis.svg"
+  --executable "$APPDIR/usr/bin/cindro-sidebar" \
+  --desktop-file "$APPDIR/cindro.desktop" --icon-file "$APPDIR/cindro.svg"
 
 # Prune host-provided libs. linuxdeploy-plugin-qt over-bundles Qt's transitive deps,
 # including libs that MUST come from the host: client libs that talk to a running host
@@ -169,7 +209,7 @@ say "Running linuxdeploy (bundling Qt + LayerShellQt + deps)..."
 # and ABI-sensitive system libs (glib/gio, GL/EGL/GLX, X/xcb, wayland, drm/gbm, dbus,
 # systemd, ...). Bundling them clashes with the host copies and corrupts Qt at runtime
 # (observed on a clean box: jarvisd SEGV in QtWebSockets::QWebSocketFrame::clear, and
-# jarvis-sidebar SEGV in pw_stream_disconnect on audio teardown). This is exactly what
+# cindro-sidebar SEGV in pw_stream_disconnect on audio teardown). This is exactly what
 # the AppImage "excludelist" is for — fetch it and delete every matching lib, so they
 # resolve from the host at runtime.
 say "Pruning host-provided libs (AppImage excludelist)..."

@@ -12,7 +12,7 @@
 //   nested compositor seat (no cursor sharing with the user). See
 //   windows/isolation/DESIGN.md.
 //
-// Two windows/-local pieces make the rest of Orin's pipeline reuse unchanged:
+// Two windows/-local pieces make the rest of Cindro's pipeline reuse unchanged:
 //   gap #1  the in-sandbox engine answers which="agent" for ITS desktop, via env
 //           JARVIS_AGENT_INSANDBOX=1 (windows/engine/backend_windows.py).
 //   gap #2  reachability -- the engine binds 0.0.0.0:<port> inside the box; the
@@ -204,7 +204,7 @@ QString sessionTempDir(const QString &sessionId)
 // We add a per-port allow rule while the tunnel is up and delete it in teardown().
 QString relayFirewallRuleName(quint16 rport)
 {
-    return QStringLiteral("Jarvis-Agent-Relay-%1").arg(rport);
+    return QStringLiteral("Cindro-Agent-Relay-%1").arg(rport);
 }
 
 // Best-effort. Requires an elevated token to actually take effect; if jarvisd is
@@ -244,7 +244,7 @@ void removeRelayFirewallRule(quint16 rport)
 // permanent until something notices. sweepOrphans() already runs once at daemon
 // startup before any in-process session exists, so it's the natural place to
 // catch these: enumerate every rule and delete the ones matching our
-// "Jarvis-Agent-Relay-*" naming scheme. netsh has no wildcard "show rule name=",
+// "Cindro-Agent-Relay-*" naming scheme. netsh has no wildcard "show rule name=",
 // so we list everything and grep for our prefix, then delete each by its exact
 // name (synchronous -- this runs once at startup, not on a hot path). Best-effort
 // like the add/remove helpers above: requires an elevated token to actually take
@@ -259,7 +259,7 @@ int sweepOrphanFirewallRules()
         return 0;
     const QString out = QString::fromLocal8Bit(show.readAllStandardOutput());
     static const QString kRuleNamePrefix = QStringLiteral("Rule Name:");
-    static const QString kOurPrefix = QStringLiteral("Jarvis-Agent-Relay-");
+    static const QString kOurPrefix = QStringLiteral("Cindro-Agent-Relay-");
     int reaped = 0;
     for (const QString &line : out.split(QLatin1Char('\n'))) {
         const QString trimmed = line.trimmed();

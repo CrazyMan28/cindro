@@ -1,0 +1,5 @@
+# Plugin payload files are Ed25519-hashed byte-for-byte (see PluginSigner::hashPayloadDir
+# / tools/jarvis-plugin's hash_payload_dir — both read raw bytes, no text-mode
+# normalization). Pin them to LF regardless of a contributor's core.autocrlf, or a
+# Windows checkout re-introduces CRLF and every signature stops verifying.
+plugins/** text eol=lf

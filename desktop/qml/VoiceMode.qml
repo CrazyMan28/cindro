@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // VoiceMode — the "spinny thing": a full-page voice UI built around a big glowing
 // ORB (an ArcReactor wrapped in a reactive concentric-ring Canvas). The orb's
@@ -191,7 +191,7 @@ Item {
         PageHeader {
             Layout.fillWidth: true
             title: "Voice Mode"
-            subtitle: "Just talk — Orin is listening. Tap the orb or Space to start/stop."
+            subtitle: "Just talk — Cindro is listening. Tap the orb or Space to start/stop."
         }
 
         // ---- which AI backs the voice session: brain + model ----------------
@@ -517,7 +517,7 @@ Item {
             Layout.alignment: Qt.AlignHCenter
             Layout.bottomMargin: 4
             horizontalAlignment: Text.AlignHCenter
-            text: "Just talk — Orin listens and replies. Try: \"what's on my screen\" or \"show me a duck\"."
+            text: "Just talk — Cindro listens and replies. Try: \"what's on my screen\" or \"show me a duck\"."
             color: Theme.textFaint
             font.family: Theme.fontSans
             font.pixelSize: 12

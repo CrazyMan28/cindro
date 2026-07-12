@@ -9,7 +9,7 @@
       "client_info": {
         "mobilesdk_app_id": "1:YOUR_PROJECT_NUMBER:android:YOURAPPIDHASH1",
         "android_client_info": {
-          "package_name": "com.jarvis.app"
+          "package_name": "com.cindro.app"
         }
       },
       "oauth_client": [],
@@ -28,7 +28,7 @@
       "client_info": {
         "mobilesdk_app_id": "1:YOUR_PROJECT_NUMBER:android:YOURAPPIDHASH2",
         "android_client_info": {
-          "package_name": "com.jarvis.app.debug"
+          "package_name": "com.cindro.app.debug"
         }
       },
       "oauth_client": [],

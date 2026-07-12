@@ -1,15 +1,15 @@
 # Tests the NEW build's binaries DIRECTLY from the staged dist/ payload (bypasses the
-# installer). dist/ is the full app dir (jarvisd.exe + jarvis-sidebar.exe + all DLLs),
+# installer). dist/ is the full app dir (jarvisd.exe + cindro-sidebar.exe + all DLLs),
 # so the binaries run as-installed. Proves the shipped build works.
 $ErrorActionPreference = 'Continue'
 function Log($m) { Write-Host "[dist] $m" }
 
-Get-Process jarvis-sidebar, jarvisd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process cindro-sidebar, jarvisd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep 2
 
 $dist = "C:\actions-runner\_work\jarvis\jarvis\windows\dist"
 $jd = Join-Path $dist "jarvisd.exe"
-$sb = Join-Path $dist "jarvis-sidebar.exe"
+$sb = Join-Path $dist "cindro-sidebar.exe"
 Log "jarvisd in dist = $(Test-Path $jd)  mtime=$((Get-Item $jd -ErrorAction SilentlyContinue).LastWriteTime)"
 Log "sidebar in dist = $(Test-Path $sb)  mtime=$((Get-Item $sb -ErrorAction SilentlyContinue).LastWriteTime)"
 

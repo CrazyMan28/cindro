@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // MCP page: list of registered servers (name, endpoint, enable switch, connected
 // dot, tools_count) with Test + Remove; an "Add MCP server" dialog. The built-in
@@ -333,7 +333,7 @@ Item {
             }
             Text {
                 Layout.fillWidth: true
-                text: "These are your codex/claude CLI's own MCP servers. Off = isolated (default). Toggle on to let Orin use one."
+                text: "These are your codex/claude CLI's own MCP servers. Off = isolated (default). Toggle on to let Cindro use one."
                 color: Theme.textMuted
                 font.family: Theme.fontSans
                 font.pixelSize: 11

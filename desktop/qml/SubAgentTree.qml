@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // SUB-AGENT TREE: visualizes child / sub-agent sessions as an indented tree.
 // Built from session.list parent links (parent_session_id) by the Bridge, which
