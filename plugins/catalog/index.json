@@ -10,7 +10,7 @@
         "filesystem:/tmp/hello-mcp",
         "network:api.hello.test"
       ],
-      "signature": "ed25519:7591cf30235f09f7:JMrsnXLoXnukcLDNmQApo9eaFV+K8cBUn0AOwfPkFcYi82NeJYWSoWrkFzS03C6M1AperC0poJ024lm0sNKlCw==",
+      "signature": "ed25519:7591cf30235f09f7:yHCLe4m+qD3MG0kRbysnoy/z9qKvalaU480IPf44qsUqz0ktUnsS/osvBCkz2rCH8t93aeKDLi/TYYxbXDezDQ==",
       "manifest": "hello-mcp.toml"
     }
   ]
