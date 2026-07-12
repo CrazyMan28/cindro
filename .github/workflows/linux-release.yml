@@ -64,6 +64,22 @@ jobs:
       - name: Build the AppImage
         run: packaging/build-appimage.sh "${{ steps.ver.outputs.version }}"
 
+      # The outpost-agent binaries (outpost-mcp/agent-bin/) are gitignored and
+      # were never shipped, so a fresh outpost hub 404'd every pairing. Cross-
+      # compile all 6 targets here and attach them to the Release so a binary
+      # install (no Go toolchain) still gets them.
+      - name: Build outpost-agent binaries
+        run: |
+          if command -v go >/dev/null 2>&1; then
+            # No `|| true`: a real cross-compile failure MUST red the job, else a
+            # tagged Release silently ships without the agent binaries and every
+            # fresh-hub pairing 404s again — the exact bug this step prevents.
+            (cd outpost-agent && ./build.sh)
+            ls -la outpost-mcp/agent-bin/
+          else
+            echo "go toolchain absent on the runner; skipping outpost-agent build"
+          fi
+
       # Gate: the AppImage MUST load the full UI (offscreen) or we don't ship it.
       # Catches the "bundled libs segfault" class of failures before release.
       - name: Smoke-test the AppImage (offscreen --selftest)
@@ -88,4 +104,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Jarvis-*.AppImage
+          # The AppImage plus the outpost-agent binaries (if the runner built
+          # them). fail_on_unmatched_files stays off so a Go-less runner still
+          # ships the AppImage rather than reddening the release.
+          fail_on_unmatched_files: false
+          files: |
+            dist/Jarvis-*.AppImage
+            outpost-mcp/agent-bin/outpost-agent-*

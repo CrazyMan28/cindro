@@ -107,6 +107,18 @@ if [ -d "${REPO_ROOT}/cli" ]; then
   fi
 fi
 
+# --- 6.5 outpost-agent binaries ---------------------------------------------
+# The compiled outpost-agent binaries (outpost-mcp/agent-bin/) are gitignored, so
+# a from-source install has none and every outpost pairing 404s. Pre-build them
+# once here if a Go toolchain is present (the server can also build on demand,
+# but paying it at install keeps the first pairing fast).
+if [ -x "${REPO_ROOT}/outpost-agent/build.sh" ] && command -v go >/dev/null 2>&1; then
+  log "Building outpost-agent binaries (Go found)..."
+  ( cd "${REPO_ROOT}/outpost-agent" && ./build.sh ) >/dev/null 2>&1 \
+    && log "outpost-agent binaries built into outpost-mcp/agent-bin/" \
+    || log "WARNING: outpost-agent build failed; the server will build on demand"
+fi
+
 # --- 7. Next steps -----------------------------------------------------------
 cat <<EOF
 

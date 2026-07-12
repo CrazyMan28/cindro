@@ -122,6 +122,27 @@ class MockDaemon:
         self.call_transcripts: dict[str, dict] = {}
         self.phone_calls: list[tuple[str, dict]] = []  # (tool_or_http_path, args)
         self._call_seq = 0
+        # ---- phone.config (Contract-A phone/Twilio config verb, control-only) --
+        # Mirrors daemon/src/ControlServer.cpp's PhoneEnv + handlePhoneConfig:
+        # secrets (account_sid/auth_token) live ONLY in phone_env, "get" never
+        # echoes them back (only has_* below); "set" writes whichever keys are
+        # present in the patch (empty string clears). phone_config_supported
+        # mirrors phone_verbs_supported's precedent for an older daemon build.
+        self.phone_config_supported = True
+        self.phone_config_reachable = True
+        self.phone_env: dict = {
+            "server_port": "8801",
+            "server_url": "http://127.0.0.1:8801",
+            "has_admin_token": True,
+            "has_device_token": True,
+            "has_agent_token": True,
+            "twilio_account_sid": "",
+            "twilio_auth_token": "",
+            "twilio_from_number": "",
+            "twilio_public_base_url": "",
+            "twilio_inbound_extension": "101",
+            "twilio_screening_extension": "",
+        }
 
     async def _handler(self, ws):
         self.ws = ws
@@ -241,6 +262,10 @@ class MockDaemon:
             if not self.phone_verbs_supported:
                 return None  # real "unknown_method" wire error
             return self._handle_phone_http(params)
+        if method == "phone.config":
+            if not self.phone_config_supported:
+                return None  # real "unknown_method" wire error
+            return self._handle_phone_config(params)
         if method == "auth.request":
             if not self.paired:
                 return {"challenge_id": "", "state": "approved", "paired": False}
@@ -329,6 +354,53 @@ class MockDaemon:
             self.active_calls = [c for c in self.active_calls if c.get("id") != cid]
             return {"status": 200, "data": {"ok": True}}
         return {"status": 404, "data": {}}
+
+    # ---- phone.config (mirrors daemon/src/ControlServer.cpp's handlePhoneConfig) --
+    def _handle_phone_config(self, params: dict) -> dict:
+        action = params.get("action", "get")
+        env = self.phone_env
+        if action == "get":
+            tw = {
+                "has_account_sid": bool(env.get("twilio_account_sid")),
+                "has_auth_token": bool(env.get("twilio_auth_token")),
+                "from_number": env.get("twilio_from_number", ""),
+                "public_base_url": env.get("twilio_public_base_url", ""),
+                "inbound_extension": env.get("twilio_inbound_extension") or "101",
+                "screening_extension": env.get("twilio_screening_extension", ""),
+                "configured": bool(env.get("twilio_account_sid"))
+                             and bool(env.get("twilio_auth_token"))
+                             and bool(env.get("twilio_from_number")),
+            }
+            return {
+                "configured": bool(env.get("has_admin_token")) or bool(env.get("has_agent_token")),
+                "server_port": env.get("server_port", "8801"),
+                "server_url": env.get("server_url", "http://127.0.0.1:8801"),
+                "has_admin_token": bool(env.get("has_admin_token")),
+                "has_device_token": bool(env.get("has_device_token")),
+                "has_agent_token": bool(env.get("has_agent_token")),
+                "twilio": tw,
+            }
+        if action == "set":
+            patch = params.get("patch") or {}
+            for key in ("server_port", "twilio_account_sid", "twilio_auth_token",
+                       "twilio_from_number", "twilio_public_base_url",
+                       "twilio_inbound_extension", "twilio_screening_extension"):
+                if key in patch:
+                    env[key] = patch[key]
+            for tok_key, has_key in (("admin_token", "has_admin_token"),
+                                     ("device_token", "has_device_token"),
+                                     ("agent_token", "has_agent_token")):
+                if tok_key in patch:
+                    env[has_key] = bool(patch[tok_key])
+            return {"ok": True, "restarted": False, "note": "phone.env updated (mock)"}
+        if action == "test":
+            return {
+                "reachable": self.phone_config_reachable,
+                "twilio_configured": bool(env.get("twilio_account_sid"))
+                                     and bool(env.get("twilio_auth_token"))
+                                     and bool(env.get("twilio_from_number")),
+            }
+        return None
 
     def _spawn(self, coro):
         t = asyncio.ensure_future(coro)

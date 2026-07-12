@@ -2715,17 +2715,51 @@ async function saveAgentModelConfig() {
   }
 }
 
+// TTS Audio Format setting (Settings → Connection) has no phone.env key — the
+// server always returns whatever the voice sample actually is encoded as. The
+// browser <audio> element can only play containerized/encoded audio (not raw
+// PCM), so the format the user picked is applied here as a real gate: we map
+// it to a MIME type and use canPlayType() to decide whether to attempt
+// playback, instead of just storing the value and ignoring it.
+const TTS_FORMAT_MIME = {
+  mp3:       "audio/mpeg",
+  wav:       "audio/wav",
+  ogg_opus:  "audio/ogg; codecs=opus",
+  pcm_16000: "",  // raw PCM has no container — not directly playable by <audio>
+  pcm_24000: ""
+};
+
 async function doPreviewVoice() {
   if (!agentConfigState.ext) return;
   const resultEl = $("agentConfigResult");
   const vid = agentConfigState.voiceId || "default";
+
+  const { phoneAudioFormat } = await chrome.storage.local.get({ phoneAudioFormat: "pcm_16000" });
+  const fmt  = (phoneAudioFormat || "pcm_16000").trim();
+  const mime = Object.prototype.hasOwnProperty.call(TTS_FORMAT_MIME, fmt) ? TTS_FORMAT_MIME[fmt] : "audio/mpeg";
+  if (!mime) {
+    if (resultEl) {
+      resultEl.textContent = "✗ " + fmt + " is raw PCM (no container) — set Settings → Connection → " +
+        "TTS Audio Format to mp3, wav, or ogg_opus to preview in the browser.";
+      resultEl.className = "phone-result bad";
+    }
+    return;
+  }
+  if (document.createElement("audio").canPlayType(mime) === "") {
+    if (resultEl) {
+      resultEl.textContent = "✗ This browser can't play " + fmt + " (" + mime + ").";
+      resultEl.className = "phone-result bad";
+    }
+    return;
+  }
+
   try {
     const data = await phoneHttp("GET", "/api/voices/" + encodeURIComponent(vid) + "/sample");
     const url = (data && (typeof data === "string" ? data : data.url)) || "";
     if (url) {
       try { new Audio(url).play(); } catch (_) { /* sandboxed */ }
     }
-    if (resultEl) { resultEl.textContent = "▶ Playing preview…"; resultEl.className = "phone-result ok"; }
+    if (resultEl) { resultEl.textContent = "▶ Playing preview (" + fmt + ")…"; resultEl.className = "phone-result ok"; }
   } catch (e) {
     if (resultEl) {
       resultEl.textContent = "✗ " + (e.message || e);
@@ -2757,39 +2791,97 @@ async function loadHud() {
 // ================================================================= SETTINGS EXPANSIONS
 
 // ---- Connection section ----
+// Server URL + audio format are extension-local prefs (chrome.storage.local —
+// Server URL also drives the HUD iframe/"Open ops HUD" link). Inbound
+// extension + agent token live server-side in ~/.config/jarvis/phone.env and
+// are read via rpc("phone.config", ...) so this panel reflects what the
+// daemon actually has, not a stale local copy. Secrets are NEVER read back —
+// only has_* booleans.
+// Baseline of the daemon's phone.config get, so save only writes a plain field
+// the user actually changed — never the daemon's DERIVED defaults (server_url
+// falls back to http://127.0.0.1:<port>, inbound_extension to "101"), which
+// would otherwise freeze those keys at loopback on a first "just store my token"
+// save. Mirrors the diff-on-save the desktop/web/cli surfaces use.
+let _connBaseline = { serverUrl: "", ext: "101" };
+
 async function loadConnectionSettings() {
   const cfg = await chrome.storage.local.get({
-    phoneServerUrl:    "",
-    phoneServerToken:  "",
-    phoneExtension:    "101",
-    phoneAudioFormat:  "pcm_16000"
+    phoneServerUrl:   "",
+    phoneAudioFormat: "pcm_16000"
   });
   const u = $("connServerUrl");   if (u) u.value = cfg.phoneServerUrl;
-  const t = $("connToken");       if (t) t.value = cfg.phoneServerToken;
-  const e = $("connExtension");   if (e) e.value = cfg.phoneExtension;
   const f = $("connAudioFormat"); if (f) f.value = cfg.phoneAudioFormat;
+  const t = $("connToken");       if (t) t.value = "";
+
+  const statusEl = $("connStatus");
+  if (statusEl) statusEl.textContent = "Loading…";
+  try {
+    const d = await rpc("phone.config", { action: "get" });
+    const tw = d.twilio || {};
+    _connBaseline = { serverUrl: d.server_url || "", ext: tw.inbound_extension || "101" };
+    // The daemon's server_url is authoritative — set it UNCONDITIONALLY (not just
+    // when empty) so the field equals the baseline it's diffed against on Save; a
+    // stale local value must not create a spurious public_base_url write. Cache
+    // it locally so the "Open ops HUD" link opens the current server URL too.
+    if (u) u.value = d.server_url || "";
+    chrome.storage.local.set({ phoneServerUrl: d.server_url || "" });
+    const e = $("connExtension"); if (e) e.value = tw.inbound_extension || "101";
+    if (t) t.placeholder = d.has_agent_token ? "•••• set (leave blank to keep)" : "not set";
+    if (statusEl) {
+      statusEl.textContent = [
+        "phone server : " + (d.configured ? "✓ configured" : "not configured"),
+        "twilio       : " + (tw.configured ? "✓ configured" : "not configured"),
+        "admin token  : " + (d.has_admin_token  ? "•••• set" : "not set"),
+        "device token : " + (d.has_device_token ? "•••• set" : "not set"),
+        "agent token  : " + (d.has_agent_token  ? "•••• set" : "not set"),
+      ].join("\n");
+    }
+  } catch (e) {
+    if (t) t.placeholder = "not set";
+    if (statusEl) statusEl.textContent = "Error: " + (e.message || e);
+  }
 }
 
 async function saveConnectionSettings() {
-  const url  = (($("connServerUrl")   && $("connServerUrl").value)   || "").trim();
-  const tok  = (($("connToken")       && $("connToken").value)       || "").trim();
-  const ext  = (($("connExtension")   && $("connExtension").value)   || "").trim();
-  const fmt  = (($("connAudioFormat") && $("connAudioFormat").value) || "").trim();
-  await chrome.storage.local.set({
-    phoneServerUrl:   url,
-    phoneServerToken: tok,
-    phoneExtension:   ext,
-    phoneAudioFormat: fmt
-  });
-  phoneResult("connResult", "✓ Saved", "ok");
+  const url = (($("connServerUrl")   && $("connServerUrl").value)   || "").trim();
+  const tok = (($("connToken")       && $("connToken").value)       || "").trim();
+  const ext = (($("connExtension")   && $("connExtension").value)   || "").trim();
+  const fmt = (($("connAudioFormat") && $("connAudioFormat").value) || "").trim();
+  // Server URL + audio format stay local (they drive the HUD link / preview
+  // gating client-side and have no phone.env key of their own).
+  await chrome.storage.local.set({ phoneServerUrl: url, phoneAudioFormat: fmt });
+
+  phoneResult("connResult", "Saving…", "");
+  try {
+    // Diff plain fields against the loaded baseline so an untouched/auto-derived
+    // value is never persisted as an explicit phone.env key.
+    const patch = {};
+    if (url !== _connBaseline.serverUrl) patch.public_base_url = url;
+    if (ext !== _connBaseline.ext) patch.twilio_inbound_extension = ext;
+    // Only send the token when the user actually typed a new one — an empty
+    // field means "leave the stored secret alone", not "clear it".
+    if (tok) patch.agent_token = tok;
+    if (Object.keys(patch).length === 0) {
+      phoneResult("connResult", "✓ nothing changed", "ok");
+      return;
+    }
+    const d = await rpc("phone.config", { action: "set", patch });
+    if ($("connToken")) $("connToken").value = "";
+    phoneResult("connResult", (d.ok ? "✓ " : "✗ ") + (d.note || "Saved"), d.ok ? "ok" : "bad");
+    await loadConnectionSettings();
+  } catch (e) {
+    phoneResult("connResult", "✗ " + (e.message || e), "bad");
+  }
 }
 
 async function testConnectionSettings() {
-  await saveConnectionSettings();
   phoneResult("connResult", "Testing…", "");
   try {
-    const d = await phoneMcp("twilio_status");
-    phoneResult("connResult", "✓ Connected — from: " + (d.from_number || "OK"), "ok");
+    const d = await rpc("phone.config", { action: "test" });
+    phoneResult("connResult",
+      (d.reachable ? "✓ reachable" : "✗ unreachable") +
+      " · twilio " + (d.twilio_configured ? "configured" : "not configured"),
+      d.reachable ? "ok" : "bad");
   } catch (e) {
     phoneResult("connResult", "✗ " + (e.message || e), "bad");
   }

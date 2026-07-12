@@ -314,6 +314,9 @@ private:
     // keeping the bearer in the daemon. Covers the per-agent config the original
     // app drives over HTTP (not MCP). Returns {status, data|text}.
     Response handlePhoneHttp(const Request &req);
+    // phone.config get/set/test — read/write the Jarvis-managed phone.env
+    // (Twilio creds, server tokens, port). Control/loopback channel ONLY.
+    Response handlePhoneConfig(const Request &req);
     // Real-time phone events (jarvis#76 item 3): persistent client socket to
     // the phone server's WS (authed as user ext 100) + opt-in control fan-out.
     void connectPhoneWs();

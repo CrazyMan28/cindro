@@ -3,9 +3,22 @@ qrencode binary needed — confirmed absent on dev machines) + device list +
 revoke, mirroring the desktop app's Devices section (Bridge.cpp:894-920).
 
 ADDS (this module still owns pairing/QR unchanged, see the "Devices" sub-tab
-below): a dialer, an active-calls list, a call-screening view, and an
+below): a dialer, an active-calls list, a call-screening view, an
 incoming-call alert banner — the terminal analogs of desktop/qml's
-PhoneDialerTab.qml, PhoneScreeningTab.qml and PhoneCallOverlay.qml.
+PhoneDialerTab.qml, PhoneScreeningTab.qml and PhoneCallOverlay.qml — and a
+"Config" sub-tab (Twilio Account SID/Auth Token/From Number/public webhook
+URL/inbound+screening extensions) backed by the daemon's ``phone.config``
+control verb (ControlServer.cpp's ``handlePhoneConfig``). Unlike ``phone.mcp``/
+``phone.http`` below, ``phone.config`` is control/loopback-channel ONLY (it
+writes live secrets to ~/.config/jarvis/phone.env) — it is still called
+exactly the same way, via ``ControlClient.call``, just never proxied to the
+phone/device channel. Secrets are never echoed back by ``action:"get"``, only
+``has_*`` booleans, so the Config tab's SID/token inputs only ever show a
+masked placeholder ("•••• set" / "not set") and only land in the
+``action:"set"`` patch when the user actually types a new value.
+``setup_wizard.py``'s step 4 calls the SAME verb, for first-run onboarding;
+this tab is where you come back to change it later (or set it up if you
+skipped that step).
 
 Wire protocol note (traced through desktop/src/Bridge.cpp +
 daemon/src/ControlServer.cpp): despite the name, ``phone.http`` is NOT a raw
@@ -71,10 +84,29 @@ def _ascii_qr(payload: str) -> str:
 class PhonePane(Vertical):
     HINT = "p: pair a new device · x: revoke · r: refresh"
     DIAL_HINT = "type an extension (e.g. 101) or free text + enter: call · r: refresh calls"
+    CONFIG_HINT = ("edit fields (blank secret = keep current) · s: save · "
+                   "t: test connectivity · r: refresh")
     COLUMNS = ("device", "id", "last seen")
     CALL_COLUMNS = ("call", "state", "route", "reason")
 
     DEFAULT_CSS = """
+    PhonePane #phone-config-status {
+        color: #9fb3c8;
+        margin-bottom: 1;
+    }
+    PhonePane #phone-config-ext-row {
+        height: auto;
+    }
+    PhonePane #phone-config-ext-row Input {
+        width: 1fr;
+    }
+    PhonePane #phone-config-ext-row Input:first-of-type {
+        margin-right: 1;
+    }
+    PhonePane #phone-config-result {
+        color: #9fb3c8;
+        margin-top: 1;
+    }
     PhonePane #phone-call-alert {
         display: none;
         border: round #35c8f0;
@@ -114,6 +146,7 @@ class PhonePane(Vertical):
         self.incoming: dict = {}  # the ringing/active call the banner shows, or {}
         self._calls_timer = None
         self._screening_timer = None
+        self.phone_config: dict = {}  # last phone.config action:"get" result
 
     @property
     def client(self):
@@ -149,6 +182,21 @@ class PhonePane(Vertical):
             with TabPane("Screening", id="phone-tab-screening"):
                 yield Static("No active screening session", id="screening-status")
                 yield Static("", id="screening-transcript")
+            with TabPane("Config", id="phone-tab-config"):
+                yield Static(Text(self.CONFIG_HINT, style="bright_black"), classes="pane-hint")
+                yield Static("", id="phone-config-status")
+                yield Input(placeholder="Twilio Account SID", password=True,
+                            id="cfg-twilio-sid")
+                yield Input(placeholder="Twilio Auth Token", password=True,
+                            id="cfg-twilio-token")
+                yield Input(placeholder="From number, e.g. +15551234567",
+                            id="cfg-twilio-from")
+                yield Input(placeholder="Public base URL (for Twilio webhooks)",
+                            id="cfg-twilio-public-url")
+                with Horizontal(id="phone-config-ext-row"):
+                    yield Input(placeholder="Inbound ext (101)", id="cfg-twilio-inbound")
+                    yield Input(placeholder="Screening ext", id="cfg-twilio-screening")
+                yield Static("", id="phone-config-result")
 
     def on_mount(self) -> None:
         # refresh_data is a plain async method (no @work decorator, unlike
@@ -159,6 +207,7 @@ class PhonePane(Vertical):
         self.call_later(self.refresh_data)
         self.call_later(self._poll_calls_and_banner)
         self.call_later(self._poll_screening)
+        self.call_later(self._refresh_phone_config)
         # Poll-based (not event-driven): ControlClient.on_broadcast_extra is a
         # SINGLE slot already claimed by CanvasPane (tui/canvas_pane.py) for
         # widget.* broadcasts — a second claimant here would silently clobber
@@ -486,6 +535,128 @@ class PhonePane(Vertical):
         else:
             transcript_widget.update("Awaiting transcript…" if active else "")
 
+    # -- Config (phone.config get/set/test) ---------------------------------------
+    async def _refresh_phone_config(self) -> None:
+        """action:"get" -- populates the status line + prefills the
+        non-secret fields (from_number/public_base_url/extensions) with
+        their REAL current value; the two secret fields only ever get a
+        repainted placeholder ("•••• set" / "not set"), never a value, since
+        phone.config never echoes a secret back."""
+        res = await call_degrading(
+            self.client, "phone.config", {"action": "get"},
+            on_unknown_method=lambda exc: self._set_config_result(
+                "phone.config is not available on this daemon build", "yellow"),
+            on_error=lambda exc: self._set_config_result(str(exc), "red"))
+        if res is None:
+            return
+        self.phone_config = res
+        tw = res.get("twilio") or {}
+        self._render_phone_config_status(res, tw)
+        try:
+            self.query_one("#cfg-twilio-sid", Input).placeholder = (
+                "•••• set — type to replace" if tw.get("has_account_sid") else "not set")
+            self.query_one("#cfg-twilio-token", Input).placeholder = (
+                "•••• set — type to replace" if tw.get("has_auth_token") else "not set")
+            self.query_one("#cfg-twilio-from", Input).value = str(tw.get("from_number") or "")
+            self.query_one("#cfg-twilio-public-url", Input).value = str(
+                tw.get("public_base_url") or "")
+            self.query_one("#cfg-twilio-inbound", Input).value = str(
+                tw.get("inbound_extension") or "")
+            self.query_one("#cfg-twilio-screening", Input).value = str(
+                tw.get("screening_extension") or "")
+        except Exception:
+            pass
+
+    def _render_phone_config_status(self, res: dict, tw: dict) -> None:
+        try:
+            status = self.query_one("#phone-config-status", Static)
+        except Exception:
+            return
+        server_bit = "phone server configured" if res.get("configured") else "phone server not set up"
+        twilio_bit = "Twilio configured" if tw.get("configured") else "Twilio not configured"
+        status.update(f"{server_bit}  ·  {twilio_bit}  ·  {res.get('server_url', '')}")
+
+    def _set_config_result(self, text: str, style: str = "") -> None:
+        try:
+            widget = self.query_one("#phone-config-result", Static)
+        except Exception:
+            return
+        widget.update(Text(text, style=style) if style else text)
+
+    async def _save_phone_config(self) -> None:
+        try:
+            sid = self.query_one("#cfg-twilio-sid", Input).value.strip()
+            token = self.query_one("#cfg-twilio-token", Input).value.strip()
+            from_number = self.query_one("#cfg-twilio-from", Input).value.strip()
+            public_url = self.query_one("#cfg-twilio-public-url", Input).value.strip()
+            inbound = self.query_one("#cfg-twilio-inbound", Input).value.strip()
+            screening = self.query_one("#cfg-twilio-screening", Input).value.strip()
+        except Exception:
+            return
+        # Require a successful load first: without the baseline, an empty field
+        # (from a failed/raced get) would masquerade as "clear this key" and wipe
+        # a saved credential.
+        base = getattr(self, "phone_config", None)
+        if not base:
+            self._set_config_result(
+                "load the current config first (press 'r' to refresh)", "yellow")
+            return
+        btw = base.get("twilio") or {}
+        # Plain fields: only send when CHANGED from the loaded baseline, so an
+        # untouched Save sends an empty patch (no phone-server restart) and never
+        # re-sends a value that would clear a key. Secrets: only when newly typed.
+        patch: dict[str, str] = {}
+        for field_val, base_val, key in (
+            (from_number, btw.get("from_number"), "twilio_from_number"),
+            (public_url, btw.get("public_base_url"), "twilio_public_base_url"),
+            (inbound, btw.get("inbound_extension"), "twilio_inbound_extension"),
+            (screening, btw.get("screening_extension"), "twilio_screening_extension"),
+        ):
+            if field_val != str(base_val or ""):
+                patch[key] = field_val
+        if sid:
+            patch["twilio_account_sid"] = sid
+        if token:
+            patch["twilio_auth_token"] = token
+        if not patch:
+            self._set_config_result("nothing changed", "green")
+            return
+
+        res = await call_degrading(
+            self.client, "phone.config", {"action": "set", "patch": patch},
+            on_unknown_method=lambda exc: self._set_config_result(
+                "phone.config is not available on this daemon build", "yellow"),
+            on_error=lambda exc: self._set_config_result(str(exc), "red"),
+            on_success=lambda r: self._set_config_result(
+                str((r or {}).get("note", "saved")), "green"))
+        # Clear the secret inputs after every save attempt so a typed token
+        # never lingers visibly in the widget — the next refresh's has_*
+        # placeholder reflects whatever actually landed daemon-side.
+        try:
+            self.query_one("#cfg-twilio-sid", Input).value = ""
+            self.query_one("#cfg-twilio-token", Input).value = ""
+        except Exception:
+            pass
+        if res is not None:
+            await self._refresh_phone_config()
+
+    async def _test_phone_config(self) -> None:
+        """A REAL connectivity probe (phone.config action:"test" -> the
+        daemon actually calls the phone server), not a fake always-success."""
+        self._set_config_result("Testing…", "cyan")
+        res = await call_degrading(
+            self.client, "phone.config", {"action": "test"},
+            on_unknown_method=lambda exc: self._set_config_result(
+                "phone.config is not available on this daemon build", "yellow"),
+            on_error=lambda exc: self._set_config_result(str(exc), "red"))
+        if res is None:
+            return
+        reachable = bool(res.get("reachable"))
+        tw_ok = bool(res.get("twilio_configured"))
+        msg = (("✓ phone server reachable" if reachable else "✗ phone server unreachable")
+               + ("  ·  Twilio configured" if tw_ok else "  ·  Twilio not configured"))
+        self._set_config_result(msg, "green" if reachable else "red")
+
     # -- key handling (gated by which sub-tab is active) -------------------------
     async def on_key(self, event) -> None:
         try:
@@ -519,3 +690,10 @@ class PhonePane(Vertical):
         elif active == "phone-tab-screening":
             if event.key == "r":
                 await self._poll_screening()
+        elif active == "phone-tab-config":
+            if event.key == "r":
+                await self._refresh_phone_config()
+            elif event.key == "s":
+                await self._save_phone_config()
+            elif event.key == "t":
+                await self._test_phone_config()

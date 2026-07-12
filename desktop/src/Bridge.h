@@ -551,6 +551,24 @@ public:
                                const QString &path,
                                const QVariantMap &body);
 
+    // ---- Phone/Twilio config (Contract A phone.config, CONTROL channel) -----
+    // Read/write the Jarvis-managed phone server config (~/.config/jarvis/
+    // phone.env: Twilio credentials, server tokens, port). This ALWAYS goes over
+    // the loopback control WS — the daemon deliberately keeps phone.config off the
+    // phone/device channel since it writes live secrets.
+    // phone.config{action:"get"} -> phoneConfigLoaded(cfg). Secrets are never
+    // echoed — only has_* booleans + non-secret values.
+    Q_INVOKABLE void phoneConfigGet();
+    // phone.config{action:"set", patch} -> phoneConfigSaved(ok,restarted,note).
+    // Only include a secret key (twilio_account_sid / twilio_auth_token /
+    // admin_token / device_token / agent_token) in `patch` when the user typed a
+    // NEW value, so a save doesn't wipe an unchanged masked secret. An empty
+    // (present) value clears a key.
+    Q_INVOKABLE void phoneConfigSet(const QVariantMap &patch);
+    // phone.config{action:"test"} -> phoneConfigTested(reachable,twilioConfigured).
+    // A REAL connectivity probe (the daemon calls the phone server).
+    Q_INVOKABLE void phoneConfigTest();
+
     // ---- Notifications ------------------------------------------------------
     // Toggle desktop notify-send on attention events. Persisted via settings.set so
     // the daemon's NotifyService honors it too.
@@ -876,6 +894,18 @@ signals:
     // A pushed phone-server event (incoming_call/call_state/call_message/
     // screening_*) — jarvis#76 item 3. Overlays react instead of polling.
     void phoneEvent(const QVariantMap &event);
+
+    // ---- Phone/Twilio config results (phone.config) -------------------------
+    // phone.config get result: {configured, server_port, server_url,
+    // has_admin_token, has_device_token, has_agent_token, twilio:{has_account_sid,
+    // has_auth_token, from_number, public_base_url, inbound_extension,
+    // screening_extension, configured}}. Secrets are NEVER present.
+    void phoneConfigLoaded(const QVariantMap &config);
+    // phone.config set result: ok + whether the phone server was restarted (Linux)
+    // and a human note (on Windows restarted=false with a "restart to apply" note).
+    void phoneConfigSaved(bool ok, bool restarted, const QString &note);
+    // phone.config test result — a real connectivity probe to the phone server.
+    void phoneConfigTested(bool reachable, bool twilioConfigured);
 
     // ---- Notifications ------------------------------------------------------
     void notificationsChanged();

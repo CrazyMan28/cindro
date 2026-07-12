@@ -1,6 +1,8 @@
 // SETTINGS SHELL — master-detail nav for the 12 sections in desktop/qml/
 // SettingsPage.qml (Identity, Defaults, Mode & Autonomy, Voice, Video, API
-// Keys, Security, Trust Policies, Updates, Connectors, Extension, Devices).
+// Keys, Security, Trust Policies, Updates, Connectors, Extension, Devices)
+// plus one web-only addition, Phone / Twilio (real config for the daemon's
+// phone.config verb — no QML counterpart yet).
 // CONTRACT for section-body agents (read this, never edit this file): drop a
 // SIBLING file at web/src/pages/settings/<key>.tsx (key from the SECTIONS
 // list below, e.g. "identity.tsx", "mode-autonomy.tsx", "api-keys.tsx")
@@ -38,6 +40,7 @@ export const SECTIONS: Array<{ key: string; label: string }> = [
   { key: "connectors", label: "Connectors" },
   { key: "extension", label: "Extension" },
   { key: "devices", label: "Devices" },
+  { key: "phone", label: "Phone / Twilio" },
 ]
 
 const sectionModules = import.meta.glob<{ default: SettingsSectionDef }>("./*.tsx", { eager: true })

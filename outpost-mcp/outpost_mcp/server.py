@@ -7,6 +7,7 @@ Layout mirrors jarvis-mcp/server.py:
 - /agent/ws is the persistent per-machine-token relay socket.
 """
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 
@@ -17,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from outpost_mcp import __version__, auth, config, tools_outpost
+from outpost_mcp import __version__, agent_build, auth, config, tools_outpost
 from outpost_mcp.agent_hub import AgentConnection, AgentHub
 from outpost_mcp.pairing import PairingStore
 from outpost_mcp.registry import MachineRegistry
@@ -46,6 +47,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Outpost MCP", version=__version__, lifespan=lifespan)
+
+# Serializes on-demand agent builds so two concurrent first-pairings for the
+# same target don't race the same `go build` output file.
+_agent_build_lock = asyncio.Lock()
 
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True,
@@ -108,10 +113,30 @@ async def pair_ps1(bootstrap_id: str):
 async def agent_download(bootstrap_id: str, os_name: str, arch: str):
     if not pairing.valid(bootstrap_id):
         return JSONResponse({"error": "invalid_bootstrap"}, status_code=403)
-    name = f"outpost-agent-{os_name}-{arch}" + (".exe" if os_name == "windows" else "")
+    # Enforce the target allow-list BEFORE touching the filesystem so a caller-
+    # supplied os_name/arch can never select an on-disk filename (a stray/manual
+    # binary in agent-bin/ must not be servable via the cache-hit fast path).
+    if not agent_build.is_known_target(os_name, arch):
+        return JSONResponse({"error": "unknown_target", "os": os_name, "arch": arch},
+                            status_code=404)
+    name = agent_build.binary_name(os_name, arch)
     path = config.agent_bin_dir() / name
     if not path.exists():
-        return JSONResponse({"error": "agent_binary_unavailable", "name": name}, status_code=404)
+        # Self-heal: a freshly-checked-out hub has an empty agent-bin/. Build the
+        # one target on demand from the Go source if a toolchain is present.
+        # Offload the blocking `go build` to a worker thread (and serialize builds
+        # with a lock) so a first pairing's on-demand compile never freezes the
+        # single-worker event loop for every other request.
+        async with _agent_build_lock:
+            if not path.exists():  # re-check under the lock (another request may have built it)
+                built = await asyncio.to_thread(agent_build.ensure_agent_binary, os_name, arch)
+                if built is None:
+                    return JSONResponse(
+                        {"error": "agent_binary_unavailable", "name": name,
+                         "hint": "populate outpost-mcp/agent-bin/ (run outpost-agent/build.sh) "
+                                 "or install a Go toolchain so the server can build it on demand"},
+                        status_code=404)
+                path = built
     return FileResponse(str(path), filename=name)
 
 

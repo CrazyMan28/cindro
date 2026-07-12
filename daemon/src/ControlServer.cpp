@@ -524,6 +524,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handlePhoneMcp(req);
     else if (m == QStringLiteral("phone.http"))
         resp = handlePhoneHttp(req);
+    else if (m == QStringLiteral("phone.config"))
+        resp = handlePhoneConfig(req);
     else if (m == QStringLiteral("session.subscribe"))
         resp = handleSessionSubscribe(client, req);
     else if (m == QStringLiteral("widget.viewing"))
@@ -1466,6 +1468,15 @@ struct PhoneEnv {
     QString deviceToken;
     QString agentToken;
     QString port = QStringLiteral("8801");
+    // Non-secret Twilio / server config surfaced by phone.config (secrets are
+    // reported only as has_* booleans, never echoed).
+    QString twilioAccountSid;
+    QString twilioAuthToken;
+    QString twilioFromNumber;
+    QString twilioPublicBaseUrl;
+    QString twilioInboundExtension;
+    QString twilioScreeningExtension;
+    QString publicBaseUrl;
 };
 
 PhoneEnv readPhoneEnv()
@@ -1476,18 +1487,115 @@ PhoneEnv readPhoneEnv()
         return env;
     const QList<QByteArray> lines = f.readAll().split('\n');
     f.close();
+    const auto val = [](const QString &line, const char *key) {
+        return line.mid(int(qstrlen(key))).trimmed();
+    };
     for (const QByteArray &raw : lines) {
         const QString line = QString::fromUtf8(raw).trimmed();
         if (line.startsWith(QStringLiteral("ADMIN_TOKEN=")))
-            env.adminToken = line.mid(QStringLiteral("ADMIN_TOKEN=").size()).trimmed();
+            env.adminToken = val(line, "ADMIN_TOKEN=");
         else if (line.startsWith(QStringLiteral("DEVICE_TOKEN=")))
-            env.deviceToken = line.mid(QStringLiteral("DEVICE_TOKEN=").size()).trimmed();
+            env.deviceToken = val(line, "DEVICE_TOKEN=");
         else if (line.startsWith(QStringLiteral("AGENT_TOKEN=")))
-            env.agentToken = line.mid(QStringLiteral("AGENT_TOKEN=").size()).trimmed();
+            env.agentToken = val(line, "AGENT_TOKEN=");
         else if (line.startsWith(QStringLiteral("SERVER_PORT=")))
-            env.port = line.mid(QStringLiteral("SERVER_PORT=").size()).trimmed();
+            env.port = val(line, "SERVER_PORT=");
+        else if (line.startsWith(QStringLiteral("TWILIO_ACCOUNT_SID=")))
+            env.twilioAccountSid = val(line, "TWILIO_ACCOUNT_SID=");
+        else if (line.startsWith(QStringLiteral("TWILIO_AUTH_TOKEN=")))
+            env.twilioAuthToken = val(line, "TWILIO_AUTH_TOKEN=");
+        else if (line.startsWith(QStringLiteral("TWILIO_FROM_NUMBER=")))
+            env.twilioFromNumber = val(line, "TWILIO_FROM_NUMBER=");
+        else if (line.startsWith(QStringLiteral("TWILIO_PUBLIC_BASE_URL=")))
+            env.twilioPublicBaseUrl = val(line, "TWILIO_PUBLIC_BASE_URL=");
+        else if (line.startsWith(QStringLiteral("TWILIO_INBOUND_EXTENSION=")))
+            env.twilioInboundExtension = val(line, "TWILIO_INBOUND_EXTENSION=");
+        else if (line.startsWith(QStringLiteral("TWILIO_SCREENING_EXTENSION=")))
+            env.twilioScreeningExtension = val(line, "TWILIO_SCREENING_EXTENSION=");
+        else if (line.startsWith(QStringLiteral("PUBLIC_BASE_URL=")))
+            env.publicBaseUrl = val(line, "PUBLIC_BASE_URL=");
     }
     return env;
+}
+
+// Rewrite ~/.config/jarvis/phone.env, setting each provided key (preserving all
+// other lines), 0600. Empty value clears the key. Creates the file if absent.
+// Returns false only on a real write failure. Shared by propagateDefaultVoice
+// and phone.config so the file format never drifts.
+bool writePhoneEnvKeys(const QMap<QString, QString> &kv, QString *err = nullptr)
+{
+    const QString envPath = Config::configDir() + QStringLiteral("/phone.env");
+    QDir().mkpath(QFileInfo(envPath).absolutePath());
+    QStringList out;
+    QSet<QString> written;
+    QFile f(envPath);
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QList<QByteArray> lines = f.readAll().split('\n');
+        f.close();
+        for (const QByteArray &raw : lines) {
+            const QString line = QString::fromUtf8(raw);
+            const QString trimmed = line.trimmed();
+            bool handled = false;
+            for (auto it = kv.constBegin(); it != kv.constEnd(); ++it) {
+                if (trimmed.startsWith(it.key() + QLatin1Char('='))) {
+                    handled = true;
+                    if (!it.value().isEmpty()) {
+                        out << it.key() + QLatin1Char('=') + it.value();
+                        written.insert(it.key());
+                    } // else drop (clear)
+                    break;
+                }
+            }
+            if (!handled)
+                out << line;
+        }
+    }
+    for (auto it = kv.constBegin(); it != kv.constEnd(); ++it) {
+        if (!it.value().isEmpty() && !written.contains(it.key()))
+            out << it.key() + QLatin1Char('=') + it.value();
+    }
+    QString body = out.join(QLatin1Char('\n'));
+    while (body.endsWith(QStringLiteral("\n\n")))
+        body.chop(1);
+    if (!body.endsWith(QLatin1Char('\n')))
+        body += QLatin1Char('\n');
+    QSaveFile sf(envPath);
+    if (!sf.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        if (err) *err = sf.errorString();
+        return false;
+    }
+    // Lock the file to 0600 BEFORE the secret bytes are written (phone.env holds
+    // Twilio creds + admin/device/agent bearer tokens), so it never exists
+    // group/world-readable even briefly — the temp file's mode is preserved
+    // across commit()'s atomic rename.
+    sf.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    sf.write(body.toUtf8());
+    if (!sf.commit()) {
+        if (err) *err = sf.errorString();
+        return false;
+    }
+    // Belt-and-suspenders: re-assert 0600 on the committed file and WARN (don't
+    // silently return ok) if the lock-down fails, matching SettingsStore.
+    if (!QFile::setPermissions(envPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner))
+        qWarning("jarvisd: could not chmod 0600 phone.env (secrets may be readable)");
+    return true;
+}
+
+// Best-effort restart of the phone subsystem so it re-reads phone.env. Returns
+// true if the restart was LAUNCHED (non-blocking — never wait on the daemon's
+// single event loop, which would freeze every client + live chat). On
+// non-systemd platforms (Windows) the change applies on the phone server's next
+// start (caller surfaces that).
+bool restartPhoneService()
+{
+#if defined(Q_OS_LINUX)
+    return QProcess::startDetached(
+        QStringLiteral("systemctl"),
+        {QStringLiteral("--user"), QStringLiteral("restart"),
+         QStringLiteral("jarvis-phone.service")});
+#else
+    return false;
+#endif
 }
 } // namespace
 
@@ -1630,6 +1738,137 @@ void ControlServer::schedulePhoneWsReconnect(int delayMs)
         m_phoneWsReconnectPending = false;
         connectPhoneWs();
     });
+}
+
+// phone.config{action:"get"|"set"|"test"} — read/write the Jarvis-managed phone
+// server config (~/.config/jarvis/phone.env: Twilio credentials, server tokens,
+// port). Control (loopback) channel ONLY — it is deliberately absent from
+// isConfigMethod() so it never reaches the phone/device channel, since it writes
+// live secrets. Secrets are never echoed back on "get" (only has_* booleans).
+Response ControlServer::handlePhoneConfig(const Request &req)
+{
+    const QString action = req.params.value(QStringLiteral("action")).toString(QStringLiteral("get"));
+    const PhoneEnv penv = readPhoneEnv();
+
+    if (action == QStringLiteral("get")) {
+        QJsonObject tw;
+        tw.insert(QStringLiteral("has_account_sid"), !penv.twilioAccountSid.isEmpty());
+        tw.insert(QStringLiteral("has_auth_token"), !penv.twilioAuthToken.isEmpty());
+        tw.insert(QStringLiteral("from_number"), penv.twilioFromNumber);
+        tw.insert(QStringLiteral("public_base_url"), penv.twilioPublicBaseUrl);
+        tw.insert(QStringLiteral("inbound_extension"),
+                  penv.twilioInboundExtension.isEmpty() ? QStringLiteral("101")
+                                                        : penv.twilioInboundExtension);
+        tw.insert(QStringLiteral("screening_extension"), penv.twilioScreeningExtension);
+        // Matches the phone server's own twilio.enabled gate (config.ts), which
+        // requires all FOUR — incl. the public base URL — so the UI's green
+        // "configured" can't disagree with what actually enables calls.
+        tw.insert(QStringLiteral("configured"),
+                  !penv.twilioAccountSid.isEmpty() && !penv.twilioAuthToken.isEmpty()
+                      && !penv.twilioFromNumber.isEmpty()
+                      && !penv.twilioPublicBaseUrl.isEmpty());
+        QJsonObject r;
+        r.insert(QStringLiteral("configured"),
+                 !penv.adminToken.isEmpty() || !penv.agentToken.isEmpty());
+        r.insert(QStringLiteral("server_port"), penv.port);
+        r.insert(QStringLiteral("server_url"),
+                 penv.publicBaseUrl.isEmpty()
+                     ? (QStringLiteral("http://127.0.0.1:") + penv.port)
+                     : penv.publicBaseUrl);
+        r.insert(QStringLiteral("has_admin_token"), !penv.adminToken.isEmpty());
+        r.insert(QStringLiteral("has_device_token"), !penv.deviceToken.isEmpty());
+        r.insert(QStringLiteral("has_agent_token"), !penv.agentToken.isEmpty());
+        r.insert(QStringLiteral("twilio"), tw);
+        return Response::success(req.id, r);
+    }
+
+    if (action == QStringLiteral("set")) {
+        const QJsonObject patch = req.params.value(QStringLiteral("patch")).toObject();
+        // Friendly patch key -> phone.env key. Only keys present in the patch are
+        // touched; an empty value clears that key. A get->set round-trip that keeps
+        // a masked secret unchanged simply omits it, so secrets aren't wiped.
+        static const QVector<QPair<QString, QString>> keymap = {
+            {QStringLiteral("server_port"), QStringLiteral("SERVER_PORT")},
+            {QStringLiteral("admin_token"), QStringLiteral("ADMIN_TOKEN")},
+            {QStringLiteral("device_token"), QStringLiteral("DEVICE_TOKEN")},
+            {QStringLiteral("agent_token"), QStringLiteral("AGENT_TOKEN")},
+            {QStringLiteral("twilio_account_sid"), QStringLiteral("TWILIO_ACCOUNT_SID")},
+            {QStringLiteral("twilio_auth_token"), QStringLiteral("TWILIO_AUTH_TOKEN")},
+            {QStringLiteral("twilio_from_number"), QStringLiteral("TWILIO_FROM_NUMBER")},
+            {QStringLiteral("twilio_public_base_url"), QStringLiteral("TWILIO_PUBLIC_BASE_URL")},
+            {QStringLiteral("twilio_inbound_extension"), QStringLiteral("TWILIO_INBOUND_EXTENSION")},
+            {QStringLiteral("twilio_screening_extension"), QStringLiteral("TWILIO_SCREENING_EXTENSION")},
+            {QStringLiteral("public_base_url"), QStringLiteral("PUBLIC_BASE_URL")},
+        };
+        QMap<QString, QString> kv;
+        for (const auto &m : keymap) {
+            if (!patch.contains(m.first))
+                continue;
+            const QJsonValue v = patch.value(m.first);
+            // Only a string value may reach the writer. toString() coerces a
+            // null/number/bool to "" which writePhoneEnvKeys treats as "clear the
+            // key" — so a mistyped non-string could silently wipe a saved secret.
+            if (!v.isString())
+                return Response::failure(req.id, QStringLiteral("bad_request"),
+                                         QStringLiteral("value for ") + m.first
+                                             + QStringLiteral(" must be a string"));
+            kv.insert(m.second, v.toString().trimmed());
+        }
+        if (kv.isEmpty())
+            return Response::failure(req.id, QStringLiteral("bad_request"),
+                                     QStringLiteral("patch has no recognized phone config keys"));
+        QString err;
+        if (!writePhoneEnvKeys(kv, &err))
+            return Response::failure(req.id, QStringLiteral("write_error"),
+                                     QStringLiteral("cannot write phone.env: ") + err);
+        m_audit.record(QStringLiteral("phone.config"), true, QStringLiteral("high"),
+                       QStringLiteral("updated %1 phone config key(s)").arg(kv.size()),
+                       QString());
+        const bool restarted = restartPhoneService();
+        QJsonObject r;
+        r.insert(QStringLiteral("ok"), true);
+        r.insert(QStringLiteral("restarted"), restarted);
+        r.insert(QStringLiteral("note"),
+                 restarted ? QStringLiteral("phone.env updated; phone server restart requested")
+                           : QStringLiteral("phone.env updated; restart the phone server to apply"));
+        return Response::success(req.id, r);
+    }
+
+    if (action == QStringLiteral("test")) {
+        if (penv.adminToken.isEmpty() && penv.deviceToken.isEmpty()
+            && penv.agentToken.isEmpty())
+            return Response::failure(req.id, QStringLiteral("phone_not_configured"),
+                                     QStringLiteral("no phone.env tokens set yet"));
+        // Real connectivity check: read the voice catalog (a lightweight GET any
+        // valid token can reach). Reuse handlePhoneHttp so the bearer stays here.
+        Request probe;
+        probe.id = req.id;
+        probe.method = QStringLiteral("phone.http");
+        QJsonObject pp;
+        pp.insert(QStringLiteral("method"), QStringLiteral("GET"));
+        pp.insert(QStringLiteral("path"), QStringLiteral("/api/voices"));
+        probe.params = pp;
+        const Response hr = handlePhoneHttp(probe);
+        // handlePhoneHttp reports ok even for a non-2xx HTTP status (it returns
+        // the body + status), so a 401/403 from a wrong/stale bearer would read
+        // as "reachable". Gate on the real HTTP status: only 2xx/3xx is healthy;
+        // surface auth_failed distinctly so the UI can say "token rejected".
+        const int status = hr.result.value(QStringLiteral("status")).toInt();
+        {
+            QJsonObject r;
+            r.insert(QStringLiteral("reachable"), hr.ok && status >= 200 && status < 400);
+            r.insert(QStringLiteral("http_status"), status);
+            r.insert(QStringLiteral("auth_failed"), status == 401 || status == 403);
+            r.insert(QStringLiteral("twilio_configured"),
+                     !penv.twilioAccountSid.isEmpty() && !penv.twilioAuthToken.isEmpty()
+                         && !penv.twilioFromNumber.isEmpty()
+                         && !penv.twilioPublicBaseUrl.isEmpty());
+            return Response::success(req.id, r);
+        }
+    }
+
+    return Response::failure(req.id, QStringLiteral("bad_request"),
+                             QStringLiteral("action must be get|set|test"));
 }
 
 void ControlServer::onPhoneWsMessage(const QString &raw)

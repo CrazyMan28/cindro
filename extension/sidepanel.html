@@ -1018,22 +1018,24 @@
 
       <!-- Connection -->
       <div class="phone-section-head">Connection</div>
+      <div id="connStatus" class="phone-status-box">—</div>
       <div class="phone-dialer">
         <div class="phone-field-row">
           <label>Server URL</label>
           <input id="connServerUrl" class="phone-input" placeholder="https://your-server.example.com">
         </div>
         <div class="phone-field-row">
-          <label>Extension</label>
+          <label>Inbound Extension</label>
           <input id="connExtension" class="phone-input" placeholder="101">
         </div>
         <div class="phone-field-row">
-          <label>Device Token</label>
-          <input id="connToken" class="phone-input" type="password" placeholder="device token…">
+          <label>Agent Token</label>
+          <input id="connToken" class="phone-input" type="password" placeholder="not set">
         </div>
         <div class="phone-field-row">
-          <label>Audio Format</label>
-          <input id="connAudioFormat" class="phone-input" placeholder="pcm_16000">
+          <label>TTS Audio Format (playback)</label>
+          <input id="connAudioFormat" class="phone-input" placeholder="mp3 / wav / ogg_opus / pcm_16000">
+          <div class="phone-card-meta">Used to gate the voice preview player in Agents → Config below.</div>
         </div>
         <div style="display:flex;gap:6px">
           <button class="phone-sm-btn ok" id="connSave">Save</button>

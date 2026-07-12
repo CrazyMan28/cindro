@@ -392,3 +392,80 @@ export async function oneCall(
     await c.close()
   }
 }
+
+// -- phone.config helpers -----------------------------------------------------
+// Typed wrappers around the control(loopback)-only phone.config verb (see
+// daemon/src/ControlServer.cpp's handlePhoneConfig) — mirrors the plain
+// `call()` helper above, just with request/response shapes spelled out so
+// callers (settings page, setup wizard) don't hand-roll the wire shape.
+// Secrets are NEVER returned by "get" (only has_* booleans); "set" only ever
+// writes the patch keys actually present, so a masked secret the user never
+// touched can't be clobbered by a save.
+export interface PhoneConfigTwilio {
+  has_account_sid: boolean
+  has_auth_token: boolean
+  from_number: string
+  public_base_url: string
+  inbound_extension: string
+  screening_extension: string
+  configured: boolean
+}
+
+export interface PhoneConfig {
+  configured: boolean
+  server_port: string
+  server_url: string
+  has_admin_token: boolean
+  has_device_token: boolean
+  has_agent_token: boolean
+  twilio: PhoneConfigTwilio
+}
+
+/** All keys optional — only keys actually present get written; an empty
+ * string clears that key. Never include a secret key unless the user typed a
+ * NEW value (see file header). */
+export interface PhoneConfigPatch {
+  server_port?: string
+  admin_token?: string
+  device_token?: string
+  agent_token?: string
+  twilio_account_sid?: string
+  twilio_auth_token?: string
+  twilio_from_number?: string
+  twilio_public_base_url?: string
+  twilio_inbound_extension?: string
+  twilio_screening_extension?: string
+  public_base_url?: string
+}
+
+export interface PhoneConfigSetResult {
+  ok: boolean
+  restarted: boolean
+  note: string
+}
+
+export interface PhoneConfigTestResult {
+  reachable: boolean
+  twilio_configured: boolean
+}
+
+export async function phoneConfigGet(client: ControlClient): Promise<PhoneConfig> {
+  return (await client.call("phone.config", { action: "get" }, 15000)) as unknown as PhoneConfig
+}
+
+export async function phoneConfigSet(
+  client: ControlClient,
+  patch: PhoneConfigPatch,
+): Promise<PhoneConfigSetResult> {
+  return (await client.call(
+    "phone.config",
+    { action: "set", patch: patch as Record<string, unknown> },
+    20000,
+  )) as unknown as PhoneConfigSetResult
+}
+
+/** Real connectivity probe (the daemon calls the phone server) — use for a
+ * Test button instead of a fake always-success. */
+export async function phoneConfigTest(client: ControlClient): Promise<PhoneConfigTestResult> {
+  return (await client.call("phone.config", { action: "test" }, 20000)) as unknown as PhoneConfigTestResult
+}
