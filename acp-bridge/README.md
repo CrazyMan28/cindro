@@ -1,10 +1,10 @@
-# jarvis-acp — Agent Client Protocol bridge for Jarvis
+# jarvis-acp — Agent Client Protocol bridge for Cindro
 
-Drive **Jarvis** from **Zed** (or any [Agent Client Protocol](https://agentclientprotocol.com)
+Drive **Cindro** from **Zed** (or any [Agent Client Protocol](https://agentclientprotocol.com)
 client — JetBrains, etc.) as a native agent. The editor spawns `jarvis-acp`, talks
 **newline-delimited JSON-RPC 2.0 over stdio**, and this bridge translates every ACP
 call to/from the `jarvisd` **Contract A** control WebSocket
-(`ws://127.0.0.1:8795/control/ws`). You get real Jarvis sessions, streamed turns,
+(`ws://127.0.0.1:8795/control/ws`). You get real Cindro sessions, streamed turns,
 tool-call visibility, and permission prompts — inside your editor.
 
 ```
@@ -55,12 +55,12 @@ python3 -m venv ~/.local/share/jarvis-acp-venv
 ## Wire it into Zed
 
 Add an entry under `agent_servers` in Zed's `settings.json`
-(`~/.config/zed/settings.json`), then pick **Jarvis** in the agent panel:
+(`~/.config/zed/settings.json`), then pick **Cindro** in the agent panel:
 
 ```json
 {
   "agent_servers": {
-    "Jarvis": {
+    "Cindro": {
       "command": "jarvis-acp",
       "args": [],
       "env": {}

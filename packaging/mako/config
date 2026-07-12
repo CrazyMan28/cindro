@@ -1,7 +1,7 @@
-# Jarvis — mako notification config.
+# Cindro — mako notification config.
 # Install: copy to ~/.config/mako/config, then `makoctl reload` (or restart mako).
-# Jarvis posts desktop notifications (approval requests, session finished, push
-# relays) under the app-name "jarvis".
+# Cindro posts desktop notifications (approval requests, session finished, push
+# relays) under the app-name "Cindro".
 
 # --- Global defaults -------------------------------------------------------
 max-visible=5
@@ -25,18 +25,18 @@ border-color=#22e0ff
 progress-color=over #b14bff
 
 # --- App-scoped rules ------------------------------------------------------
-[app-name=jarvis]
+[app-name=Cindro]
 group-by=summary
 border-color=#22e0ff
 
 # Approval requests are urgent and must not auto-dismiss until acted on.
-[app-name=jarvis urgency=critical]
+[app-name=Cindro urgency=critical]
 border-color=#ff2d95
 text-color=#ff2d95
 default-timeout=0
 ignore-timeout=1
 
 # Low-priority status pings (e.g. "session finished") fade quickly.
-[app-name=jarvis urgency=low]
+[app-name=Cindro urgency=low]
 border-color=#2dffb0
 default-timeout=4000

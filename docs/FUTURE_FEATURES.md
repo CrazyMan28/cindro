@@ -1,6 +1,6 @@
-# Orin — Future Features (ideas backlog)
+# Cindro — Future Features (ideas backlog)
 
-> Cool, genuinely useful features Orin **doesn't have yet** — the "what should we build
+> Cool, genuinely useful features Cindro **doesn't have yet** — the "what should we build
 > next" list. Not bugs (see [`STATUS.md`](STATUS.md)) and not Windows-parity gaps
 > (see [`WINDOWS.md`](WINDOWS.md)) — brand-new capabilities.
 >
@@ -10,11 +10,11 @@
 
 ## ⭐ Starting on now: "What's on my screen?" hotkey
 
-Press one global hotkey **anywhere** → Orin grabs the current screen and you ask about
+Press one global hotkey **anywhere** → Cindro grabs the current screen and you ask about
 whatever you're looking at (a weird error, a chart, a menu in another language, a contract).
 No copy-paste, no "take a screenshot and attach it." Instant, frictionless, always-there.
 
-**Why it's great:** it's the single feature that makes Orin feel like *actual* Orin —
+**Why it's great:** it's the single feature that makes Cindro feel like *actual* Cindro —
 ambient, one keypress away, understands context without being told.
 
 **Rough shape (fits what already exists):**
@@ -31,7 +31,7 @@ ambient, one keypress away, understands context without being told.
 ## The backlog
 
 ### 1. 🔮 Proactive mode — it notices things on its own
-Today Orin is reactive (you ask, it acts). Proactive mode watches your day and jumps in:
+Today Cindro is reactive (you ask, it acts). Proactive mode watches your day and jumps in:
 *"your build finished," "meeting in 5, here's the doc," "this email needs a reply — draft it?"*
 Turns a tool-you-summon into a co-worker watching your back. (Builds on scheduler + hooks +
 background jobs + the existing digest.)
@@ -69,7 +69,7 @@ IFTTT/Zapier but with a brain, running locally. Builds on hooks + the scheduler.
 ---
 
 ## Ranking (subjective)
-1. **Proactive mode** + **screen hotkey** — make it feel like real Orin.
+1. **Proactive mode** + **screen hotkey** — make it feel like real Cindro.
 2. **Overnight autopilot** — the "wow, it did my work while I slept" moment.
 3. **Local brain** + **second brain** — privacy/cost + memory that compounds.
 4. **Creative output**, **camera vision**, **automations** — big-delight, more work.

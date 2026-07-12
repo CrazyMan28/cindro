@@ -347,7 +347,7 @@ class Bridge:
         approval_id prefixes 'takeover-' / 'inject-' are daemon-side kinds; we
         surface their ``summary`` text as-is (the option semantics are the same)."""
         approval_id = str(ev.get("approval_id") or "")
-        summary = ev.get("summary") or "Jarvis requests permission"
+        summary = ev.get("summary") or "Cindro requests permission"
         risk = ev.get("risk") or ""
 
         title = summary

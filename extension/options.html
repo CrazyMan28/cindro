@@ -18,16 +18,16 @@
 </head>
 <body>
   <h1>Computer Use Bridge</h1>
-  <p>Connects to the local computer-use MCP server + the Orin desktop daemon.</p>
+  <p>Connects to the local computer-use MCP server + the Cindro desktop daemon.</p>
 
   <h2 style="margin-top:0.5rem;border:0;padding:0">Pair with a code (easy)</h2>
-  <p class="hint">In the Orin app open <b>Settings → Browser Extension → “Generate
-     pairing code”</b>, then paste the code here. Orin fills in both tokens for you —
+  <p class="hint">In the Cindro app open <b>Settings → Browser Extension → “Generate
+     pairing code”</b>, then paste the code here. Cindro fills in both tokens for you —
      no hunting through config files.</p>
   <label for="pairCode">Pairing code</label>
   <input id="pairCode" type="text" inputmode="numeric" autocomplete="off"
-         placeholder="6-digit code from the Orin app">
-  <label for="pairPort">Orin control port</label>
+         placeholder="6-digit code from the Cindro app">
+  <label for="pairPort">Cindro control port</label>
   <input id="pairPort" type="number" value="8795">
   <button id="pair">Pair</button>
   <div id="pairStatus" class="hint"></div>
@@ -40,13 +40,13 @@
   <label for="token">Bearer token</label>
   <input id="token" type="password" placeholder="paste bearer_token here">
 
-  <h2>Orin co-worker side panel</h2>
+  <h2>Cindro co-worker side panel</h2>
   <p class="hint">The side panel chat connects to the desktop daemon's control
      WebSocket. Token is in <code>~/.config/jarvis/control_token</code> on this
      machine (the desktop daemon's control token).</p>
-  <label for="controlPort">Orin control port</label>
+  <label for="controlPort">Cindro control port</label>
   <input id="controlPort" type="number" value="8795">
-  <label for="controlToken">Orin control token</label>
+  <label for="controlToken">Cindro control token</label>
   <input id="controlToken" type="password" placeholder="paste control_token here">
 
   <button id="save">Save &amp; Connect</button>

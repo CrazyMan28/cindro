@@ -63,7 +63,7 @@ function Home() {
         <ArcReactor size={64} />
         <div class="home-hero-text">
           <div class="hud-label" style={{ color: "var(--accent-bright)", "font-size": "20px" }}>
-            J.A.R.V.I.S
+            CINDRO
           </div>
           <div style={{ color: "var(--text-muted)", "font-size": "13px" }}>
             {connected() ? "All systems connected." : "Connecting to the daemon…"}

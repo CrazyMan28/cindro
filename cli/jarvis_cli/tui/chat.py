@@ -67,7 +67,7 @@ BUILTIN_COMMANDS = [
     ("mcp", "peek at MCP"), ("plugins", "peek at Plugins"),
     ("outpost", "peek at Outpost"), ("memorygraph", "peek at the Memory Graph"),
     ("home", "open the Home tab"), ("schedules", "peek at Schedules"),
-    ("tui", "ask Orin to add/edit/remove a TUI page"),
+    ("tui", "ask Cindro to add/edit/remove a TUI page"),
     ("model", "pick the active model"),
     ("provider", "pick codex, claude, or api"),
     ("voice", "open push-to-talk voice mode"),
@@ -184,12 +184,12 @@ class ChatPane(Vertical):
             Static("", id="chat-status"),
             id="status-row",
         )
-        yield Input(placeholder="Message Orin…  (/new /stop /goal /y /n)",
+        yield Input(placeholder="Message Cindro…  (/new /stop /goal /y /n)",
                     id="chat-input")
 
     def on_mount(self) -> None:
         log = self.query_one("#transcript", RichLog)
-        log.write(Text("◉ ORIN", style="bold cyan"))
+        log.write(Text("◉ CINDRO", style="bold cyan"))
         log.write(Text("Type a message to start a conversation. "
                        "Tab switches screens; Ctrl+Q quits.", style="bright_black"))
         status_reactor = self.query_one("#status-reactor", ArcReactorWidget)
@@ -716,7 +716,7 @@ class ChatPane(Vertical):
         elif kind == "approval":
             self.pending_approval = str(ev.get("approval_id", ""))
             what = ev.get("summary") or ev.get("tool") or "an action"
-            self._log(Text(f"✋ Orin asks permission: {what}", style="bold red"))
+            self._log(Text(f"✋ Cindro asks permission: {what}", style="bold red"))
             self._log(Text("   type /y to allow · /n to deny", style="red"))
             self._status("approval pending — /y or /n", "red")
         elif kind == "error":

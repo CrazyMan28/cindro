@@ -263,7 +263,7 @@ void WindowController::installTray()
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = kTrayCallbackMsg;
     nid.hIcon = ::LoadIconW(nullptr, IDI_APPLICATION);
-    const wchar_t tip[] = L"Orin (Ctrl+Alt+J to toggle)";
+    const wchar_t tip[] = L"Cindro (Ctrl+Alt+J to toggle)";
     wcsncpy_s(nid.szTip, tip, _TRUNCATE);
     if (::Shell_NotifyIconW(NIM_ADD, &nid))
         m_trayInstalled = true;

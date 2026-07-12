@@ -82,7 +82,7 @@ QString CodexBrain::ensureIsolatedHome() const
                 out += line + QLatin1Char('\n');
         }
     }
-    out = QStringLiteral("# Orin-isolated CODEX_HOME — user [mcp_servers.*] stripped so the\n"
+    out = QStringLiteral("# Cindro-isolated CODEX_HOME — user [mcp_servers.*] stripped so the\n"
                          "# co-work brain can ONLY use the injected nested computer-use engine.\n")
           + out;
     QFile cfg(home + QStringLiteral("/config.toml"));

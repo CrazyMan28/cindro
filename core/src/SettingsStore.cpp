@@ -250,7 +250,7 @@ void SettingsStore::load()
     m_sttProvider = QStringLiteral("voxtral");
     m_ttsProvider = QStringLiteral("voxtral");
     m_setupComplete = false;          // wizard not done until config says so
-    m_assistantName = QStringLiteral("Orin");
+    m_assistantName = QStringLiteral("Cindro");
     m_userName.clear();               // the human's name; empty until the wizard sets it
     m_autoUpdate = true;              // default ON (only an explicit false/0 disables)
     m_autoUpdateApply = false;        // auto-INSTALL stays opt-in
@@ -456,7 +456,7 @@ void SettingsStore::load()
                             ((v.front() == QLatin1Char('\'') && v.back() == QLatin1Char('\'')) ||
                              (v.front() == QLatin1Char('"') && v.back() == QLatin1Char('"'))))
                             v = v.mid(1, v.size() - 2);
-                        setAssistantName(v); // empty -> "Orin"
+                        setAssistantName(v); // empty -> "Cindro"
                     }
                     continue;
                 }

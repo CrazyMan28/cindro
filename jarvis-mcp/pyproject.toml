@@ -1,7 +1,7 @@
 [project]
 name = "jarvis-mcp"
 version = "0.1.0"
-description = "Jarvis-MCP: one MCP endpoint exposing Jarvis orchestration (Contract A) plus the re-exported computer-use engine, so external agents can drive Jarvis."
+description = "Cindro-MCP: one MCP endpoint exposing Cindro orchestration (Contract A) plus the re-exported computer-use engine, so external agents can drive Cindro."
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=1.26.0",

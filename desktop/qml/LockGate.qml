@@ -145,7 +145,7 @@ Item {
 
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
-            text: "ORIN LOCKED"
+            text: "CINDRO LOCKED"
             color: Theme.accent
             font.family: Theme.fontDisplay
             font.pixelSize: 18

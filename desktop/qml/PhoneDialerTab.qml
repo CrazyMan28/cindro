@@ -494,7 +494,7 @@ Item {
                     anchors { left: parent.left; right: parent.right; top: parent.top; margins: 12 }
                     spacing: 8
                     Text { text: "CONNECT REQUIRED"; color: Theme.amber; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: 2.0; font.weight: Font.DemiBold }
-                    Text { text: "Connect to the Orin daemon to enable calling."; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                    Text { text: "Connect to the Cindro daemon to enable calling."; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                     RowLayout {
                         spacing: 8
                         Rectangle {

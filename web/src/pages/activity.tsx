@@ -139,7 +139,7 @@ function Activity() {
         <div class="act-hero-text">
           <div class="hud-label" style={{ color: "var(--accent-bright)", "font-size": "16px" }}>ACTIVITY</div>
           <div style={{ color: "var(--text-muted)", "font-size": "12px" }}>
-            The daemon's audit log — every tool/action Orin has taken, newest first.
+            The daemon's audit log — every tool/action Cindro has taken, newest first.
           </div>
         </div>
         <div class="act-toolbar">
@@ -168,7 +168,7 @@ function Activity() {
           <ArcReactor size={72} />
           <div class="act-empty-title">NO ACTIVITY YET</div>
           <div class="act-empty-body">
-            Once Orin takes an action — a tool call, a session turn, a scheduled fire — it shows up here.
+            Once Cindro takes an action — a tool call, a session turn, a scheduled fire — it shows up here.
           </div>
         </div>
       </Show>

@@ -13,7 +13,7 @@ import com.jarvis.app.R
 
 /**
  * The REAL Android home-screen widget. Each placed instance (appWidgetId) is bound
- * to an Orin widget/canvas id and shows its DSL spec drawn to a bitmap by
+ * to a Cindro widget/canvas id and shows its DSL spec drawn to a bitmap by
  * [WidgetBitmapRenderer]. Live updates arrive over the device WS: the background
  * service calls [refreshForWidgetId] when the daemon forwards a render for a pinned
  * id. Tapping the widget opens the app.
@@ -150,7 +150,7 @@ open class JarvisWidgetProvider : AppWidgetProvider() {
             } else {
                 views.setViewVisibility(R.id.widget_image, View.GONE)
                 views.setViewVisibility(R.id.widget_placeholder, View.VISIBLE)
-                views.setTextViewText(R.id.widget_placeholder, "$title\nopen Orin")
+                views.setTextViewText(R.id.widget_placeholder, "$title\nopen Cindro")
             }
 
             val tap = PendingIntent.getActivity(

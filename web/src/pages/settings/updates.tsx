@@ -114,9 +114,9 @@ function UpdatesSection() {
       const reason = typeof res.reason === "string" ? res.reason : ""
       if (updated) {
         setUpdateBehind(false)
-        setStatusLine(`Updated to ${to.length ? to : "latest"} — Orin is restarting…`)
+        setStatusLine(`Updated to ${to.length ? to : "latest"} — Cindro is restarting…`)
         setStatusKind("ok")
-        app.notify("Update applied — Orin is restarting.")
+        app.notify("Update applied — Cindro is restarting.")
       } else {
         setStatusLine(reason.length ? reason : "No update applied")
         setStatusKind("neutral")
@@ -242,7 +242,7 @@ function UpdatesSection() {
             <div class="supd-row-text">
               <span class="supd-row-title">Install updates automatically</span>
               <span class="supd-row-sub">
-                When a new release is found, download and install it without asking. Orin restarts itself
+                When a new release is found, download and install it without asking. Cindro restarts itself
                 on Windows; on Linux the update takes effect the next time you launch. Only runs when
                 automatic updates (Mode &amp; Autonomy) are on.
               </span>
@@ -261,7 +261,7 @@ function UpdatesSection() {
           <div class="supd-row">
             <div class="supd-row-text">
               <span class="supd-row-title">Check cadence</span>
-              <span class="supd-row-sub">How often Orin checks for a new release in the background.</span>
+              <span class="supd-row-sub">How often Cindro checks for a new release in the background.</span>
             </div>
             <div class="supd-interval">
               <input

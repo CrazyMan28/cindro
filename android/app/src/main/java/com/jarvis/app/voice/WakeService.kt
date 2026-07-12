@@ -19,7 +19,7 @@ import com.jarvis.app.R
 import com.jarvis.app.fcm.JarvisNotifier
 
 /**
- * "Hey Orin" wake. A foreground (microphone) service with a persistent, visible
+ * "Hey Cindro" wake. A foreground (microphone) service with a persistent, visible
  * notification — there is NO silent background listening. While it runs it uses the
  * on-device [SpeechRecognizer] as a cheap wake-word detector; on hearing the phrase it
  * launches [MainActivity] with [EXTRA_WAKE] so the chat opens straight into push-to-talk.
@@ -61,8 +61,8 @@ class WakeService : Service() {
         val notif = NotificationCompat.Builder(this, JarvisNotifier.CHANNEL_WAKE)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setColor(0xFF34D8FF.toInt())
-            .setContentTitle("Orin is listening")
-            .setContentText("Say \"Hey Orin\" to talk")
+            .setContentTitle("Cindro is listening")
+            .setContentText("Say \"Hey Cindro\" to talk")
             .setOngoing(true)
             .setContentIntent(open)
             .addAction(0, "Stop", stop)
@@ -123,7 +123,7 @@ class WakeService : Service() {
 
     private fun checkForWake(bundle: Bundle?): Boolean {
         val phrases = bundle?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION) ?: return false
-        val hit = phrases.any { it.lowercase().let { p -> p.contains("hey orin") || p.contains("orin") } }
+        val hit = phrases.any { it.lowercase().let { p -> p.contains("hey cindro") || p.contains("cindro") } }
         if (hit) onWakeDetected()
         return hit
     }

@@ -4,7 +4,7 @@ import android.content.Context
 
 /**
  * Persistent map of a placed home-screen AppWidget instance (its appWidgetId) to
- * the Orin widget/canvas id it shows, plus the last spec + title so the widget
+ * the Cindro widget/canvas id it shows, plus the last spec + title so the widget
  * can be redrawn after a reboot or when the app process was dead. Plain
  * SharedPreferences — tiny, synchronous, survives process death.
  */
@@ -48,16 +48,16 @@ object WidgetBindings {
     }
 
     fun titleFor(ctx: Context, appWidgetId: Int): String =
-        prefs(ctx).getString("title_$appWidgetId", null) ?: "Orin"
+        prefs(ctx).getString("title_$appWidgetId", null) ?: "Cindro"
 
-    /** Placed AppWidget instances bound to a given Orin widget id (a render fans
+    /** Placed AppWidget instances bound to a given Cindro widget id (a render fans
      *  out to all of them). */
     fun appWidgetIdsFor(ctx: Context, widgetId: String): List<Int> =
         prefs(ctx).all.entries
             .filter { it.key.startsWith("bind_") && it.value == widgetId }
             .mapNotNull { it.key.removePrefix("bind_").toIntOrNull() }
 
-    /** Every distinct Orin widget id currently pinned to the home screen (used to
+    /** Every distinct Cindro widget id currently pinned to the home screen (used to
      *  send pin heartbeats so the daemon keeps those live jobs alive). */
     fun pinnedWidgetIds(ctx: Context): Set<String> =
         prefs(ctx).all.entries
@@ -92,7 +92,7 @@ object WidgetBindings {
         val p = prefs(ctx)
         val widgetId = p.getString("pending_widget", null) ?: return false
         val spec = p.getString("pending_spec", null) ?: return false
-        val title = p.getString("pending_title", "Orin") ?: "Orin"
+        val title = p.getString("pending_title", "Cindro") ?: "Cindro"
         p.edit()
             .putString("bind_$appWidgetId", widgetId)
             .putString("spec_$appWidgetId", spec)

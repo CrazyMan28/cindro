@@ -54,7 +54,7 @@ function AssistantMessage(props: { text: string; live: boolean }) {
           <ArcReactor size={3} thinking={true} />
         </Show>
         <text fg={theme.accent} attributes={TextAttributes.BOLD} selectable={false}>
-          J.A.R.V.I.S
+          CINDRO
         </text>
       </box>
       <Show

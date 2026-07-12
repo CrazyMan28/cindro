@@ -1,5 +1,5 @@
-# Clean-install + smoke-test the freshly built Orin .exe on the runner box.
-# Kills the pre-existing (running) Orin so the installer can replace the binaries,
+# Clean-install + smoke-test the freshly built Cindro .exe on the runner box.
+# Kills the pre-existing (running) Cindro so the installer can replace the binaries,
 # then verifies: NEW binaries in place, jarvisd writes control_token to
 # $HOME\.config\jarvis (where the fixed sidebar reads it) + listens on 8795, and the
 # sidebar QML loads offscreen (--selftest) — proving the new UI (maximize + name
@@ -7,7 +7,7 @@
 $ErrorActionPreference = 'Continue'
 function Log($m) { Write-Host "[test] $m" }
 
-# Kill any running Orin + the launcher (wscript) so files aren't in use.
+# Kill any running Cindro + the launcher (wscript) so files aren't in use.
 Get-Process jarvis-sidebar, jarvisd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-CimInstance Win32_Process -Filter "Name='wscript.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -like '*jarvis*' } |

@@ -307,7 +307,7 @@ class DeviceClient(
         if (pinned.isNullOrBlank()) return
         _identityWarning.value = if (fp != pinned) {
             "This device's paired computer identity looks different from when you paired. " +
-                "If you didn't reinstall or re-pair Orin, consider re-pairing to be safe."
+                "If you didn't reinstall or re-pair Cindro, consider re-pairing to be safe."
         } else {
             null
         }

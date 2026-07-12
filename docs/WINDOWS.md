@@ -1,8 +1,8 @@
-# Orin on Windows (experimental — second-tier)
+# Cindro on Windows (experimental — second-tier)
 
 > **Priority, stated plainly:** **Linux and Android are the priority for every new
 > feature. Windows is second** — it tracks the Linux build and may lag. Windows support
-> exists so people without Codex/Claude on Linux can still run Orin; the polished,
+> exists so people without Codex/Claude on Linux can still run Cindro; the polished,
 > leading platform is Linux (Sway + KDE Plasma 6) and Android. *Maybe more Windows later.*
 
 The Windows edition reuses the **same daemon, the same ~60 QML pages, the same Python
@@ -21,7 +21,7 @@ platform guards; it never changes how Linux/Android build or run.
 | Multi-seat isolated agent cursor | ✅ forked KWin | ❌ | No compositor to fork; agent shares your input queue (gated by the take-over banner + consent). |
 | Real-screen take-over (glow cursor + banner + consent + Esc) | ✅ | ✅ | Transparent click-through overlay (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST`). |
 | Voice (Voxtral STT/TTS, voice library, voice mode) | ✅ | ✅ | Voxtral is HTTP. Mic capture via Qt Multimedia (WASAPI) wherever `pw-record` doesn't exist — chat dictation, hands-free voice mode, and the clip recorder all fall back to it. |
-| Video understanding (YouTube URL / local file → frames + whisper transcript) | ✅ | ✅ needs ffmpeg | Pipeline is pure Python (`computer_use_mcp/video`): yt-dlp + faster-whisper freeze into `jarvis-engine.exe`; only **ffmpeg** stays external — `winget install Gyan.FFmpeg`, then restart Orin so the updated PATH is seen. Whisper models auto-download from Hugging Face on first use. |
+| Video understanding (YouTube URL / local file → frames + whisper transcript) | ✅ | ✅ needs ffmpeg | Pipeline is pure Python (`computer_use_mcp/video`): yt-dlp + faster-whisper freeze into `jarvis-engine.exe`; only **ffmpeg** stays external — `winget install Gyan.FFmpeg`, then restart Cindro so the updated PATH is seen. Whisper models auto-download from Hugging Face on first use. |
 | Generative widgets / canvas / pager / Home pins / live widgets | ✅ | ✅ | Daemon/engine-driven; QML renderer reused. |
 | Agents / subagents, scheduler, memory, skills, hooks, modes, permissions | ✅ | ✅ | Core is cross-platform. |
 | Plugins (signed Ed25519, install) | ✅ | ✅ render/install; ⚠ sandbox | The Linux `systemd-run` sandbox has no Win32 equal → Windows uses a Job-Object/restricted-token sandbox (or runs with explicit consent). |
@@ -61,7 +61,7 @@ a portable Node runtime under `node\`). Just:
 2. Run it. (Unsigned for now → Windows SmartScreen shows "More info → Run anyway"; a signing
    cert is a future item.) It installs to `%ProgramFiles%\Jarvis`, adds a Start-menu entry,
    and offers autostart.
-3. Launch **Orin** from the Start menu. The first-launch **setup wizard** asks your
+3. Launch **Cindro** from the Start menu. The first-launch **setup wizard** asks your
    assistant's name, a voice, and (if you have no Codex/Claude CLI) a Mistral API key.
 
 Config lives in `%APPDATA%\Jarvis`. See [`MISTRAL_SETUP.md`](MISTRAL_SETUP.md).
@@ -92,12 +92,12 @@ desktop is Linux-only, so on Windows computer-use drives the real screen; and th
 
 - **MCP tools:** since the nested agent desktop can't come up on Windows v1,
   `jarvisd` injects the **global** `:8794` engine's MCP config into claude, codex, and
-  api sessions whenever "Let Orin use a computer" is on (the v1 real-screen contract).
+  api sessions whenever "Let Cindro use a computer" is on (the v1 real-screen contract).
   Claude gets `--mcp-config` + `bypassPermissions` (headless `claude -p` otherwise stalls
   on MCP permission prompts); codex gets `-c mcp_servers.*` overrides.
-- **Skills:** Orin mirrors its skills into `%USERPROFILE%\.claude\skills` and
+- **Skills:** Cindro mirrors its skills into `%USERPROFILE%\.claude\skills` and
   `%USERPROFILE%\.codex\skills` at daemon start (and at skill creation). If you install
-  Claude Code / Codex **after** Orin, restart Orin once and the mirrors (e.g.
+  Claude Code / Codex **after** Cindro, restart Cindro once and the mirrors (e.g.
   `/internal_docs`) appear.
 - **Codex auth:** the per-session isolated `CODEX_HOME` mirrors `~/.codex/auth.json` via a
   hard link (or copy) — never `QFile::link`, which on Windows plants a binary `.lnk`

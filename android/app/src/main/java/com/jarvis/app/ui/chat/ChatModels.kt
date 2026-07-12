@@ -58,7 +58,7 @@ sealed interface ChatItem {
     @Immutable
     data class Error(override val id: String, val message: String) : ChatItem
 
-    /** A file Orin sent to the phone (jarvis_send_file -> file.offer). Images render
+    /** A file Cindro sent to the phone (jarvis_send_file -> file.offer). Images render
      *  inline; any other type shows a saveable file card. */
     @Immutable
     data class FileOffer(

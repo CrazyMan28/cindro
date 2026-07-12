@@ -1,15 +1,15 @@
-; Orin — Windows installer (Inno Setup 6).
+; Cindro — Windows installer (Inno Setup 6).
 ; Produces windows\dist\Jarvis-Setup-<version>.exe.
 ; Bundles: jarvisd.exe, jarvis-sidebar.exe (Windows Qt shell), the PyInstaller
 ; computer-use engine (one-folder), the Node phone server, and the Qt runtime.
 ; Build the payload first with windows\scripts\build.ps1, which stages everything
 ; into windows\dist\payload\ and then invokes ISCC on this script.
 
-#define MyAppName "Orin"
+#define MyAppName "Cindro"
 #ifndef MyAppVersion
   #define MyAppVersion "0.1.0"
 #endif
-#define MyAppPublisher "Orin"
+#define MyAppPublisher "Cindro"
 #define MyAppExeName "jarvis-sidebar.exe"
 #define MyDaemonExeName "jarvisd.exe"
 ; Payload root staged by build.ps1 (relative to this .iss).
@@ -29,7 +29,7 @@ OutputDir=..\dist
 OutputBaseFilename=Jarvis-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
-; Orin arc-reactor icon on the installer itself + Add/Remove Programs
+; Cindro arc-reactor icon on the installer itself + Add/Remove Programs
 ; (the app/shortcut/taskbar icon comes from the exe's embedded RC icon —
 ; windows/jarvis.rc — which didn't exist before, hence the iconless app).
 SetupIconFile=..\jarvis.ico
@@ -46,7 +46,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "autostart"; Description: "Start the Orin daemon when I sign in"; GroupDescription: "Startup:"
+Name: "autostart"; Description: "Start the Cindro daemon when I sign in"; GroupDescription: "Startup:"
 
 [Files]
 ; The whole staged payload (binaries + Qt runtime + engine folder + node server).
@@ -55,11 +55,11 @@ Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubd
 [Icons]
 ; The shortcut launches the WHOLE stack (engine + phone + daemon + UI) via the
 ; HIDDEN VBS launcher (wscript) — so jarvisd + the engine start with NO console
-; window; only jarvis-sidebar (the GUI) appears. Orin icon kept.
+; window; only jarvis-sidebar (the GUI) appears. Cindro icon kept.
 Name: "{group}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; IconFilename: "{app}\{#MyAppExeName}"
 ; Terminal UI v2 (jarvis-tui.exe) — a console app, launched directly. Only
 ; created when the payload actually contains it (built on a bun-equipped runner).
-Name: "{group}\Orin Terminal (TUI)"; Filename: "{app}\jarvis-tui.exe"; IconFilename: "{app}\{#MyAppExeName}"; Check: FileExists(ExpandConstant('{app}\jarvis-tui.exe'))
+Name: "{group}\Cindro Terminal (TUI)"; Filename: "{app}\jarvis-tui.exe"; IconFilename: "{app}\{#MyAppExeName}"; Check: FileExists(ExpandConstant('{app}\jarvis-tui.exe'))
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 

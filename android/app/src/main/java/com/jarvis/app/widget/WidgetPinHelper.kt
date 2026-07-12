@@ -9,7 +9,7 @@ import android.os.Build
 import com.google.gson.JsonParser
 
 /**
- * One-click "pin to home screen" for an Orin widget. Asks the launcher to place a
+ * One-click "pin to home screen" for a Cindro widget. Asks the launcher to place a
  * [JarvisWidgetProvider] instance via requestPinAppWidget (API 26+); the widget id +
  * spec are stashed as a pending bind that the new instance adopts (the launcher
  * doesn't reliably hand us the new appWidgetId, so the provider consumes the stash).

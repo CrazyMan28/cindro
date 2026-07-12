@@ -140,7 +140,7 @@ private fun WidgetBubble(item: ChatItem.Widget, onWidgetAction: (com.google.gson
                     .clip(RoundedCornerShape(6.dp))
                     .clickable {
                         val ok = com.jarvis.app.widget.WidgetPinHelper.pinToHome(
-                            context, item.id, item.specJson, item.title.ifBlank { "Orin" })
+                            context, item.id, item.specJson, item.title.ifBlank { "Cindro" })
                         android.widget.Toast.makeText(
                             context,
                             if (ok) "Confirm to add the widget to your home screen"

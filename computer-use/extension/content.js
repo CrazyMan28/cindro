@@ -160,7 +160,7 @@
       root.appendChild(st);
       chip = document.createElement("div");
       chip.id = "__jv_chip";
-      chip.innerHTML = '<span style="color:#7CFCEF">⚡</span><span>Jarvis is using this tab</span>';
+      chip.innerHTML = '<span style="color:#7CFCEF">⚡</span><span>Cindro is using this tab</span>';
       cursor = document.createElement("div");
       cursor.id = "__jv_cur";
       cursor.innerHTML =

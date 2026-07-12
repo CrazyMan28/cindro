@@ -50,7 +50,7 @@ export function SetupWizard(props: SetupWizardProps) {
 
   const [skip, setSkip] = createSignal(false) // already setup_complete — render nothing
   const [step, setStep] = createSignal(0)
-  const [assistantName, setAssistantName] = createSignal("Jarvis")
+  const [assistantName, setAssistantName] = createSignal("Cindro")
   const [userName, setUserName] = createSignal("")
   const [ttsVoice, setTtsVoice] = createSignal("")
   const [voiceList, setVoiceList] = createSignal<VoiceOption[]>([])
@@ -140,7 +140,7 @@ export function SetupWizard(props: SetupWizardProps) {
     const name = assistantName().trim()
     const patch: Record<string, unknown> = {
       setup_complete: true,
-      assistant_name: name || "Jarvis",
+      assistant_name: name || "Cindro",
       user_name: userName().trim(),
       tts_voice: ttsVoice(),
       permission_level: permissionLevel(),
@@ -236,7 +236,7 @@ export function SetupWizard(props: SetupWizardProps) {
                   nameRef = r
                   r.value = assistantName()
                 }}
-                placeholder="Jarvis"
+                placeholder="Cindro"
                 onInput={setAssistantName}
                 onKeyDown={swallowTab}
                 onSubmit={goNext}
@@ -310,7 +310,7 @@ export function SetupWizard(props: SetupWizardProps) {
           <Show when={step() === 3}>
             <box flexDirection="column">
               <text fg={theme.textMuted}>
-                How cautious should Jarvis be before risky actions?
+                How cautious should Cindro be before risky actions?
               </text>
               <select
                 ref={(r: SelectRenderable) => {
@@ -339,7 +339,7 @@ export function SetupWizard(props: SetupWizardProps) {
                   {autoUpdate() ? "[x]" : "[ ]"}
                 </text>
                 <text fg={theme.textMuted} selectable={false}>
-                  Keep Jarvis up to date automatically
+                  Keep Cindro up to date automatically
                 </text>
               </box>
             </box>

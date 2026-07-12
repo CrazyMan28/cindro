@@ -61,7 +61,7 @@ async def lifespan(app: FastAPI):
             await control_client.close()
 
 
-app = FastAPI(title="Jarvis MCP", version=__version__, lifespan=lifespan)
+app = FastAPI(title="Cindro MCP", version=__version__, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

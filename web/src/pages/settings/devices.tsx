@@ -184,7 +184,7 @@ function DevicesSection() {
 
       <div class="sdv-head">
         <div class="hud-label sdv-title">Devices</div>
-        <p class="sdv-desc">Paired phones with device-channel access. Scan the QR in the Orin app, or enter the code manually.</p>
+        <p class="sdv-desc">Paired phones with device-channel access. Scan the QR in the Cindro app, or enter the code manually.</p>
       </div>
 
       <div class="sdv-pair-card">

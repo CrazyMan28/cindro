@@ -1,9 +1,9 @@
-# Orin — Voice Mode, Generative Renderer, KDE Widget & Connectors (Roadmap)
+# Cindro — Voice Mode, Generative Renderer, KDE Widget & Connectors (Roadmap)
 
 Status: **PLANNED / not yet built.** Captured 2026-06-24 from the user's vision so it
 isn't forgotten. Build incrementally; **test each piece before claiming done.**
 
-This sits on top of the existing Orin monorepo (`~/projects/computer_use`):
+This sits on top of the existing Cindro monorepo (`~/projects/computer_use`):
 Qt6/C++ daemon `jarvisd` + `jarvis-sidebar` desktop, Python computer-use engine,
 Android app, Chrome extension. Voice plumbing ALREADY exists: daemon `voice.stt` /
 `voice.tts` (Mistral Voxtral), phone `VoiceController` + voice settings. We extend
@@ -11,36 +11,36 @@ from there.
 
 ---
 
-## 1. Voice Mode ("the spinny thing")  — talk to Orin, hands-free
+## 1. Voice Mode ("the spinny thing")  — talk to Cindro, hands-free
 A dedicated **voice interface**: a central animated **orb / spinner** you talk into.
-- **STT + TTS loop**: push-to-talk (or wake/always-listen) → STT → Orin turn →
+- **STT + TTS loop**: push-to-talk (or wake/always-listen) → STT → Cindro turn →
   TTS spoken reply. The orb reacts: idle pulse, listening (ripple on mic level),
   thinking (spin + the whimsical phrases — see the funny-status work), speaking
   (waveform). Esc / tap to stop.
 - **Surfaces**: (a) a full-window mode in `jarvis-sidebar` (a `VoiceMode.qml`
   overlay/page centered on the orb), and (b) launchable from the KDE widget (§3).
 - **Commands it must nail**: "what's on my screen / my main?" → screenshot the real
-  screen → Orin summarizes aloud. "Summarize this." "Open X." etc.
+  screen → Cindro summarizes aloud. "Summarize this." "Open X." etc.
 - **Reuse**: daemon `voice.stt`/`voice.tts`; add a desktop `VoiceController` (mirror
   the Android one) + mic capture (QtMultimedia `QAudioSource`) + playback.
 
-## 2. Generative Renderer — Orin pops up CUSTOM widgets around the orb
-The headline feature: Orin can **render custom UI on the fly**, arranged around the
+## 2. Generative Renderer — Cindro pops up CUSTOM widgets around the orb
+The headline feature: Cindro can **render custom UI on the fly**, arranged around the
 orb in Voice Mode (and in the app).
-- Example: say **"show me a duck"** → Orin emits widget code → a **custom duck
+- Example: say **"show me a duck"** → Cindro emits widget code → a **custom duck
   widget** appears next to the orb. "Show my calendar" → a calendar card. "Graph
   this" → a chart.
-- **Mechanism (safest path)**: Orin returns a **widget spec** the app renders. Two
+- **Mechanism (safest path)**: Cindro returns a **widget spec** the app renders. Two
   options to evaluate:
-  1. **Constrained QML**: Orin emits a *restricted* QML snippet; the app loads it
+  1. **Constrained QML**: Cindro emits a *restricted* QML snippet; the app loads it
      via `Qt.createQmlObject` / a `Loader` into a sandboxed item. RISK: arbitrary QML
      = code exec — must whitelist allowed types (no `Process`, no file/network), run
-     in a locked-down context. Prefer a **vetted component library** Orin composes
+     in a locked-down context. Prefer a **vetted component library** Cindro composes
      from (Card, Text, Image, Chart, List, Canvas-draw) via a JSON spec, NOT raw QML.
-  2. **JSON widget DSL** (recommended v1): Orin returns `{widget:"duck", props:{…}}`
+  2. **JSON widget DSL** (recommended v1): Cindro returns `{widget:"duck", props:{…}}`
      or a small declarative tree (`{type:"column", children:[…]}`) that a trusted
      QML renderer interprets. Safe, deterministic, extensible. "Show me a duck" maps
-     to a `canvas`/`image` node Orin fills in.
+     to a `canvas`/`image` node Cindro fills in.
 - **Transport**: a new normalized brain event kind `widget` (or an MCP tool
   `render_widget(spec)`) the daemon forwards to the app; the app mounts it around the
   orb / in a "canvas" panel. Widgets are dismissable, stackable.
@@ -48,8 +48,8 @@ orb in Voice Mode (and in the app).
 
 ## 3. KDE Plasma Widget (plasmoid)
 A native **Plasma 6 applet** (`kde-applet/` in the plan) that:
-- Shows Orin status + a button to **toggle the sidebar** and to **launch Voice Mode**.
-- Optional: tiny orb in the panel that pulses when Orin is active.
+- Shows Cindro status + a button to **toggle the sidebar** and to **launch Voice Mode**.
+- Optional: tiny orb in the panel that pulses when Cindro is active.
 - Plasmoid = QML `metadata.json` + `main.qml`; talks to `jarvisd` control WS.
 
 ## 4. Voice picker in Settings
@@ -59,7 +59,7 @@ A native **Plasma 6 applet** (`kde-applet/` in the plan) that:
   settings + add to desktop SettingsPage.
 
 ## 5. Connectors — Google Drive / Docs / Calendar / Gmail (+ more)
-Let Orin read/act on the user's Google services.
+Let Cindro read/act on the user's Google services.
 - **Path**: add them as **MCP servers** (OAuth-backed) the user enables in Settings —
   fits the existing MCP registry + the new "paste/enable MCP" flow. Either use
   existing community Google MCP servers or a small OAuth bridge.
@@ -68,7 +68,7 @@ Let Orin read/act on the user's Google services.
 - Gate writes (send email / edit doc) behind the approval tier.
 
 ## 6. "What's on my screen" + ambient summaries (voice)
-- Voice command → real-screen screenshot (real_screen MCP) → Orin vision summary →
+- Voice command → real-screen screenshot (real_screen MCP) → Cindro vision summary →
   spoken + a widget card. Ties Voice Mode + Renderer + computer-use together.
 
 ---
@@ -81,7 +81,7 @@ Let Orin read/act on the user's Google services.
    canvas/list/chart) → "show me a duck".
 4. **KDE plasmoid** (toggle sidebar + launch Voice Mode).
 5. **Google connectors** (Calendar first, then Docs/Drive/Gmail) via OAuth MCP.
-6. **Renderer v2**: richer components, Orin-authored canvas drawings, persistence.
+6. **Renderer v2**: richer components, Cindro-authored canvas drawings, persistence.
 
 ## Risks / decisions to settle first
 - **Renderer security**: do NOT eval arbitrary QML/JS from the model. Commit to the

@@ -16,7 +16,7 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Headless renderer for the Orin widget DSL -> a Bitmap, for the REAL Android
+ * Headless renderer for the Cindro widget DSL -> a Bitmap, for the REAL Android
  * home-screen widget (RemoteViews can't host Compose, and a WebView/AndroidView
  * can't be snapshotted off-screen). It draws straight onto an android.graphics
  * Canvas, so it needs no Activity/lifecycle and is cheap to run from the

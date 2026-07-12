@@ -1,7 +1,7 @@
 # jarvis-mcp
 
-One **MCP endpoint** that fronts the whole Jarvis stack so external agents
-(Claude Code / Codex) can drive Jarvis **and** do full computer use through a
+One **MCP endpoint** that fronts the whole Cindro stack so external agents
+(Claude Code / Codex) can drive Cindro **and** do full computer use through a
 single server.
 
 - **Port:** `8797` (HTTP streamable MCP at `/mcp`). `8790` project-tracker,

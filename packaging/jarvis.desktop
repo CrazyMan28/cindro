@@ -1,9 +1,9 @@
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=Orin
+Name=Cindro
 GenericName=AI co-worker
-Comment=Orin AI co-worker sidebar
+Comment=Cindro AI co-worker sidebar
 Exec=__HOME__/.local/bin/jarvis-sidebar
 Icon=jarvis
 Terminal=false

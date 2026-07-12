@@ -12,7 +12,7 @@
 //   nested compositor seat (no cursor sharing with the user). See
 //   windows/isolation/DESIGN.md.
 //
-// Two windows/-local pieces make the rest of Orin's pipeline reuse unchanged:
+// Two windows/-local pieces make the rest of Cindro's pipeline reuse unchanged:
 //   gap #1  the in-sandbox engine answers which="agent" for ITS desktop, via env
 //           JARVIS_AGENT_INSANDBOX=1 (windows/engine/backend_windows.py).
 //   gap #2  reachability -- the engine binds 0.0.0.0:<port> inside the box; the

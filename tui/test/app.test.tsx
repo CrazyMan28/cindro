@@ -60,7 +60,7 @@ test("shell boots: topbar telemetry + tabs + manifest pages render", async () =>
   await setup.renderOnce()
   const frame = setup.captureCharFrame()
 
-  expect(frame).toContain("J.A.R.V.I.S")
+  expect(frame).toContain("CINDRO")
   expect(frame).toContain("jarvisd v9.9.9")
   expect(frame).toContain("MCP 3/4") // LIVE telemetry, not hardcoded
   expect(frame).toContain("AGENTS 2")

@@ -207,7 +207,7 @@ export function LockGate(props: LockGateProps) {
       >
         <ArcReactor size={13} thinking={reactorThinking()} />
         <text fg={theme.accent} attributes={TextAttributes.BOLD} selectable={false}>
-          JARVIS LOCKED
+          CINDRO LOCKED
         </text>
         <text fg={theme.textMuted} selectable={false} wrapMode="word">
           {PHASE_MESSAGES[phase()]}

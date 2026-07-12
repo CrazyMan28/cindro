@@ -1,6 +1,6 @@
-# Jarvis Plugin Marketplace (Wave 7 backend)
+# Cindro Plugin Marketplace (Wave 7 backend)
 
-A Jarvis plugin is a small **signed package** that adds a capability to the
+A Cindro plugin is a small **signed package** that adds a capability to the
 brains: an MCP server, a skill, or both. The daemon **verifies the Ed25519
 signature before install**, records the verdict + the permissions it granted,
 and launches MCP plugins **sandboxed** under exactly those permissions.

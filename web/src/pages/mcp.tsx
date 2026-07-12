@@ -341,7 +341,7 @@ function McpPage() {
             CLI SERVERS (PER BRAIN)
           </div>
           <div class="mcp-cli-hint">
-            Your codex/claude CLI's own MCP servers. Off = isolated (default). Toggle on to let Orin use one.
+            Your codex/claude CLI's own MCP servers. Off = isolated (default). Toggle on to let Cindro use one.
           </div>
           <For each={groupedCli()}>
             {(group) => (

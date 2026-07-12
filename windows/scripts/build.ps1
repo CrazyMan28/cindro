@@ -1,5 +1,5 @@
 <#
-  build.ps1 — one-shot Windows build + package for Orin.
+  build.ps1 — one-shot Windows build + package for Cindro.
 
   Steps:
     1. Configure + build the C++ daemon and Windows Qt shell from the SELF-CONTAINED
@@ -30,7 +30,7 @@ $win    = Join-Path $repo "windows"
 # segment ninja can't mkdir (the reason the QML build used to need NO_CACHEGEN).
 $build  = Join-Path $win "build-win"
 $payload= Join-Path $win "dist\payload"
-Write-Host "==> Orin Windows build  (repo=$repo  version=$Version)" -ForegroundColor Cyan
+Write-Host "==> Cindro Windows build  (repo=$repo  version=$Version)" -ForegroundColor Cyan
 
 # 1. C++ daemon + Windows shell ------------------------------------------------
 # Configure the SELF-CONTAINED windows/ project (NOT the repo root) — it references
@@ -171,7 +171,7 @@ Copy-Item (Join-Path $win "scripts\jarvis-start.cmd") $payload
 Copy-Item -Recurse (Join-Path $repo "extension") (Join-Path $payload "extension")
 # Qt runtime + the MSVC C/C++ runtime DLLs next to the exes (app-local deploy:
 # --compiler-runtime ships vcruntime/msvcp so a BARE machine with no Visual C++
-# Redistributable still runs Orin). Target both exes so jarvisd's deps land too.
+# Redistributable still runs Cindro). Target both exes so jarvisd's deps land too.
 if (Get-Command windeployqt -ErrorAction SilentlyContinue) {
   windeployqt --qmldir (Join-Path $repo "desktop\qml") --release --compiler-runtime `
     (Join-Path $payload "jarvis-sidebar.exe")

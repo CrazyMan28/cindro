@@ -141,7 +141,7 @@ function SecuritySection() {
         <div class="ssec-block">
           <div class="ssec-row">
             <div class="ssec-row-text">
-              <span class="ssec-row-title">Require phone + fingerprint to open Orin</span>
+              <span class="ssec-row-title">Require phone + fingerprint to open Cindro</span>
               <span class="ssec-row-sub">
                 Two factors: a tap on your paired phone AND its fingerprint unlock. Fails open when no
                 phone is paired.

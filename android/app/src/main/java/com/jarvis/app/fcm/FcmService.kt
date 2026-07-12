@@ -26,7 +26,7 @@ class FcmService : FirebaseMessagingService() {
 
         val data = message.data
         val kind = data["kind"] ?: data["type"] ?: "update"
-        val title = data["title"] ?: message.notification?.title ?: "Orin"
+        val title = data["title"] ?: message.notification?.title ?: "Cindro"
         val body = data["body"] ?: message.notification?.body ?: ""
         val sessionId = data["session_id"] ?: data["sessionId"]
         // 2FA + fingerprint cross-device unlock: an "auth" push carries the

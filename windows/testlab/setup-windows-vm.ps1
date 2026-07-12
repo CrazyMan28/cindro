@@ -1,5 +1,5 @@
 <#
-  setup-windows-vm.ps1 - turn this Windows VM into an Orin test target, in ONE command.
+  setup-windows-vm.ps1 - turn this Windows VM into a Cindro test target, in ONE command.
 
   Run this single line in ANY PowerShell on the VM (it self-elevates via UAC):
 

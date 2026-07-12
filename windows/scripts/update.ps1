@@ -1,5 +1,5 @@
 <#
-  Orin self-update (Windows). Called by the daemon's Updater (auto, on the
+  Cindro self-update (Windows). Called by the daemon's Updater (auto, on the
   auto_update interval) and by the manual "Check for updates" button.
 
     update.ps1 -Mode check          # prints JSON {current, latest, behind}

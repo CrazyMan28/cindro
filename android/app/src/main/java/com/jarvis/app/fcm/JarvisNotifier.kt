@@ -32,7 +32,7 @@ object JarvisNotifier {
                 CHANNEL_ATTENTION,
                 "Needs attention",
                 NotificationManager.IMPORTANCE_HIGH,
-            ).apply { description = "Approvals Orin is waiting on" },
+            ).apply { description = "Approvals Cindro is waiting on" },
         )
         mgr.createNotificationChannel(
             NotificationChannel(
@@ -46,7 +46,7 @@ object JarvisNotifier {
                 CHANNEL_WAKE,
                 "Wake listener",
                 NotificationManager.IMPORTANCE_LOW,
-            ).apply { description = "Shown while \"Hey Orin\" wake is active" },
+            ).apply { description = "Shown while \"Hey Cindro\" wake is active" },
         )
     }
 
@@ -74,7 +74,7 @@ object JarvisNotifier {
 
         // For the unlock push, override the title/body so the notification reads
         // as a sign-in prompt regardless of what the daemon sent.
-        val showTitle = if (kind == "auth") "Unlock Orin" else title
+        val showTitle = if (kind == "auth") "Unlock Cindro" else title
         val showBody = if (kind == "auth") "Approve to sign in on your computer" else body
 
         val tapIntent = Intent(context, MainActivity::class.java).apply {

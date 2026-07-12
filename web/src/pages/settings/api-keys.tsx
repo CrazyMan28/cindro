@@ -29,7 +29,7 @@ const PROVIDERS: ProviderMeta[] = [
   {
     id: "gemini",
     label: "Google Gemini",
-    hint: "Gemini API key (api brain, gemini-* models). Several keys? comma-separate them — Orin rotates on rate limits",
+    hint: "Gemini API key (api brain, gemini-* models). Several keys? comma-separate them — Cindro rotates on rate limits",
   },
   { id: "xai", label: "xAI Grok", hint: "xAI API key (api brain, grok-* models)" },
   { id: "deepseek", label: "DeepSeek", hint: "DeepSeek API key (api brain, deepseek-* models)" },

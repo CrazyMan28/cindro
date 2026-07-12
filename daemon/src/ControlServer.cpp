@@ -258,7 +258,7 @@ bool ControlServer::start()
     // automatically (the user confirms via Settings → "Check for updates").
     connect(&m_updater, &Updater::updateAvailable, this,
             [this](const UpdateStatus &st) {
-                m_notify.notify(QStringLiteral("Orin update available"),
+                m_notify.notify(QStringLiteral("Cindro update available"),
                                 QStringLiteral("A newer version is on main (%1). "
                                                "Open Settings → Updates to update.")
                                     .arg(st.latest.left(12)),
@@ -278,9 +278,9 @@ bool ControlServer::start()
         if (updated) {
             const bool needsRestart =
                 r.value(QStringLiteral("restart_required")).toBool();
-            m_notify.notify(QStringLiteral("Orin updated"),
+            m_notify.notify(QStringLiteral("Cindro updated"),
                             needsRestart
-                                ? QStringLiteral("Updated to %1 — restart Orin to "
+                                ? QStringLiteral("Updated to %1 — restart Cindro to "
                                                  "finish.").arg(to)
                                 : QStringLiteral("Updated to %1.").arg(to),
                             NotifyService::Urgency::Normal,
@@ -2563,9 +2563,9 @@ QString ControlServer::memorySystemBlock()
 {
     // ApiBrain has no CLI system prompt of its own; seed it with recent memory.
     if (!m_memory.isOpen())
-        return QStringLiteral("You are Orin, a helpful AI co-worker.");
+        return QStringLiteral("You are Cindro, a helpful AI co-worker.");
     QString block = QStringLiteral(
-        "You are Orin, a helpful AI co-worker. You have persistent memory.\n");
+        "You are Cindro, a helpful AI co-worker. You have persistent memory.\n");
     const QString mem = MemoryStore::renderPromptBlock(m_memory.prefetch(QString(), 8));
     if (!mem.isEmpty())
         block += QStringLiteral("\n") + mem;
@@ -3324,10 +3324,10 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
     "\"top -bn1 | awk '/Cpu/{print 100-$8}'\", "
 #endif
         guide = QStringLiteral(
-            "[Orin co-work — READ FIRST] You have TWO separate computer-use tool "
+            "[Cindro co-work — READ FIRST] You have TWO separate computer-use tool "
             "sets, plus ask_user, schedule_task, remember/recall/forget, create_skill.\n"
             "  * The \"real_screen\" tools operate the USER'S REAL screen + windows "
-            "(what they physically see). A glowing \"Orin is using this computer\" "
+            "(what they physically see). A glowing \"Cindro is using this computer\" "
             "banner appears while you act there.\n"
             "  * The \"computer_use\" tools operate YOUR OWN private agent desktop (a "
             "separate screen the user watches on the Computer page). This is the DEFAULT.\n"
@@ -3371,9 +3371,9 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "it — and edit_memory / forget to keep it current. Use recall / list_memories "
             "to check what you already know before asking again.\n"
             "SKILLS: when you work out a repeatable procedure the user may want again, "
-            "save it as an Orin skill — but you MUST use the create_skill MCP TOOL "
+            "save it as a Cindro skill — but you MUST use the create_skill MCP TOOL "
             "(NOT your own CLI's skill files / not by writing to ~/.codex/skills or "
-            "~/.claude/skills yourself). Only create_skill registers it in Orin so it "
+            "~/.claude/skills yourself). Only create_skill registers it in Cindro so it "
             "shows in the Skills tab and is invokable everywhere; a file you write "
             "directly will NOT appear. Use create_skill(name, description, body), "
             "edit_skill to refine, list_skills / get_skill to inspect, remove_skill to "
@@ -4499,8 +4499,8 @@ void ControlServer::onOAuthRedirect()
 
         const QString bodyHtml =
             stateOk && err.isEmpty() && !code.isEmpty()
-                ? QStringLiteral("<h2>Connected.</h2><p>You can close this tab and return to Orin.</p>")
-                : QStringLiteral("<h2>Sign-in failed.</h2><p>Return to Orin and try again.</p>");
+                ? QStringLiteral("<h2>Connected.</h2><p>You can close this tab and return to Cindro.</p>")
+                : QStringLiteral("<h2>Sign-in failed.</h2><p>Return to Cindro and try again.</p>");
         const QByteArray html = bodyHtml.toUtf8();
         sock->write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
                     "Connection: close\r\nContent-Length: "
@@ -5038,7 +5038,7 @@ bool ControlServer::requestTakeOver(const QString &sessionId, QString *err,
         *approvalIdOut = approvalId;
     NormalizedBrainEvent ev = NormalizedBrainEvent::approval(
         approvalId,
-        QStringLiteral("Allow Orin to drive your REAL screen?"),
+        QStringLiteral("Allow Cindro to drive your REAL screen?"),
         QStringLiteral("high"));
     onBrainEvent(sessionId, ev);
     return true;
@@ -5164,7 +5164,7 @@ Response ControlServer::handleAuthRequest(const Request &req)
     // runs BiometricPrompt, and calls auth.approve over its authed device WS.
     if (m_fcm) {
         PushMessage msg;
-        msg.title = QStringLiteral("Unlock Orin");
+        msg.title = QStringLiteral("Unlock Cindro");
         msg.body = QStringLiteral("Approve sign-in on your phone");
         msg.data.insert(QStringLiteral("kind"), QStringLiteral("auth"));
         msg.data.insert(QStringLiteral("challenge_id"), ch.id);
@@ -5691,9 +5691,9 @@ void ControlServer::seedInternalDocsSkill()
     const QString body = QStringLiteral(
         "[catalog v4] When the user asks what you can do, your features, how to do "
         "something with you, or you're unsure you're capable of something, use THIS as "
-        "the source of truth for Orin's capabilities. Tell them what fits + offer to "
+        "the source of truth for Cindro's capabilities. Tell them what fits + offer to "
         "do it.\n\n"
-        "# Orin — what you can do\n\n"
+        "# Cindro — what you can do\n\n"
         "**Computer use** — drive mouse/keyboard/screen on KDE & Sway. You work on your "
         "OWN nested agent desktop by default (the user watches it live in chat / on the "
         "Computer page), or take over the user's REAL screen on request (consent-gated, "
@@ -5754,14 +5754,14 @@ void ControlServer::seedInternalDocsSkill()
         "gated shell commands + screenshots on it by name.\n"
         "**Connectors** — a Google connectors framework (Gmail / Calendar / Drive etc.) "
         "the user can enable. (docs/JARVIS_GOOGLE_CONNECTORS.md)\n"
-        "**Security / unlock** — optional 2FA: open Orin by approving on the paired "
+        "**Security / unlock** — optional 2FA: open Cindro by approving on the paired "
         "phone with a fingerprint, with a local PIN fallback (no-brick fail-open).\n"
         "**Brains** — you can run on Codex, Claude, or a direct API brain; the user picks "
         "the brain + model per session.\n"
         "**Cross-surface** — one daemon behind a desktop sidebar, an Android app, and a "
         "Chrome extension; cross-device biometric unlock. (README.md, docs/ARCHITECTURE.md)\n");
     m_skills.create(QStringLiteral("internal_docs"),
-                    QStringLiteral("Orin's own feature/capability catalog — load this "
+                    QStringLiteral("Cindro's own feature/capability catalog — load this "
                                    "when asked what you can do or when unsure."),
                     body, QStringLiteral("builtin"));
 }
@@ -5787,7 +5787,7 @@ void ControlServer::seedPhoneSkill()
         "[phone skill v1] Use this when calling/texting the user, when they call or text "
         "you, or when working with the phone subsystem.\n\n"
         "# Phone — call & text the user, and answer when they reach you\n\n"
-        "Orin has a NATIVE phone subsystem (vendored in the repo; MCP gateway on :8801). "
+        "Cindro has a NATIVE phone subsystem (vendored in the repo; MCP gateway on :8801). "
         "You have ~56 phone tools (server `phone`). Use them to reach the user on their REAL "
         "phone, and you ANSWER when they call or text the Twilio number.\n\n"
         "## Reach the user (outbound)\n"
@@ -5820,7 +5820,7 @@ void ControlServer::seedPhoneSkill()
         "- `store_memory` / `search_memory` — phone memory that persists across calls AND texts.\n"
         "- `twilio_allowlist_add/list/remove` — only allow-listed numbers connect; `twilio_set_user_number`.\n\n"
         "## Surfaces\n"
-        "The same phone lives in the Orin Android app (Phone tab = the full app: dialer, inbox, "
+        "The same phone lives in the Cindro Android app (Phone tab = the full app: dialer, inbox, "
         "agents, HUD, settings, screening), the desktop sidebar (Phone hub: Dialer · Agents · Inbox "
         "· HUD · Settings · Screening), and the Chrome side panel. See docs/PHONE.md.\n");
     m_skills.create(QStringLiteral("phone"),
@@ -7080,7 +7080,7 @@ QString ControlServer::fireScheduledJob(const ScheduleRow &row)
     if (!row.reportThread.isEmpty()) {
         prompt += QStringLiteral(
             "\n\n[Workflow report] When you finish this task, post a concise "
-            "summary of the outcome to the user's Orin inbox by calling the "
+            "summary of the outcome to the user's Cindro inbox by calling the "
             "notify_user tool with title=\"%1\". Keep it to a few lines.")
             .arg(row.reportThread);
     }
@@ -7093,7 +7093,7 @@ QString ControlServer::fireScheduledJob(const ScheduleRow &row)
     if (m_fcm) {
         PushMessage msg;
         msg.title = QStringLiteral("Scheduled task started");
-        msg.body = row.name.isEmpty() ? QStringLiteral("A scheduled Orin task is running")
+        msg.body = row.name.isEmpty() ? QStringLiteral("A scheduled Cindro task is running")
                                        : row.name;
         msg.data.insert(QStringLiteral("kind"), QStringLiteral("schedule_fired"));
         msg.data.insert(QStringLiteral("session_id"), sid);
@@ -8038,7 +8038,7 @@ Response ControlServer::handleOutpostInstallWorkload(const Request &req)
         "WantedBy=multi-user.target\n");
     const QByteArray jarvisdUnit = QByteArrayLiteral(
         "[Unit]\n"
-        "Description=Orin daemon \xE2\x80\x94 Proxmox workload-manager profile (headless, Mistral/ApiBrain)\n"
+        "Description=Cindro daemon \xE2\x80\x94 Proxmox workload-manager profile (headless, Mistral/ApiBrain)\n"
         "After=network.target proxmox-mcp.service\n"
         "Requires=proxmox-mcp.service\n\n"
         "[Service]\n"
@@ -9220,7 +9220,7 @@ void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrain
     if (ev.kind == NormalizedBrainEvent::Kind::Approval) {
         m_notify.approvalNeeded(
             ev.fields.value(QStringLiteral("summary")).toString(
-                QStringLiteral("Orin needs your approval")),
+                QStringLiteral("Cindro needs your approval")),
             sessionId);
         // Audit the brain-emitted approval (computer-use / take-over etc.).
         m_audit.record(QStringLiteral("approval"), true,
