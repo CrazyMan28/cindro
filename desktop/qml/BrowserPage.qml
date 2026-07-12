@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // IN-APP BROWSER page: a live preview of the agent's controlled Chrome tab.
 // We do NOT embed QtWebEngine — the desktop drives the per-session computer-use

@@ -1,5 +1,5 @@
 """Shared fixtures: a mock Contract-A daemon WS, and an in-process ASGI MCP
-client so tests don't need a separately-running jarvis-mcp process."""
+client so tests don't need a separately-running cindro-mcp process."""
 
 import asyncio
 import contextlib
@@ -88,7 +88,7 @@ class MockDaemon:
 async def mock_daemon(monkeypatch):
     daemon = MockDaemon()
     await daemon.start()
-    # Point the jarvis-mcp control client at the mock + give it the mock token.
+    # Point the cindro-mcp control client at the mock + give it the mock token.
     monkeypatch.setenv("JARVIS_CONTROL_WS", daemon.ws_url)
     monkeypatch.setenv("JARVIS_CONTROL_TOKEN", daemon.token)
     try:

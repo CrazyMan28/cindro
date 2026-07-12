@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // SCREENING tab — polls get_screening_status and renders a live caller/agent
 // transcript while a carrier call is being screened by the AI.

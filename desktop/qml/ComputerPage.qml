@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // COMPUTER page — "Jarvis drives your computer".
 //

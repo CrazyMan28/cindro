@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // HUD page header: a tracked uppercase title with a small leading bracket, an
 // optional subtitle, and a neon underline that fades out to the right.

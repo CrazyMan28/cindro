@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // MCP page: list of registered servers (name, endpoint, enable switch, connected
 // dot, tools_count) with Test + Remove; an "Add MCP server" dialog. The built-in

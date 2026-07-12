@@ -60,8 +60,8 @@ Local-first. Your keys, your machine, your data. One brain, many hands: a **code
 | **Computer use** | Pixel-accurate mouse/keyboard/screen on **KDE and Sway** via the Python engine. Runs on a **nested headless agent desktop** by default (watchable live in chat *and* on the phone), or **takes over your real screen** on request — approval-gated, distinct blue cursor + "Cindro is driving" banner. The model can `desktop_reset` its own desktop. → [`docs/COMPUTER_USE.md`](docs/COMPUTER_USE.md) |
 | **Chrome** | MV3 extension with a full Cindro side-panel that sees your tabs and acts in-page (Chrome-only mode, blue cursor + "controlling Chrome" banner). |
 | **Editors (ACP)** | Drive Cindro from **Zed / JetBrains** as a native [Agent Client Protocol](https://agentclientprotocol.com) agent — real sessions, streamed turns, tool-call cards, in-editor permission prompts — via the `jarvis-acp` stdio bridge. → [`acp-bridge/README.md`](acp-bridge/README.md) |
-| **Web** | A **full browser dashboard** (`web/` — Bun+Vite+SolidJS) with **GUI parity**: every page the desktop app has (Home/Chat/Voice/Computer/Canvas/Widgets/Sessions/Memory/Skills/Agents/Schedules/Activity/Graph/Replay/MCP/Plugins/SSH/Phone/Settings, plus Browser), same Arc Reactor HUD theme, same Contract A the extension/TUI speak. `jarvis web start` builds it, serves it, and prints the control token to the terminal. → [`web/README.md`](web/README.md) |
-| **Terminal** | `jarvis` in **any terminal** (Linux + Windows) opens a Claude-Code-style **TUI agent** with **full GUI parity** — all 20 screens (Home/Chat/Sessions/Memory/Skills/Agents/Queue/Schedules/Settings/Canvas/Widgets/Phone/Computer/Browser/Activity/Graph/Replay/MCP/Plugins/SSH), the same first-run wizard and 2FA/fingerprint lock gate, and hands-free **voice mode** (`F2`, real mic capture + STT/TTS). Terminal-only touches on top: a **self-editing layout** (ask Cindro to add/edit/remove a page — declarative, hot-reloads live, no restart) and an extensible **`/` command engine** (fuzzy palette, tab-jump *and* inline-popup commands, self-authored custom commands, `/model`/`/provider` pickers) — plus a faithful terminal recreation of the desktop's spinning **arc-reactor** animation and typewriter-reveal chat replies. And the ops surface: `jarvis doctor` (health check with fixes), `jarvis status`, `jarvis start` (**headless**, no GUI anywhere), `jarvis web start`, `jarvis ask "…"` for scripts. → [`cli/README.md`](cli/README.md) |
+| **Web** | A **full browser dashboard** (`web/` — Bun+Vite+SolidJS) with **GUI parity**: every page the desktop app has (Home/Chat/Voice/Computer/Canvas/Widgets/Sessions/Memory/Skills/Agents/Schedules/Activity/Graph/Replay/MCP/Plugins/SSH/Phone/Settings, plus Browser), same Arc Reactor HUD theme, same Contract A the extension/TUI speak. `cindro web start` builds it, serves it, and prints the control token to the terminal. → [`web/README.md`](web/README.md) |
+| **Terminal** | `cindro` in **any terminal** (Linux + Windows) opens a Claude-Code-style **TUI agent** with **full GUI parity** — all 20 screens (Home/Chat/Sessions/Memory/Skills/Agents/Queue/Schedules/Settings/Canvas/Widgets/Phone/Computer/Browser/Activity/Graph/Replay/MCP/Plugins/SSH), the same first-run wizard and 2FA/fingerprint lock gate, and hands-free **voice mode** (`F2`, real mic capture + STT/TTS). Terminal-only touches on top: a **self-editing layout** (ask Cindro to add/edit/remove a page — declarative, hot-reloads live, no restart) and an extensible **`/` command engine** (fuzzy palette, tab-jump *and* inline-popup commands, self-authored custom commands, `/model`/`/provider` pickers) — plus a faithful terminal recreation of the desktop's spinning **arc-reactor** animation and typewriter-reveal chat replies. And the ops surface: `cindro doctor` (health check with fixes), `cindro status`, `cindro start` (**headless**, no GUI anywhere), `cindro web start`, `cindro ask "…"` for scripts. → [`cli/README.md`](cli/README.md) |
 | **Voice** | Hands-free voice mode (just talk — energy-VAD auto-sends, no hold-to-talk), STT/TTS via Mistral Voxtral with **pluggable local providers** (whisper.cpp / piper), animated arc-reactor orb. → [`docs/VOICE.md`](docs/VOICE.md) |
 | **Generative renderer** | The model calls `render_widget` to draw **custom UI** from a safe JSON DSL — containers, text, charts, SVG/canvas art, buttons, animation, and **multi-page `pager`** widgets (tap-to-advance quizzes with right/wrong feedback, **no model round-trip**). **Live** canvases auto-refresh (`widget_live`); pin any to the **desktop Home** (`home_pin`, drag to reorder) or to a **real Android home-screen widget** (sizes to its content). Renders on desktop **and** phone. → [`docs/WIDGETS_CANVAS.md`](docs/WIDGETS_CANVAS.md) |
 | **Plan & permissions** | The model keeps a live **plan/checklist** (`todo_write` + granular add/edit/done/del) in an animated side panel. A **permission level** (cautious / balanced / autonomous) auto-ranks tools; on top of that, **Trust Policies** are a real **policy engine** — per-tool/per-app `allow`/`ask`/`deny` rules **enforced at the tool layer** (deny fails the call, ask pops an approval on desktop *and* phone), editable in Settings → Permissions. |
@@ -80,7 +80,7 @@ Local-first. Your keys, your machine, your data. One brain, many hands: a **code
 ```mermaid
 flowchart TD
     subgraph Desktop["🖥️  Linux desktop"]
-        SB["jarvis-sidebar<br/>(Qt6/QML + LayerShellQt)"]
+        SB["cindro-sidebar<br/>(Qt6/QML + LayerShellQt)"]
         KDE["KDE plasmoid"]
     end
     subgraph Phone["📱  Android"]
@@ -130,7 +130,7 @@ core/         C++/Qt6 shared lib — session model, Brain abstraction, MCP regis
               scheduler, memories, skills, SSH allow-list, settings, FCM sender, voice
 daemon/       jarvisd — headless service: ControlServer (:8795) + DeviceServer (:8796),
               pairing, session orchestration, Jarvis-MCP server, auth challenges
-desktop/      jarvis-sidebar — QML/Quick + LayerShellQt UI (Home dashboard, chat + in-chat
+desktop/      cindro-sidebar — QML/Quick + LayerShellQt UI (Home dashboard, chat + in-chat
               agent peek, voice, canvas, widgets, sessions, memory, skills, schedules,
               activity, MCP, plugins, ssh, settings) + ⌘K command palette
 computer-use/ Python FastMCP engine (mouse/kbd/screen, Chrome bridge, render_widget,
@@ -159,7 +159,7 @@ scripts/      Live verification scripts (WS round-trips, voice, auth gate, etc.)
 **Desktop (C++/Qt6 + Python engine)**
 ```bash
 cmake -S . -B build -G Ninja          # configure once
-cmake --build build                   # builds jarvisd + jarvis-sidebar
+cmake --build build                   # builds jarvisd + cindro-sidebar
 ctest --test-dir build                # C++ unit + GUI smoke tests
 # engine deps:
 cd computer-use && python -m venv .venv && .venv/bin/pip install -e . && cd -
@@ -168,9 +168,9 @@ env -u PYTHONPATH computer-use/.venv/bin/python -m pytest computer-use/tests -q
 The one-shot installer copies the binaries to `~/.local/bin`, installs the desktop entry +
 systemd user units, and the Sway keybind:
 ```bash
-./packaging/install.sh                # build + install jarvisd, jarvis-sidebar, units
+./packaging/install.sh                # build + install jarvisd, cindro-sidebar, units
 ```
-Then `systemctl --user start jarvisd` and launch **jarvis-sidebar** (`--voice` boots straight
+Then `systemctl --user start jarvisd` and launch **cindro-sidebar** (`--voice` boots straight
 into voice mode; `$mod+j` toggles it under Sway).
 
 **Android**
@@ -187,7 +187,7 @@ cd android && ./gradlew :app:assembleDebug
 
 **Windows (experimental — second-tier)** — a native edition lives entirely in `windows/`
 (zero changes to the Linux build). It reuses the same daemon + the ~60 QML pages + the Python
-engine via a Win32 backend; ships as a **self-contained `Jarvis-Setup.exe`** that bundles Qt, the
+engine via a Win32 backend; ships as a **self-contained `Cindro-Setup.exe`** that bundles Qt, the
 MSVC runtime, a frozen Python engine, and a portable Node — the user needs nothing pre-installed.
 **Priority is Linux + Android first; Windows tracks them and may lag.** See [`docs/WINDOWS.md`](docs/WINDOWS.md).
 

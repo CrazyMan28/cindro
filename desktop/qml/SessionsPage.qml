@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // Sessions page: list of stored sessions (title, brain/model, state, updated).
 // Clicking a row opens that thread in Chat (bridge.openSession -> sessionOpened,

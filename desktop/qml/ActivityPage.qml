@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // ACTIVITY / AUDIT page: every tool/action the daemon logged (audit.list) as
 // {ts,tool,ok,risk,summary}, with a risk filter and a desktop-notifications

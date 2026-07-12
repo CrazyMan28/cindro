@@ -1,9 +1,9 @@
-# jarvis-tui — the Jarvis terminal UI, v2
+# cindro-tui — the Cindro terminal UI, v2
 
 A TypeScript/[Bun](https://bun.sh) + [OpenTUI](https://github.com/sst/opentui) 0.3.4
-(`@opentui/core` + `@opentui/solid`, SolidJS reactivity) rewrite of the Jarvis
+(`@opentui/core` + `@opentui/solid`, SolidJS reactivity) rewrite of the Cindro
 terminal agent. It's a thin client over the same **Contract A** control
-websocket every other Jarvis surface speaks (`jarvisd` on `:8795`, JSON
+websocket every other Cindro surface speaks (`jarvisd` on `:8795`, JSON
 `{v,id,method,params}` requests / `{v,id,ok,result|error}` replies /
 `{v,event,data}` broadcasts) — no logic lives here that isn't already true of
 the daemon. It supersedes the Python/Textual TUI in [`../cli`](../cli), which
@@ -18,7 +18,7 @@ bun install
 bun run dev          # bun run src/index.tsx
 ```
 
-Needs a reachable `jarvisd` (`jarvis start` / `jarvis doctor` from `../cli`).
+Needs a reachable `jarvisd` (`cindro start` / `cindro doctor` from `../cli`).
 Endpoint + token resolution is a faithful port of `cli/jarvis_cli/config.py`
 (`src/config.ts`): config root `$JARVIS_CONFIG_DIR` else `~/.config/jarvis`,
 control token from `<config>/control_token` (or `JARVIS_CONTROL_TOKEN`),
@@ -28,14 +28,14 @@ control port from `config.toml`'s `[ports] control` (default `8795`, or
 ## Build the self-contained binary
 
 ```bash
-bun run build        # bun run script/build.ts -> dist/jarvis-tui
+bun run build        # bun run script/build.ts -> dist/cindro-tui
 ```
 
 `bun build --compile` can't apply the Solid JSX transform on its own, so
 `script/build.ts` goes through `Bun.build()` with
 `@opentui/solid/bun-plugin`'s `createSolidTransformPlugin()` (minified, no
 sourcemap, ESM) — the same approach OpenCode's own build script uses. Output
-is one native binary at `dist/jarvis-tui`; run it directly, no `bun`/Node
+is one native binary at `dist/cindro-tui`; run it directly, no `bun`/Node
 needed on the target machine.
 
 ## Test
@@ -99,7 +99,7 @@ src/
   pages/engine/         the manifest-driven generic renderers: TablePage (any
                        manifest "table" page — data verb + columns + row/page/
                        input actions, zero per-feature frontend code) and
-                       CustomPage (Jarvis-authored log|table|markdown|widget|list
+                       CustomPage (Cindro-authored log|table|markdown|widget|list
                        pages from tui_add_page), plus types.ts (shared shapes +
                        pure helpers: substituteParams, formatCell, columnWidths)
   phone/                the 6-tab Phone hub (PhonePage) + tabs/*, CallOverlay
@@ -156,7 +156,7 @@ the choice to `~/.config/jarvis/tui.json` as `{ "accent": "<name>" }`
   Replay, Settings) **+ 11 `ui.manifest`-driven data pages** (Sessions,
   Memory, Memory Graph, Skills, Agents, Queue, Activity, MCP, Plugins, SSH,
   Schedules) rendered by the generic `TablePage` as overlay routes, **+ any
-  number of custom pages** Jarvis authors live via `tui_add_page`.
+  number of custom pages** Cindro authors live via `tui_add_page`.
 - **Phone hub**: 6 tabs (Calls, Agents, Inbox, HUD, Settings, Screening,
   cycled with `[`/`]`) plus an app-wide incoming/active-call overlay
   (accept/reject/end).

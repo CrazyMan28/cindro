@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Shapes
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // ArcReactor — the brand centerpiece. Concentric rotating rings (opposite
 // directions), a pulsing glowing core, faint radial glow. Scales with `size`.

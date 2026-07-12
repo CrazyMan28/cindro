@@ -231,7 +231,7 @@ PlasmoidItem {
                 icon.name: "sidebar-expand-left-symbolic"
                 text: i18n("Open / Toggle Sidebar")
                 onClicked: {
-                    root.run("jarvis-sidebar")
+                    root.run("cindro-sidebar")
                     root.expanded = false
                 }
             }
@@ -241,7 +241,7 @@ PlasmoidItem {
                 icon.name: "audio-input-microphone-symbolic"
                 text: i18n("Voice Mode")
                 onClicked: {
-                    root.run("jarvis-sidebar --voice")
+                    root.run("cindro-sidebar --voice")
                     root.expanded = false
                 }
             }

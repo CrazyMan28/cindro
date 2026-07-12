@@ -17,10 +17,10 @@ bridge. It runs in two profiles — **coder** and **co-worker** — over a
 |-----------------|----------------|------------------------------|----------------|
 | `jarvis-core`   | `core/`        | C++20 static lib             | `SessionStore` (SQLite), Brain interface + implementations (CodexBrain now; Claude/Api later), protocol types, config loading. |
 | `jarvisd`       | `daemon/`      | C++ exe (`QCoreApplication`) | Control WebSocket server (Contract A), device WebSocket server (Contract C), scheduler, push. Spawns/streams brains. |
-| `jarvis-sidebar`| `desktop/`     | C++ exe (`QGuiApplication` + QtQuick/QML + LayerShellQt) | The anchored sidebar UI: chat view, input box, model picker; control-WS client. |
+| `cindro-sidebar`| `desktop/`     | C++ exe (`QGuiApplication` + QtQuick/QML + LayerShellQt) | The anchored sidebar UI: chat view, input box, model picker; control-WS client. |
 | computer-use    | `computer-use/`| Python FastMCP engine        | Screen/keyboard/mouse computer-use tools, served over HTTP MCP. |
 | extension       | `extension/`   | Chrome MV3                   | Browser bridge for the computer-use engine. |
-| android         | `android/`     | Kotlin/Compose (`com.jarvis.app`) | Phone client: pairing, sessions, chat + photo, queue, FCM push. |
+| android         | `android/`     | Kotlin/Compose (`com.cindro.app`) | Phone client: pairing, sessions, chat + photo, queue, FCM push. |
 | plugins         | `plugins/`     | Plugin SDK + signed catalog  | Extensibility surface (later waves). |
 | kde-applet      | `kde-applet/`  | Plasma applet/tray           | Toggles the sidebar on KDE. |
 | packaging       | `packaging/`   | systemd user units + configs | `jarvisd.service`, Sway keybind snippet, mako config, `install.sh`. |
@@ -115,7 +115,7 @@ video). Reuse the design in
   user types in sidebar
         |
         v  Contract A request: session.create / session.send
-  jarvis-sidebar  ───────ws://127.0.0.1:8795────────▶  jarvisd
+  cindro-sidebar  ───────ws://127.0.0.1:8795────────▶  jarvisd
         ▲                                                  |
         |                                                  |  spawn brain
         |                                                  v
@@ -153,7 +153,7 @@ The sidebar uses LayerShellQt directly — do **not** call the deprecated
 `useLayerShell()`. For the QWindow/QQuickWindow: `LayerShellQt::Window::get(w)`,
 then accumulate anchors into `LayerShellQt::Window::Anchors` with `|=` (the anchor
 enums lack QFlags operators), and call
-`setLayer`/`setAnchors`/`setExclusiveZone`/`setScope("jarvis-sidebar")`/
+`setLayer`/`setAnchors`/`setExclusiveZone`/`setScope("cindro-sidebar")`/
 `setKeyboardInteractivity(... KeyboardInteractivityOnDemand)`. Run with
 `QT_QPA_PLATFORM=wayland`. Right-anchoring + keyboard focus are confirmed on
 KWin 6 and native Sway (wlroots).

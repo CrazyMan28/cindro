@@ -31,7 +31,7 @@ from jarvis_mcp.control_client import client as control_client
 # middleware, so DNS-rebinding protection (which would reject the Tailscale IP /
 # MagicDNS Host headers) is disabled — same rationale as computer-use.
 mcp = FastMCP(
-    "jarvis",
+    "cindro",
     streamable_http_path="/mcp",
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     try:
         CU_TOOLS = await cu_proxy.register_all(mcp)
     except Exception as exc:  # never let re-export failure block startup
-        print(f"jarvis-mcp: computer-use re-export failed: {exc}")
+        print(f"cindro-mcp: computer-use re-export failed: {exc}")
         CU_TOOLS = []
     async with mcp.session_manager.run():
         try:
@@ -99,7 +99,7 @@ async def health():
         daemon_detail = str(exc)
     return {
         "status": "ok",
-        "service": "jarvis-mcp",
+        "service": "cindro-mcp",
         "version": __version__,
         "daemon_control_ok": daemon_ok,
         "daemon_detail": daemon_detail,
@@ -118,7 +118,7 @@ def main() -> None:
     h, p = config.host(), config.port()
     # Touch the token so it's generated (and its path printed) on first start.
     config.get_bearer_token()
-    print(f"jarvis-mcp v{__version__} starting on {h}:{p}/mcp "
+    print(f"cindro-mcp v{__version__} starting on {h}:{p}/mcp "
           f"(advertise {config.ADVERTISE_HOST}:{p})")
     uvicorn.run(app, host=h, port=p, log_level="info")
 

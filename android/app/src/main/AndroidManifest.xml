@@ -104,7 +104,7 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.jarvis.app.WIDGET_PINNED" />
+                <action android:name="com.cindro.app.WIDGET_PINNED" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
@@ -117,7 +117,7 @@
         <receiver android:name=".widget.JarvisWidgetCompactProvider" android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.jarvis.app.WIDGET_PINNED" />
+                <action android:name="com.cindro.app.WIDGET_PINNED" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider"
                 android:resource="@xml/jarvis_appwidget_info_compact" />
@@ -125,7 +125,7 @@
         <receiver android:name=".widget.JarvisWidgetTallProvider" android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.jarvis.app.WIDGET_PINNED" />
+                <action android:name="com.cindro.app.WIDGET_PINNED" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider"
                 android:resource="@xml/jarvis_appwidget_info_tall" />
@@ -133,7 +133,7 @@
         <receiver android:name=".widget.JarvisWidgetXTallProvider" android:exported="false">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.jarvis.app.WIDGET_PINNED" />
+                <action android:name="com.cindro.app.WIDGET_PINNED" />
             </intent-filter>
             <meta-data android:name="android.appwidget.provider"
                 android:resource="@xml/jarvis_appwidget_info_xtall" />

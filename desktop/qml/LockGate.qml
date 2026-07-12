@@ -1,6 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
-import JarvisSidebar
+import CindroSidebar
 
 // LockGate — the full-bleed unlock overlay drawn ON TOP of the AppShell while the
 // desktop is locked (2FA + fingerprint cross-device unlock). It runs the two-

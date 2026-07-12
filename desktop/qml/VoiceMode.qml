@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // VoiceMode — the "spinny thing": a full-page voice UI built around a big glowing
 // ORB (an ArcReactor wrapped in a reactive concentric-ring Canvas). The orb's

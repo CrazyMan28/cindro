@@ -189,7 +189,7 @@ class ControlClient:
             raise ConnectionError(
                 f"jarvisd is not reachable at {config.control_host()}:"
                 f"{config.control_port()} — is the daemon running? "
-                f"(try: jarvis start / jarvis doctor)"
+                f"(try: cindro start / cindro doctor)"
             )
 
         loop = asyncio.get_event_loop()

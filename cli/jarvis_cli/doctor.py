@@ -1,4 +1,4 @@
-"""`jarvis status` (quick snapshot) and `jarvis doctor` (deep health check).
+"""`cindro status` (quick snapshot) and `cindro doctor` (deep health check).
 
 Both are read-only. `status` answers "is everything up?" in one glance;
 `doctor` walks every layer (config, daemon, engine, phone, web, brains) and
@@ -102,7 +102,7 @@ def cmd_status() -> int:
     web_up = _tcp_open(WEB_PORT)
     t.add_row("web dashboard", _mark(web_up, bad="not running"),
               f"http://127.0.0.1:{WEB_PORT}" if web_up
-              else "optional — start with: jarvis web start")
+              else "optional — start with: cindro web start")
 
     if snap.get("reachable"):
         t.add_row("sessions", "[cyan]·[/cyan]",
@@ -131,12 +131,12 @@ def cmd_doctor() -> int:
             if fix:
                 console.print(f"      [yellow]fix:[/yellow] {fix}")
 
-    console.print("[bold cyan]jarvis doctor[/bold cyan]")
+    console.print("[bold cyan]cindro doctor[/bold cyan]")
 
     console.print("[bold]config[/bold]")
     cdir = config.config_dir()
     check(cdir.is_dir(), f"config dir {cdir}",
-          "run the daemon once (jarvis start) to create it")
+          "run the daemon once (cindro start) to create it")
     tok = config.control_token()
     check(bool(tok), f"control token ({cdir / 'control_token'})",
           "start jarvisd once — it generates the token on first run")
@@ -151,7 +151,7 @@ def cmd_doctor() -> int:
     console.print("[bold]daemon[/bold]")
     port_open = _tcp_open(config.control_port())
     check(port_open, f"control port 127.0.0.1:{config.control_port()}",
-          "jarvis start   (Linux: systemctl --user status jarvisd)")
+          "cindro start   (Linux: systemctl --user status jarvisd)")
     snap = asyncio.run(_daemon_snapshot()) if port_open else {}
     if port_open:
         check(snap.get("reachable", False),
@@ -186,7 +186,7 @@ def cmd_doctor() -> int:
         console.print(f"  [green]✔[/green] web dashboard http://127.0.0.1:{WEB_PORT}")
     else:
         console.print("  [bright_black]–[/bright_black] web dashboard not running "
-                      "(jarvis web start)")
+                      "(cindro web start)")
 
     if problems == 0:
         console.print("\n[bold green]all checks passed[/bold green]")

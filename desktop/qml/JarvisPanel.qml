@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // The full Jarvis content panel: model picker + chat transcript + composer.
 // Instantiated ONCE in Main.qml and reparented between the floating window and

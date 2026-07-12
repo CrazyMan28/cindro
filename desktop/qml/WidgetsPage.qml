@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // WIDGETS page: the REUSABLE widget library (saved_widgets.json), distinct from
 // the ad-hoc CANVAS. Save a canvas with its ★ button (or the widget_save MCP

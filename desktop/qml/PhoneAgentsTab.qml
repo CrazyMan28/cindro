@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // AGENTS tab — live agent list with per-agent CONFIG panel:
 // voice picker (speaker groups + emotion chips + ▶ preview), speaking-rate

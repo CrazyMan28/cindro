@@ -1,7 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // WidgetRenderer — a SAFE, recursive interpreter for the render_widget JSON DSL.
 //

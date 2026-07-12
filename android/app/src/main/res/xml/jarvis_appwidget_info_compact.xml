@@ -12,5 +12,5 @@
     android:previewImage="@drawable/widget_preview"
     android:previewLayout="@layout/widget_jarvis"
     android:initialLayout="@layout/widget_jarvis"
-    android:configure="com.jarvis.app.widget.WidgetConfigActivity"
+    android:configure="com.cindro.app.widget.WidgetConfigActivity"
     android:description="@string/widget_description" />

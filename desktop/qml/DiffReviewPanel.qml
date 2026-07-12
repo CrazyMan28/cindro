@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // DIFF-REVIEW: a reviewable per-file diff panel rendered for chat `diff` events.
 // Per-line +/- tinting (with line numbers + a hunk header), collapse/expand, and

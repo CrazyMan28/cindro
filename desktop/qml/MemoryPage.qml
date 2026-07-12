@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // MEMORY page: the long-term memory store Jarvis injects into every brain turn.
 // A live search box (memory.search) over a full list (memory.list), an inline

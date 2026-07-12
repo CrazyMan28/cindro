@@ -16,7 +16,7 @@ import com.agentphone.net.ApiResult
 import com.agentphone.net.PhoneEvent
 import com.agentphone.service.AgentPhoneForegroundService
 import com.agentphone.service.CallForegroundService
-import com.jarvis.app.JarvisApp
+import com.cindro.app.JarvisApp
 import com.agentphone.state.AgentPhonePreferences
 import com.agentphone.state.AgentPhoneSettings
 import com.agentphone.state.CallStateReducer

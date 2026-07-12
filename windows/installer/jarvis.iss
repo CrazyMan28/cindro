@@ -1,6 +1,6 @@
 ; Cindro — Windows installer (Inno Setup 6).
-; Produces windows\dist\Jarvis-Setup-<version>.exe.
-; Bundles: jarvisd.exe, jarvis-sidebar.exe (Windows Qt shell), the PyInstaller
+; Produces windows\dist\Cindro-Setup-<version>.exe.
+; Bundles: jarvisd.exe, cindro-sidebar.exe (Windows Qt shell), the PyInstaller
 ; computer-use engine (one-folder), the Node phone server, and the Qt runtime.
 ; Build the payload first with windows\scripts\build.ps1, which stages everything
 ; into windows\dist\payload\ and then invokes ISCC on this script.
@@ -10,7 +10,7 @@
   #define MyAppVersion "0.1.0"
 #endif
 #define MyAppPublisher "Cindro"
-#define MyAppExeName "jarvis-sidebar.exe"
+#define MyAppExeName "cindro-sidebar.exe"
 #define MyDaemonExeName "jarvisd.exe"
 ; Payload root staged by build.ps1 (relative to this .iss).
 #ifndef PayloadDir
@@ -18,15 +18,15 @@
 #endif
 
 [Setup]
-AppId={{B6F0E7B2-7C2A-4E1D-9C3F-JARVISWIN0001}
+AppId={{B6F0E7B2-7C2A-4E1D-9C3F-CINDROWIN0001}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
-DefaultDirName={autopf}\Jarvis
+DefaultDirName={autopf}\Cindro
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist
-OutputBaseFilename=Jarvis-Setup-{#MyAppVersion}
+OutputBaseFilename=Cindro-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
 ; Cindro arc-reactor icon on the installer itself + Add/Remove Programs
@@ -55,11 +55,11 @@ Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubd
 [Icons]
 ; The shortcut launches the WHOLE stack (engine + phone + daemon + UI) via the
 ; HIDDEN VBS launcher (wscript) — so jarvisd + the engine start with NO console
-; window; only jarvis-sidebar (the GUI) appears. Cindro icon kept.
+; window; only cindro-sidebar (the GUI) appears. Cindro icon kept.
 Name: "{group}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; IconFilename: "{app}\{#MyAppExeName}"
-; Terminal UI v2 (jarvis-tui.exe) — a console app, launched directly. Only
+; Terminal UI v2 (cindro-tui.exe) — a console app, launched directly. Only
 ; created when the payload actually contains it (built on a bun-equipped runner).
-Name: "{group}\Cindro Terminal (TUI)"; Filename: "{app}\jarvis-tui.exe"; IconFilename: "{app}\{#MyAppExeName}"; Check: FileExists(ExpandConstant('{app}\jarvis-tui.exe'))
+Name: "{group}\Cindro Terminal (TUI)"; Filename: "{app}\cindro-tui.exe"; IconFilename: "{app}\{#MyAppExeName}"; Check: FileExists(ExpandConstant('{app}\cindro-tui.exe'))
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
@@ -71,7 +71,7 @@ Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; Descri
 [Registry]
 ; Optional autostart for the whole stack (per-user Run key) — hidden launcher.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; \
-  ValueName: "Jarvis"; ValueData: """{sys}\wscript.exe"" ""{app}\jarvis-launch.vbs"""; Tasks: autostart; Flags: uninsdeletevalue
+  ValueName: "Cindro"; ValueData: """{sys}\wscript.exe"" ""{app}\jarvis-launch.vbs"""; Tasks: autostart; Flags: uninsdeletevalue
 
 [UninstallDelete]
 ; Leave %APPDATA%\Jarvis (user config/keys) in place on uninstall by default.

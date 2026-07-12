@@ -1,14 +1,14 @@
 [project]
-name = "jarvis-acp"
+name = "cindro-acp"
 version = "0.1.0"
-description = "jarvis-acp: an Agent Client Protocol (ACP) bridge that lets Zed / any ACP editor drive Jarvis natively, translating ACP JSON-RPC over stdio to/from the jarvisd Contract A control WebSocket."
+description = "cindro-acp: an Agent Client Protocol (ACP) bridge that lets Zed / any ACP editor drive Cindro natively, translating ACP JSON-RPC over stdio to/from the jarvisd Contract A control WebSocket."
 requires-python = ">=3.12"
 dependencies = [
     "websockets>=12.0",
 ]
 
 [project.scripts]
-jarvis-acp = "acp_bridge.main:main"
+cindro-acp = "acp_bridge.main:main"
 
 [dependency-groups]
 dev = [

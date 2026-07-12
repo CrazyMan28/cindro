@@ -8,22 +8,22 @@ $ErrorActionPreference = 'Continue'
 function Log($m) { Write-Host "[test] $m" }
 
 # Kill any running Cindro + the launcher (wscript) so files aren't in use.
-Get-Process jarvis-sidebar, jarvisd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process cindro-sidebar, jarvisd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Get-CimInstance Win32_Process -Filter "Name='wscript.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.CommandLine -like '*jarvis*' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 Start-Sleep 3
 
 # Uninstall the old build if present, so the new one installs clean.
-$unins = "C:\Program Files\Jarvis\unins000.exe"
+$unins = "C:\Program Files\Cindro\unins000.exe"
 if (Test-Path $unins) { Log "uninstalling old..."; Start-Process $unins -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait; Start-Sleep 3 }
 
-$exe = "C:\actions-runner\_work\jarvis\jarvis\windows\dist\Jarvis-Setup-0.1.0-9197979.exe"
+$exe = "C:\actions-runner\_work\jarvis\jarvis\windows\dist\Cindro-Setup-0.1.0-9197979.exe"
 Log "installing new build..."
 $p = Start-Process -FilePath $exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
 Log "install exit = $($p.ExitCode)"
-$sb = "C:\Program Files\Jarvis\jarvis-sidebar.exe"
-$jd = "C:\Program Files\Jarvis\jarvisd.exe"
+$sb = "C:\Program Files\Cindro\cindro-sidebar.exe"
+$jd = "C:\Program Files\Cindro\jarvisd.exe"
 Log "sidebar installed = $(Test-Path $sb); mtime = $((Get-Item $sb -ErrorAction SilentlyContinue).LastWriteTime)"
 
 # --- root-cause token test (fresh jarvisd) ---

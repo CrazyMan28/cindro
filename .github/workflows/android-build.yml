@@ -101,18 +101,18 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: Jarvis-${{ steps.ver.outputs.version }}-debug.apk
+          name: Cindro-${{ steps.ver.outputs.version }}-debug.apk
           path: android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 7
 
       # On a version tag, attach the APK to the Release (same pattern as
-      # windows-build.yml's Jarvis-Setup.exe / linux-release.yml's AppImage).
+      # windows-build.yml's Cindro-Setup.exe / linux-release.yml's AppImage).
       - name: Rename APK for release
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           mkdir -p release-out
-          cp android/app/build/outputs/apk/debug/*.apk "release-out/Jarvis-${{ steps.ver.outputs.version }}.apk"
+          cp android/app/build/outputs/apk/debug/*.apk "release-out/Cindro-${{ steps.ver.outputs.version }}.apk"
 
       - name: Attach to Release
         if: startsWith(github.ref, 'refs/tags/v')

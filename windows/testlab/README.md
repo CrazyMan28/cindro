@@ -43,7 +43,7 @@ or step by step:
 winlab release 0.12.2     # download + silently install the GitHub Release installer on the VM
 winlab launch             # start Jarvis (hidden launcher)
 winlab shot               # screenshot the VM -> ~/.config/jarvis/winlab/shot-*.png
-winlab ps "Get-Process jarvisd,jarvis-sidebar,jarvis-engine"   # is the GUI process even alive?
+winlab ps "Get-Process jarvisd,cindro-sidebar,jarvis-engine"   # is the GUI process even alive?
 winlab logs               # pull diagnostics
 ```
 

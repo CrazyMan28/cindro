@@ -119,15 +119,15 @@ int main()
         const QByteArray rel = R"({
             "tag_name": "v0.13.2",
             "assets": [
-                {"name": "Jarvis-0.13.2-x86_64.AppImage",
+                {"name": "Cindro-0.13.2-x86_64.AppImage",
                  "browser_download_url": "https://x/app.AppImage"},
-                {"name": "Jarvis-Setup-0.13.2.exe",
+                {"name": "Cindro-Setup-0.13.2.exe",
                  "browser_download_url": "https://x/setup.exe"}
             ]
         })";
-        const RA exe = jarvis::Updater::parseLatestRelease(rel, "Jarvis-Setup-*.exe");
+        const RA exe = jarvis::Updater::parseLatestRelease(rel, "Cindro-Setup-*.exe");
         check(exe.tag == QStringLiteral("0.13.2"), "release tag parsed, v stripped");
-        check(exe.name == QStringLiteral("Jarvis-Setup-0.13.2.exe"), "exe asset picked");
+        check(exe.name == QStringLiteral("Cindro-Setup-0.13.2.exe"), "exe asset picked");
         check(exe.url == QStringLiteral("https://x/setup.exe"), "exe url picked");
         const RA app = jarvis::Updater::parseLatestRelease(rel, "*.AppImage");
         check(app.name.endsWith(QStringLiteral(".AppImage")), "AppImage asset picked");

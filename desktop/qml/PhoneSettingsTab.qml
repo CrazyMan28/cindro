@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // SETTINGS tab — all settings cards from the Android Agent Phone app:
 // connection, SMS agent, call screening (transport/auto/who-answers/who-screens/

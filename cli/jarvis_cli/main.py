@@ -1,13 +1,13 @@
-"""`jarvis` entry point — subcommand dispatch.
+"""`cindro` entry point — subcommand dispatch.
 
-    jarvis                     full-screen TUI agent (all GUI screens, in the terminal)
-    jarvis status              one-glance health snapshot
-    jarvis doctor              deep health check with fixes (exit 1 on problems)
-    jarvis start | stop        headless daemon (+engine) up/down — no GUI needed
-    jarvis web start|stop      the browser dashboard
-    jarvis ask "..."           one streamed turn straight to stdout
-    jarvis sessions            recent sessions
-    jarvis search "..."        full-text search across all chat history
+    cindro                     full-screen TUI agent (all GUI screens, in the terminal)
+    cindro status              one-glance health snapshot
+    cindro doctor              deep health check with fixes (exit 1 on problems)
+    cindro start | stop        headless daemon (+engine) up/down — no GUI needed
+    cindro web start|stop      the browser dashboard
+    cindro ask "..."           one streamed turn straight to stdout
+    cindro sessions            recent sessions
+    cindro search "..."        full-text search across all chat history
     jarvis version             CLI + daemon versions
 """
 
@@ -80,7 +80,7 @@ def _cmd_version() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="jarvis",
+        prog="cindro",
         description="The Cindro terminal — a full agent in your shell. "
                     "Run with no arguments for the TUI.")
     sub = parser.add_subparsers(dest="cmd")
@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     web = sub.add_parser("web", help="the browser dashboard")
     web.add_argument("action", choices=["start", "stop"])
 
-    ask = sub.add_parser("ask", help='one streamed turn: jarvis ask "fix the failing test"')
+    ask = sub.add_parser("ask", help='one streamed turn: cindro ask "fix the failing test"')
     ask.add_argument("prompt")
     ask.add_argument("--session", help="continue an existing session id")
     ask.add_argument("--brain", help="codex | claude | api | ...")

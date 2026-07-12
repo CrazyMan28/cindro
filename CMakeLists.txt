@@ -1,6 +1,6 @@
 # Jarvis — top-level CMake superbuild.
 # Builds the three C++ components: jarvis-core (static lib), jarvisd (daemon),
-# and jarvis-sidebar (desktop UI). Other components (computer-use, extension,
+# and cindro-sidebar (desktop UI). Other components (computer-use, extension,
 # android, plugins, kde-applet, packaging) have their own toolchains and are
 # not driven by this file.
 #

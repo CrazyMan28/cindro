@@ -30,7 +30,7 @@ Design pillars:
 - **`daemon/`**: `ControlServer` (:8795 loopback, token) for the desktop + `DeviceServer` (:8796
   tailnet, ed25519 pairing) for the phone. Both speak **Contract A**. `ControlServer::createSession`
   is the single choke-point that fans out `session.opened` to every surface.
-- **`desktop/`**: `jarvis-sidebar`, QML + LayerShellQt. `Bridge` (C++) is the QML↔daemon client;
+- **`desktop/`**: `cindro-sidebar`, QML + LayerShellQt. `Bridge` (C++) is the QML↔daemon client;
   pages live in `desktop/qml/`. The panel is instantiated **once** and reparented between a float
   window and a docked layer-shell surface, so chat state survives mode changes.
 - **`computer-use/`**: the Python FastMCP engine. Tools are registered in `server.py`; key modules:
@@ -52,14 +52,14 @@ Design pillars:
 - **Verify with evidence, not self-report.** There are live WS scripts in `scripts/` (e.g.
   `session_opened_ws.py`, `voice_roundtrip_test.py`, `auth_gate_check.py`, `roadmap_live_verify.py`).
   Run them against a running `jarvisd`. For QML, do an offscreen smoke load:
-  `QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 build/desktop/jarvis-sidebar --demo`.
+  `QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 build/desktop/cindro-sidebar --demo`.
 - **Tests gate everything:** `ctest --test-dir build`, the engine `pytest`, Android `assembleDebug`.
 
 ## Hard rules / gotchas (learned the hard way)
 
 - Run **all** Python/builds with `env -u PYTHONPATH` — a user `PYTHONPATH` leaks system PIL and breaks
   the venv.
-- **Never** broad-kill `foot` / `sway` / `kwin` / a running `jarvis-sidebar`/`jarvisd`. Stop by
+- **Never** broad-kill `foot` / `sway` / `kwin` / a running `cindro-sidebar`/`jarvisd`. Stop by
   PID or systemd unit only.
 - Secrets live in `~/.config/jarvis/` (0600) — `control_token`, `mistral_api_key`, `secrets.json`,
   device keys — **never** in git. OAuth/refresh tokens for connectors go in `secrets.json`.
@@ -285,7 +285,7 @@ Design pillars:
 
 ## New subsystems (2026-07-03 follow-up wave)
 
-- **`cli/` — the jarvis terminal** (own venv, like acp-bridge): `jarvis` = textual
+- **`cli/` — the cindro terminal** (own venv, like acp-bridge): `cindro` = textual
   TUI (Chat/Sessions/Memory/Skills/Agents/Queue/Settings over ONE streaming
   Contract A client); subcommands status/doctor/start/stop/web/ask/sessions/
   search/version. Tests use a threaded MockDaemon (`tests/harness.py
@@ -576,7 +576,7 @@ test. When qa passes, open a **PR into `main`** and merge it. Never commit direc
   (or `sc.exe start …`); it does not always auto-start after a hard power cycle.
 - **Releases are automatic: merging to `main` = a new release.** `auto-release.yml` finds the
   highest `vX.Y.Z` tag, bumps the **patch**, and creates that tag → `windows-build` +
-  `linux-release` fire on the tag and attach `Jarvis-Setup-<ver>.exe` + the AppImage to a new
+  `linux-release` fire on the tag and attach `Cindro-Setup-<ver>.exe` + the AppImage to a new
   GitHub Release. **Do NOT hand-edit a version number** to cut a release. (Want a minor/major
   bump? cut the tag yourself, e.g. `gh release create v0.13.0`; auto-bump continues from it.)
   Requires the `RELEASE_PAT` repo secret — a `GITHUB_TOKEN`-created tag can't trigger the

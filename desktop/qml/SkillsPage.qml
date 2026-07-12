@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // SKILLS page: the self-authored skill library. Lists skills (skills.list) with a
 // "self-authored" badge, views a skill's frontmatter + body (skills.get), CREATES

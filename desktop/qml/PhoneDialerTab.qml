@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // CALLS tab — full-feature dialer: number display, quick-chips 101-900,
 // numeric keypad 1-9 * 0 #, green call circle, backspace, active call card,

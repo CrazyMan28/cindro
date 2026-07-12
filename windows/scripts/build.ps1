@@ -11,7 +11,7 @@
        computer_use_mcp package + requirements-windows.txt deps.
     3. Stage the Node phone server (prod deps).
     4. Stage everything into windows\dist\payload\ and build the Inno Setup installer
-       -> windows\dist\Jarvis-Setup-<version>.exe.
+       -> windows\dist\Cindro-Setup-<version>.exe.
 
   Run from a "x64 Native Tools" / Developer PowerShell. Prereqs: Visual Studio 2022,
   CMake 3.24+, vcpkg (VCPKG_ROOT set), Qt 6.5+ (Qt6_DIR or in PATH), Python 3.12, Node 18+,
@@ -137,28 +137,28 @@ New-Item -ItemType Directory -Force -Path $payload | Out-Null
 # Find the exes wherever the generator put them (build root for Ninja, <Config>\
 # for the multi-config VS generator).
 $jarvisdExe = (Get-ChildItem -Path $build -Recurse -Filter "jarvisd.exe"       | Select-Object -First 1).FullName
-$sidebarExe = (Get-ChildItem -Path $build -Recurse -Filter "jarvis-sidebar.exe" | Select-Object -First 1).FullName
+$sidebarExe = (Get-ChildItem -Path $build -Recurse -Filter "cindro-sidebar.exe" | Select-Object -First 1).FullName
 if (-not $jarvisdExe) { throw "jarvisd.exe not found under $build" }
-if (-not $sidebarExe) { throw "jarvis-sidebar.exe not found under $build" }
+if (-not $sidebarExe) { throw "cindro-sidebar.exe not found under $build" }
 Copy-Item $jarvisdExe $payload
 Copy-Item $sidebarExe $payload
 
-# jarvis-tui.exe — the TypeScript/OpenTUI terminal UI v2, compiled here on
+# cindro-tui.exe — the TypeScript/OpenTUI terminal UI v2, compiled here on
 # Windows (bun install pulls @opentui/core-win32-x64, which can't extract on
 # Linux). Non-fatal if bun is absent so the GUI-only installer still builds.
 $tuiDir = Join-Path $repo "tui"
 if (Get-Command bun -ErrorAction SilentlyContinue) {
-  Write-Host "Building jarvis-tui.exe (TS TUI v2)…"
+  Write-Host "Building cindro-tui.exe (TS TUI v2)…"
   Push-Location $tuiDir
   try {
     bun install --frozen-lockfile
     bun run build win
-    $tuiExe = Join-Path $tuiDir "dist\jarvis-tui.exe"
-    if (Test-Path $tuiExe) { Copy-Item $tuiExe $payload; Write-Host "  staged jarvis-tui.exe" }
-    else { Write-Warning "jarvis-tui.exe not produced — TUI v2 will be absent from this installer" }
+    $tuiExe = Join-Path $tuiDir "dist\cindro-tui.exe"
+    if (Test-Path $tuiExe) { Copy-Item $tuiExe $payload; Write-Host "  staged cindro-tui.exe" }
+    else { Write-Warning "cindro-tui.exe not produced — TUI v2 will be absent from this installer" }
   } finally { Pop-Location }
 } else {
-  Write-Warning "bun not found — jarvis-tui.exe (TUI v2) NOT bundled. Install bun on the runner."
+  Write-Warning "bun not found — cindro-tui.exe (TUI v2) NOT bundled. Install bun on the runner."
 }
 
 Copy-Item (Join-Path $repo "LICENSE") (Join-Path $payload "LICENSE.txt")
@@ -174,7 +174,7 @@ Copy-Item -Recurse (Join-Path $repo "extension") (Join-Path $payload "extension"
 # Redistributable still runs Cindro). Target both exes so jarvisd's deps land too.
 if (Get-Command windeployqt -ErrorAction SilentlyContinue) {
   windeployqt --qmldir (Join-Path $repo "desktop\qml") --release --compiler-runtime `
-    (Join-Path $payload "jarvis-sidebar.exe")
+    (Join-Path $payload "cindro-sidebar.exe")
   windeployqt --release --compiler-runtime (Join-Path $payload "jarvisd.exe")
 } else { Write-Warning "windeployqt not found; Qt + MSVC runtime DLLs must be staged manually." }
 
@@ -323,4 +323,4 @@ try {
 # 5. Installer -----------------------------------------------------------------
 Write-Host "==> building installer" -ForegroundColor Cyan
 iscc /DMyAppVersion=$Version (Join-Path $win "installer\jarvis.iss")
-Write-Host "==> done: windows\dist\Jarvis-Setup-$Version.exe" -ForegroundColor Green
+Write-Host "==> done: windows\dist\Cindro-Setup-$Version.exe" -ForegroundColor Green

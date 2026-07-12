@@ -10,7 +10,7 @@ import android.content.Intent
 import android.os.Build
 import com.agentphone.IncomingCallActivity
 import com.agentphone.MainActivity
-import com.jarvis.app.R
+import com.cindro.app.R
 import com.agentphone.state.AgentPhoneSettings
 import com.agentphone.state.UiMessage
 

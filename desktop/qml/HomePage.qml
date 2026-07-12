@@ -1,7 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // HOME — the desktop landing dashboard, rebuilt to the approved redesign mockup
 // (jarvis-desktop-redesign.html): a hero "active agent" card with an always-on

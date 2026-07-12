@@ -1,11 +1,11 @@
-// Compile jarvis-tui into a self-contained binary. `bun build --compile` on
+// Compile cindro-tui into a self-contained binary. `bun build --compile` on
 // the CLI can't apply the Solid JSX transform, so this goes through
 // Bun.build() with @opentui/solid's bun plugin (same approach OpenCode's
 // build.ts uses).
 //
 // Usage:
-//   bun run script/build.ts            → host binary (dist/jarvis-tui)
-//   bun run script/build.ts win        → Windows exe (dist/jarvis-tui.exe)
+//   bun run script/build.ts            → host binary (dist/cindro-tui)
+//   bun run script/build.ts win        → Windows exe (dist/cindro-tui.exe)
 //   bun run script/build.ts all        → both
 // So Windows ships every TUI v2 feature — same code, cross-compiled.
 
@@ -37,7 +37,7 @@ async function build(target: string | undefined, outfile: string, icon?: string)
   console.log(`built ${outfile}`)
 }
 
-if (wantHost) await build(undefined, "dist/jarvis-tui")
+if (wantHost) await build(undefined, "dist/cindro-tui")
 if (wantWin) {
   // Cross-compiling for Windows needs OpenTUI's win32 native, which bun only
   // extracts when installing ON Windows (its `os` field filters it out on
@@ -54,6 +54,6 @@ if (wantWin) {
     )
     process.exit(wantHost ? 0 : 2)
   }
-  // The exe gets the Jarvis arc-reactor icon (same .ico the GUI/installer use).
-  await build("bun-windows-x64", "dist/jarvis-tui.exe", "../windows/jarvis.ico")
+  // The exe gets the Cindro arc-reactor icon (same .ico the GUI/installer use).
+  await build("bun-windows-x64", "dist/cindro-tui.exe", "../windows/jarvis.ico")
 }

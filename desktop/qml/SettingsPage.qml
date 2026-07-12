@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Dialogs
-import JarvisSidebar
+import CindroSidebar
 
 // Settings page: per-provider masked API-key fields (write-only; the saved/empty
 // badge comes from settings.get api_keys_set), a default-brain selector, a

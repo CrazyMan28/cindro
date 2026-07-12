@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // Plugins page: marketplace cards from plugins.catalog (name, author, version,
 // kind badge, description, permissions list) with Install / Enable toggle / Remove.

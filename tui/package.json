@@ -1,9 +1,9 @@
 {
-  "name": "@jarvis/tui",
+  "name": "@cindro/tui",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Jarvis terminal UI v2 \u2014 OpenTUI + SolidJS over the jarvisd control websocket",
+  "description": "Cindro terminal UI v2 \u2014 OpenTUI + SolidJS over the jarvisd control websocket",
   "scripts": {
     "dev": "bun run src/index.tsx",
     "test": "bun test",

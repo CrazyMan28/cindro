@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Register the Jarvis-MCP server with Claude Code (~/.claude.json) and Codex
-# (~/.codex/config.toml) so either agent can drive Jarvis + computer-use through
+# Register the Cindro-MCP server with Claude Code (~/.claude.json) and Codex
+# (~/.codex/config.toml) so either agent can drive Cindro + computer-use through
 # this one endpoint.
 #
 #   ./client-setup.sh            # print the snippets (no changes)
@@ -8,10 +8,10 @@
 #   ./client-setup.sh --claude   # patch only ~/.claude.json
 #   ./client-setup.sh --codex    # patch only ~/.codex/config.toml
 #
-# Idempotent: re-running replaces the existing "jarvis" entry in place.
+# Idempotent: re-running replaces the existing "cindro" entry in place.
 set -euo pipefail
 
-NAME="jarvis"
+NAME="cindro"
 HOST="${JARVIS_MCP_ADVERTISE_HOST:-127.0.0.1}"
 PORT="${JARVIS_MCP_PORT:-8797}"
 URL="http://${HOST}:${PORT}/mcp"
@@ -32,7 +32,7 @@ CODEX_TOML="${HOME}/.codex/config.toml"
 print_snippets() {
   cat <<EOF
 # ============================================================================
-# Jarvis-MCP endpoint: ${URL}
+# Cindro-MCP endpoint: ${URL}
 # ============================================================================
 
 # --- Claude Code: ~/.claude.json -> mcpServers.${NAME} ----------------------

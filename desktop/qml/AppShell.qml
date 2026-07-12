@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls
-import JarvisSidebar
+import CindroSidebar
 
 // AppShell — the full multi-page application body. A slim left NavRail routes
 // between the pages rendered in the content area on the right:

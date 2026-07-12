@@ -3,7 +3,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // MISSION CONTROL REPLAY (jarvis#66) — scrub a past session like a video.
 //

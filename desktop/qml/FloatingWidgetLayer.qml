@@ -1,7 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // A transparent overlay that floats DRAGGABLE widget cards the model renders via
 // render_widget (-> bridge.widgetRendered). Dropped into BOTH the Chat transcript

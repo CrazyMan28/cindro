@@ -1,4 +1,4 @@
-"""`jarvis start|stop` (headless daemon + engine) and `jarvis web start|stop`.
+"""`cindro start|stop` (headless daemon + engine) and `cindro web start|stop`.
 
 Headless means: bring up jarvisd (and the computer-use engine service where one
 exists) WITHOUT any GUI — chat then happens through this CLI, the web
@@ -83,7 +83,7 @@ def cmd_start() -> int:
     binary = _daemon_binary()
     if binary is None:
         console.print("[red]jarvisd not found[/red] — install Cindro first "
-                      "(packaging/install.sh on Linux, Jarvis-Setup.exe on Windows)")
+                      "(packaging/install.sh on Linux, Cindro-Setup.exe on Windows)")
         return 1
     creation = {}
     if IS_WIN:
@@ -174,7 +174,7 @@ def cmd_web(action: str) -> int:
             pid = int(pidfile.read_text().strip())
         except (OSError, ValueError):
             console.print("[yellow]web dashboard pid file not found[/yellow] — "
-                          "was it started with `jarvis web start`?")
+                          "was it started with `cindro web start`?")
             return 1
         try:
             if IS_WIN:
@@ -194,7 +194,7 @@ def cmd_web(action: str) -> int:
     if existing_pid and _pid_alive(existing_pid):
         port = os.environ.get("JARVIS_WEB_PORT", "8788")
         console.print(f"[yellow]•[/yellow] web dashboard already running (pid {existing_pid}) "
-                      f"at http://127.0.0.1:{port} — stop it first with `jarvis web stop` "
+                      f"at http://127.0.0.1:{port} — stop it first with `cindro web stop` "
                       "if you want to restart it")
         return 0
 
@@ -238,7 +238,7 @@ def cmd_web(action: str) -> int:
     pidfile.parent.mkdir(parents=True, exist_ok=True)
     pidfile.write_text(str(proc.pid))
     console.print(f"[green]✔[/green] web dashboard on http://127.0.0.1:{port} "
-                  f"(pid {proc.pid}) — stop with: jarvis web stop")
+                  f"(pid {proc.pid}) — stop with: cindro web stop")
 
     token = config.control_token()
     if token:

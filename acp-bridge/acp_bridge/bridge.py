@@ -162,7 +162,7 @@ class Bridge:
                 },
             },
             "authMethods": [],
-            "agentInfo": {"name": "jarvis-acp", "version": __version__},
+            "agentInfo": {"name": "cindro-acp", "version": __version__},
         }
 
     # -- session lifecycle --------------------------------------------------

@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // INCOMING + ACTIVE CALL OVERLAY
 // Full-bleed overlay shown on top of all PhonePage tabs when a call is

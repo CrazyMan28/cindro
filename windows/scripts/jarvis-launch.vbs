@@ -2,9 +2,9 @@
 '
 ' The Start-menu/desktop shortcuts + autostart run THIS (via wscript) instead of
 ' the .cmd, so jarvisd + the engine (console apps) start HIDDEN (window style 0)
-' and only jarvis-sidebar.exe (the GUI) shows a window. Brings up the whole stack:
+' and only cindro-sidebar.exe (the GUI) shows a window. Brings up the whole stack:
 '   engine (:8794, all MCP tools) -> phone server (:8801, if configured) ->
-'   jarvisd -> jarvis-sidebar (UI; first run = setup wizard).
+'   jarvisd -> cindro-sidebar (UI; first run = setup wizard).
 Option Explicit
 Dim sh, fso, dir, p
 Set sh  = CreateObject("WScript.Shell")
@@ -58,5 +58,5 @@ If fso.FileExists(p) Then sh.Run """" & p & """", 0, False
 WScript.Sleep 1500
 
 ' 4. the UI (normal window)
-p = dir & "\jarvis-sidebar.exe"
+p = dir & "\cindro-sidebar.exe"
 If fso.FileExists(p) Then sh.Run """" & p & """", 1, True

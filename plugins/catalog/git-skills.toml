@@ -1,4 +1,4 @@
-# Jarvis plugin manifest — catalog entry.
+# Cindro plugin manifest — catalog entry.
 id = "git-skills"
 name = "Git Power Skills"
 author = "community"

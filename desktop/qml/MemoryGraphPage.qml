@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // GRAPH page (jarvis#70 phase 1): a visual browser over the knowledge graph —
 // entities (people/projects/topics) auto-extracted from memory text/tags, and

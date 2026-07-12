@@ -27,7 +27,7 @@
 
 namespace {
 
-constexpr auto kIpcName = "jarvis-sidebar";
+constexpr auto kIpcName = "cindro-sidebar";
 
 // Best-effort single-instance toggle: if an instance is already listening on the
 // local socket, send it a "toggle" line and return true (caller should exit).
@@ -49,9 +49,9 @@ bool sendToggleToRunningInstance()
 int main(int argc, char **argv)
 {
     QGuiApplication app(argc, argv);
-    app.setApplicationName(QStringLiteral("jarvis-sidebar"));
-    app.setOrganizationName(QStringLiteral("jarvis"));
-    app.setOrganizationDomain(QStringLiteral("jarvis.local"));
+    app.setApplicationName(QStringLiteral("cindro-sidebar"));
+    app.setOrganizationName(QStringLiteral("cindro"));
+    app.setOrganizationDomain(QStringLiteral("cindro.local"));
 
     QCommandLineParser parser;
     parser.setApplicationDescription(QStringLiteral("Cindro desktop app"));
@@ -69,7 +69,7 @@ int main(int argc, char **argv)
                                       QStringLiteral("Show the take-over overlay with a fake agent pointer."));
     parser.addOption(drivingDemoOpt);
     // Start straight on the Voice Mode page (the plasmoid's "Voice Mode" button
-    // launches `jarvis-sidebar --voice`).
+    // launches `cindro-sidebar --voice`).
     QCommandLineOption voiceOpt(QStringLiteral("voice"),
                                 QStringLiteral("Open the app on the Voice Mode page."));
     parser.addOption(voiceOpt);
@@ -136,15 +136,15 @@ int main(int argc, char **argv)
     // WindowController is QML_SINGLETON; register the concrete instance so C++
     // and QML share one object that survives engine teardown order.
     auto *windowController = new WindowController(&app);
-    qmlRegisterSingletonInstance("JarvisSidebar", 1, 0, "WindowController", windowController);
+    qmlRegisterSingletonInstance("CindroSidebar", 1, 0, "WindowController", windowController);
 
-    engine.loadFromModule(QStringLiteral("JarvisSidebar"), QStringLiteral("Main"));
+    engine.loadFromModule(QStringLiteral("CindroSidebar"), QStringLiteral("Main"));
     if (engine.rootObjects().isEmpty()) {
         // Windows: a silent exit looks like "nothing happened". Surface it.
         // (windows.h / MessageBoxW come from the force-included posix_compat.h.)
         ::MessageBoxW(nullptr,
             L"Cindro UI failed to load (QML).\n\nThis usually means a missing Qt "
-            L"plugin/DLL next to jarvis-sidebar.exe. Please report it.",
+            L"plugin/DLL next to cindro-sidebar.exe. Please report it.",
             L"Cindro", MB_OK | MB_ICONERROR);
         return -1;
     }
@@ -154,7 +154,7 @@ int main(int argc, char **argv)
     // then exit 0. A crash in that window fails the test.
     if (parser.isSet(selftestOpt)) {
         QTimer::singleShot(2000, &app, []() {
-            qInfo("jarvis-sidebar selftest: UI rendered OK");
+            qInfo("cindro-sidebar selftest: UI rendered OK");
             QCoreApplication::exit(0);
         });
         return app.exec();
@@ -184,12 +184,12 @@ int main(int argc, char **argv)
                 if (win) {
                     const QImage img = win->grabWindow();
                     if (!img.isNull() && img.save(shotPath))
-                        qInfo("jarvis-sidebar shot saved: %s (%dx%d)",
+                        qInfo("cindro-sidebar shot saved: %s (%dx%d)",
                               qPrintable(shotPath), img.width(), img.height());
                     else
-                        qWarning("jarvis-sidebar shot: grab/save failed");
+                        qWarning("cindro-sidebar shot: grab/save failed");
                 } else {
-                    qWarning("jarvis-sidebar shot: no window found");
+                    qWarning("cindro-sidebar shot: no window found");
                 }
                 QCoreApplication::exit(0);
             });

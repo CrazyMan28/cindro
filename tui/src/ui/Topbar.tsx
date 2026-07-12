@@ -81,7 +81,7 @@ export function Topbar() {
         when={status()}
         fallback={
           <text fg={theme.textFaint} selectable={false}>
-            daemon unreachable — jarvis start / jarvis doctor
+            daemon unreachable — cindro start / cindro doctor
           </text>
         }
       >

@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // TODAY // BRIEFING — a compact HUD panel summarizing "what I'm working on today"
 // from skills.today (project-tracker + recent sessions/memories). Refreshes on

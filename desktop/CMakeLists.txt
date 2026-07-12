@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(jarvis-sidebar LANGUAGES CXX)
+project(cindro-sidebar LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,7 +11,7 @@ find_package(LayerShellQt REQUIRED)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
-qt_add_executable(jarvis-sidebar
+qt_add_executable(cindro-sidebar
     src/main.cpp
     src/Bridge.cpp
     src/Bridge.h
@@ -27,9 +27,9 @@ set_source_files_properties(qml/Theme.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 # so it must be a singleton too.
 set_source_files_properties(qml/Widgets.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
-# Bundle the QML as a proper module so main.cpp can loadFromModule("JarvisSidebar","Main").
-qt_add_qml_module(jarvis-sidebar
-    URI JarvisSidebar
+# Bundle the QML as a proper module so main.cpp can loadFromModule("CindroSidebar","Main").
+qt_add_qml_module(cindro-sidebar
+    URI CindroSidebar
     VERSION 1.0
     QML_FILES
         qml/Main.qml
@@ -89,7 +89,7 @@ qt_add_qml_module(jarvis-sidebar
 # The generated QML type-registration unit includes the QML_ELEMENT headers by
 # basename (e.g. <Bridge.h>), so the directory holding them must be on the
 # include path or registration of `Bridge` fails to compile.
-target_include_directories(jarvis-sidebar PRIVATE
+target_include_directories(cindro-sidebar PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     # Header-only shared resolver jarvis/DataPaths.h — keeps the desktop's file-bus
     # paths in lock-step with the engine + daemon on every OS. No link dependency on
@@ -98,7 +98,7 @@ target_include_directories(jarvis-sidebar PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../core/include
 )
 
-target_link_libraries(jarvis-sidebar PRIVATE
+target_link_libraries(cindro-sidebar PRIVATE
     Qt6::Core
     Qt6::Gui
     Qt6::Quick
@@ -113,7 +113,7 @@ target_link_libraries(jarvis-sidebar PRIVATE
 # GUI integration smoke test: load the FULL UI offscreen (every page instantiated
 # via Main.qml), verify the QML tree renders + survives a settle window, exit 0.
 # Catches QML load/runtime regressions in CI (ctest), not just a compile.
-add_test(NAME gui_selftest COMMAND jarvis-sidebar --selftest)
+add_test(NAME gui_selftest COMMAND cindro-sidebar --selftest)
 set_tests_properties(gui_selftest PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_FORCE_STDERR_LOGGING=1"
     TIMEOUT 30)

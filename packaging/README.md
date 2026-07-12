@@ -1,7 +1,7 @@
 # Cindro — packaging & install
 
 This directory makes Cindro launchable like a real desktop app: it builds the
-C++ superbuild, drops the `jarvisd` daemon and `jarvis-sidebar` UI into
+C++ superbuild, drops the `jarvisd` daemon and `cindro-sidebar` UI into
 `~/.local/bin`, registers an app icon + launcher, installs a `systemd --user`
 unit for the daemon, and adds a Sway keybind to toggle the sidebar.
 
@@ -12,10 +12,10 @@ Everything installs under `$HOME`. **No `sudo` is used or required.**
 | File                | Purpose                                                                 |
 |---------------------|-------------------------------------------------------------------------|
 | `install.sh`        | Builds the superbuild and installs all of the below. Idempotent.        |
-| `jarvis.desktop`    | XDG launcher entry (`__HOME__` is replaced with your `$HOME` on install). |
-| `jarvis.svg`        | Scalable app icon (arc-reactor "J", cyan `#19E3FF` on a dark disc).     |
+| `cindro.desktop`    | XDG launcher entry (`__HOME__` is replaced with your `$HOME` on install). |
+| `cindro.svg`        | Scalable app icon (arc-reactor "C", cyan `#19E3FF` on a dark disc).     |
 | `jarvisd.service`   | `systemd --user` unit that runs the daemon headless.                    |
-| `sway-jarvis.conf`  | Reference Sway snippet (the installer writes its own `config.d/90-jarvis.conf`). |
+| `sway-cindro.conf`  | Reference Sway snippet (the installer writes its own `config.d/90-cindro.conf`). |
 | `mako/config`       | mako notification styling (used in later waves).                        |
 
 ## Install
@@ -28,14 +28,14 @@ This will:
 
 1. Configure and build the superbuild
    (`cmake -S . -B build -G Ninja && cmake --build build`).
-2. Copy `build/daemon/jarvisd` and `build/desktop/jarvis-sidebar`
+2. Copy `build/daemon/jarvisd` and `build/desktop/cindro-sidebar`
    to `~/.local/bin/`.
-3. Install the icon to `~/.local/share/icons/hicolor/scalable/apps/jarvis.svg`.
-4. Install the launcher to `~/.local/share/applications/jarvis.desktop`
+3. Install the icon to `~/.local/share/icons/hicolor/scalable/apps/cindro.svg`.
+4. Install the launcher to `~/.local/share/applications/cindro.desktop`
    (with `__HOME__` replaced by your real home), then refresh the desktop and
    icon caches.
 5. Install the daemon unit to `~/.config/systemd/user/jarvisd.service`.
-6. Write `~/.config/sway/config.d/90-jarvis.conf` with the `$mod+j` keybind.
+6. Write `~/.config/sway/config.d/90-cindro.conf` with the `$mod+j` keybind.
 
 Re-running the script is safe — it rebuilds and overwrites the installed files
 in place.
@@ -69,21 +69,21 @@ After installing, Cindro shows up in the KDE application launcher
    Plasma version. Either keeps the Cindro icon permanently on the taskbar so a
    single click launches the sidebar.
 
-Clicking the icon launches `~/.local/bin/jarvis-sidebar`, which anchors itself
+Clicking the icon launches `~/.local/bin/cindro-sidebar`, which anchors itself
 to the right edge of the screen as a `wlr-layer-shell` surface (proven working
-on KWin 6). `StartupWMClass=jarvis-sidebar` ties the running window back to the
+on KWin 6). `StartupWMClass=cindro-sidebar` ties the running window back to the
 launcher entry so KDE shows it as the same task.
 
 ## How the keybind works
 
-On **Sway**, the installer drops `~/.config/sway/config.d/90-jarvis.conf`
+On **Sway**, the installer drops `~/.config/sway/config.d/90-cindro.conf`
 containing:
 
 ```
-bindsym $mod+j exec ~/.local/bin/jarvis-sidebar --toggle
+bindsym $mod+j exec ~/.local/bin/cindro-sidebar --toggle
 ```
 
-- `$mod+j` runs `jarvis-sidebar --toggle`.
+- `$mod+j` runs `cindro-sidebar --toggle`.
 - First press launches the sidebar; subsequent presses show/hide the running
   instance (single-instance toggle).
 
@@ -103,4 +103,4 @@ swaymsg reload
 The sidebar must run under the Wayland platform plugin
 (`QT_QPA_PLATFORM=wayland`); set that in your Sway environment if it isn't
 already (e.g. `exec_always export QT_QPA_PLATFORM=wayland`, as shown in the
-reference `sway-jarvis.conf`).
+reference `sway-cindro.conf`).

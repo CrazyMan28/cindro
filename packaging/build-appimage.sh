@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Build a portable Jarvis .AppImage (Linux release artifact).
+# Build a portable Cindro .AppImage (Linux release artifact).
 #
-#   packaging/build-appimage.sh [version]      -> dist/Jarvis-<version>-x86_64.AppImage
+#   packaging/build-appimage.sh [version]      -> dist/Cindro-<version>-x86_64.AppImage
 #
-# Bundles jarvisd + jarvis-sidebar + Qt6 + LayerShellQt + libsodium (via
+# Bundles jarvisd + cindro-sidebar + Qt6 + LayerShellQt + libsodium (via
 # linuxdeploy-plugin-qt) and the Python computer-use engine (PyInstaller). The
 # AppRun starts the engine + daemon (background) then the UI. Runs on most modern
 # Linux. Computer-use still needs the host's Wayland tools (grim/spectacle, ydotool,
@@ -22,7 +22,7 @@ say(){ printf '\033[1;36m==> %s\033[0m\n' "$*" >&2; }   # stderr: never pollute 
 mkdir -p "$DIST" "$TOOLS"
 
 # 1. Build the C++ superbuild --------------------------------------------------
-say "Building jarvisd + jarvis-sidebar..."
+say "Building jarvisd + cindro-sidebar..."
 env -u PYTHONPATH cmake -S "$REPO" -B "$BUILD" -G Ninja >/dev/null
 env -u PYTHONPATH cmake --build "$BUILD"   # not silenced: build errors must surface in CI logs
 
@@ -33,7 +33,7 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" \
          "$APPDIR/usr/share/applications" \
          "$APPDIR/usr/share/icons/hicolor/scalable/apps"
 install -m755 "$BUILD/daemon/jarvisd"         "$APPDIR/usr/bin/jarvisd"
-install -m755 "$BUILD/desktop/jarvis-sidebar" "$APPDIR/usr/bin/jarvis-sidebar"
+install -m755 "$BUILD/desktop/cindro-sidebar" "$APPDIR/usr/bin/cindro-sidebar"
 install -m644 "$REPO/packaging/jarvis.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/jarvis.svg"
 cp "$REPO/packaging/jarvis.svg" "$APPDIR/jarvis.svg"   # top-level icon AppImage wants
 
@@ -107,7 +107,7 @@ if ! pgrep -x jarvisd >/dev/null 2>&1; then
   sleep 1
 fi
 # the UI (foreground).
-exec env LD_LIBRARY_PATH="$L${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$HERE/usr/bin/jarvis-sidebar" "$@"
+exec env LD_LIBRARY_PATH="$L${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$HERE/usr/bin/cindro-sidebar" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
 
@@ -119,7 +119,7 @@ fetch(){ # name url
 }
 LD="$(fetch linuxdeploy "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-${ARCH}.AppImage")"
 LDQT="$(fetch linuxdeploy-plugin-qt "https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-${ARCH}.AppImage")"
-export OUTPUT="Jarvis-${VER}-${ARCH}.AppImage"
+export OUTPUT="Cindro-${VER}-${ARCH}.AppImage"
 export QML_SOURCES_PATHS="$REPO/desktop/qml"
 export VERSION="$VER"
 # By default linuxdeploy-plugin-qt bundles only xcb. This app runs on WAYLAND
@@ -160,7 +160,7 @@ say "Running linuxdeploy (bundling Qt + LayerShellQt + deps)..."
 # Bundle into the AppDir but DON'T package yet (no --output): we must prune first.
 "$LD" --appdir "$APPDIR" --plugin qt \
   --executable "$APPDIR/usr/bin/jarvisd" \
-  --executable "$APPDIR/usr/bin/jarvis-sidebar" \
+  --executable "$APPDIR/usr/bin/cindro-sidebar" \
   --desktop-file "$APPDIR/jarvis.desktop" --icon-file "$APPDIR/jarvis.svg"
 
 # Prune host-provided libs. linuxdeploy-plugin-qt over-bundles Qt's transitive deps,
@@ -169,7 +169,7 @@ say "Running linuxdeploy (bundling Qt + LayerShellQt + deps)..."
 # and ABI-sensitive system libs (glib/gio, GL/EGL/GLX, X/xcb, wayland, drm/gbm, dbus,
 # systemd, ...). Bundling them clashes with the host copies and corrupts Qt at runtime
 # (observed on a clean box: jarvisd SEGV in QtWebSockets::QWebSocketFrame::clear, and
-# jarvis-sidebar SEGV in pw_stream_disconnect on audio teardown). This is exactly what
+# cindro-sidebar SEGV in pw_stream_disconnect on audio teardown). This is exactly what
 # the AppImage "excludelist" is for — fetch it and delete every matching lib, so they
 # resolve from the host at runtime.
 say "Pruning host-provided libs (AppImage excludelist)..."

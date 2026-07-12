@@ -4,7 +4,7 @@ Status: **PLANNED / not yet built.** Captured 2026-06-24 from the user's vision 
 isn't forgotten. Build incrementally; **test each piece before claiming done.**
 
 This sits on top of the existing Cindro monorepo (`~/projects/computer_use`):
-Qt6/C++ daemon `jarvisd` + `jarvis-sidebar` desktop, Python computer-use engine,
+Qt6/C++ daemon `jarvisd` + `cindro-sidebar` desktop, Python computer-use engine,
 Android app, Chrome extension. Voice plumbing ALREADY exists: daemon `voice.stt` /
 `voice.tts` (Mistral Voxtral), phone `VoiceController` + voice settings. We extend
 from there.
@@ -17,7 +17,7 @@ A dedicated **voice interface**: a central animated **orb / spinner** you talk i
   TTS spoken reply. The orb reacts: idle pulse, listening (ripple on mic level),
   thinking (spin + the whimsical phrases — see the funny-status work), speaking
   (waveform). Esc / tap to stop.
-- **Surfaces**: (a) a full-window mode in `jarvis-sidebar` (a `VoiceMode.qml`
+- **Surfaces**: (a) a full-window mode in `cindro-sidebar` (a `VoiceMode.qml`
   overlay/page centered on the orb), and (b) launchable from the KDE widget (§3).
 - **Commands it must nail**: "what's on my screen / my main?" → screenshot the real
   screen → Cindro summarizes aloud. "Summarize this." "Open X." etc.

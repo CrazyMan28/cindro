@@ -53,11 +53,11 @@ selected by `platform.system()`); the model-facing MCP tool schema is **byte-ide
 ## Install (end users) — assumes a BARE machine, bundles everything
 
 **You need nothing pre-installed** — no Python, no Node.js, no Qt, no Visual C++ runtime.
-`Jarvis-Setup.exe` ships them all (the Qt runtime + MSVC runtime via `windeployqt
+`Cindro-Setup.exe` ships them all (the Qt runtime + MSVC runtime via `windeployqt
 --compiler-runtime`, the computer-use engine frozen with PyInstaller incl. its own Python, and
 a portable Node runtime under `node\`). Just:
 
-1. Download **`Jarvis-Setup-x.y.z.exe`** from the Releases page.
+1. Download **`Cindro-Setup-x.y.z.exe`** from the Releases page.
 2. Run it. (Unsigned for now → Windows SmartScreen shows "More info → Run anyway"; a signing
    cert is a future item.) It installs to `%ProgramFiles%\Jarvis`, adds a Start-menu entry,
    and offers autostart.
@@ -72,7 +72,7 @@ Config lives in `%APPDATA%\Jarvis`. See [`MISTRAL_SETUP.md`](MISTRAL_SETUP.md).
 detects the package manager (dnf/apt/pacman/zypper), installs every dependency (Qt6,
 LayerShellQt, libsodium, libqrencode, Python, Node, and the computer-use runtime tools
 grim/spectacle/ydotool/wl-clipboard), sets up the engine venv + phone server, builds, and
-installs — then `systemctl --user start jarvisd` + launch `jarvis-sidebar`.
+installs — then `systemctl --user start jarvisd` + launch `cindro-sidebar`.
 
 ### How the whole stack starts (Windows has no systemd)
 
@@ -82,7 +82,7 @@ point at) — brings up everything so **every feature works**: (1) the **compute
 (`jarvis-engine.exe`) on `127.0.0.1:8794` serving **all** MCP tools, (2) the **phone server**
 (bundled Node) on `:8801` if you've configured it, (3) **`jarvisd.exe`** (sessions, skills,
 schedules, subagents, hooks, memory, voice, plugins, connectors, the phone proxy, and the
-device/pairing channel), and (4) **`jarvis-sidebar.exe`** (the UI). The engine self-creates
+device/pairing channel), and (4) **`cindro-sidebar.exe`** (the UI). The engine self-creates
 `%USERPROFILE%\.computer-use\config.yaml` (random bearer) on first run and `jarvisd` reads the
 same file, so they agree with no setup. *(Known v1 limitation: the per-session **nested** agent
 desktop is Linux-only, so on Windows computer-use drives the real screen; and the daemon's
@@ -115,7 +115,7 @@ cmake -S . -B build-win -G "Ninja" `
   -DWINDOWS_BUILD=ON            # gates off LayerShellQt + stubs AgentDesktop's nested-Sway
 cmake --build build-win --config Release
 # bundle engine + node + make the installer:
-windows\scripts\build.ps1       # -> windows\dist\Jarvis-Setup-x.y.z.exe (Inno Setup)
+windows\scripts\build.ps1       # -> windows\dist\Cindro-Setup-x.y.z.exe (Inno Setup)
 ```
 
 The Windows seams are additive and guarded (`#ifdef Q_OS_WINDOWS` in C++,

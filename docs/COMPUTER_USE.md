@@ -157,7 +157,7 @@ returns are above that point, so the event only fires on a real, live session.
   `Main.qml` raises/focuses the window + navigates to the Chat page (index 0).
   A desktop-initiated create is guarded (`sid != m_sessionId`) so it does not
   double-open its own echo.
-  **No sidebar running ⇒ no-op:** if `jarvis-sidebar` isn't running there is no
+  **No sidebar running ⇒ no-op:** if `cindro-sidebar` isn't running there is no
   control-WS client subscribed, so the daemon's broadcast simply reaches nobody.
 - **Device WS** (`DeviceServer::onSessionOpened`) → **every authed phone**. Unlike
   `file.offer` this is **not** gated on `subscribedSessions`: a brand-new session

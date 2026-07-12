@@ -8,7 +8,7 @@ rem    1. computer-use engine (jarvis-engine.exe)  -> 127.0.0.1:8794  (all MCP t
 rem    2. phone server (bundled node + phone-server) -> 127.0.0.1:8801 (calls/SMS), if configured
 rem    3. jarvisd.exe (the daemon: sessions, skills, schedules, subagents, hooks,
 rem       memory, voice, plugins, connectors, phone proxy, device/pairing channel)
-rem    4. jarvis-sidebar.exe (the UI; first run shows the setup wizard)
+rem    4. cindro-sidebar.exe (the UI; first run shows the setup wizard)
 rem
 rem  Installed to {app}\ ; the Start-menu shortcut + autostart point here.
 rem  The engine auto-creates %USERPROFILE%\.computer-use\config.yaml (random
@@ -50,5 +50,5 @@ rem 3. the daemon (headless)
 start "jarvisd" /b "jarvisd.exe"
 
 rem 4. the UI (foreground; closing it leaves the daemon + engine running in tray)
-start "" "jarvis-sidebar.exe"
+start "" "cindro-sidebar.exe"
 endlocal

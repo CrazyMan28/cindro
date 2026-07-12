@@ -1,4 +1,4 @@
-# jarvis-mcp
+# cindro-mcp
 
 One **MCP endpoint** that fronts the whole Cindro stack so external agents
 (Claude Code / Codex) can drive Cindro **and** do full computer use through a
@@ -14,7 +14,7 @@ single server.
 
 ## What it exposes
 
-### Jarvis orchestration (`jarvis_*`) — wraps Contract A (jarvisd control WS)
+### Cindro orchestration (`jarvis_*`) — wraps Contract A (jarvisd control WS)
 
 These call the daemon's control WebSocket
 (`ws://127.0.0.1:8795/control/ws`, token from `~/.config/jarvis/control_token`):
@@ -47,13 +47,13 @@ and forwards `tools/call` unchanged, so all 32 computer-use tools
 (`jarvis_cu_mouse_click`, `jarvis_cu_desktop_screenshot`,
 `jarvis_cu_browser_navigate`, …) are reachable through this one endpoint. The
 re-export is dynamic, so it never drifts from the engine's tool list. If the
-engine is down at startup the server still serves the Jarvis-only surface.
+engine is down at startup the server still serves the Cindro-only surface.
 
 ## Run
 
 ```bash
 cd jarvis-mcp
-env -u PYTHONPATH uv run jarvis-mcp        # serves 0.0.0.0:8797/mcp
+env -u PYTHONPATH uv run cindro-mcp        # serves 0.0.0.0:8797/mcp
 curl -s http://127.0.0.1:8797/health | jq  # open readiness probe
 ```
 
@@ -69,13 +69,13 @@ curl -s http://127.0.0.1:8797/health | jq  # open readiness probe
 ./client-setup.sh --codex    # only ~/.codex/config.toml
 ```
 
-- Claude Code (`~/.claude.json` → `mcpServers.jarvis`): `type:"http"`, `url`,
+- Claude Code (`~/.claude.json` → `mcpServers.cindro`): `type:"http"`, `url`,
   `headers.Authorization: "Bearer <token>"`.
-- Codex (`~/.codex/config.toml` → `[mcp_servers.jarvis]`): `url` +
+- Codex (`~/.codex/config.toml` → `[mcp_servers.cindro]`): `url` +
   `bearer_token_env_var = "JARVIS_MCP_TOKEN"`; then
   `export JARVIS_MCP_TOKEN="$(cat ~/.config/jarvis/jarvis_mcp_token)"`.
 
-Patching is idempotent (re-running replaces the `jarvis` entry in place).
+Patching is idempotent (re-running replaces the `cindro` entry in place).
 
 ## systemd (user)
 
@@ -97,7 +97,7 @@ env -u PYTHONPATH uv run pytest
   MCP `tools/call` of `jarvis_list_sessions` / `jarvis_start_session`
   round-trips through a fake Contract-A WS server.
 - Live test (skipped if `:8795` isn't reachable): launches the real
-  `jarvis-mcp` in a subprocess on a test port and connects with the real MCP
+  `cindro-mcp` in a subprocess on a test port and connects with the real MCP
   streamable-http client — `initialize` + `tools/list` (asserts `jarvis_*`
   present and `jarvis_cu_*` re-exported) + one `tools/call`
   (`jarvis_list_sessions`) against the live daemon.

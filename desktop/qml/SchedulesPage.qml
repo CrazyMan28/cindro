@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // SCHEDULES page: list the daemon's cron jobs (schedule.list), create a new one
 // (name + when|cron + prompt + brain/model), and enable / remove each. Fires due

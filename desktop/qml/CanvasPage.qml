@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // CANVAS page: model-rendered generative widgets. The model calls the engine's
 // render_widget MCP tool, which appends a {ts,title,spec} record to the widgets

@@ -2,7 +2,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Effects
-import JarvisSidebar
+import CindroSidebar
 
 // One row in the chat transcript. Renders by `kind`:
 //   message (user right / accent-tinted, assistant left / surface),

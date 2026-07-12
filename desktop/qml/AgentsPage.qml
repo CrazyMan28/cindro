@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
-import JarvisSidebar
+import CindroSidebar
 
 // AGENTS page: the custom-agent (subagent) library. Lists agents (agents.list)
 // with their "when to use", views an agent's full definition (agents.get),

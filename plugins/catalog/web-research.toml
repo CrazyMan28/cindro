@@ -1,7 +1,7 @@
-# Jarvis plugin manifest — catalog entry.
+# Cindro plugin manifest — catalog entry.
 id = "web-research"
 name = "Web Research"
-author = "Jarvis Labs"
+author = "Cindro Labs"
 version = "2.0.0"
 kind = "both"
 description = "Fan-out web search + page fetch as an MCP tool, plus a deep-research skill that adversarially verifies claims and writes a cited report."

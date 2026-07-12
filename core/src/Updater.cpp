@@ -207,7 +207,7 @@ Updater::ReleaseAsset Updater::parseLatestRelease(const QByteArray &json,
 QString Updater::assetGlob()
 {
 #ifdef Q_OS_WIN
-    return QStringLiteral("Jarvis-Setup-*.exe");
+    return QStringLiteral("Cindro-Setup-*.exe");
 #else
     return QStringLiteral("*.AppImage");
 #endif
@@ -217,7 +217,7 @@ QByteArray Updater::httpGet(const QString &url, int timeoutMs)
 {
     QNetworkAccessManager nam;
     QNetworkRequest rq{QUrl(url)};
-    rq.setRawHeader("User-Agent", "Jarvis-Updater");
+    rq.setRawHeader("User-Agent", "Cindro-Updater");
     rq.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                     QNetworkRequest::NoLessSafeRedirectPolicy);
     QEventLoop loop;
@@ -248,7 +248,7 @@ static qint64 httpDownload(const QString &url, const QString &filePath, int time
         return -1;
     QNetworkAccessManager nam;
     QNetworkRequest rq{QUrl(url)};
-    rq.setRawHeader("User-Agent", "Jarvis-Updater");
+    rq.setRawHeader("User-Agent", "Cindro-Updater");
     rq.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                     QNetworkRequest::NoLessSafeRedirectPolicy);
     QEventLoop loop;

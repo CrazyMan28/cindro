@@ -13,7 +13,7 @@ windows/
                  computer-use/computer_use_mcp/ is never modified. Run: server_windows.py
   shell/         Native Windows Qt window controller (tray + global hotkey) that reuses
                  the existing ~60 desktop/qml/* pages (no LayerShellQt).
-  installer/     Inno Setup script (jarvis.iss) -> Jarvis-Setup-x.y.z.exe
+  installer/     Inno Setup script (jarvis.iss) -> Cindro-Setup-x.y.z.exe
   scripts/       build.ps1 — one-shot: build daemon + shell, bundle engine + node, make .exe
   dist/          build output (gitignored)
 ```
@@ -26,7 +26,7 @@ windows/
   module attribute, so the swap is total). Windows deps live in
   `engine/requirements-windows.txt`, not the shared `pyproject.toml`.
 - **Daemon/shell (C++):** a SELF-CONTAINED CMake project, `windows/CMakeLists.txt`
-  (`cmake -S windows -B build-win`), builds `jarvisd.exe` + `jarvis-sidebar.exe` on Windows via
+  (`cmake -S windows -B build-win`), builds `jarvisd.exe` + `cindro-sidebar.exe` on Windows via
   Qt6 + vcpkg (libsodium/libqrencode). It NEVER edits `core/`, `daemon/`, `desktop/`, or the root
   `CMakeLists.txt`:
   - It **references the unmodified shared sources read-only** by their Linux path (all of
@@ -54,7 +54,7 @@ Prereqs: Visual Studio 2022 (or MinGW-w64), CMake 3.24+, vcpkg, Qt 6.5+ (MSVC), 
 cmake -S ..\..\windows -B ..\..\build-win -G Ninja `
   -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
 cmake --build ..\..\build-win --config Release
-.\build.ps1     # bundles engine + node + makes windows\dist\Jarvis-Setup-x.y.z.exe
+.\build.ps1     # bundles engine + node + makes windows\dist\Cindro-Setup-x.y.z.exe
 ```
 
 ## Windows v2 — the isolated "beside-you" agent desktop

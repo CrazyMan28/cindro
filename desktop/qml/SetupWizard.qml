@@ -2,7 +2,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls.Basic
-import JarvisSidebar
+import CindroSidebar
 
 // SetupWizard — the first-launch flow shown by Main.qml while settings report
 // setup_complete=false. A modal full-cover overlay with four steps:

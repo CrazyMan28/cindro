@@ -21,7 +21,7 @@ hello-mcp/
 ```toml
 id          = "hello-mcp"
 name        = "Hello MCP"
-author      = "Jarvis Labs"
+author      = "Cindro Labs"
 version     = "1.0.0"
 kind        = "both"               # "mcp" | "skill" | "both"
 description = "..."
@@ -89,9 +89,9 @@ Trusted publisher public keys live in `~/.config/jarvis/plugin_keys.json`:
 Runs via `uv` (PEP 723 inline deps; resolves `cryptography` on first run).
 
 ```
-./tools/jarvis-plugin keygen  --out keys/jarvis-labs        # Ed25519 keypair (.key 0600 / .pub)
+./tools/jarvis-plugin keygen  --out keys/cindro-labs        # Ed25519 keypair (.key 0600 / .pub)
 ./tools/jarvis-plugin pack    <dir> [-o out.tar.gz]         # tar.gz a package
-./tools/jarvis-plugin sign    <pkg> --key keys/jarvis-labs.key
+./tools/jarvis-plugin sign    <pkg> --key keys/cindro-labs.key
 ./tools/jarvis-plugin verify  <pkg> [--keys plugin_keys.json]
 ./tools/jarvis-plugin publish <pkg> <catalog-dir>          # add a signed entry to the catalog
 ```
@@ -104,7 +104,7 @@ Runs via `uv` (PEP 723 inline deps; resolves `cryptography` on first run).
 ## Sample signed plugin
 
 `plugins/sample-src/hello-mcp/` is signed by the demo publisher key
-(`plugins/keys/jarvis-labs.pub`; the private `.key` is gitignored) and published
+(`plugins/keys/cindro-labs.pub`; the private `.key` is gitignored) and published
 to `plugins/catalog/` (`hello-mcp.toml` + `hello-mcp/skill/SKILL.md` +
 `index.json`). Add the publisher key to `~/.config/jarvis/plugin_keys.json` and:
 

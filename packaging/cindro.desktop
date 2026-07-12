@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Cindro
+GenericName=AI co-worker
+Comment=Cindro AI co-worker sidebar
+Exec=__HOME__/.local/bin/cindro-sidebar
+Icon=cindro
+Terminal=false
+Categories=Utility;Development;Qt;
+StartupWMClass=cindro-sidebar
+Keywords=ai;assistant;codex;

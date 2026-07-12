@@ -3,14 +3,14 @@
     {
       "id": "hello-mcp",
       "name": "Hello MCP",
-      "author": "Jarvis Labs",
+      "author": "Cindro Labs",
       "version": "1.0.0",
       "kind": "both",
       "permissions": [
         "filesystem:/tmp/hello-mcp",
         "network:api.hello.test"
       ],
-      "signature": "ed25519:45663c69d74bb710:dCY21/ZhvGebuVUqvws4n7MBzdM/BPn2BiZdSRKHlYS5VpoB5fJ7q88s1yR4miojdBHAwDa7ZUJmjXqUY72JDQ==",
+      "signature": "ed25519:7591cf30235f09f7:JMrsnXLoXnukcLDNmQApo9eaFV+K8cBUn0AOwfPkFcYi82NeJYWSoWrkFzS03C6M1AperC0poJ024lm0sNKlCw==",
       "manifest": "hello-mcp.toml"
     }
   ]

@@ -1,4 +1,4 @@
-"""`jarvis web start` — regression coverage for the Bun+Vite dashboard launch
+"""`cindro web start` — regression coverage for the Bun+Vite dashboard launch
 path (no live daemon/bun binary needed; subprocess calls are monkeypatched)."""
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ def test_cmd_web_build_failure_stops_before_serving(fake_web_dir, isolated_env, 
 
 
 def test_cmd_web_already_running_is_a_noop(fake_web_dir, isolated_env, capsys):
-    # Regression: running `jarvis web start` while a previous instance still
+    # Regression: running `cindro web start` while a previous instance still
     # holds the port used to crash with a confusing "exited immediately, run
     # bun ... to see why" instead of a clear "already running" message.
     pidfile = services._web_pidfile()

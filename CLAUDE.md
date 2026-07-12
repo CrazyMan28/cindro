@@ -18,11 +18,11 @@ extension, terminal client, and web dashboard, all driven by one daemon:
 |---|---|---|
 | `core/` | C++/Qt6 | Shared business logic: `Brain` abstraction (`CodexBrain`/`ClaudeBrain`/`ApiBrain`), `SessionStore`, `Scheduler`, `MemoryStore`, `McpRegistry`, `SkillStore`, `SettingsStore`, etc. Tested by `core/tests/*` (ctest). |
 | `daemon/` | C++/Qt6 | `jarvisd`: `ControlServer` (:8795 loopback, desktop) + `DeviceServer` (:8796 tailnet, phone). Both speak Contract A. |
-| `desktop/` | C++/QML | `jarvis-sidebar` — the desktop app. `Bridge` is the QML↔daemon client. |
+| `desktop/` | C++/QML | `cindro-sidebar` — the desktop app. `Bridge` is the QML↔daemon client. |
 | `android/` | Kotlin/Compose | MVVM, Gradle build. |
 | `extension/` | JS (MV3) | Chrome extension: `sw.js` (engine bridge), `content.js`, `sidepanel.*`. |
 | `computer-use/` | Python (uv) | The FastMCP engine that actually drives the screen/browser — `computer_use_mcp/` package, tools registered in `server.py`. |
-| `cli/` | Python (uv) | `jarvis` terminal client — a Textual TUI (`jarvis_cli/tui/`) plus `doctor`/`status`/`service` commands, over the daemon's Contract A control WebSocket. |
+| `cli/` | Python (uv) | `cindro` terminal client — a Textual TUI (`jarvis_cli/tui/`) plus `doctor`/`status`/`service` commands, over the daemon's Contract A control WebSocket. |
 | `outpost-mcp/` | Python (uv) + Go | Pairs remote machines; `outpost-agent` (Go) runs on the paired machine, `outpost-mcp` (Python) is the relay/pairing server. |
 | `proxmox-mcp/` | Python (uv) | Tool server for the always-on Proxmox workload-manager agent (see `docs/PROXMOX_WORKLOAD_MANAGER.md`). |
 | `web/` | TypeScript/SolidJS (Bun) | Browser dashboard mirroring the desktop's page set, talking straight to the daemon's control WebSocket. |
@@ -38,7 +38,7 @@ daemon/core first, then the surfaces, keeping the protocol identical across them
 ```bash
 cmake -S . -B build -G Ninja      # configure (once, or after adding new source files/targets)
 cmake --build build               # build everything
-ninja -C build <target>           # build one target, e.g. jarvisd, jarvis-sidebar, api_brain_tools_test
+ninja -C build <target>           # build one target, e.g. jarvisd, cindro-sidebar, api_brain_tools_test
 ctest --test-dir build            # run all C++ tests
 ctest --test-dir build -R <name>  # run one test by name (regex)
 build/core/<test_binary>          # or just run a test binary directly for full output
@@ -82,7 +82,7 @@ Don't just self-report a fix worked — there are live smoke scripts in `scripts
 `jarvisd` over the real WebSocket protocol. For QML changes, an offscreen smoke load catches
 binding/type errors without a display:
 ```bash
-QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 build/desktop/jarvis-sidebar --demo
+QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 build/desktop/cindro-sidebar --demo
 ```
 
 ## Git

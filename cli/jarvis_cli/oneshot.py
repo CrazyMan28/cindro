@@ -1,4 +1,4 @@
-"""`jarvis ask "..."` — one streamed turn without the full TUI.
+"""`cindro ask "..."` — one streamed turn without the full TUI.
 
 Creates a session (or reuses --session), sends the prompt, and streams the
 NormalizedBrainEvent flow to stdout with rich formatting until the `final`
@@ -71,7 +71,7 @@ async def _run(prompt: str, session_id: Optional[str], brain: Optional[str],
                     console.print(f"[bright_black]  ↳ {out}[/bright_black]")
             elif kind == "approval":
                 console.print("[red]✋ approval requested — auto-DENIED in one-shot "
-                              "mode (use `jarvis` TUI to approve interactively)[/red]")
+                              "mode (use `cindro` TUI to approve interactively)[/red]")
                 try:
                     await c.call("approval.respond",
                                  {"session_id": session_id,
@@ -86,7 +86,7 @@ async def _run(prompt: str, session_id: Optional[str], brain: Optional[str],
                 break
         if created:
             console.print(f"[bright_black]— session {session_id} (continue with: "
-                          f"jarvis ask --session {session_id} \"...\")[/bright_black]")
+                          f"cindro ask --session {session_id} \"...\")[/bright_black]")
         return rc
     except (ConnectionError, ControlError, TimeoutError) as exc:
         console.print(f"[red]{exc}[/red]")

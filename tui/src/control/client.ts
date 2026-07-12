@@ -147,7 +147,7 @@ export class ControlClient {
         reject(
           new Error(
             `jarvisd is not reachable at ${controlHost()}:${controlPort()} — ` +
-              `is the daemon running? (try: jarvis start / jarvis doctor)`,
+              `is the daemon running? (try: cindro start / cindro doctor)`,
           ),
         )
       }, timeoutMs)
