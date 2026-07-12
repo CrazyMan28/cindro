@@ -1,5 +1,5 @@
 [Unit]
-Description=Jarvis-MCP server (Jarvis Contract-A + computer-use, one MCP endpoint)
+Description=Cindro-MCP server (Cindro Contract-A + computer-use, one MCP endpoint)
 # It fronts jarvisd's control WS and the computer-use engine; start after both
 # so the re-export + control ping succeed on first poll. Wants (not Requires)
 # keeps it degraded-but-up if a dependency is briefly down.
@@ -7,7 +7,7 @@ Wants=jarvisd.service computer-use-mcp.service
 After=jarvisd.service computer-use-mcp.service network-online.target
 
 [Service]
-# jarvis-mcp reads ~/.config/jarvis/{control_token,jarvis_mcp_token} (the
+# cindro-mcp reads ~/.config/jarvis/{control_token,jarvis_mcp_token} (the
 # inbound token is auto-generated 0600 on first start) and
 # ~/.computer-use/config.yaml (computer-use bearer for the re-export). It binds
 # 0.0.0.0:8797 (tailnet bearer model). Run from the project's uv venv.
@@ -17,7 +17,7 @@ After=jarvisd.service computer-use-mcp.service network-online.target
 # that breaks venvs (see computer_use README).
 WorkingDirectory=%h/projects/computer_use/jarvis-mcp
 Environment=PYTHONPATH=
-ExecStart=/usr/bin/env -u PYTHONPATH %h/.local/bin/uv run jarvis-mcp
+ExecStart=/usr/bin/env -u PYTHONPATH %h/.local/bin/uv run cindro-mcp
 Restart=on-failure
 RestartSec=2
 
