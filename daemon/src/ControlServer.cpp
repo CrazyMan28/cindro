@@ -5677,7 +5677,7 @@ void ControlServer::seedInternalDocsSkill()
     // installs pick up new capabilities — but never clobber a user's own skills.
     // If internal_docs exists and already carries the current marker, skip;
     // otherwise (absent OR stale) refresh it.
-    const QString kMarker = QStringLiteral("[catalog v4]");
+    const QString kMarker = QStringLiteral("[catalog v5]");
     if (auto existing = m_skills.get(QStringLiteral("internal_docs"))) {
         QFile f(existing->path);
         if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -5689,7 +5689,7 @@ void ControlServer::seedInternalDocsSkill()
         m_skills.remove(QStringLiteral("internal_docs")); // stale builtin -> refresh
     }
     const QString body = QStringLiteral(
-        "[catalog v4] When the user asks what you can do, your features, how to do "
+        "[catalog v5] When the user asks what you can do, your features, how to do "
         "something with you, or you're unsure you're capable of something, use THIS as "
         "the source of truth for Cindro's capabilities. Tell them what fits + offer to "
         "do it.\n\n"
@@ -5770,7 +5770,7 @@ void ControlServer::seedPhoneSkill()
 {
     // Builtin "phone" playbook. Versioned like internal_docs so an install picks up
     // updates, but never clobbers a user's own edits to a same-named skill.
-    const QString kMarker = QStringLiteral("[phone skill v1]");
+    const QString kMarker = QStringLiteral("[phone skill v2]");
     if (auto existing = m_skills.get(QStringLiteral("phone"))) {
         QFile f(existing->path);
         if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -5784,7 +5784,7 @@ void ControlServer::seedPhoneSkill()
         m_skills.remove(QStringLiteral("phone")); // stale builtin -> refresh
     }
     const QString body = QStringLiteral(
-        "[phone skill v1] Use this when calling/texting the user, when they call or text "
+        "[phone skill v2] Use this when calling/texting the user, when they call or text "
         "you, or when working with the phone subsystem.\n\n"
         "# Phone — call & text the user, and answer when they reach you\n\n"
         "Cindro has a NATIVE phone subsystem (vendored in the repo; MCP gateway on :8801). "
