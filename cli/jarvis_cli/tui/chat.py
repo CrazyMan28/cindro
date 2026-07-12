@@ -71,10 +71,10 @@ BUILTIN_COMMANDS = [
     ("model", "pick the active model"),
     ("provider", "pick codex, claude, or api"),
     ("voice", "open push-to-talk voice mode"),
-    ("stage", "🚧 stage a file from the last diff (not yet available)"),
-    ("commit", "🚧 commit staged changes (not yet available)"),
-    ("revert", "🚧 revert a file from the last diff (not yet available)"),
-    ("openpr", "🚧 open a pull request for the current branch (not yet available)"),
+    ("stage", "stage a file from the last diff"),
+    ("commit", "commit staged changes"),
+    ("revert", "revert a file from the last diff"),
+    ("openpr", "open a pull request for the current branch"),
 ]
 
 # These 11 screens have NO tab-* TabPane in app.py's main TabbedContent at

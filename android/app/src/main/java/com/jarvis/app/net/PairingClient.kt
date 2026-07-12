@@ -25,7 +25,9 @@ import java.util.concurrent.TimeUnit
 class PairingClient(private val identity: DeviceIdentity) {
 
     sealed interface Result {
-        data class Paired(val deviceId: String) : Result
+        /** [fingerprint] is the daemon's identity fingerprint from the pairing ack's
+         *  `fp` field (null on older daemons or the bare-`authed` fallback path). */
+        data class Paired(val deviceId: String, val fingerprint: String? = null) : Result
         data class Failed(val reason: String) : Result
     }
 
@@ -60,7 +62,8 @@ class PairingClient(private val identity: DeviceIdentity) {
                 when {
                     // Some daemons may issue a challenge even on the pair path
                     // (defense in depth); sign it to prove key possession.
-                    obj.has("challenge") -> {
+                    obj.has("challenge") &&
+                        obj.get("challenge").let { it.isJsonPrimitive && it.asJsonPrimitive.isString } -> {
                         val nonce = android.util.Base64.decode(
                             obj.get("challenge").asString, android.util.Base64.NO_WRAP,
                         )
@@ -73,7 +76,10 @@ class PairingClient(private val identity: DeviceIdentity) {
                         val ok = obj.get("paired")?.asBoolean ?: true
                         if (ok) {
                             val id = obj.get("device_id")?.asString ?: identity.fingerprint
-                            complete(done, ws, Result.Paired(id))
+                            val fp = obj.get("fp")
+                                ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
+                                ?.asString
+                            complete(done, ws, Result.Paired(id, fp))
                         } else {
                             complete(done, ws, Result.Failed("daemon refused pairing"))
                         }
@@ -81,7 +87,7 @@ class PairingClient(private val identity: DeviceIdentity) {
 
                     obj.has("authed") -> {
                         // Treat a bare authed ack as success too.
-                        complete(done, ws, Result.Paired(identity.fingerprint))
+                        complete(done, ws, Result.Paired(identity.fingerprint, null))
                     }
 
                     obj.has("error") && obj.get("error").isJsonObject -> {

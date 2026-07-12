@@ -84,6 +84,14 @@ public:
         // the owning session id for hook payloads.
         HookStore *hooks = nullptr;
         QString sessionId;
+        // TODO(resume): when non-empty, should let a re-spawned brain (e.g.
+        // after a daemon restart) rebuild m_history from persisted events and
+        // resume this session's conversation instead of starting cold. NOT
+        // YET IMPLEMENTED — needs a careful pass to reconstruct history
+        // without resending tool_calls that never got a matching tool result
+        // (unresolved calls would desync the provider's tool-loop state).
+        // Flagged for human review; currently unused.
+        QString resumeSessionId;
     };
 
     explicit ApiBrain(Options opts, QObject *parent = nullptr);

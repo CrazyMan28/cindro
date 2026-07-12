@@ -44,12 +44,17 @@ class JarvisRepository(
 ) {
     private val client = DeviceClient(
         identity = identity,
+        pairingStore = pairingStore,
         onAuthFailure = { /* surfaced via state; pairing screen handles re-pair */ },
     )
 
     val connectionState: StateFlow<DeviceClient.State> get() = client.state
     val lastError: StateFlow<String?> get() = client.lastError
     val events: SharedFlow<SessionEvent> get() = client.events
+
+    /** Soft, dismissible "daemon identity changed" warning (fp mismatch on reconnect). */
+    val identityWarning: StateFlow<String?> get() = client.identityWarning
+    fun dismissIdentityWarning() = client.dismissIdentityWarning()
 
     /** Decoded binary mirror.frame JPEGs (Contract C live video). */
     val frames: SharedFlow<MirrorFrame> get() = client.frames

@@ -30,20 +30,25 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.jarvis.app.protocol.Agent
 import com.jarvis.app.ui.theme.GlowCard
 import com.jarvis.app.ui.theme.JarvisPalette
+import com.jarvis.app.ui.util.Biometric
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AgentsScreen(viewModel: AgentsViewModel, onOpenChat: (String) -> Unit) {
+fun AgentsScreen(viewModel: AgentsViewModel, activity: FragmentActivity, onOpenChat: (String) -> Unit) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
     var showCreate by remember { mutableStateOf(false) }
     var dispatchFor by remember { mutableStateOf<Agent?>(null) }
 
@@ -100,7 +105,16 @@ fun AgentsScreen(viewModel: AgentsViewModel, onOpenChat: (String) -> Unit) {
                     AgentRow(
                         agent = agent,
                         onDispatch = { dispatchFor = agent },
-                        onRemove = { viewModel.remove(agent.name) },
+                        onRemove = {
+                            scope.launch {
+                                val ok = Biometric.authenticate(
+                                    activity,
+                                    title = "Remove agent",
+                                    subtitle = agent.name,
+                                )
+                                if (ok) viewModel.remove(agent.name)
+                            }
+                        },
                     )
                 }
             }
@@ -111,7 +125,12 @@ fun AgentsScreen(viewModel: AgentsViewModel, onOpenChat: (String) -> Unit) {
         CreateAgentDialog(
             onDismiss = { showCreate = false },
             onCreate = { name, desc, whenTo, brain, model, profile, prompt ->
-                viewModel.create(name, desc, whenTo, prompt, brain, model, profile) { showCreate = false }
+                scope.launch {
+                    val ok = Biometric.authenticate(activity, title = "Create agent", subtitle = name)
+                    if (ok) {
+                        viewModel.create(name, desc, whenTo, prompt, brain, model, profile) { showCreate = false }
+                    }
+                }
             },
         )
     }
@@ -119,7 +138,13 @@ fun AgentsScreen(viewModel: AgentsViewModel, onOpenChat: (String) -> Unit) {
         DispatchAgentDialog(
             agent = agent,
             onDismiss = { dispatchFor = null },
-            onDispatch = { task -> viewModel.dispatch(agent.name, task); dispatchFor = null },
+            onDispatch = { task ->
+                dispatchFor = null
+                scope.launch {
+                    val ok = Biometric.authenticate(activity, title = "Dispatch ${agent.name}", subtitle = task)
+                    if (ok) viewModel.dispatch(agent.name, task)
+                }
+            },
         )
     }
 }

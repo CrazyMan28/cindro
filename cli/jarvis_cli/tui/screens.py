@@ -139,8 +139,20 @@ class TablePane(Vertical):
 
 
 class SessionsPane(TablePane):
-    HINT = "enter: open in Chat · n: new chat · x: delete · r: refresh"
+    HINT = "enter: open in Chat · n: new chat · x: delete (press twice) · r: refresh"
+    CONFIRM_HINT = "press x again to delete this session · any other key cancels"
     COLUMNS = ("title", "brain", "state", "id")
+
+    def __init__(self, **kw) -> None:
+        super().__init__(**kw)
+        self._delete_armed_id: str | None = None
+
+    def _set_hint(self, text: str) -> None:
+        try:
+            hint = self.query_one(".pane-hint", Static)
+        except Exception:
+            return
+        hint.update(Text(text, style="bright_black"))
 
     async def fetch(self) -> list[dict]:
         res = await self.client.call("session.list", {})
@@ -153,17 +165,28 @@ class SessionsPane(TablePane):
                 Text(state, style=style), r.get("id", ""))
 
     async def on_key(self, event) -> None:
+        # Any key other than a repeat 'x' disarms a pending delete confirm —
+        # keyboard-only two-step, mirrors the desktop app's confirm-before-delete.
+        if event.key != "x" and self._delete_armed_id is not None:
+            self._delete_armed_id = None
+            self._set_hint(self.HINT)
         if event.key == "r":
             self.refresh_data()
         elif event.key == "x":
             row = self.selected()
             if row:
-                try:
-                    await self.client.call("session.delete",
-                                           {"session_id": row.get("id", "")})
-                except ControlError as exc:
-                    self.notify(str(exc), severity="error")
-                self.refresh_data()
+                row_id = row.get("id", "")
+                if self._delete_armed_id == row_id:
+                    self._delete_armed_id = None
+                    self._set_hint(self.HINT)
+                    try:
+                        await self.client.call("session.delete", {"session_id": row_id})
+                    except ControlError as exc:
+                        self.notify(str(exc), severity="error")
+                    self.refresh_data()
+                else:
+                    self._delete_armed_id = row_id
+                    self._set_hint(self.CONFIRM_HINT)
         elif event.key == "n":
             await self.app.open_chat("", "")
         elif event.key == "enter":

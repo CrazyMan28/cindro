@@ -2,8 +2,10 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="jarvis_secret_store.xml" />
+        <exclude domain="sharedpref" path="jarvis_secret_store_plain.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="jarvis_secret_store.xml" />
+        <exclude domain="sharedpref" path="jarvis_secret_store_plain.xml" />
     </device-transfer>
 </data-extraction-rules>

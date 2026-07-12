@@ -286,9 +286,29 @@ private fun LinkNode(node: JsonObject, mod: Modifier, onAction: (JsonObject) -> 
 private fun ImageNode(node: JsonObject) {
     // Render via a transparent WebView so any url / data URI works without a new dep.
     val url = node.str("url") ?: return
+    // Scheme allow-list — mirrors desktop QML's linkComp safe-scheme pattern. Blocks
+    // e.g. file:/content: URLs the WebView could otherwise read off local storage.
+    if (!isAllowedImageScheme(url)) return
     val w = node.num("w", 120f); val h = node.num("h", 120f)
-    HtmlBox("<img src='$url' style='width:100%;height:100%;object-fit:contain'/>", w, h)
+    HtmlBox("<img src='${url.htmlAttrEscape()}' style='width:100%;height:100%;object-fit:contain'/>", w, h)
 }
+
+private fun isAllowedImageScheme(url: String): Boolean {
+    val u = url.trim()
+    return u.startsWith("data:image/", ignoreCase = true) ||
+        u.startsWith("http://", ignoreCase = true) ||
+        u.startsWith("https://", ignoreCase = true)
+}
+
+/** HTML-attribute-escape a value interpolated into an HtmlBox tag attribute
+ *  (single-quoted `src='...'` here), so a crafted url can't break out of the
+ *  attribute and inject markup. */
+private fun String.htmlAttrEscape(): String = this
+    .replace("&", "&amp;")
+    .replace("'", "&#39;")
+    .replace("\"", "&quot;")
+    .replace("<", "&lt;")
+    .replace(">", "&gt;")
 
 @Composable
 private fun SvgNode(node: JsonObject) {

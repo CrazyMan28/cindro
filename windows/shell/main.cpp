@@ -1,6 +1,10 @@
-// windows/shell/main.cpp — Windows COPY of desktop/src/main.cpp (byte-identical
-// body). It is compiled INSTEAD of the original on Windows; the difference is the
-// include path: windows/shell/ is searched BEFORE desktop/src/, so #include
+// windows/shell/main.cpp — Windows COPY of desktop/src/main.cpp, edited (not
+// byte-identical): two Windows-only additions layered on the shared body — a
+// MessageBoxW surfaced when QML fails to load (a silent exit on Windows looks
+// like nothing happened) and a forced windowController->present() on first
+// launch (belt-and-suspenders in case the QML onCompleted show path hiccuped).
+// It is compiled INSTEAD of the original on Windows via include-path
+// precedence: windows/shell/ is searched BEFORE desktop/src/, so #include
 // "WindowController.h" resolves to the Windows controller (tray + global hotkey,
 // no LayerShellQt) while "Bridge.h"/"FrameProvider.h" still resolve to the shared,
 // read-only desktop sources. The Linux original is never edited.

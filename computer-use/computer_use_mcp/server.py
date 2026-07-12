@@ -73,7 +73,11 @@ app = FastAPI(title="Computer Use MCP", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    # Credentials (cookies) are never used for auth here — the web dashboard's
+    # cross-origin fetches carry a manual Authorization header, not
+    # credentials:'include' — so reflecting Origin with credentials allowed
+    # is unnecessary exposure. allow_origins/allow_headers stay wildcard.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -307,7 +311,11 @@ app.mount("/", mcp_app)
 def main() -> None:
     host, port = load_config()["host"], int(load_config()["port"])
     print(f"computer-use MCP v{__version__} starting on {host}:{port}/mcp")
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # access_log=False: the documented ?token=... auth fallback (for
+    # header-incapable clients like img/video tags and WS URLs) would
+    # otherwise land the bearer token in cleartext in uvicorn's INFO access
+    # log on every request.
+    uvicorn.run(app, host=host, port=port, log_level="info", access_log=False)
 
 
 if __name__ == "__main__":

@@ -427,17 +427,17 @@ async def test_diff_action_includes_session_id_when_a_session_exists(monkeypatch
         assert stages and stages[0][1] == {"session_id": "sess_active", "path": "foo.py"}
 
 
-def test_diff_review_commands_are_marked_not_yet_available_in_the_palette():
-    """The daemon has ZERO diff.* handlers implemented today — BUILTIN_COMMANDS'
-    /stage /commit /revert /openpr entries must carry a visible "not yet
-    available" marker so the `/` command palette itself signals this, not
-    just a transient yellow transcript line after the user already tried it."""
+def test_diff_review_commands_are_not_falsely_marked_unavailable_in_the_palette():
+    """diff.* (stage/commit/revert/open_pr) IS implemented daemon-side (GitOps),
+    so BUILTIN_COMMANDS' /stage /commit /revert /openpr entries must NOT carry a
+    "not yet available" marker — the earlier marker was misleading the user into
+    thinking working (and destructive, e.g. revert) commands were disabled."""
     from jarvis_cli.tui.chat import BUILTIN_COMMANDS
 
     by_name = dict(BUILTIN_COMMANDS)
     for name in ("stage", "commit", "revert", "openpr"):
-        assert "not yet available" in by_name[name], (name, by_name[name])
-    # Sanity check the marker isn't slapped on everything indiscriminately.
+        assert "not yet available" not in by_name[name], (name, by_name[name])
+    # The 🚧 convention still applies to genuinely-unfinished commands.
     assert "not yet available" not in by_name["new"]
 
 

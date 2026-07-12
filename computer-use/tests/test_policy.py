@@ -3,6 +3,7 @@
 import json
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -207,3 +208,52 @@ def test_cmd_scanner_gates_free_form_commands(tmp_path, monkeypatch):
             (tmp_path / "policy_log.jsonl").read_text().splitlines() if l]
     denials = [r for r in rows if r.get("kind") == "cmd_scan" and not r["allowed"]]
     assert denials and denials[0]["reason"] == "fork bomb"
+
+
+# --- C++/Python trust-policy glob-matching parity conformance --------------
+# core/src/TrustPolicyStore.cpp's globMatch() (Settings "test rule" preview +
+# the command.shell gate) must match this module's fnmatchcase-based matching
+# in evaluate() — the REAL enforcement / source of truth — on every pattern.
+# Both consume the SAME fixture, core/tests/fixtures/trust_policy_vectors.json
+# (also read by core/tests/trust_policy_test.cpp), so a divergence is caught
+# on either side without hand-duplicating cases. See that file's "_schema"
+# key for the vector shape: each vector is one glob-match probe
+# {"pattern", "value", "tool": bool, "app": bool, "expected": bool, "note"},
+# where exactly one of tool/app selects which of evaluate()'s two matching
+# contexts to probe (tool = case-sensitive; app = case-insensitive, mirroring
+# `if not fnmatchcase(tool, tpat)` / `fnmatchcase((app or "").lower(),
+# apat.lower())` there). This test exercises fnmatchcase EXACTLY the way
+# evaluate() does — it does not change policy.py's matching logic (fnmatchcase
+# stays the source of truth) — and skips (does not fail) if the fixture
+# doesn't exist yet.
+def _trust_policy_fixture_path() -> Path:
+    # computer-use/tests/test_policy.py -> repo root is two parents up.
+    repo_root = Path(__file__).resolve().parents[2]
+    return repo_root / "core" / "tests" / "fixtures" / "trust_policy_vectors.json"
+
+
+def test_glob_matching_matches_shared_cpp_fixture():
+    from fnmatch import fnmatchcase
+
+    fixture_path = _trust_policy_fixture_path()
+    if not fixture_path.exists():
+        pytest.skip(f"shared conformance fixture not present yet: {fixture_path}")
+    doc = json.loads(fixture_path.read_text(encoding="utf-8"))
+    vectors = doc["vectors"] if isinstance(doc, dict) else doc
+    assert vectors, f"{fixture_path} is present but has no vectors"
+
+    for i, vec in enumerate(vectors):
+        pattern, value = vec["pattern"], vec["value"]
+        is_tool, is_app = bool(vec["tool"]), bool(vec["app"])
+        assert is_tool != is_app, f"vector {i}: exactly one of tool/app must be true"
+        if is_tool:
+            # Tool-field matching in evaluate(): case-sensitive, as-is.
+            matched = fnmatchcase(value, pattern)
+        else:
+            # App-field matching in evaluate(): case-insensitive.
+            matched = fnmatchcase(value.lower(), pattern.lower())
+        assert matched == vec["expected"], (
+            f"vector {i} ({vec.get('note', '')!r}): "
+            f"fnmatchcase(pattern={pattern!r}, value={value!r}, "
+            f"{'tool' if is_tool else 'app'}-mode) = {matched!r}, expected {vec['expected']!r}"
+        )

@@ -113,6 +113,12 @@ CodexBrain::CodexBrain(Options opts, QObject *parent)
     // the user's real machine.
     if (m_opts.driveMcp)
         m_opts.sandboxMode = QStringLiteral("danger-full-access");
+    // Resume an existing conversation (e.g. after a daemon restart re-spawned
+    // this brain for a session that already has a codex thread) instead of
+    // starting cold — the resume branch in buildArgs() fires as soon as
+    // m_threadId is non-empty.
+    if (!m_opts.resumeThreadId.isEmpty())
+        m_threadId = m_opts.resumeThreadId;
 }
 
 CodexBrain::~CodexBrain()

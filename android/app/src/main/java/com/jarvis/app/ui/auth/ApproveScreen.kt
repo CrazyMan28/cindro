@@ -39,6 +39,7 @@ fun ApproveScreen(
     app: JarvisApp,
     activity: FragmentActivity,
     challengeId: String,
+    onUnlocked: () -> Unit = {},
     onDone: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -61,6 +62,9 @@ fun ApproveScreen(
                 phase = "denied"
                 return@launch
             }
+            // Biometric cleared: this satisfies the app-open gate too, so returning
+            // to the shell doesn't double-prompt with a second BiometricPrompt.
+            onUnlocked()
             phase = "working"
             val res = runCatching { app.repository.approveAuth(challengeId) }
             if (res.isSuccess) {

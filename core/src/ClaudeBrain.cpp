@@ -24,6 +24,13 @@ ClaudeBrain::ClaudeBrain(Options opts, QObject *parent)
         m_opts.configDir = QDir::homePath() + QStringLiteral("/.claude");
     // A stable session id for the whole conversation (set turn 1, resumed after).
     m_claudeSessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    // Resume an existing conversation (e.g. after a daemon restart re-spawned
+    // this brain for a session that already has a claude session id) instead
+    // of starting cold with a brand-new --session-id.
+    if (!m_opts.resumeSessionId.isEmpty()) {
+        m_claudeSessionId = m_opts.resumeSessionId;
+        m_started = true;
+    }
     // Pre-trust the workspace so headless `claude -p` doesn't ignore permissions.allow.
     ensureWorkspaceTrusted();
 }
@@ -172,8 +179,23 @@ void ClaudeBrain::send(const QString &text, const QStringList &images)
                           m_sessionId + QStringLiteral(".json");
         QFile f(m_mcpConfigPath);
         if (f.open(QIODevice::WriteOnly | QIODevice::Text)) {
-            f.write(m_opts.mcpConfigJson.toUtf8());
+            // This file holds the live computer-use bearer token. Lock it to
+            // 0600 on the empty file BEFORE writing the secret, so it never
+            // exists world-readable even briefly. If the chmod fails (network
+            // temp mount, restrictive SELinux/AppArmor), fail closed — drop the
+            // MCP config for this turn rather than hand claude a readable token.
             f.close();
+            if (QFile::setPermissions(m_mcpConfigPath,
+                                      QFileDevice::ReadOwner | QFileDevice::WriteOwner)
+                && f.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
+                f.write(m_opts.mcpConfigJson.toUtf8());
+                f.close();
+            } else {
+                qWarning() << "ClaudeBrain: cannot secure MCP config to 0600;"
+                           << "running without MCP this turn";
+                QFile::remove(m_mcpConfigPath);
+                m_mcpConfigPath.clear();
+            }
         } else {
             m_mcpConfigPath.clear();
         }

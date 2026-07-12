@@ -335,6 +335,15 @@ const HANDLERS = {
     if (p.trusted) {
       const pt = await contentCall(tab, { type: "clickPoint", ref: p.ref, selector: p.selector });
       if (pt && pt.error) throw new Error(pt.error);
+      // Re-resolve + re-check the target's bounds right before the trusted CDP
+      // click fires. clickPoint above already scrolled the page and may have
+      // triggered layout/animation — without this re-check, a shift between
+      // resolving the point and the debugger-dispatched mouse event would
+      // silently redirect a real, trusted click to whatever now sits there.
+      // Coordinate-based Input.dispatchMouseEvent stays the delivery mechanism
+      // (required for sites that filter synthetic .click()); this only guards it.
+      const check = await contentCall(tab, { type: "verifyPoint", ref: p.ref, selector: p.selector, x: pt.x, y: pt.y });
+      if (check && check.error) throw new Error(check.error);
       const base = { x: pt.x, y: pt.y, button: "left", clickCount: 1 };
       await cdp(tab.id, "Input.dispatchMouseEvent", { type: "mousePressed", ...base });
       await cdp(tab.id, "Input.dispatchMouseEvent", { type: "mouseReleased", ...base });

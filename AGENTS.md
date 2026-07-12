@@ -797,6 +797,88 @@ model a session tried to use.
   instance — daemon stays thin, business logic stays in `core/`, per this
   file's own Conventions section below.
 
+## New subsystems (2026-07-11) — cross-surface security + bug hardening wave
+
+A full-repo review (all surfaces + cross-surface contracts) landed a batch of
+feature-preserving fixes. These are the load-bearing invariants — don't
+regress them:
+
+- **The DeviceServer (phone/tailnet :8796) channel is allow-by-family-minus-
+  denylist, and the denylist is security-critical.** `dispatchAuthed()` rejects,
+  at the channel boundary, methods that are legitimate over the loopback control
+  channel but must never be driven from a paired phone: `outpost.*`/`proxmox.*`
+  and `schedule.webhook_token` (pre-existing), plus **`hooks.*`** (HookStore does
+  unsandboxed `sh -c` → RCE), **`file.push{path}`** (arbitrary host-file read;
+  the `path` source is rejected over the device channel via the new `remote` flag
+  threaded through `ControlServer::dispatchConfigMethod` — phones must send
+  `b64`), **`devices.revoke`** for any id ≠ the caller's own (self-unpair only),
+  and **`diff.*`** (runs real `git commit`/`push`/`gh pr create` on the host).
+  A new config/ops method that can write host state MUST be added to this reject
+  set if it isn't safe for the phone.
+- **Daemon-side gated approvals use a random, registry-tracked id, never a
+  pattern.** `m_pendingApprovals` (random `takeover-`/`inject-`-prefixed ids +
+  sessionId + TTL) is the authority: `respondApprovalFor()` only honors an id
+  that is actually pending for that exact session, so a forged/enumerated
+  `takeover-<sid>` can't arm real-screen take-over. `reapPendingApprovals()`
+  prunes expired + dedups per (session,kind) before each insert so the map can't
+  grow unbounded. Don't revert to `startsWith("takeover-")` matching.
+- **Never block the daemon's single Qt event loop.** The pairing brute-force
+  throttle (`PairingManager::consume`) is a purely non-blocking counter+cooldown
+  (5 fails → drop pending codes + 30s cooldown) — it must NOT `QThread::msleep`
+  (that froze every client = trivial DoS). Same rule the async model.list work
+  established; the PIN gate (`m_pinLockedUntilMs`) and outpost timeout clamp
+  (`qBound(60000, …, 600000)` so a caller `timeout` can't pin `outpostHttp`'s
+  nested loop open) follow it. Successful pairing is now `audit.record`ed.
+- **The permission/mode/trust-policy preamble fires once per NON-subagent
+  session (`m_policyGuided`), independent of whether an agent desktop exists.**
+  Previously it was gated behind the co-work screen-targeting guide, so
+  computer-off / scheduled / background sessions silently got zero ask-before-
+  risky guidance while Settings showed "Cautious". Keep the screen-targeting
+  guide gated on `m_agentDesktops.has()`; keep the policy clauses ungated.
+- **Brain context resumes after a respawn.** `CodexBrain::Options.resumeThreadId`
+  / `ClaudeBrain::Options.resumeSessionId` are seeded by `makeBrain()` from
+  `row.threadId` so a second turn on an existing session continues the CLI's
+  thread instead of starting a fresh model conversation. **ApiBrain history
+  replay is deliberately deferred** (a TODO stub — needs human review to avoid
+  resending unresolved tool_calls); don't "finish" it blindly.
+- **Trust-policy glob parity is now testable, not hand-waved.**
+  `TrustPolicyStore::globMatch` passes `QRegularExpression::NonPathWildcardConversion`
+  and neutralizes a leading `^` inside `[...]` so it matches Python `fnmatch`
+  (the engine's real enforcement in `policy.py`). A shared fixture
+  `core/tests/fixtures/trust_policy_vectors.json` is consumed by BOTH
+  `core/tests/trust_policy_test.cpp` and `computer-use/tests/test_policy.py` —
+  add divergent cases there, keep both readers in sync.
+- **Model-authored content is scheme-gated at every render sink.** The widget
+  `image` node applies a `{data:image/, http:, https:}` allow-list on ALL four
+  surfaces (desktop QML, web TSX, Android, **and the extension** — the extension
+  was the one missed in the first pass); the extension `svg` node is sanitized
+  (no raw `innerHTML`). `supportsVision` was inverted to allow-unless-known-text-
+  only (was blocking the api-brain default + llava) and ported to Android
+  (`VisionSupport.kt`). Keep these predicates/allow-lists in sync across
+  surfaces — there's no shared wire format, only the same rule copied.
+- **Android Contract C hardening:** envelope/event frames are dropped until
+  `authed==true` (`DeviceClient`), so a pre-handshake host can't push a spoofed
+  `auth.challenge`; the QR-pinned `daemonFingerprint` is the trust anchor and is
+  **compared, never overwritten** by the plaintext pairing ack (TOFU only when no
+  pin exists); Agents create/dispatch/remove is biometric-gated client-side; the
+  plaintext keystore-fallback secret is excluded from backup. The daemon proves
+  its identity by echoing `fp` in the reconnect ack (field name is exactly
+  `"fp"`).
+- **chmod-hardening has two flavors — pick deliberately.** `config.toml`'s 0600
+  is **best-effort** (already durably committed; a chmod failure logs a warning
+  but must NOT fail `saveConfig()`, or it spuriously aborts callers' follow-up).
+  The claude per-turn `--mcp-config` temp file (holds a live bearer) is
+  **fail-closed**: it's chmod'd 0600 on the empty file BEFORE the secret is
+  written, and on failure the MCP config is dropped for that turn rather than
+  handed over world-readable.
+- **Windows copies must mirror new core methods.** `PluginSandbox::isSandboxed`
+  was added to `core/src/PluginSandbox.cpp` AND the Windows copy
+  `windows/shell/PluginSandbox.cpp` (returns `false` there — Windows plugins run
+  the weaker plain-QProcess fallback, which is the honest state the visibility
+  audit wants). A new method on a COPY-variant class (WindowController /
+  AgentDesktop / PluginSandbox) needs the same mirror or the Windows build won't
+  link (compile-only checks miss it — link `jarvisd` to catch it).
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

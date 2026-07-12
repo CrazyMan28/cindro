@@ -41,6 +41,13 @@ public:
         // (~/.claude-secondary) from the ambient environment. The daemon maps
         // the `claude_account` setting (pro|max) onto this.
         QString configDir;
+        // When non-empty, seeds m_claudeSessionId (instead of a fresh random
+        // UUID) and marks the conversation already-started, so the FIRST
+        // send() of a re-spawned brain (e.g. after a daemon restart) resumes
+        // this existing claude session (`--resume <id>`) instead of starting
+        // fresh with `--session-id` and losing all prior context. Set by the
+        // daemon from the session's persisted session id.
+        QString resumeSessionId;
     };
 
     explicit ClaudeBrain(Options opts, QObject *parent = nullptr);

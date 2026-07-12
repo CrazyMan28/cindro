@@ -3,6 +3,7 @@ package com.jarvis.app.net
 import android.util.Log
 import com.google.gson.JsonObject
 import com.jarvis.app.crypto.DeviceIdentity
+import com.jarvis.app.data.PairingStore
 import com.jarvis.app.protocol.AuthChallenge
 import com.jarvis.app.protocol.Protocol
 import com.jarvis.app.protocol.FileOfferEvent
@@ -51,6 +52,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class DeviceClient(
     private val identity: DeviceIdentity,
+    private val pairingStore: PairingStore? = null,
     private val onAuthFailure: () -> Unit = {},
 ) {
     enum class State { DISCONNECTED, CONNECTING, HANDSHAKING, CONNECTED, ERROR }
@@ -95,6 +97,16 @@ class DeviceClient(
 
     private val _lastError = MutableStateFlow<String?>(null)
     val lastError: StateFlow<String?> = _lastError.asStateFlow()
+
+    /**
+     * Soft, dismissible warning when a reconnect ack's daemon identity fingerprint
+     * (`fp`) doesn't match the one pinned at pairing time. Never hard-blocks the
+     * connection (anti-brick on a legit reinstall/key rotation) — advisory only.
+     */
+    private val _identityWarning = MutableStateFlow<String?>(null)
+    val identityWarning: StateFlow<String?> = _identityWarning.asStateFlow()
+
+    fun dismissIdentityWarning() { _identityWarning.value = null }
 
     private val nextId = AtomicInteger(1)
     private val pending = ConcurrentHashMap<Int, CompletableDeferred<WsResponse>>()
@@ -198,8 +210,13 @@ class DeviceClient(
             // --- handshake frames (no envelope) ---
             if (!authed) {
                 if (obj.has("challenge")) {
-                    val nonceB64 = obj.get("challenge").asString
-                    val nonce = android.util.Base64.decode(nonceB64, android.util.Base64.NO_WRAP)
+                    val challengeEl = obj.get("challenge")
+                    if (!challengeEl.isJsonPrimitive || !challengeEl.asJsonPrimitive.isString) {
+                        // Malformed frame: drop it and keep handshaking rather than
+                        // throwing out of asString (which tears the socket down).
+                        return
+                    }
+                    val nonce = android.util.Base64.decode(challengeEl.asString, android.util.Base64.NO_WRAP)
                     val sig = identity.sign(nonce)
                     ws.send(JsonObject().apply { addProperty("sig", sig) }.toString())
                     return
@@ -207,6 +224,7 @@ class DeviceClient(
                 if (obj.has("authed") || obj.get("event")?.asString == "authed") {
                     val okAuth = obj.get("authed")?.asBoolean ?: true
                     if (okAuth) {
+                        checkIdentityFingerprint(obj)
                         authed = true
                         reconnectAttempts = 0
                         _state.value = State.CONNECTED
@@ -222,6 +240,9 @@ class DeviceClient(
                     handleAuthRejected(ws, msg)
                     return
                 }
+                // Unrecognized pre-auth frame: drop it, don't fall through to the
+                // authed envelope phase below.
+                return
             }
 
             // --- authed envelope phase ---
@@ -269,6 +290,26 @@ class DeviceClient(
         override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
             Log.w(TAG, "ws failure: ${t.message}")
             onDown(t.message ?: "connection failed", retry = true)
+        }
+    }
+
+    /**
+     * Compare the reconnect ack's daemon identity fingerprint (`fp`) against the one
+     * pinned at pairing time. Fail OPEN when nothing is pinned yet or the daemon
+     * didn't send one (older daemon) — ordinary reconnects must keep working. On a
+     * mismatch, surface a soft/dismissible warning; never hard-block the connection.
+     */
+    private fun checkIdentityFingerprint(obj: JsonObject) {
+        val fpEl = obj.get("fp") ?: return
+        if (!fpEl.isJsonPrimitive || !fpEl.asJsonPrimitive.isString) return
+        val fp = fpEl.asString
+        val pinned = pairingStore?.daemonFingerprint
+        if (pinned.isNullOrBlank()) return
+        _identityWarning.value = if (fp != pinned) {
+            "This device's paired computer identity looks different from when you paired. " +
+                "If you didn't reinstall or re-pair Jarvis, consider re-pairing to be safe."
+        } else {
+            null
         }
     }
 

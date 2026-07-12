@@ -100,6 +100,23 @@ def _write_meta(jid: str, meta: dict) -> None:
         raise
 
 
+def _write_meta_unless_stopped(jid: str, meta: dict) -> bool:
+    """Persist meta UNLESS a concurrent stop() already marked the job stopped.
+
+    Re-reads the on-disk state immediately before the atomic write so a user
+    stop() is never clobbered back to done/expired/ok, and keeps 'stopped'
+    sticky. There's no portable cross-process file lock across Linux+Windows
+    here, so this isn't fully atomic — but collapsing the runners' repeated
+    check-then-write into one shared helper shrinks the race to a single
+    read->os.replace gap. Returns False (writing nothing) when already stopped,
+    so the caller should break out of its loop.
+    """
+    if _read_meta(jid).get("state") == "stopped":
+        return False
+    _write_meta(jid, meta)
+    return True
+
+
 def _alive(pid) -> bool:
     if not pid:
         return False
@@ -116,7 +133,12 @@ def _tail(text: str, n: int) -> str:
 
 
 def _session_default(session_id: str = "") -> str:
-    return session_id or os.environ.get("JARVIS_AGENT_SESSION", "")
+    # JARVIS_AGENT_SESSION is set on a per-session engine; the shared/global
+    # engine has no such env, so without this fallback every wake path
+    # silently no-ops there. current_session_id() checks that env first
+    # (byte-identical on the per-session engine) and only falls back to
+    # asking the daemon which session is mid-turn when it's unset.
+    return session_id or daemon_client.current_session_id()
 
 
 def _wake(session_id: str, message: str, critical: bool = False) -> None:
@@ -375,7 +397,11 @@ def _run_monitor(jid: str) -> None:
             m["matched"] = True
             m["state"] = "done"
             m["ended_at"] = _now()
-            _write_meta(jid, m)
+            # A stop() may have raced us since the top-of-loop read above — a
+            # user stop must never be downgraded/clobbered to "done" (the shared
+            # helper re-checks on-disk state right before its atomic write).
+            if not _write_meta_unless_stopped(jid, m):
+                break
             if m.get("wake_on_match") and m.get("session_id"):
                 _wake(m["session_id"],
                       f"[MONITOR TRIPPED] \"{m.get('name')}\" (id {jid}) — condition met "
@@ -385,13 +411,15 @@ def _run_monitor(jid: str) -> None:
         if m.get("max_checks") and checks >= int(m["max_checks"]):
             m["state"] = "expired"
             m["ended_at"] = _now()
-            _write_meta(jid, m)
+            if not _write_meta_unless_stopped(jid, m):
+                break
             if m.get("session_id"):
                 _wake(m["session_id"],
                       f"[MONITOR EXPIRED] \"{m.get('name')}\" (id {jid}) ran {checks} "
                       f"checks without the condition tripping.")
             break
-        _write_meta(jid, m)
+        if not _write_meta_unless_stopped(jid, m):
+            break
         time.sleep(m.get("interval_sec", 30))
     log.close()
 
@@ -427,9 +455,13 @@ def _run_watch(jid: str) -> None:
         if m.get("max_checks") and report["check"] >= int(m["max_checks"]):
             m["state"] = "expired"
             m["ended_at"] = _now()
-            _write_meta(jid, m)
+            # Same stop-race guard as _run_monitor/_run_job: don't clobber a
+            # concurrent stop() back to "expired".
+            if not _write_meta_unless_stopped(jid, m):
+                break
             break
-        _write_meta(jid, m)
+        if not _write_meta_unless_stopped(jid, m):
+            break
         time.sleep(m.get("interval_sec", 60))
     log.close()
 

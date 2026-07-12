@@ -113,10 +113,15 @@ def cmd_stop() -> int:
         if binary is None:
             console.print("[yellow]jarvisd.exe not found — nothing to stop[/yellow]")
             return 1
+        safe_binary = str(binary).replace("'", "''")
         ps = ("Get-CimInstance Win32_Process -Filter \"Name='jarvisd.exe'\" | "
-              f"Where-Object {{ $_.ExecutablePath -eq '{binary}' }} | "
+              f"Where-Object {{ $_.ExecutablePath -eq '{safe_binary}' }} | "
               "ForEach-Object { Stop-Process -Id $_.ProcessId -Force; $_.ProcessId }")
         r = _run(["powershell", "-NoProfile", "-Command", ps])
+        if r.returncode != 0:
+            console.print(f"[red]•[/red] jarvisd ({binary}): failed to query process "
+                          f"({r.stderr.strip() or 'unknown error'})")
+            return 1
         pids = [p for p in r.stdout.split() if p.strip().isdigit()]
         console.print(f"[cyan]•[/cyan] jarvisd ({binary}): "
                       + (f"stopped pid {', '.join(pids)}" if pids else "not running"))

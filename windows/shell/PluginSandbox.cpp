@@ -296,4 +296,15 @@ qint64 PluginSandbox::pidOf(const QString &id) const
     return it == m_running.end() ? 0 : it->second->pid;
 }
 
+// Windows plugins run under the weaker plain-QProcess fallback (no systemd
+// confinement), so usesSystemdRun is always false here — isSandboxed()
+// therefore reports the honest "not confined" state the visibility audit wants.
+bool PluginSandbox::isSandboxed(const QString &id) const
+{
+    auto it = m_running.find(id);
+    if (it == m_running.end())
+        return false;
+    return it->second->usesSystemdRun;
+}
+
 } // namespace jarvis

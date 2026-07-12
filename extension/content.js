@@ -242,7 +242,7 @@
     for (let i = 0; i < els.length; i++) {
       if (lines.length >= maxNodes) { truncated = true; break; }
       const el = els[i];
-      const ref = `e${i + 1}`;
+      const ref = `e${gen}.${i + 1}`;
       refs.set(ref, new WeakRef(el));
       const rect = el.getBoundingClientRect();
       const bits = [`${ref} [${roleFor(el)}]`];
@@ -285,6 +285,10 @@
 
   function resolve(ref, selector) {
     if (ref) {
+      const m = /^e(\d+)\.\d+$/.exec(ref);
+      if (!m || Number(m[1]) !== gen) {
+        throw new Error(`ref ${ref} is stale (page changed?) — call browser_snapshot again`);
+      }
       const wr = refs.get(ref);
       const el = wr && wr.deref();
       if (!el || !el.isConnected) {
@@ -331,6 +335,32 @@
       const r = el.getBoundingClientRect();
       Takeover.onAction(el);
       return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    },
+
+    // Re-resolve the same ref/selector right before a trusted CDP click fires
+    // (sw.js calls this between clickPoint and Input.dispatchMouseEvent) and
+    // confirm the target is STILL the element that will actually receive the
+    // click. Two checks: (1) the point is still within the target's current
+    // bounds (layout shift), and (2) the topmost element at that point — what a
+    // coordinate-based CDP click really hits — is the target, a descendant, or
+    // an ancestor of it, NOT some unrelated overlay injected on top after we
+    // resolved it (pure containment missed that: an overlay leaves the target's
+    // own bounds unchanged). Full atomicity is impossible via CDP (the page's JS
+    // isn't paused during the debugger dispatch), so this shrinks the window and
+    // aborts on any detectable mismatch rather than delivering a redirected click.
+    verifyPoint: (p) => {
+      const el = resolve(p.ref, p.selector);
+      const r = el.getBoundingClientRect();
+      const x = Number(p.x), y = Number(p.y);
+      const within = x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+      if (!within) {
+        throw new Error(`element moved before the click landed (target's bounds no longer contain (${x},${y})) — call browser_snapshot again`);
+      }
+      const top = document.elementFromPoint(x, y);
+      if (top && top !== el && !el.contains(top) && !top.contains(el)) {
+        throw new Error(`another element is now on top of the target at (${x},${y}) — call browser_snapshot again`);
+      }
+      return { ok: true };
     },
 
     click: (p) => {

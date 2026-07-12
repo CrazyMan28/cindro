@@ -52,6 +52,16 @@ private:
     static QString genCode(); // 6 random digits
 
     QVector<PairingCode> m_codes;
+
+    // Brute-force throttle shared across BOTH pairing channels (device hello +
+    // /control/pair): consecutive failed consume() attempts. Past the threshold
+    // every pending code is dropped and a short cooldown refuses further attempts,
+    // so the tiny window a guessed 6-digit code could be redeemed slams shut. A
+    // single correct first attempt never trips this (success resets the counter).
+    static constexpr int kMaxFailedAttempts = 5;
+    static constexpr qint64 kCooldownMs = 30 * 1000; // 30s
+    int m_failCount = 0;
+    qint64 m_cooldownUntil = 0; // epoch ms; > now => in cooldown
 };
 
 } // namespace jarvis

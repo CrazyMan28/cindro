@@ -295,10 +295,19 @@ add_test(NAME voice_provider_test COMMAND voice_provider_test)
 # storage, and clip-path resolution. Hermetic (raw .wav bytes; no ffmpeg/network).
 # TrustPolicyStore (jarvis#71): CRUD persistence + the evaluation mirror of the
 # engine's policy gate (most-specific-wins, tie->earliest, case-insensitive app
-# globs, corrupt-file fail-open) against a QTemporaryDir root. Hermetic.
+# globs, corrupt-file fail-open) against a QTemporaryDir root. Hermetic. Also
+# replays the shared glob conformance fixture (trust-policy-glob-parity) that
+# computer-use's Python test replays against policy.py's fnmatch.
+set(JARVIS_TRUST_POLICY_VECTORS
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/trust_policy_vectors.json"
+    CACHE FILEPATH "Shared glob conformance vectors fed to trust_policy_test")
+
 add_executable(trust_policy_test tests/trust_policy_test.cpp)
 target_link_libraries(trust_policy_test PRIVATE jarvis-core Qt6::Core)
-add_test(NAME trust_policy_test COMMAND trust_policy_test)
+target_compile_definitions(trust_policy_test
+    PRIVATE JARVIS_TRUST_POLICY_VECTORS="${JARVIS_TRUST_POLICY_VECTORS}")
+add_test(NAME trust_policy_test
+         COMMAND trust_policy_test "${JARVIS_TRUST_POLICY_VECTORS}")
 
 add_executable(voice_library_test tests/voice_library_test.cpp)
 target_link_libraries(voice_library_test PRIVATE jarvis-core Qt6::Core)

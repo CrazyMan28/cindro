@@ -67,6 +67,8 @@ const server = Bun.serve({
       headers: {
         "Cache-Control": "no-store, must-revalidate",
         "Referrer-Policy": "no-referrer",
+        "X-Frame-Options": "DENY",
+        "Content-Security-Policy": "frame-ancestors 'none'",
       },
     })
   },

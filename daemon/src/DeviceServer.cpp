@@ -348,6 +348,14 @@ void DeviceServer::handleHello(QWebSocket *client, Conn &c, const QJsonObject &o
         const DeviceRow row = m_control->devices().pair(pubkey, c.name);
         c.authed = true;
         c.deviceId = row.id;
+        // Leave a visible trail for every successful pairing (mirrors
+        // auth.verify_pin / outpost.pair_start). remote=true: it came in over
+        // the device channel.
+        m_control->audit().record(QStringLiteral("devices.pair"), true,
+                                  QStringLiteral("high"),
+                                  QStringLiteral("paired device '") + c.name +
+                                      QStringLiteral("' (") + row.id + QLatin1Char(')'),
+                                  QString(), /*remote=*/true);
 
         QJsonObject ack;
         ack.insert(QStringLiteral("ok"), true);
@@ -408,6 +416,10 @@ void DeviceServer::handleChallengeResponse(QWebSocket *client, Conn &c, const QJ
     ack.insert(QStringLiteral("ok"), true);
     ack.insert(QStringLiteral("authed"), true);
     ack.insert(QStringLiteral("device_id"), c.deviceId);
+    // Daemon identity fingerprint on EVERY reconnect (the pairing ack already
+    // carries it): lets the phone verify it's still talking to the daemon it
+    // pinned from the QR. Field name matches the pairing ack exactly ("fp").
+    ack.insert(QStringLiteral("fp"), m_control->devices().identityFingerprint());
     ack.insert(QStringLiteral("capabilities"), capabilityMap());
     sendJson(client, ack);
 }
@@ -699,6 +711,19 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
             resp = Response::failure(req.id, QStringLiteral("channel_not_allowed"),
                                      QStringLiteral("outpost.*/proxmox.* is not available over "
                                                     "the phone/device channel"));
+        } else if (m.startsWith(QStringLiteral("diff."))) {
+            // diff.* (stage/revert/commit/open_pr) runs real `git commit` /
+            // `git push` / `gh pr create` against the session's workdir (and
+            // falls back to the daemon's own cwd when session_id is empty) —
+            // exactly the loopback-only-write-to-host class kept off this
+            // channel for outpost.*/hooks.*. Diff review is a desktop/web/TUI
+            // feature; the phone app never calls diff.*, so rejecting it here
+            // removes no phone capability. (isOpsMethod() still matches diff.*
+            // for the loopback control channel, which is why the reject lives
+            // at the channel boundary rather than in isOpsMethod().)
+            resp = Response::failure(req.id, QStringLiteral("channel_not_allowed"),
+                                     QStringLiteral("diff.* is not available over the "
+                                                    "phone/device channel"));
         } else if (m == QStringLiteral("schedule.webhook_token")) {
             // schedule.webhook_token returns the raw, cleartext per-workflow
             // webhook bearer secret (see handleScheduleWebhookToken) — a
@@ -723,14 +748,34 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         // take_over/file.* all mirror to the phone via the SAME ControlServer
         // machinery, so the phone configures one coherent world. Biometric-tier
         // methods are gated on the phone before they're sent.
-        // A device that pushes a session-scoped file should also RECEIVE the
-        // resulting file.offer event, so subscribe it to that session first.
-        if (m == QStringLiteral("file.push")) {
-            const QString sid = req.params.value(QStringLiteral("session_id")).toString();
-            if (!sid.isEmpty())
-                c.subscribedSessions.insert(sid);
+        if (m.startsWith(QStringLiteral("hooks."))) {
+            // hooks.* runs arbitrary shell on the daemon host (unconfined RCE) —
+            // mirror the outpost.*/proxmox.* reject above. It's a loopback-only
+            // surface (desktop Settings -> Hooks); no phone client advertises it
+            // (absent from tierFor()/capabilityMap()), so this only closes the
+            // raw-dispatch hole.
+            resp = Response::failure(req.id, QStringLiteral("channel_not_allowed"),
+                                     QStringLiteral("hooks.* is not available over the "
+                                                    "phone/device channel"));
+        } else if (m == QStringLiteral("devices.revoke") &&
+                   req.params.value(QStringLiteral("id")).toString() != c.deviceId) {
+            // A device may only unpair ITSELF over this channel; revoking ANY
+            // OTHER paired device stays a loopback-only (desktop/web/TUI) power.
+            resp = Response::failure(req.id, QStringLiteral("channel_not_allowed"),
+                                     QStringLiteral("a device may only revoke itself over "
+                                                    "the phone/device channel"));
+        } else {
+            // A device that pushes a session-scoped file should also RECEIVE the
+            // resulting file.offer event, so subscribe it to that session first.
+            if (m == QStringLiteral("file.push")) {
+                const QString sid = req.params.value(QStringLiteral("session_id")).toString();
+                if (!sid.isEmpty())
+                    c.subscribedSessions.insert(sid);
+            }
+            // remote=true: a device-channel file.push{path} (arbitrary local-file
+            // read) is refused inside dispatchConfigMethod.
+            resp = m_control->dispatchConfigMethod(req, /*remote=*/true);
         }
-        resp = m_control->dispatchConfigMethod(req);
     } else {
         resp = Response::failure(req.id, QStringLiteral("unknown_method"),
                                  QStringLiteral("unknown method: ") + m);

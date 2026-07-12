@@ -11,6 +11,8 @@ from typing import Any
 
 from starlette.websockets import WebSocketDisconnect
 
+from outpost_mcp import audit
+
 
 class AgentConnection:
     def __init__(self, machine_id: str, ws: Any):
@@ -81,10 +83,18 @@ class AgentHub:
     async def exec(self, machine: str, cmd: str, timeout: float = 30.0,
                    shell: str = "auto") -> dict[str, Any]:
         m = self._registry.get(machine)
+        mid, mname = (m["id"], m["name"]) if m else ("", machine)
+
+        def _log(ok: bool, error: str = "") -> None:
+            detail = f"cmd={cmd[:500]!r}" + (f" error={error}" if error else "")
+            audit.record("exec", mid, mname, ok, detail)
+
         if not m:
+            _log(False, "unknown_machine")
             return {"ok": False, "exit_code": -1, "output": "", "error": "unknown_machine"}
         conn = self._conns.get(m["id"])
         if not conn:
+            _log(False, "machine_offline")
             return {"ok": False, "exit_code": -1, "output": "", "error": "machine_offline"}
         try:
             res = await conn.request(
@@ -92,29 +102,40 @@ class AgentHub:
                 timeout=timeout + 5,
             )
         except asyncio.TimeoutError:
+            _log(False, "agent_timeout")
             return {"ok": False, "exit_code": -1, "output": "", "error": "agent_timeout"}
         except ConnectionError:
             # The socket died mid-request (send_text failed). Tear down the
             # now-useless connection so the next call doesn't retry it.
             self.unregister(m["id"], conn)
+            _log(False, "machine_offline")
             return {"ok": False, "exit_code": -1, "output": "", "error": "machine_offline"}
         self._registry.set_status(m["id"], "online")
-        return {
+        result = {
             "ok": bool(res.get("ok")),
             "exit_code": int(res.get("exit_code", -1)),
             "output": res.get("output", ""),
             "error": res.get("error", ""),
         }
+        _log(result["ok"], result["error"])
+        return result
 
     async def screenshot(self, machine: str) -> dict[str, Any]:
         m = self._registry.get(machine)
+        mid, mname = (m["id"], m["name"]) if m else ("", machine)
+
+        def _log(ok: bool, error: str = "") -> None:
+            audit.record("screenshot", mid, mname, ok, f"error={error}" if error else "")
+
         if not m:
+            _log(False, "unknown_machine")
             return {
                 "ok": False, "image_base64": "", "width": 0, "height": 0,
                 "captured_at": 0, "error": "unknown_machine",
             }
         conn = self._conns.get(m["id"])
         if not conn:
+            _log(False, "machine_offline")
             return {
                 "ok": False, "image_base64": "", "width": 0, "height": 0,
                 "captured_at": 0, "error": "machine_offline",
@@ -122,18 +143,20 @@ class AgentHub:
         try:
             res = await conn.request({"type": "screenshot"}, timeout=45)
         except asyncio.TimeoutError:
+            _log(False, "agent_timeout")
             return {
                 "ok": False, "image_base64": "", "width": 0, "height": 0,
                 "captured_at": 0, "error": "agent_timeout",
             }
         except ConnectionError:
             self.unregister(m["id"], conn)
+            _log(False, "machine_offline")
             return {
                 "ok": False, "image_base64": "", "width": 0, "height": 0,
                 "captured_at": 0, "error": "machine_offline",
             }
         self._registry.set_status(m["id"], "online")
-        return {
+        result = {
             "ok": bool(res.get("ok")),
             "image_base64": res.get("image_base64", ""),
             "width": int(res.get("width", 0)),
@@ -141,3 +164,5 @@ class AgentHub:
             "captured_at": res.get("captured_at", 0),
             "error": res.get("error", ""),
         }
+        _log(result["ok"], result["error"])
+        return result

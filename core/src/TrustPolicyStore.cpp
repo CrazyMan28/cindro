@@ -174,11 +174,49 @@ int TrustPolicyStore::specificity(const QJsonObject &rule)
     return s;
 }
 
+namespace {
+
+// Escape a leading '^' at the START of a bracket expression ("[^...") so
+// QRegularExpression::wildcardToRegularExpression() emits a LITERAL caret
+// rather than a regex negation. Qt forwards "[...]" almost verbatim into the
+// resulting regex, where "[^...]" negates (plain regex semantics). The engine
+// side (computer-use/policy.py) uses Python's fnmatch.translate, which only
+// negates on a leading '!' inside brackets -- a leading '^' there is literal
+// text, exactly like a shell fnmatch. Leaves an already-escaped "\[" and any
+// '!' negation alone.
+QString neutralizeLeadingCaretInBrackets(const QString &pattern)
+{
+    QString out;
+    out.reserve(pattern.size() + 1);
+    bool escaped = false;
+    for (int i = 0; i < pattern.size(); ++i) {
+        const QChar c = pattern.at(i);
+        out += c;
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (c == QLatin1Char('\\')) {
+            escaped = true;
+            continue;
+        }
+        if (c == QLatin1Char('[') && i + 1 < pattern.size()
+            && pattern.at(i + 1) == QLatin1Char('^')) {
+            out += QLatin1Char('\\'); // "[^" -> "[\^" (literal caret, not negation)
+        }
+    }
+    return out;
+}
+
+} // namespace
+
 bool TrustPolicyStore::globMatch(const QString &pattern, const QString &value,
                                  Qt::CaseSensitivity cs)
 {
+    const QString normalized = neutralizeLeadingCaretInBrackets(pattern);
     const QRegularExpression re(
-        QRegularExpression::wildcardToRegularExpression(pattern),
+        QRegularExpression::wildcardToRegularExpression(
+            normalized, QRegularExpression::NonPathWildcardConversion),
         cs == Qt::CaseInsensitive ? QRegularExpression::CaseInsensitiveOption
                                   : QRegularExpression::NoPatternOption);
     return re.match(value).hasMatch();

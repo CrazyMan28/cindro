@@ -5,4 +5,10 @@
       device-bound and would not be restorable on another device.
     -->
     <exclude domain="sharedpref" path="jarvis_secret_store.xml" />
+    <!--
+      Also exclude the plain (unencrypted) fallback file used when the
+      AndroidKeyStore master key can't be minted — it holds the same raw
+      Ed25519 seed / device secrets, just not AES-GCM wrapped.
+    -->
+    <exclude domain="sharedpref" path="jarvis_secret_store_plain.xml" />
 </full-backup-content>
