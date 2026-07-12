@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from outpost_mcp import config
+from outpost_mcp import audit, config
 
 _PUBLIC_KEYS = ("id", "name", "os", "transport", "status", "last_seen", "paired_at")
 
@@ -94,4 +94,5 @@ class MachineRegistry:
             return False
         self._machines = [x for x in self._machines if x["id"] != m["id"]]
         self._persist()
+        audit.record("revoke", m["id"], m["name"], ok=True)
         return True

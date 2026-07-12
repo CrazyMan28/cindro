@@ -113,6 +113,25 @@ class PairingViewModel(
             when (result) {
                 is PairingClient.Result.Paired -> {
                     pairingStore.isPaired = true
+                    // Pin the daemon's identity fingerprint for later reconnect
+                    // verification. If a QR already pinned one out-of-band, that is
+                    // the trust anchor — NEVER overwrite it with the value from the
+                    // unauthenticated plaintext pairing ack (a MITM racing the code
+                    // could otherwise make its own fp the permanently-trusted
+                    // anchor). Only trust-on-first-use when no pin exists yet
+                    // (manual code entry); on mismatch keep the QR pin and warn so
+                    // the reconnect identity check still catches the impostor.
+                    val ackFp = result.fingerprint
+                    val pinnedFp = pairingStore.daemonFingerprint
+                    if (!ackFp.isNullOrBlank()) {
+                        if (pinnedFp.isNullOrBlank()) {
+                            pairingStore.daemonFingerprint = ackFp
+                        } else if (pinnedFp != ackFp) {
+                            _uiState.update {
+                                it.copy(message = "Warning: the daemon's identity didn't match the QR code.")
+                            }
+                        }
+                    }
                     app.repository.connect()
                     PushRegistrar.syncCurrentToken(app)
                     _uiState.update {

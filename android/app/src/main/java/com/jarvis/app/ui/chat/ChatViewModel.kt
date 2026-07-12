@@ -72,10 +72,27 @@ class ChatViewModel(
     /** Read-back only applies to live events, never to the history replay on open. */
     @Volatile private var historyReplayed = false
 
+    /** This session's brain/model (for the vision gate below); loaded once, best-effort. */
+    @Volatile private var sessionBrain: String? = null
+    @Volatile private var sessionModel: String? = null
+
     init {
         loadHistory()
+        loadSessionInfo()
         subscribe()
         holdWidgetViewingLease()
+    }
+
+    private fun loadSessionInfo() {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.listSessions() } }
+                .onSuccess { sessions ->
+                    sessions.firstOrNull { it.id == _uiState.value.sessionId }?.let {
+                        sessionBrain = it.brain
+                        sessionModel = it.model
+                    }
+                }
+        }
     }
 
     /**
@@ -176,8 +193,16 @@ class ChatViewModel(
         else st.copy(items = st.items + item)
     }
 
-    fun attach(image: PendingImage) =
+    /** Vision-gated with a friendly inline notice — never a silent drop (see VisionSupport). */
+    fun attach(image: PendingImage) {
+        if (!VisionSupport.supportsVision(sessionBrain, sessionModel)) {
+            _uiState.update {
+                it.copy(error = "This session's brain/model can't see images — switch to codex or claude (or a vision-capable model) to attach photos.")
+            }
+            return
+        }
         _uiState.update { it.copy(pending = it.pending + image) }
+    }
 
     fun removeAttachment(previewUri: String) =
         _uiState.update { it.copy(pending = it.pending.filterNot { p -> p.previewUri == previewUri }) }

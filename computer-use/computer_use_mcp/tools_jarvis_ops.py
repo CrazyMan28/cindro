@@ -18,7 +18,13 @@ from mcp.server.fastmcp import FastMCP
 
 from computer_use_mcp import daemon_client, project_tracker_client
 
-_PROJECT_TRACKER_URL = "http://100.114.201.41:8790/mcp"
+
+def _project_tracker_url() -> str:
+    """Project Tracker MCP base URL. JARVIS_PROJECT_TRACKER_URL wins; else the
+    same tailnet default proxmox_agent_checkin has always used — matches the
+    package's other overridable-with-a-zero-config-default conventions
+    (JARVIS_WEBHOOK_BASE, JARVIS_CONTROL_HOST, ...)."""
+    return os.environ.get("JARVIS_PROJECT_TRACKER_URL") or "http://100.114.201.41:8790/mcp"
 
 
 def _project_tracker_bearer() -> str:
@@ -114,7 +120,7 @@ def proxmox_agent_checkin() -> str:
     {"error":...} if Project Tracker is unreachable or no token is configured."""
     try:
         result = project_tracker_client.agent_list_active(
-            _PROJECT_TRACKER_URL, _project_tracker_bearer())
+            _project_tracker_url(), _project_tracker_bearer())
         agents = [a for a in result.get("agents", [])
                  if str(a.get("name", "")).startswith("proxmox-")]
         return json.dumps({"agents": agents})

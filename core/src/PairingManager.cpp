@@ -68,11 +68,28 @@ bool PairingManager::consume(const QString &code)
 {
     prune();
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
+
+    // In a brute-force cooldown: refuse fast (no per-attempt delay to amplify),
+    // treating every attempt as a failure until the window elapses.
+    if (m_cooldownUntil > now)
+        return false;
+
     for (int i = 0; i < m_codes.size(); ++i) {
         if (m_codes[i].code == code && m_codes[i].expiresAt > now) {
             m_codes.remove(i);
+            m_failCount = 0; // a legitimate success resets the throttle
             return true;
         }
+    }
+
+    // Failure. Once past the threshold, drop all pending codes and open a short
+    // cooldown. This is a purely non-blocking counter+timestamp gate — never
+    // sleep here: consume() runs on the daemon's single Qt event-loop thread, so
+    // a blocking delay would freeze every client (a trivially-triggerable DoS).
+    if (++m_failCount >= kMaxFailedAttempts) {
+        m_codes.clear();
+        m_cooldownUntil = now + kCooldownMs;
+        m_failCount = 0;
     }
     return false;
 }

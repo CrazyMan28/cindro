@@ -387,4 +387,24 @@ int KanbanStore::reclaimStale(qint64 staleMs)
     return q.numRowsAffected();
 }
 
+bool KanbanStore::releaseClaim(const QString &id)
+{
+    // Unlike updateStatus() (which deliberately leaves session_id untouched
+    // when the caller passes an empty sessionId, so error paths/transitions
+    // don't clobber it), releasing a claim back to pending must CLEAR
+    // session_id — otherwise a reclaimed item keeps pointing at a session
+    // that's about to be torn down. Mirrors reclaimStale()'s single-item form.
+    QSqlQuery q(m_db);
+    q.prepare(QStringLiteral(
+        "UPDATE work_queue SET status='pending', session_id='', heartbeat_at=0,"
+        " updated=? WHERE id=?"));
+    q.addBindValue(QDateTime::currentMSecsSinceEpoch());
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        return false;
+    }
+    return q.numRowsAffected() > 0;
+}
+
 } // namespace jarvis

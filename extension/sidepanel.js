@@ -396,6 +396,26 @@ function handleEv(ev) {
       markToolResult(ev);
       break;
 
+    case "diff": {
+      // File edit — show a compact "✎ path +N/-M" line via the same tool-row
+      // primitive tool_call/tool_result use, so edits are visible in-chat
+      // instead of silently vanishing (parity with desktop/phone diff cards).
+      endLiveBubble();
+      const stat = diffStat(ev.patch);
+      addTool(`✎ ${ev.path || "diff"}  +${stat.add}/-${stat.del}`);
+      break;
+    }
+
+    case "approval":
+      // Gated turn (e.g. ApiBrain's injection hold) — render an allow/deny
+      // card. Continuing this session from the Sessions picker on ANY brain
+      // (incl. api-brain) must be able to answer this, or the turn hangs
+      // forever; Stop already calls session.cancel (see doStop) which
+      // releases the daemon's server-side injection hold.
+      endLiveBubble();
+      addApprovalCard(ev);
+      break;
+
     case "error":
       endLiveBubble();
       addError(ev.message || "error");
@@ -408,9 +428,70 @@ function handleEv(ev) {
       break;
 
     default:
-      // thread_started / usage / diff / approval / driving.state — ignore for chat UI.
+      // thread_started / usage / driving.state — ignore for chat UI.
       break;
   }
+}
+
+// Sum patch +/- lines for the compact diff row (skip the "+++"/"---" file
+// header lines so they don't get counted as an added/removed line).
+function diffStat(patch) {
+  let add = 0, del = 0;
+  String(patch || "").split("\n").forEach((line) => {
+    if (line.startsWith("+++") || line.startsWith("---")) return;
+    if (line.startsWith("+")) add++;
+    else if (line.startsWith("-")) del++;
+  });
+  return { add, del };
+}
+
+// Allow/deny card for a gated turn (approval{approval_id,summary,risk}).
+// Responding calls approval.respond{session_id,approval_id,decision} — the
+// same RPC/shape the desktop's respondApproval() sends.
+function addApprovalCard(ev) {
+  const approvalId = ev.approval_id || "";
+  const summary = ev.summary || "Approval requested";
+  const risk = ev.risk != null && ev.risk !== "" ? String(ev.risk) : "";
+
+  const row = document.createElement("div");
+  row.className = "row left";
+  const card = document.createElement("div");
+  card.className = "widget-card";
+  card.style.cssText = "margin:6px 0;padding:10px 12px;border:1px solid #3D6EFF;border-radius:12px;background:#0C141C;color:#EAF6FF;font-size:13px;";
+
+  const head = document.createElement("div");
+  head.textContent = (risk ? `[${risk}] ` : "") + summary;
+  head.style.cssText = "margin-bottom:8px;";
+  card.appendChild(head);
+
+  const btnRow = document.createElement("div");
+  btnRow.style.cssText = "display:flex;gap:8px;";
+  const mkBtn = (label, decision, primary) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.style.cssText = `padding:5px 14px;border-radius:8px;cursor:pointer;font-size:12px;` +
+      `border:1px solid ${primary ? "rgba(61,214,255,.55)" : "rgba(255,90,90,.5)"};` +
+      `background:${primary ? "rgba(61,214,255,.15)" : "rgba(255,90,90,.12)"};` +
+      `color:${primary ? "#3DD6FF" : "#FF8A8A"};`;
+    b.addEventListener("click", async () => {
+      if (b.disabled) return;
+      [...btnRow.children].forEach((x) => { x.disabled = true; x.style.opacity = "0.5"; });
+      head.textContent += `  — ${decision}`;
+      try {
+        await rpc("approval.respond", { session_id: sessionId, approval_id: approvalId, decision });
+      } catch (e) {
+        addError("approval.respond failed: " + (e && e.message || e));
+      }
+    });
+    return b;
+  };
+  btnRow.appendChild(mkBtn("Allow", "allow", true));
+  btnRow.appendChild(mkBtn("Deny", "deny", false));
+  card.appendChild(btnRow);
+
+  row.appendChild(card);
+  els.transcript.appendChild(row);
+  scrollDown(true);
 }
 
 // ----------------------------------------------------------- transcript DOM
@@ -712,7 +793,13 @@ function renderWidgetNode(node) {
   }
   if (type === "image") {
     const el = document.createElement("img");
-    el.src = node.url || ""; if (node.w) el.style.width = px(node.w, "auto"); if (node.h) el.style.height = px(node.h, "auto");
+    // Scheme allow-list mirrors desktop/QML, web, and Android: only inline
+    // data:image/ and network http(s) — never file:// or other schemes a
+    // prompt-injected model could use to read a local file onto the panel
+    // (or beacon via a non-image URL).
+    const u = node.url || "";
+    const safe = /^data:image\//i.test(u) || /^https?:\/\//i.test(u);
+    el.src = safe ? u : ""; if (node.w) el.style.width = px(node.w, "auto"); if (node.h) el.style.height = px(node.h, "auto");
     el.style.maxWidth = "100%"; return el;
   }
   if (type === "button") {
@@ -727,8 +814,25 @@ function renderWidgetNode(node) {
     return el;
   }
   if (type === "svg") {
-    const el = document.createElement("div");
-    el.innerHTML = String(node.svg || ""); // engine-produced, local trusted source
+    // Widget content isn't trusted the way it once was assumed to be — raw
+    // innerHTML would let a <script>/onerror/onload in the markup execute
+    // with this side panel's own privileged extension origin. Route through
+    // an <img> data URI instead: browsers never run script or fire
+    // event-handler attributes for SVG loaded as an image resource, so this
+    // strips the executable subset while still rendering shapes/paths/
+    // gradients/text pixel-identically. Mirrors the desktop WidgetRenderer's
+    // data:image/svg+xml Image source.
+    const svgText = String(node.svg || "");
+    const el = document.createElement("img");
+    el.alt = "";
+    el.style.maxWidth = "100%";
+    if (node.w != null) el.style.width = px(node.w, "auto");
+    if (node.h != null) el.style.height = px(node.h, "auto");
+    if (svgText) {
+      try {
+        el.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgText)));
+      } catch (e) { /* malformed markup -> leave src unset */ }
+    }
     return el;
   }
   // pager/canvas and unknown -> render children if any, else a small label.
@@ -966,6 +1070,16 @@ const BROWSER_PRIMER =
   "4) If something genuinely can't be done with the browser tools, say so plainly " +
   "instead of falling back to real-screen control.]";
 
+// Declare which session(s) this panel wants live events for, so the daemon
+// scopes delivery to just that session instead of the unscoped legacy
+// broadcast (every session's events sent to every unsubscribed control
+// client). Mirrors Bridge.cpp's syncSubscriptions(); tolerates older daemons
+// that don't implement session.subscribe (the daemon then just keeps
+// broadcasting, same as before this fix). Best-effort — never blocks the UI.
+function syncSessionSubscription() {
+  rpc("session.subscribe", { session_ids: sessionId ? [sessionId] : [] }).catch(() => {});
+}
+
 async function ensureSession() {
   if (sessionId) return sessionId;
   const brain = els.brain.value || "codex";
@@ -976,6 +1090,7 @@ async function ensureSession() {
   sessionId = res.session_id;
   if (!sessionId) throw new Error("session.create returned no session_id");
   sessionPrimed = false;
+  syncSessionSubscription();
   return sessionId;
 }
 
@@ -1107,6 +1222,7 @@ async function pickSession(s) {
   closeSessions();
   sessionId = s.id;
   sessionPrimed = true;              // existing convo — don't re-inject the primer
+  syncSessionSubscription();
   // Reflect the session's brain/model in the pickers (best-effort).
   if (s.brain && [...els.brain.options].some((o) => o.value === s.brain)) {
     els.brain.value = s.brain;
@@ -1160,6 +1276,7 @@ function newSession() {
   closeSessions();
   sessionId = null;
   sessionPrimed = false;
+  syncSessionSubscription();
   clearTranscript();
   addSys("New conversation — your next message starts a fresh session.");
 }
@@ -1227,14 +1344,26 @@ async function handleSlash(text) {
 // friendly inline notice — never a silent drop.
 let pendingImages = [];
 
+// Text-only model families the api brain is known NOT to see images with —
+// everything else (incl. the api-brain default and Ollama llava) is assumed
+// vision-capable, since daemon/ApiBrain never gates on model name and nearly
+// every current model family is multimodal. Blocking is only ever a friendly
+// notice (see the paste handler below) — attaching an image never silently drops.
+const VISION_TEXT_ONLY = [
+  "gpt-3.5", "o1-mini", "o1-preview", "text-", "davinci", "babbage", "curie",
+  "ada", "code-", "whisper", "embedding", "moderation", "tts-",
+  "deepseek-r1", "mistral-nemo", "mixtral", "llama-2", "llama2",
+];
+
 function supportsVision(brain, model) {
   // Mirror of the desktop predicate: codex (--image) and claude (Read tool)
-  // always see images; the api brain only for vision model families.
+  // always see images; the api brain sees images for any model EXCEPT the
+  // known text-only families above (allow-unless-known-text-only, not
+  // deny-unless-known-vision — the old allowlist blocked working models).
   if (brain === "codex" || brain === "claude") return true;
   const m = String(model || "").toLowerCase();
-  return m.startsWith("gpt-") || m.startsWith("o3") || m.startsWith("o4") ||
-         m.includes("claude") || m.startsWith("gemini") || m.startsWith("grok") ||
-         m.startsWith("pixtral") || m.startsWith("mistral-small");
+  if (!m) return true; // "" = daemon default model -> assume vision-capable
+  return !VISION_TEXT_ONLY.some((p) => m.includes(p));
 }
 
 function renderImageChips() {
@@ -1344,6 +1473,7 @@ async function onBrainChange() {
   sessionId = null;
   endLiveBubble();
   endTurn();
+  syncSessionSubscription();
   loadModels(els.brain.value);  // repopulate models for the new brain
   addSys("brain set to " + els.brain.value + " — a new session starts on your next message");
 }

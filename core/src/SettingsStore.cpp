@@ -688,6 +688,14 @@ bool SettingsStore::saveConfig()
         m_lastError = QStringLiteral("cannot commit config.toml: ") + sf.errorString();
         return false;
     }
+    if (!QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+        // Best-effort hardening only: config.toml is already durably committed,
+        // so a failure to tighten permissions (FAT/exFAT/network/overlay mounts,
+        // transient AV lock on Windows) must NOT fail the save — gating on it
+        // would spuriously abort callers' follow-up steps (voice-lib update,
+        // phone propagation) even though the new settings are correctly on disk.
+        qWarning() << "SettingsStore: could not chmod 0600 config.toml (non-fatal)";
+    }
     return true;
 }
 

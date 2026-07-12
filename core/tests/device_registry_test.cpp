@@ -153,6 +153,35 @@ int main()
         pm.start(QStringLiteral("h"), QStringLiteral("f"), -1);
     check(!pm.isValid(expired.code), "expired code is invalid");
 
+    // --- brute-force throttle on consume() ---------------------------------
+    // A legit user who fat-fingers a few times then enters the right code must
+    // NOT be locked out, and a success must reset the counter.
+    {
+        jarvis::PairingManager tpm;
+        const jarvis::PairingCode good = tpm.start(QStringLiteral("h"), fp1);
+        const QString wrong = good.code == QStringLiteral("111111")
+                                  ? QStringLiteral("222222") : QStringLiteral("111111");
+        for (int i = 0; i < 4; ++i)  // below the 5-attempt threshold
+            check(!tpm.consume(wrong), "pre-threshold wrong guess is rejected");
+        check(tpm.consume(good.code), "correct code still consumes after <threshold wrong guesses");
+        const jarvis::PairingCode again = tpm.start(QStringLiteral("h"), fp1);
+        check(tpm.consume(again.code), "success reset the counter — no lingering cooldown");
+    }
+    // Hitting the failed-attempt threshold drops all pending codes AND opens a
+    // cooldown, so guessing can't be continued and even a fresh valid code is
+    // refused until the window elapses.
+    {
+        jarvis::PairingManager tpm;
+        const jarvis::PairingCode victim = tpm.start(QStringLiteral("h"), fp1);
+        const QString wrong = victim.code == QStringLiteral("111111")
+                                  ? QStringLiteral("222222") : QStringLiteral("111111");
+        for (int i = 0; i < 5; ++i)  // reach the threshold
+            (void)tpm.consume(wrong);
+        check(!tpm.consume(victim.code), "brute-force threshold invalidated the pending code");
+        const jarvis::PairingCode fresh = tpm.start(QStringLiteral("h"), fp1);
+        check(!tpm.consume(fresh.code), "a fresh valid code is refused while in cooldown");
+    }
+
     if (g_failures == 0) {
         std::fprintf(stderr, "\nPASS device_registry_test\n");
         return 0;

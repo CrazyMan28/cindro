@@ -363,10 +363,19 @@ Item {
     Component {
         id: imageComp
         Image {
+            readonly property string rawUrl: (root.node && typeof root.node.url === "string")
+                                              ? root.node.url : ""
+            // SCHEME GUARD (mirrors linkComp's safe-scheme pattern): only ever
+            // load data:image/, http:// or https:// — never file:/qrc:/other
+            // schemes, which would let a widget read local files or probe
+            // internal resources instead of just rendering a network image.
+            readonly property bool safe: rawUrl.indexOf("data:image/") === 0 ||
+                                          rawUrl.indexOf("http://") === 0 ||
+                                          rawUrl.indexOf("https://") === 0
             // implicitWidth/implicitHeight on Image are read-only (derived from
             // sourceSize), so size the box explicitly from the spec's w/h, falling
             // back to a 120px square. PreserveAspectFit letterboxes within it.
-            source: (root.node && typeof root.node.url === "string") ? root.node.url : ""
+            source: safe ? rawUrl : ""
             width: root.numOr(root.node ? root.node.w : undefined, 120)
             height: root.numOr(root.node ? root.node.h : undefined, 120)
             fillMode: Image.PreserveAspectFit

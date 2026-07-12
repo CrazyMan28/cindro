@@ -1,0 +1,102 @@
+{
+  "_schema": [
+    "Shared conformance fixture for trust-policy glob matching, consumed by",
+    "BOTH the C++ mirror (core/tests/trust_policy_test.cpp -> TrustPolicyStore",
+    "::evaluate/globMatch) and the Python source of truth",
+    "(computer-use/computer_use_mcp/policy.py, fnmatch-based -- see its test",
+    "at computer-use/tests/test_policy.py). Keep this filename/path and the",
+    "vector object shape stable across both consumers.",
+    "",
+    "Each vector in \"vectors\" is a single glob-match probe:",
+    "  pattern  - the glob rule pattern under test.",
+    "  value    - the string matched against `pattern`.",
+    "  tool     - true => probe TOOL-field matching semantics",
+    "             (case-SENSITIVE, e.g. TrustPolicyStore::evaluate()'s tool arg).",
+    "  app      - true => probe APP-field matching semantics",
+    "             (case-INSENSITIVE, '*'/'?' cross path separators like",
+    "             fnmatch, e.g. TrustPolicyStore::evaluate()'s app arg).",
+    "             Exactly one of tool/app is true per vector.",
+    "  expected - whether `pattern` should match `value` under that context.",
+    "",
+    "Seeded with the proven-divergent cases between Qt's",
+    "QRegularExpression::wildcardToRegularExpression() and Python's",
+    "fnmatch.translate(): (1) '*' must cross path separators ('/' and '\\\\'),",
+    "and (2) a leading '^' inside a bracket expression ('[^bank]') is a",
+    "LITERAL caret in fnmatch -- only a leading '!' negates -- whereas plain",
+    "regex bracket syntax treats '^' as negation."
+  ],
+  "vectors": [
+    {
+      "pattern": "*bank*",
+      "value": "C:/Users/kihi2024/Documents/bank/statement.pdf",
+      "tool": false,
+      "app": true,
+      "expected": true,
+      "note": "app glob must match across a path separator (NonPathWildcardConversion)"
+    },
+    {
+      "pattern": "*bank*",
+      "value": "My Bank Login",
+      "tool": false,
+      "app": true,
+      "expected": true,
+      "note": "regression guard: no-separator case must keep matching"
+    },
+    {
+      "pattern": "[^bank]",
+      "value": "x",
+      "tool": true,
+      "app": false,
+      "expected": false,
+      "note": "leading '^' in [...] is LITERAL (fnmatch), not negation: 'x' is not one of ^,b,a,n,k"
+    },
+    {
+      "pattern": "[^bank]",
+      "value": "b",
+      "tool": true,
+      "app": false,
+      "expected": true,
+      "note": "leading '^' in [...] is LITERAL (fnmatch): 'b' IS one of ^,b,a,n,k"
+    },
+    {
+      "pattern": "[!bank]",
+      "value": "x",
+      "tool": false,
+      "app": true,
+      "expected": true,
+      "note": "regression guard: '!' still negates -- 'x' is not b,a,n,k so it matches"
+    },
+    {
+      "pattern": "[!bank]",
+      "value": "b",
+      "tool": false,
+      "app": true,
+      "expected": false,
+      "note": "regression guard: '!' still negates -- 'b' IS excluded"
+    },
+    {
+      "pattern": "browser_*",
+      "value": "browser_click",
+      "tool": true,
+      "app": false,
+      "expected": true,
+      "note": "regression guard: plain prefix-star tool match"
+    },
+    {
+      "pattern": "Browser_*",
+      "value": "browser_click",
+      "tool": true,
+      "app": false,
+      "expected": false,
+      "note": "regression guard: tool matching stays case-SENSITIVE"
+    },
+    {
+      "pattern": "*bank*",
+      "value": "MY BANK LOGIN",
+      "tool": false,
+      "app": true,
+      "expected": true,
+      "note": "regression guard: app matching stays case-INSENSITIVE"
+    }
+  ]
+}

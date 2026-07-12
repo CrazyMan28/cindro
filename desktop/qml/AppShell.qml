@@ -5,9 +5,9 @@ import JarvisSidebar
 
 // AppShell — the full multi-page application body. A slim left NavRail routes
 // between the pages rendered in the content area on the right:
-//   0 Home · 1 Chat · 2 Voice · 3 Computer · 4 Canvas · 5 Widgets · 6 Sessions ·
-//   7 Memory · 8 Skills · 9 Agents · 10 Schedules · 11 Activity · 12 Graph ·
-//   13 MCP · 14 Plugins · 15 SSH · 16 Phone · 17 Settings.
+//   0 Home · 1 Chat · 2 Voice · 3 Computer · 4 Browser · 5 Canvas · 6 Widgets ·
+//   7 Sessions · 8 Memory · 9 Skills · 10 Agents · 11 Schedules · 12 Activity ·
+//   13 Graph · 14 Replay · 15 MCP · 16 Plugins · 17 Outpost · 18 Phone · 19 Settings.
 //
 // NOTE: this switch + NavRail.items MUST stay in lock-step (same order, same
 // length). The page Repeater derives its count from rail.items.length so adding
@@ -57,7 +57,7 @@ Item {
             // Watching the agent desktop = a viewer of this session, so the daemon's
             // idle-teardown keeps the nested desktop alive while it's on screen.
             bridge.setPageViewing(bridge.sessionId, "mirror")
-        } else if (currentIndex === 0 || currentIndex === 4 || currentIndex === 5) { // Home / Canvas / Widgets
+        } else if (currentIndex === 0 || currentIndex === 5 || currentIndex === 6) { // Home / Canvas / Widgets
             bridge.setPageViewing("all", "canvas")
             bridge.replayAllWidgets()
         } else {
@@ -87,7 +87,7 @@ Item {
     // Set by the Replay loader so the Sessions page can drive it (open a session
     // into Mission Control Replay). The Replay page's index in the rail.
     property var replayPanel: null
-    readonly property int replayIndex: 13
+    readonly property int replayIndex: 14
 
     // Singleton-style access to shared inline widgets (Widgets.PillButton, etc.).
     // QML resolves `Widgets` inside pages because it's in the same module.
@@ -172,21 +172,22 @@ Item {
                             case 1: return chatComp
                             case 2: return voiceComp
                             case 3: return computerComp
-                            case 4: return canvasComp
-                            case 5: return widgetsComp
-                            case 6: return sessionsComp
-                            case 7: return memoryComp
-                            case 8: return skillsComp
-                            case 9: return agentsComp
-                            case 10: return schedulesComp
-                            case 11: return activityComp
-                            case 12: return memGraphComp
-                            case 13: return replayComp
-                            case 14: return mcpComp
-                            case 15: return pluginsComp
-                            case 16: return outpostComp
-                            case 17: return phoneComp
-                            case 18: return settingsComp
+                            case 4: return browserComp
+                            case 5: return canvasComp
+                            case 6: return widgetsComp
+                            case 7: return sessionsComp
+                            case 8: return memoryComp
+                            case 9: return skillsComp
+                            case 10: return agentsComp
+                            case 11: return schedulesComp
+                            case 12: return activityComp
+                            case 13: return memGraphComp
+                            case 14: return replayComp
+                            case 15: return mcpComp
+                            case 16: return pluginsComp
+                            case 17: return outpostComp
+                            case 18: return phoneComp
+                            case 19: return settingsComp
                             }
                         }
                     }
@@ -224,7 +225,7 @@ Item {
         id: homeComp
         HomePage {
             onOpenSession: function(sid) {
-                if (sid.length === 0) { shell.currentIndex = 6; return }  // "All sessions"
+                if (sid.length === 0) { shell.currentIndex = 7; return }  // "All sessions"
                 bridge.openSession(sid)
                 shell.currentIndex = 1
             }
@@ -232,7 +233,7 @@ Item {
                 if (shell.chatPanel) shell.chatPanel.startNewChat()
                 shell.currentIndex = 1
             }
-            onGoCanvas: function() { shell.currentIndex = 4 }
+            onGoCanvas: function() { shell.currentIndex = 5 }
             onGoComputer: function() { shell.currentIndex = shell.computerIndex }
             onGoVoice: function() { shell.currentIndex = 2 }
         }
@@ -245,12 +246,13 @@ Item {
             onRequestComputerPage: shell.currentIndex = shell.computerIndex
             // Slash-command navigation: /voice, /agents, /skills jump to their pages.
             onRequestVoice: shell.currentIndex = 2
-            onRequestAgents: shell.currentIndex = 9
-            onRequestSkills: shell.currentIndex = 8
+            onRequestAgents: shell.currentIndex = 10
+            onRequestSkills: shell.currentIndex = 9
         }
     }
     Component { id: voiceComp;    VoiceMode {} }
     Component { id: computerComp; ComputerPage { pageVisible: shell.currentIndex === 3 } }
+    Component { id: browserComp;  BrowserPage {} }
     Component {
         id: canvasComp
         CanvasPage {
@@ -326,7 +328,7 @@ Item {
             // jumps to Chat so the user sees it land.
             onRenderedToChat: function() { shell.currentIndex = 1 }
             // "Render to canvas" jumps to the Canvas page to show the result.
-            onRenderedToCanvas: function() { shell.currentIndex = 4 }
+            onRenderedToCanvas: function() { shell.currentIndex = 5 }
         }
     }
 }

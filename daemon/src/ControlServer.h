@@ -105,8 +105,11 @@ public:
     // forwards reads/actions here; biometric-tier methods (settings.set, mcp.add,
     // take_over.request, plugins install/remove) are gated by the phone before
     // they reach this dispatcher. Returns ok=false unknown_method if `method` is
-    // not part of the shared config surface.
-    Response dispatchConfigMethod(const Request &req);
+    // not part of the shared config surface. `remote` marks a call arriving over
+    // the phone/device channel (DeviceServer passes true) so a few methods can
+    // refuse device-unsafe variants — e.g. file.push{path} (arbitrary local-file
+    // read) is rejected for a remote caller; loopback callers pass false.
+    Response dispatchConfigMethod(const Request &req, bool remote = false);
     static bool isConfigMethod(const QString &method);
 
     // Voice (Mistral Voxtral, laptop-proxied). Shared by Contract A + Contract C.
@@ -185,7 +188,11 @@ public:
     // user's ACTIVE real session via the global :8794 engine. requestTakeOver
     // records intent + emits the agent-driving overlay state; the actual
     // approval flow rides Contract A approval.respond / Contract C biometric.
-    bool requestTakeOver(const QString &sessionId, QString *err);
+    // On success registers a fresh, random, single-use approval id in
+    // m_pendingApprovals and emits the approval event carrying it; the minted id
+    // is returned via *approvalIdOut (when non-null) for the RPC response.
+    bool requestTakeOver(const QString &sessionId, QString *err,
+                         QString *approvalIdOut = nullptr);
     bool setTakeOverActive(const QString &sessionId, bool active);
     bool takeOverActive(const QString &sessionId) const
     {
@@ -467,9 +474,13 @@ private:
     Response handleOutpostScreenshot(const Request &req);
     Response handleOutpostRevoke(const Request &req);
     // Loopback call to outpost-mcp; returns its parsed JSON body. Sets
-    // *reachable=false on transport failure.
+    // *reachable=false on transport failure. `localTimeoutMs` bounds the local
+    // wait — the default 60s suits the quick list/pair/screenshot/revoke calls,
+    // while a long outpost.exec/install step passes a larger value (scaled off
+    // the remote timeout) so the client doesn't abort work still running remotely.
     QJsonObject outpostHttp(const QString &httpMethod, const QString &path,
-                            const QJsonObject &body, bool *reachable);
+                            const QJsonObject &body, bool *reachable,
+                            int localTimeoutMs = 60000);
     // Proxmox workload manager: installs the always-on jarvisd-proxmox-agent +
     // proxmox-mcp onto a paired machine, and the status/report/restart_vm/
     // set_blocklist ops against it — every one of them is an outpost.exec
@@ -650,6 +661,13 @@ private:
     // Epoch-ms until which a desktop unlock is auto-approved (granted by a deliberate
     // phone-app action). 0 = no grace.
     qint64 m_deviceAuthGraceUntil = 0;
+    // Brute-force throttle for the desktop unlock PIN (handleAuthVerifyPin only):
+    // after kPinMaxAttempts consecutive wrong PINs, further attempts are refused
+    // ('locked_out') for an escalating backoff window. A correct PIN resets both.
+    static constexpr int kPinMaxAttempts = 5;
+    static constexpr qint64 kPinMaxBackoffMs = 5 * 60 * 1000; // 5 min cap
+    int m_pinFailCount = 0;
+    qint64 m_pinLockedUntilMs = 0;
 
     // Model-generated session titles: a cheap async Mistral chat call names the
     // session from its first user message (replaces the truncated placeholder).
@@ -775,6 +793,11 @@ private:
     QSet<QString> m_toolLoopStopping;
     // Sessions that have already received the one-time co-work guidance preamble.
     QSet<QString> m_coworkGuided;
+    // Sessions that have already received the one-time policy preamble
+    // (permission_level + agent_mode + trust-policy clauses). Fires on turn 1 of
+    // EVERY non-subagent session, independent of whether an agent desktop exists
+    // — the co-work screen-targeting guide (m_coworkGuided) stays gated on one.
+    QSet<QString> m_policyGuided;
     // Per-session custom-agent system prompt (set when a session runs AS an agent)
     // and the set of sessions that have already had it injected (turn 1 only).
     QHash<QString, QString> m_sessionAgentPrompt;
@@ -794,6 +817,22 @@ private:
     AgentDesktop m_agentDesktops{AgentDesktop::Options{}};
     // sessionId set: real-session take-over currently active (overlay shown).
     QSet<QString> m_takeOverActive;
+    // Pending daemon-side gated approvals (real-screen take-over + injection gate),
+    // keyed by a RANDOM, unguessable approval id. respondApprovalFor() only honors
+    // an id that is actually pending for THAT exact session, so a forged /
+    // enumerated "takeover-<sid>"/"inject-<sid>" can no longer trigger the action.
+    static constexpr qint64 kApprovalTtlMs = 10 * 60 * 1000; // 10 min
+    struct PendingApproval {
+        QString sessionId;
+        QString kind;         // "takeover" | "inject"
+        qint64 expiresAt = 0; // epoch ms
+    };
+    QHash<QString, PendingApproval> m_pendingApprovals;
+    // Drop TTL-expired pending approvals AND any prior pending approval for this
+    // (sessionId, kind) before registering a new one, so a session that re-gates
+    // repeatedly (or a device that requests take-over then never answers) can't
+    // grow m_pendingApprovals without bound; only the latest id stays honored.
+    void reapPendingApprovals(const QString &sessionId, const QString &kind);
     // sessionIds whose nested desktop was AUTO-spawned (let_jarvis_use_computer)
     // for a non-co-work chat. These are torn down when the session goes idle so a
     // plain chat doesn't leak a compositor per turn; an EXPLICIT coworker+agent

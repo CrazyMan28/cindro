@@ -203,7 +203,7 @@ def gate(tool: str) -> None:
 # --- pre-exec command scanner (jarvis#76 feature 12) ------------------------
 # The free-form command tools run their `command` arg via subprocess(shell=True)
 # in a DETACHED runner — this call_tool wrapper is the ONLY window to inspect it.
-_CMD_TOOLS = {"bg_start", "monitor", "watch", "widget_live"}
+_CMD_TOOLS = {"bg_start", "monitor", "watch", "widget_live", "app_launch"}
 
 
 def _log_cmd(tool: str, cmd: str, hit: "cmd_scan.Result",
@@ -237,8 +237,10 @@ def _scan_command(tool: str, arguments: Any) -> None:
         return
     if tool not in _CMD_TOOLS or not isinstance(arguments, dict):
         return
-    # All four tools take a top-level `command`; widget_live MAY additionally
-    # carry a nested `spec.command` — scan both if present.
+    # All four command tools take a top-level `command`; widget_live MAY
+    # additionally carry a nested `spec.command` — scan both if present.
+    # app_launch's raw-command capability uses a different arg key ('app')
+    # and must be scanned unconditionally (it defaults to the real host seat).
     candidates: list[str] = []
     top = arguments.get("command")
     if isinstance(top, str) and top.strip():
@@ -248,6 +250,10 @@ def _scan_command(tool: str, arguments: Any) -> None:
         sc = spec.get("command")
         if isinstance(sc, str) and sc.strip() and sc not in candidates:
             candidates.append(sc)
+    if tool == "app_launch":
+        app_arg = arguments.get("app")
+        if isinstance(app_arg, str) and app_arg.strip() and app_arg not in candidates:
+            candidates.append(app_arg)
 
     for cmd in candidates:
         hit = cmd_scan.scan(cmd)
@@ -266,6 +272,64 @@ def _scan_command(tool: str, arguments: Any) -> None:
         raise PermissionError(f"command blocked by scanner: {hit.reason}")
 
 
+# --- TUI custom "log" page approval gate -------------------------------------
+# tui_add_page/tui_edit_page (cli/jarvis_cli) let the model make the terminal
+# client auto-display and live-tail an arbitrary local file (kind == "log").
+# Arbitrary paths are the intended feature (no allow-list) but disclosing a
+# file's contents to the model needs the same explicit-approval gate as any
+# other filesystem read outside the sandbox. Ask once per path; a path the
+# user already approved (via add or a prior edit) is not re-asked.
+_TUI_LOG_TOOLS = {"tui_add_page", "tui_edit_page"}
+_approved_log_paths: set[str] = set()
+
+
+def _tui_log_path(arguments: dict) -> str | None:
+    config = arguments.get("config")
+    if isinstance(config, str):
+        try:
+            config = json.loads(config) if config.strip() else {}
+        except Exception:
+            return None
+    if not isinstance(config, dict):
+        return None
+    path = config.get("path")
+    return path if isinstance(path, str) and path.strip() else None
+
+
+def _scan_tui_layout(tool: str, arguments: Any) -> None:
+    """Gate a custom TUI 'log' page's file path behind an explicit Allow.
+
+    tui_add_page carries `kind` directly, so it only gates when kind=='log'.
+    tui_edit_page only replaces `config` (kind is fixed at creation and not
+    resent), so a non-empty config.path there is treated as a log-page path
+    too — every OTHER kind's config shape (table/markdown/widget/list) is
+    documented without a `path` key. Disable with env ``JARVIS_CMD_SCAN=0``
+    (same escape hatch as the command scanner; both gate model-supplied
+    filesystem/process access before the daemon call).
+    """
+    if os.environ.get("JARVIS_CMD_SCAN", "1") == "0":
+        return
+    if tool not in _TUI_LOG_TOOLS or not isinstance(arguments, dict):
+        return
+    if tool == "tui_add_page" and str(arguments.get("kind") or "") != "log":
+        return
+    path = _tui_log_path(arguments)
+    if not path or path in _approved_log_paths:
+        return
+    q = f"Jarvis wants to add/edit a TUI page that tails local file: {path}. Allow?"
+    try:
+        res = ask_bus.ask(q, ["Allow", "Deny"], timeout=_ASK_TIMEOUT)
+        answer = str((res or {}).get("answer", "")).strip().lower()
+    except Exception:
+        answer = ""
+    if answer == "allow":
+        _approved_log_paths.add(path)
+        return
+    raise PermissionError(
+        f"tui '{tool}' blocked: log page path {path!r} was not approved by the user."
+    )
+
+
 def install(mcp) -> None:
     """Wrap FastMCP's ToolManager.call_tool so EVERY tool passes the gate."""
     mgr = mcp._tool_manager
@@ -276,6 +340,7 @@ def install(mcp) -> None:
     async def gated_call_tool(name: str, arguments: dict, *args, **kwargs):
         gate(name)  # trust policy: raises to reject; FastMCP turns it into an error
         _scan_command(name, arguments)  # command scanner: raises to reject
+        _scan_tui_layout(name, arguments)  # tui log-page path approval: raises to reject
         return await orig(name, arguments, *args, **kwargs)
 
     mgr.call_tool = gated_call_tool

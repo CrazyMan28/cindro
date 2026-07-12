@@ -83,6 +83,11 @@ public:
 
     bool isRunning(const QString &id) const;
     qint64 pidOf(const QString &id) const;
+    // True iff the running plugin `id` is confined by the systemd-run sandbox
+    // (RunningPlugin::usesSystemdRun) rather than the unconfined plain-QProcess
+    // fallback. False if not running. Visibility only — callers should NOT gate
+    // the launch on this; the fallback is a documented, intentional degrade.
+    bool isSandboxed(const QString &id) const;
 
     QString lastError() const { return m_lastError; }
 

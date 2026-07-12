@@ -8,7 +8,10 @@ Protocol (JSON text frames):
 
 import asyncio
 import json
+import os
+import time
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -21,6 +24,28 @@ NOT_CONNECTED = (
     "and enabled at chrome://extensions (and the token/port set in its Options)? "
     "It reconnects within ~30s of Chrome starting."
 )
+
+# Audit trail for the "newest wins" single-connection replacement below (jarvis
+# audit finding: silent displacement of the real extension by any bearer
+# holder). Same private-jsonl-log style as selfheal.py/policy.py.
+_LOG_FILE = Path(
+    os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")
+) / "jarvis" / "bridge_log.jsonl"
+
+
+def _log_displaced(old: WebSocket, new: WebSocket) -> None:
+    """Audit an active extension connection being replaced (never fatal)."""
+    try:
+        _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with _LOG_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "ts": int(time.time() * 1000),
+                "event": "extension_bridge_displaced",
+                "old_peer": getattr(old.client, "host", None),
+                "new_peer": getattr(new.client, "host", None),
+            }) + "\n")
+    except Exception:
+        pass  # audit must never break the reconnect path
 
 
 class BridgeNotConnected(RuntimeError):
@@ -57,6 +82,7 @@ class ExtensionBridge:
 
         old, self._ws = self._ws, ws
         if old is not None:
+            _log_displaced(old, ws)  # audit: token-is-the-gate, so log who displaced whom
             try:
                 await old.close(code=4000)  # replaced by a newer connection
             except Exception:

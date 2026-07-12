@@ -85,6 +85,11 @@ public:
     // Reclaim running items whose heartbeat is older than staleMs back to
     // pending (worker died / daemon restarted mid-run). Returns count.
     int reclaimStale(qint64 staleMs);
+    // Release a single claimed item back to pending, CLEARING session_id
+    // (unlike updateStatus(), which leaves session_id untouched when passed
+    // empty). Use this to un-claim a work item whose session is being torn
+    // down, so it never points at a deleted session.
+    bool releaseClaim(const QString &id);
 
 private:
     bool exec(const QString &sql);

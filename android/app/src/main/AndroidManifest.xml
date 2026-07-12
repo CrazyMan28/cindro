@@ -70,7 +70,7 @@
              Launched only via adb for screenshots; not in the launcher. -->
         <activity
             android:name=".ui.PreviewActivity"
-            android:exported="true"
+            android:exported="false"
             android:theme="@style/Theme.Jarvis" />
 
         <!-- FCM receiver: data-only pushes from jarvisd (project "the FCM project"). -->

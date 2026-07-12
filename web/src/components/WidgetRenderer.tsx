@@ -112,13 +112,23 @@ function WidgetNode(props: { node: unknown; onAction?: (a: WidgetAction) => void
         <ActionNode node={node()} tag="a" onAction={props.onAction} />
       </Match>
       <Match when={kind() === "image"}>
-        <img class="w-image" src={str(node().src)} alt={str(node().alt, "")} style={imgStyle(node())} />
+        <img class="w-image" src={safeImageUrl(node().url)} alt={str(node().alt, "")} style={imgStyle(node())} />
       </Match>
       <Match when={kind() === "svg"}>
         <SvgNode node={node()} />
       </Match>
     </Switch>
   )
+}
+
+/** Scheme allow-list for the "image" node — mirrors desktop/qml/WidgetRenderer.qml's
+ * linkComp safe-scheme pattern. Only inline data:image/ URIs (generated charts/
+ * thumbnails) and http(s) network images are allowed through; anything else
+ * (file:, javascript:, etc.) is dropped to an empty src rather than rendered. */
+function safeImageUrl(raw: unknown): string {
+  const url = str(raw)
+  const safe = url.startsWith("data:image/") || url.startsWith("http://") || url.startsWith("https://")
+  return safe ? url : ""
 }
 
 function imgStyle(node: Spec) {

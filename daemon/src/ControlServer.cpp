@@ -734,6 +734,29 @@ static QString firstModelForBrain(const QString &brain)
     return models.isEmpty() ? QString() : models.first().toString();
 }
 
+// The codex default model configured directly in ~/.codex/config.toml (the
+// `model = "..."` line, ignoring `model_*` keys), or empty when unset/unreadable.
+// Shared by handleModelList (to surface it in the picker) and coerceModelForBrain
+// (to accept it as a valid codex model instead of reverting to the static default).
+static QString codexConfiguredModel()
+{
+    QFile f(QDir::homePath() + QStringLiteral("/.codex/config.toml"));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString();
+    QTextStream in(&f);
+    while (!in.atEnd()) {
+        const QString line = in.readLine().trimmed();
+        if (line.startsWith(QStringLiteral("model")) && line.contains(QLatin1Char('='))
+            && !line.startsWith(QStringLiteral("model_"))) {
+            QString v = line.section(QLatin1Char('='), 1).trimmed();
+            if (v.size() >= 2 && v.startsWith(QLatin1Char('"')))
+                v = v.mid(1, v.size() - 2);
+            return v;
+        }
+    }
+    return QString();
+}
+
 // Guard a brain/model MISMATCH. Brain and model are picked independently, so
 // switching the brain (e.g. claude -> codex) without touching the model leaves a
 // stale foreign model selected. Sending it to the CLI is fatal: codex on a ChatGPT
@@ -752,6 +775,12 @@ QString ControlServer::coerceModelForBrain(const QString &brain, const QString &
     if (model.isEmpty())
         return model;
     if (mergedModelsForBrain(brain).contains(QJsonValue(model)))
+        return model;
+    // codex: a model set directly in ~/.codex/config.toml is legitimate even
+    // when it's not in the static/live catalog — accept the user's own pick
+    // instead of silently reverting it to the brain default.
+    if (brain == QStringLiteral("codex") && !model.isEmpty()
+        && model == codexConfiguredModel())
         return model;
     return firstModelForBrain(brain);
 }
@@ -1740,22 +1769,9 @@ Response ControlServer::handleModelList(const Request &req)
 
     // codex: merge the configured default model from ~/.codex/config.toml.
     if (brain == QStringLiteral("codex")) {
-        QFile f(QDir::homePath() + QStringLiteral("/.codex/config.toml"));
-        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-            QTextStream in(&f);
-            while (!in.atEnd()) {
-                const QString line = in.readLine().trimmed();
-                if (line.startsWith(QStringLiteral("model")) && line.contains(QLatin1Char('='))
-                    && !line.startsWith(QStringLiteral("model_"))) {
-                    QString v = line.section(QLatin1Char('='), 1).trimmed();
-                    if (v.size() >= 2 && v.startsWith(QLatin1Char('"')))
-                        v = v.mid(1, v.size() - 2);
-                    if (!v.isEmpty() && !models.contains(v))
-                        models.prepend(v);
-                    break;
-                }
-            }
-        }
+        const QString v = codexConfiguredModel();
+        if (!v.isEmpty() && !models.contains(v))
+            models.prepend(v);
     }
 
     // ollama (api brain): best-effort live tag list.
@@ -1813,6 +1829,12 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         opts.model = coerceModelForBrain(row.brain, row.model);
         opts.profile = row.profile;
         opts.sandboxMode = CodexBrain::sandboxForProfile(row.profile);
+        // RESUME prior context when re-spawning a brain for an EXISTING session
+        // (daemon restart / crash / idle-teardown): seed the codex thread id from
+        // the persisted row so the first send() resumes the real conversation
+        // instead of starting a fresh, memory-less thread. Empty for a brand-new
+        // session (no thread yet), so nothing changes there.
+        opts.resumeThreadId = row.threadId;
         // coworker sessions get every enabled MCP server (incl the built-in
         // computer-use, bearer from ~/.computer-use/config.yaml) injected as
         // `-c mcp_servers.<name>...` codex config overrides so the brain can
@@ -1860,6 +1882,11 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         opts.cwd = cwdOverride.isEmpty() ? m_config.effectiveCwd() : cwdOverride;
         opts.model = coerceModelForBrain(row.brain, row.model);
         opts.profile = row.profile;
+        // RESUME prior context when re-spawning a brain for an EXISTING session
+        // (daemon restart / crash / idle-teardown): seed the claude session id
+        // from the persisted row so the first send() resumes the real
+        // conversation. Empty for a brand-new session, so nothing changes there.
+        opts.resumeSessionId = row.threadId;
         // Pin the claude OAuth account: pro -> ~/.claude (default), max ->
         // ~/.claude-secondary. The brain ctor also defaults to Pro if empty, so
         // the brain can never accidentally inherit the Max account.
@@ -3008,12 +3035,29 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         effectiveText = QStringLiteral("[HOOK CONTEXT]\n") + hookContext +
                         QStringLiteral("\n---\n") + effectiveText;
 
+    // ONE-TIME policy preamble: the permission_level + agent_mode + trust-policy
+    // clauses must reach the model on turn 1 of EVERY non-subagent session —
+    // independent of whether an agent desktop is provisioned (the screen-targeting
+    // co-work guide below stays gated on that). Fires once per session.
+    QString policyPreamble;
+    if (!isSubagent && !m_policyGuided.contains(sessionId)) {
+        m_policyGuided.insert(sessionId);
+        // Trust policies (jarvis#71): tell the model the enforced rules up
+        // front so it plans around them instead of discovering them by being
+        // blocked at the tool layer. Reload first — the file is edited live
+        // from Settings on any surface.
+        m_trustPolicies.load();
+        policyPreamble = permissionPolicyClause() + modePolicyClause() +
+                         m_trustPolicies.preambleClause();
+    }
+
     // ONE-TIME co-work guidance: the first turn a session has computer-use, teach
     // the model the screen-targeting contract + the ASK-WHEN-AMBIGUOUS rule the
     // user asked for. Every computer-use tool takes a `which` arg: "agent" = the
     // model's own private nested desktop (default, watched on the Computer page);
     // "real" = the user's REAL screen (glowing banner shows). If the user doesn't
     // say whose screen, the model MUST ask_user first.
+    QString guide;
     if (!isSubagent && m_agentDesktops.has(sessionId) && !m_coworkGuided.contains(sessionId)) {
         m_coworkGuided.insert(sessionId);
         // MSVC's classic preprocessor chokes on a bare #ifdef mid-argument-list
@@ -3028,7 +3072,7 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
 #define JARVIS_LIVE_CPU_CMD_EXAMPLE \
     "\"top -bn1 | awk '/Cpu/{print 100-$8}'\", "
 #endif
-        const QString guide = QStringLiteral(
+        guide = QStringLiteral(
             "[Jarvis co-work — READ FIRST] You have TWO separate computer-use tool "
             "sets, plus ask_user, schedule_task, remember/recall/forget, create_skill.\n"
             "  * The \"real_screen\" tools operate the USER'S REAL screen + windows "
@@ -3197,15 +3241,14 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "• MODES — the user selects plan / build / co-worker in Settings; follow "
             "the mode clause appended below.");
 #undef JARVIS_LIVE_CPU_CMD_EXAMPLE
-        // Trust policies (jarvis#71): tell the model the enforced rules up
-        // front so it plans around them instead of discovering them by being
-        // blocked at the tool layer. Reload first — the file is edited live
-        // from Settings on any surface.
-        m_trustPolicies.load();
-        effectiveText = guide + permissionPolicyClause() + modePolicyClause() +
-                        m_trustPolicies.preambleClause() +
-                        QStringLiteral("\n---\n") + effectiveText;
     }
+
+    // Prepend whatever fired this turn. When BOTH fire (an agent-desktop session's
+    // turn 1) the assembly is identical to before: guide + permission + mode +
+    // trust-policy clauses + separator + the rest.
+    if (!guide.isEmpty() || !policyPreamble.isEmpty())
+        effectiveText = guide + policyPreamble +
+                        QStringLiteral("\n---\n") + effectiveText;
 
     // ONE-TIME agent role injection: if this session runs AS a custom agent, put
     // its system prompt at the very FRONT of the first turn so it dominates.
@@ -3266,12 +3309,20 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     if (m_takeOverActive.contains(sessionId))
         setTakeOverActive(sessionId, false);
     m_injectionHeld.remove(sessionId);
+    // Drop any pending take-over/injection approvals for this (now-gone) session.
+    for (auto it = m_pendingApprovals.begin(); it != m_pendingApprovals.end();) {
+        if (it->sessionId == sessionId)
+            it = m_pendingApprovals.erase(it);
+        else
+            ++it;
+    }
     // 3) Tear down the nested agent desktop (compositor + per-session engine) and
     //    drop its port/bearer reservation — the session is gone for good.
     m_agentDesktops.releaseSession(sessionId);
     m_autoComputerSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_coworkGuided.remove(sessionId);
+    m_policyGuided.remove(sessionId);
     m_sessionAgentPrompt.remove(sessionId);
     m_agentGuided.remove(sessionId);
     m_subagentPendingWake.remove(sessionId);   // as a child awaiting parent-wake
@@ -3290,25 +3341,55 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     return true;
 }
 
+// A random, unguessable approval id (kind prefix kept as a routing hint only —
+// the pending-approval registry, not the prefix, is what authorizes the action).
+static QString genApprovalId(const QString &kind)
+{
+    auto *rng = QRandomGenerator::system();
+    QByteArray bytes(16, Qt::Uninitialized);
+    for (int i = 0; i < bytes.size(); ++i)
+        bytes[i] = char(rng->bounded(256));
+    return kind + QLatin1Char('-') + QString::fromLatin1(bytes.toHex());
+}
+
 bool ControlServer::respondApprovalFor(const QString &sessionId, const QString &approvalId,
                                        const QString &decision, QString *err)
 {
-    // A take-over approval is daemon-side (no brain involvement): allow/always
-    // flips the real-session take-over ON (overlay shown), deny clears it.
-    if (approvalId.startsWith(QStringLiteral("takeover-"))) {
+    // Daemon-side gated approvals (real-screen take-over + injection gate) are
+    // authorized ONLY through the pending-approval registry: the approval id must
+    // be actually pending for THIS exact session (defeats a forged / enumerated
+    // "takeover-<sid>"/"inject-<sid>"). Brain-issued tool approvals use ids that
+    // are never in the registry, so they fall through to the brain below.
+    const bool daemonKind = approvalId.startsWith(QStringLiteral("takeover-")) ||
+                            approvalId.startsWith(QStringLiteral("inject-"));
+    if (daemonKind) {
+        auto it = m_pendingApprovals.find(approvalId);
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const bool expired = (it != m_pendingApprovals.end()) &&
+                             it->expiresAt != 0 && now > it->expiresAt;
+        if (it == m_pendingApprovals.end() || it->sessionId != sessionId || expired) {
+            if (expired)
+                m_pendingApprovals.erase(it); // reap the stale entry
+            if (err)
+                *err = QStringLiteral("no pending approval matches this id/session");
+            return false;
+        }
+        const PendingApproval pa = it.value();
+        m_pendingApprovals.erase(it); // single-use
         const bool allow = (decision == QStringLiteral("allow") ||
                             decision == QStringLiteral("always"));
-        setTakeOverActive(sessionId, allow);
-        return true;
-    }
 
-    // An injection-gate approval (BUILD_SPEC prompt-injection gating): the user
-    // confirmed the held turn is safe. allow/always resumes the held turn
-    // (bypassing the gate this time); deny drops it. Daemon-side, no brain call.
-    if (approvalId.startsWith(QStringLiteral("inject-"))) {
+        // A take-over approval is daemon-side (no brain involvement): allow/always
+        // flips the real-session take-over ON (overlay shown), deny clears it.
+        if (pa.kind == QStringLiteral("takeover")) {
+            setTakeOverActive(sessionId, allow);
+            return true;
+        }
+
+        // An injection-gate approval (BUILD_SPEC prompt-injection gating): the user
+        // confirmed the held turn is safe. allow/always resumes the held turn
+        // (bypassing the gate this time); deny drops it. Daemon-side, no brain call.
         const HeldTurn held = m_injectionHeld.take(sessionId);
-        const bool allow = (decision == QStringLiteral("allow") ||
-                            decision == QStringLiteral("always"));
         m_audit.record(QStringLiteral("injection.gate"), allow,
                        allow ? QStringLiteral("high") : QStringLiteral("low"),
                        allow ? QStringLiteral("user approved a flagged turn")
@@ -4161,6 +4242,12 @@ Response ControlServer::handlePluginsSetEnabled(const Request &req)
 
     QJsonObject ok;
     ok.insert(QStringLiteral("ok"), true);
+    // For an enabled stdio-MCP plugin, surface whether it actually got sandbox
+    // confinement so the UI can badge an unconfined fallback launch.
+    const bool isMcp = (man->kind == QStringLiteral("mcp") ||
+                        man->kind == QStringLiteral("both"));
+    if (enabled && isMcp && man->effectiveTransport() == QStringLiteral("stdio"))
+        ok.insert(QStringLiteral("sandboxed"), m_sandbox.isSandboxed(id));
     return Response::success(req.id, ok);
 }
 
@@ -4231,6 +4318,16 @@ bool ControlServer::applyPluginEnable(const PluginManifest &m, QString *err)
                 if (err) *err = m_sandbox.lastError();
                 return false;
             }
+            // Visibility (do NOT gate the launch): on a host without systemd-run
+            // the sandbox silently falls back to an UNCONFINED plain QProcess (the
+            // documented fallback). Record a high-risk audit line so the operator
+            // can see the granted permissions are not actually being enforced.
+            if (!m_sandbox.isSandboxed(m.id))
+                m_audit.record(QStringLiteral("plugins.set_enabled"), true,
+                               QStringLiteral("high"),
+                               QStringLiteral("plugin ") + m.id +
+                                   QStringLiteral(" enabled WITHOUT sandbox confinement "
+                                                  "— granted permissions not enforced"));
         }
     }
 
@@ -4391,7 +4488,19 @@ Response ControlServer::handleAgentDesktopInfo(const Request &req)
     return Response::success(req.id, result);
 }
 
-bool ControlServer::requestTakeOver(const QString &sessionId, QString *err)
+void ControlServer::reapPendingApprovals(const QString &sessionId, const QString &kind)
+{
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    for (auto it = m_pendingApprovals.begin(); it != m_pendingApprovals.end();) {
+        if (it->expiresAt <= now || (it->sessionId == sessionId && it->kind == kind))
+            it = m_pendingApprovals.erase(it);
+        else
+            ++it;
+    }
+}
+
+bool ControlServer::requestTakeOver(const QString &sessionId, QString *err,
+                                    QString *approvalIdOut)
 {
     Brain *brain = m_brains.value(sessionId, nullptr);
     if (!brain) {
@@ -4402,9 +4511,18 @@ bool ControlServer::requestTakeOver(const QString &sessionId, QString *err)
     // The actual approval is biometric (Contract C tier / Contract A
     // approval.respond). We surface an approval event so the phone/desktop can
     // gate it; the take-over goes ACTIVE only once setTakeOverActive(true) is
-    // called by the approval path.
+    // called by the approval path. The approval id is a fresh RANDOM token
+    // registered in m_pendingApprovals, so respondApprovalFor() can reject a
+    // forged/enumerated id instead of trusting a "takeover-<sessionId>" pattern.
+    reapPendingApprovals(sessionId, QStringLiteral("takeover"));
+    const QString approvalId = genApprovalId(QStringLiteral("takeover"));
+    m_pendingApprovals.insert(
+        approvalId, PendingApproval{sessionId, QStringLiteral("takeover"),
+                                    QDateTime::currentMSecsSinceEpoch() + kApprovalTtlMs});
+    if (approvalIdOut)
+        *approvalIdOut = approvalId;
     NormalizedBrainEvent ev = NormalizedBrainEvent::approval(
-        QStringLiteral("takeover-") + sessionId,
+        approvalId,
         QStringLiteral("Allow Jarvis to drive your REAL screen?"),
         QStringLiteral("high"));
     onBrainEvent(sessionId, ev);
@@ -4437,12 +4555,12 @@ Response ControlServer::handleTakeOverRequest(const Request &req)
 {
     const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
     QString err;
-    if (!requestTakeOver(sessionId, &err))
+    QString approvalId;
+    if (!requestTakeOver(sessionId, &err, &approvalId))
         return Response::failure(req.id, QStringLiteral("no_session"), err);
     QJsonObject result;
     result.insert(QStringLiteral("pending_approval"), true);
-    result.insert(QStringLiteral("approval_id"),
-                  QStringLiteral("takeover-") + sessionId);
+    result.insert(QStringLiteral("approval_id"), approvalId);
     return Response::success(req.id, result);
 }
 
@@ -4583,12 +4701,33 @@ Response ControlServer::handleAuthVerifyPin(const Request &req)
     if (!m_settings.hasDesktopPin())
         return Response::failure(req.id, QStringLiteral("no_pin"),
                                  QStringLiteral("no desktop PIN is set"));
+    // Brute-force throttle: once past the threshold, refuse (WITHOUT even hashing
+    // the PIN) until the escalating backoff window elapses. A correct PIN clears
+    // this below, so a legitimate unlock is never slowed.
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (m_pinLockedUntilMs > nowMs) {
+        m_audit.record(QStringLiteral("auth.verify_pin"), false, QStringLiteral("high"),
+                       QStringLiteral("desktop PIN locked out (too many attempts)"),
+                       QString(), false);
+        return Response::failure(req.id, QStringLiteral("locked_out"),
+                                 QStringLiteral("too many attempts; try again shortly"));
+    }
     if (!m_settings.verifyDesktopPin(pin)) {
+        if (++m_pinFailCount >= kPinMaxAttempts) {
+            // Escalating backoff past the threshold: 5s, 10s, 20s, ... capped.
+            const int over = m_pinFailCount - kPinMaxAttempts;
+            const qint64 backoff =
+                qMin<qint64>(kPinMaxBackoffMs, 5000LL << qMin(over, 6));
+            m_pinLockedUntilMs = nowMs + backoff;
+        }
         m_audit.record(QStringLiteral("auth.verify_pin"), false, QStringLiteral("high"),
                        QStringLiteral("wrong desktop PIN"), QString(), false);
         return Response::failure(req.id, QStringLiteral("bad_pin"),
                                  QStringLiteral("incorrect PIN"));
     }
+    // Correct PIN: clear the throttle so the next lock cycle starts fresh.
+    m_pinFailCount = 0;
+    m_pinLockedUntilMs = 0;
     const QString challengeId = req.params.value(QStringLiteral("challenge_id")).toString();
     if (!challengeId.isEmpty())
         m_authChallenges.approve(challengeId, QStringLiteral("pin"));
@@ -6119,7 +6258,7 @@ bool ControlServer::isConfigMethod(const QString &method)
     return methods.contains(method);
 }
 
-Response ControlServer::dispatchConfigMethod(const Request &req)
+Response ControlServer::dispatchConfigMethod(const Request &req, bool remote)
 {
     const QString &m = req.method;
     if (m == QStringLiteral("settings.get"))    return handleSettingsGet(req);
@@ -6157,7 +6296,17 @@ Response ControlServer::dispatchConfigMethod(const Request &req)
     if (m == QStringLiteral("voice.rename_clone")) return handleVoiceRenameClone(req);
     if (m == QStringLiteral("voice.preview_clone")) return handleVoicePreviewClone(req);
     if (m == QStringLiteral("take_over.request")) return handleTakeOverRequest(req);
-    if (m == QStringLiteral("file.push"))       return handleFilePush(req);
+    if (m == QStringLiteral("file.push")) {
+        // Over the phone/device channel, refuse a {path} source: it would read an
+        // arbitrary local file off the daemon host and hand it back via file.get.
+        // Phones send bytes inline (b64); only loopback callers (jarvis_send_file)
+        // may reference an on-disk path, and they call handleFilePush directly
+        // (never through this remote dispatcher).
+        if (remote && req.params.contains(QStringLiteral("path")))
+            return Response::failure(req.id, QStringLiteral("bad_request"),
+                                     QStringLiteral("send b64 over the device channel"));
+        return handleFilePush(req);
+    }
     if (m == QStringLiteral("file.get"))        return handleFileGet(req);
     if (m == QStringLiteral("devices.pair_start")) return handleDevicesPairStart(req);
     if (m == QStringLiteral("devices.list"))    return handleDevicesList(req);
@@ -6290,8 +6439,11 @@ void ControlServer::tickWorkQueue()
             m_kanban.heartbeat(it.value());
             ++it;
         } else {
-            // Session deleted out from under the item — reclaim it.
-            m_kanban.updateStatus(it.value(), QStringLiteral("pending"), QString());
+            // Session deleted out from under the item — reclaim it. releaseClaim
+            // clears session_id/heartbeat back to a clean pending state (updateStatus
+            // with an empty session_id deliberately leaves the column untouched, so
+            // it can't be used here to null out the now-dead session pointer).
+            m_kanban.releaseClaim(it.value());
             it = m_queueItemBySession.erase(it);
         }
     }
@@ -6961,7 +7113,8 @@ QString ControlServer::outpostPort()
 }
 
 QJsonObject ControlServer::outpostHttp(const QString &httpMethod, const QString &path,
-                                       const QJsonObject &body, bool *reachable)
+                                       const QJsonObject &body, bool *reachable,
+                                       int localTimeoutMs)
 {
     // outpost-mcp inbound bearer lives beside ours (~/.config/jarvis/outpost_mcp_token
     // by default). OUTPOST_CONFIG_DIR / OUTPOST_MCP_PORT mirror outpost_mcp/config.py's
@@ -6989,7 +7142,7 @@ QJsonObject ControlServer::outpostHttp(const QString &httpMethod, const QString 
         ? nam.get(rq) : nam.post(rq, data);
 
     QEventLoop loop;
-    QTimer::singleShot(60000, &loop, &QEventLoop::quit);
+    QTimer::singleShot(localTimeoutMs, &loop, &QEventLoop::quit);
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     loop.exec();
     if (!reply->isFinished()) {
@@ -7061,16 +7214,24 @@ Response ControlServer::handleOutpostExec(const Request &req, bool remote)
     if (machine.trimmed().isEmpty() || cmd.trimmed().isEmpty())
         return Response::failure(req.id, QStringLiteral("bad_request"),
                                  QStringLiteral("machine and cmd are required"));
+    const double timeoutSec = req.params.value(QStringLiteral("timeout")).toDouble(0);
     QJsonObject body;
     body.insert(QStringLiteral("machine"), machine);
     body.insert(QStringLiteral("cmd"), cmd);
     if (req.params.contains(QStringLiteral("timeout")))
-        body.insert(QStringLiteral("timeout"), req.params.value(QStringLiteral("timeout")).toDouble());
+        body.insert(QStringLiteral("timeout"), timeoutSec);
     if (req.params.contains(QStringLiteral("shell")))
         body.insert(QStringLiteral("shell"), req.params.value(QStringLiteral("shell")).toString());
     bool ok = false;
+    // Local wait must outlast the caller's remote timeout (+slack), with the 60s
+    // floor for a bare exec — otherwise a long-running remote step is aborted
+    // client-side while it's still running on the machine. Clamp to a 10-min
+    // ceiling (covers the 180s/300s Proxmox install steps) so a caller-supplied
+    // timeout can't pin outpostHttp's nested event loop open for days. Bound the
+    // double BEFORE the int cast to avoid overflow on an absurd value.
+    const int localMs = int(qBound(60000.0, (timeoutSec + 10) * 1000.0, 600000.0));
     const QJsonObject r = outpostHttp(QStringLiteral("POST"),
-                                      QStringLiteral("/api/exec"), body, &ok);
+                                      QStringLiteral("/api/exec"), body, &ok, localMs);
     m_audit.record(QStringLiteral("outpost.exec"), ok && r.value(QStringLiteral("ok")).toBool(),
                    QStringLiteral("high"),
                    QStringLiteral("outpost %1: %2").arg(machine, cmd.left(80)),
@@ -7135,7 +7296,11 @@ QJsonObject ControlServer::execOnMachine(const QString &machine, const QString &
     body.insert(QStringLiteral("machine"), machine);
     body.insert(QStringLiteral("cmd"), cmd);
     body.insert(QStringLiteral("timeout"), timeoutSec);
-    return outpostHttp(QStringLiteral("POST"), QStringLiteral("/api/exec"), body, reachable);
+    // Local wait outlasts the remote timeout (+slack), 60s floor — so the long
+    // Proxmox install steps (180s/300s) aren't cut off client-side mid-run.
+    const int localMs = qMax(60000, int((timeoutSec + 10) * 1000));
+    return outpostHttp(QStringLiteral("POST"), QStringLiteral("/api/exec"), body,
+                       reachable, localMs);
 }
 
 QJsonObject ControlServer::writeRemoteFile(const QString &machine, const QString &path,
@@ -8495,8 +8660,15 @@ bool ControlServer::gateForInjection(const QString &sessionId, const QString &br
     m_notify.approvalNeeded(scan.summary(), sessionId);
 
     if (brain == QStringLiteral("api")) {
+        // Random, registry-tracked approval id (same anti-forgery rationale as
+        // requestTakeOver) so only a genuinely-pending id can release the held turn.
+        reapPendingApprovals(sessionId, QStringLiteral("inject"));
+        const QString approvalId = genApprovalId(QStringLiteral("inject"));
+        m_pendingApprovals.insert(
+            approvalId, PendingApproval{sessionId, QStringLiteral("inject"),
+                                        QDateTime::currentMSecsSinceEpoch() + kApprovalTtlMs});
         NormalizedBrainEvent ev = NormalizedBrainEvent::approval(
-            QStringLiteral("inject-") + sessionId, scan.summary(), scan.risk);
+            approvalId, scan.summary(), scan.risk);
         onBrainEvent(sessionId, ev);
         return true; // caller holds the turn
     }

@@ -22,6 +22,8 @@ data class Session(
     val parentSessionId: String? = null,
     /** The custom-agent name a child session runs as (when it is a subagent). */
     val agent: String? = null,
+    /** The model this session runs (api-brain vision gating needs this — see VisionSupport). */
+    val model: String? = null,
 ) {
     val displayTitle: String
         get() = title?.takeIf { it.isNotBlank() }
@@ -40,6 +42,7 @@ data class Session(
                 ?: o.get("updatedAt")?.takeIf { !it.isJsonNull }?.asLong,
             parentSessionId = o.get("parent_session_id")?.takeIf { !it.isJsonNull }?.asString,
             agent = o.get("agent")?.takeIf { !it.isJsonNull }?.asString,
+            model = o.get("model")?.takeIf { !it.isJsonNull }?.asString,
         )
     }
 }

@@ -10,6 +10,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
@@ -19,21 +24,26 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -176,9 +186,9 @@ fun AppNav(
     LaunchedEffect(deepLinkAuthChallenge) {
         val cid = deepLinkAuthChallenge ?: return@LaunchedEffect
         if (app.pairingStore.isPaired && cid.isNotEmpty()) {
-            // Approving requires the device WS + BiometricPrompt — consider the
-            // app unlocked for this launch so the gate doesn't double-prompt.
-            appUnlocked = true
+            // The app-open gate must still hold here — ApproveScreen's own
+            // BiometricPrompt (the 2FA second factor) is what flips appUnlocked,
+            // and only once it actually succeeds (see composable(APPROVE) below).
             nav.navigate(Routes.approve(cid))
             onDeepLinkConsumed()
         }
@@ -219,6 +229,10 @@ fun AppNav(
                 app = app,
                 activity = activity,
                 challengeId = cid,
+                // Flip the app-open gate open ONLY once ApproveScreen's own
+                // BiometricPrompt actually succeeds — never preemptively — so a
+                // failed/cancelled approval still re-gates the shell behind GateScreen.
+                onUnlocked = { appUnlocked = true },
                 onDone = {
                     if (!nav.popBackStack()) {
                         nav.navigate(Routes.SHELL) {
@@ -259,6 +273,7 @@ fun AppNav(
             val vm: AgentsViewModel = viewModel(factory = AgentsViewModel.factory(app))
             AgentsScreen(
                 viewModel = vm,
+                activity = activity,
                 // Dispatching opens the spawned child session's chat.
                 onOpenChat = { sid -> nav.navigate(Routes.chat(sid)) },
             )
@@ -329,16 +344,41 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
             }
         },
     ) { padding ->
-        NavHost(
-            navController = tabNav,
-            startDestination = Routes.HOME,
-            modifier = Modifier.padding(padding),
-            // Fade-through between tabs (Material 3 Expressive motion) instead of a hard cut.
-            enterTransition = { fadeIn(tween(190)) + scaleIn(initialScale = 0.985f, animationSpec = tween(190)) },
-            exitTransition = { fadeOut(tween(110)) },
-            popEnterTransition = { fadeIn(tween(190)) },
-            popExitTransition = { fadeOut(tween(110)) },
-        ) {
+        Column(Modifier.padding(padding)) {
+            // Soft, dismissible warning if a reconnect's daemon identity fingerprint
+            // doesn't match the one pinned at pairing time (see DeviceClient). Never
+            // blocks anything — just an advisory the user can dismiss.
+            val identityWarning by app.repository.identityWarning.collectAsStateWithLifecycle()
+            identityWarning?.let { msg ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(JarvisPalette.Error.copy(alpha = 0.15f))
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        msg,
+                        color = JarvisPalette.Error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { app.repository.dismissIdentityWarning() }) {
+                        Text("Dismiss")
+                    }
+                }
+            }
+            NavHost(
+                navController = tabNav,
+                startDestination = Routes.HOME,
+                modifier = Modifier.weight(1f),
+                // Fade-through between tabs (Material 3 Expressive motion) instead of a hard cut.
+                enterTransition = { fadeIn(tween(190)) + scaleIn(initialScale = 0.985f, animationSpec = tween(190)) },
+                exitTransition = { fadeOut(tween(110)) },
+                popEnterTransition = { fadeIn(tween(190)) },
+                popExitTransition = { fadeOut(tween(110)) },
+            ) {
             composable(Routes.HOME) {
                 val vm: HomeViewModel = viewModel(factory = HomeViewModel.factory(app))
                 HomeScreen(
@@ -382,6 +422,7 @@ private fun Shell(app: JarvisApp, activity: FragmentActivity, parentNav: NavHost
                         }
                     },
                 )
+            }
             }
         }
     }

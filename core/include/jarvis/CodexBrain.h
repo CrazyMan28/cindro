@@ -52,6 +52,12 @@ public:
         // `bearer_token_env_var=<NAME>` (codex 0.135 rejects inline bearers for
         // streamable_http). Merged on top of the inherited environment.
         QMap<QString, QString> extraEnv;
+        // When non-empty, seeds m_threadId so the FIRST send() of a re-spawned
+        // brain (e.g. after a daemon restart) resumes this existing codex
+        // conversation (`codex exec resume <id>`) instead of starting fresh and
+        // losing all prior context. Set by the daemon from the session's
+        // persisted thread id.
+        QString resumeThreadId;
     };
 
     // Map a session profile to the codex sandbox mode.

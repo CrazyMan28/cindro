@@ -624,16 +624,25 @@ bool Bridge::supportsVision(const QString &brain, const QString &model) const
 {
     // Client-side mirror of what each brain does with attachments: codex passes
     // --image (all its models are multimodal), claude reads the file with its
-    // Read tool (all current claude models see images), the api brain builds a
-    // vision content array — but only for model families that accept one.
+    // Read tool (all current claude models see images). The api brain builds a
+    // vision content array for whatever model is configured, and the daemon's
+    // ApiBrain never gates on model name — so most configured chat models
+    // (including e.g. Ollama's llava, gpt-5.x, gemini, grok, pixtral, etc.) DO
+    // accept images. Default to ALLOWING and only deny the model families we
+    // KNOW are text/audio-only, so a drift here degrades to a harmless extra
+    // notice (see JarvisPanel's pasteImageFromClipboard) instead of silently
+    // blocking a working vision model.
+    // TODO: source a real vision flag from model.list instead of this heuristic.
     if (brain == QStringLiteral("codex") || brain == QStringLiteral("claude"))
         return true;
     const QString m = model.toLower();
-    return m.startsWith(QStringLiteral("gpt-")) || m.startsWith(QStringLiteral("o3")) ||
-           m.startsWith(QStringLiteral("o4")) || m.contains(QStringLiteral("claude")) ||
-           m.startsWith(QStringLiteral("gemini")) || m.startsWith(QStringLiteral("grok")) ||
-           m.startsWith(QStringLiteral("pixtral")) ||
-           m.startsWith(QStringLiteral("mistral-small"));
+    const bool knownTextOnly =
+        m.contains(QStringLiteral("embed")) || m.contains(QStringLiteral("whisper")) ||
+        m.contains(QStringLiteral("tts")) || m.contains(QStringLiteral("dall-e")) ||
+        m.contains(QStringLiteral("moderation")) ||
+        m.startsWith(QStringLiteral("davinci")) || m.startsWith(QStringLiteral("babbage")) ||
+        m.startsWith(QStringLiteral("gpt-3.5-turbo-instruct"));
+    return !knownTextOnly;
 }
 
 void Bridge::cancelSession()
@@ -3685,18 +3694,27 @@ bool Bridge::handleComputerEvent(const QString &sessionId, const QVariantMap &ev
         return true;
     }
     if (kind == QStringLiteral("driving.state") || kind == QStringLiteral("driving")) {
-        setDriving(ev.value(QStringLiteral("active")).toBool());
+        // Only arm/disarm the real-screen take-over overlay for OUR OWN driving
+        // session (set by our own session.create) — otherwise a co-worker
+        // take-over on a foreign, merely-subscribed session would spawn the
+        // banner/cursor overlay on this desktop for someone else's session.
+        if (sessionId == m_sessionId)
+            setDriving(ev.value(QStringLiteral("active")).toBool());
         return true;
     }
     if (kind == QStringLiteral("mirror.state")) {
-        const QString engineUrl = ev.value(QStringLiteral("engine_url")).toString();
-        if (!engineUrl.isEmpty())
-            setVideoEndpoint(engineUrl);
-        if (ev.value(QStringLiteral("active")).toBool()) {
-            if (sessionId == m_coworkerSessionId && !m_mirroring)
-                mirrorStart();
-        } else {
-            mirrorStop();
+        // Scope the whole mirror.state handling (engine_url + start/stop) to the
+        // co-worker session it belongs to, matching the mirrorStart() gate below.
+        if (sessionId == m_coworkerSessionId) {
+            const QString engineUrl = ev.value(QStringLiteral("engine_url")).toString();
+            if (!engineUrl.isEmpty())
+                setVideoEndpoint(engineUrl);
+            if (ev.value(QStringLiteral("active")).toBool()) {
+                if (!m_mirroring)
+                    mirrorStart();
+            } else {
+                mirrorStop();
+            }
         }
         return true;
     }

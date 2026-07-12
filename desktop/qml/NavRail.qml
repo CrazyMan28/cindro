@@ -31,6 +31,9 @@ Item {
         // Computer appears when there's a live agent desktop to show (or the user
         // is already on the page) — see `computerAvailable` + the delegate.
         { key: "computer",  label: "COMPUTER",  section: "WORKSPACE", gated: "computer" },
+        // Live preview + control of the agent's co-worker browser tab. Placed next
+        // to COMPUTER since both surface the same live agent desktop/session.
+        { key: "browser",   label: "BROWSER",   section: "WORKSPACE" },
         { key: "canvas",    label: "CANVAS",    section: "WORKSPACE" },
         { key: "widgets",   label: "WIDGETS",   section: "WORKSPACE" },
         { key: "sessions",  label: "SESSIONS",  section: "WORKSPACE" },

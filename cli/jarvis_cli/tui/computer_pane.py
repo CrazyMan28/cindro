@@ -126,7 +126,7 @@ class ComputerPane(Vertical):
             try:
                 await self.client.call("approval.respond", {
                     "session_id": self.session_id, "approval_id": self._last_approval_id,
-                    "decision": "approve" if event.key == "y" else "deny",
+                    "decision": "allow" if event.key == "y" else "deny",
                 })
                 self._append(f"approval {'approved' if event.key == 'y' else 'denied'}")
             except ControlError as exc:

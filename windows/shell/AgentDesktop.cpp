@@ -238,6 +238,45 @@ void removeRelayFirewallRule(quint16 rport)
          QStringLiteral("name=") + relayFirewallRuleName(rport)});
 }
 
+// removeRelayFirewallRule() above is fire-and-forget (startDetached, called from
+// teardown()) so it never runs at all if jarvisd exits abnormally (crash/kill)
+// with a session still up -- the "any profile" inbound allow rule is then
+// permanent until something notices. sweepOrphans() already runs once at daemon
+// startup before any in-process session exists, so it's the natural place to
+// catch these: enumerate every rule and delete the ones matching our
+// "Jarvis-Agent-Relay-*" naming scheme. netsh has no wildcard "show rule name=",
+// so we list everything and grep for our prefix, then delete each by its exact
+// name (synchronous -- this runs once at startup, not on a hot path). Best-effort
+// like the add/remove helpers above: requires an elevated token to actually take
+// effect. Returns the number of rules removed.
+int sweepOrphanFirewallRules()
+{
+    QProcess show;
+    show.start(QStringLiteral("netsh"),
+               {QStringLiteral("advfirewall"), QStringLiteral("firewall"),
+                QStringLiteral("show"), QStringLiteral("rule"), QStringLiteral("name=all")});
+    if (!show.waitForFinished(5000))
+        return 0;
+    const QString out = QString::fromLocal8Bit(show.readAllStandardOutput());
+    static const QString kRuleNamePrefix = QStringLiteral("Rule Name:");
+    static const QString kOurPrefix = QStringLiteral("Jarvis-Agent-Relay-");
+    int reaped = 0;
+    for (const QString &line : out.split(QLatin1Char('\n'))) {
+        const QString trimmed = line.trimmed();
+        if (!trimmed.startsWith(kRuleNamePrefix))
+            continue;
+        const QString name = trimmed.mid(kRuleNamePrefix.length()).trimmed();
+        if (!name.startsWith(kOurPrefix))
+            continue;
+        QProcess::execute(QStringLiteral("netsh"),
+                          {QStringLiteral("advfirewall"), QStringLiteral("firewall"),
+                           QStringLiteral("delete"), QStringLiteral("rule"),
+                           QStringLiteral("name=") + name});
+        ++reaped;
+    }
+    return reaped;
+}
+
 // --- single-instance guard --------------------------------------------------
 // Windows Sandbox allows only ONE running instance per host. Detect an existing
 // one (ours-after-a-crash or the USER's own) so ensure() can refuse a 2nd launch
@@ -788,10 +827,12 @@ int AgentDesktop::sweepOrphans()
     // persists across a daemon crash). So unlike the Linux nested-Sway sweep there
     // are no long-lived orphan compositors/engines to kill: we cannot safely
     // taskkill a running WindowsSandbox.exe because it might be the USER'S own
-    // sandbox, not ours. We therefore reap only our ON-DISK leftovers -- stale
+    // sandbox, not ours. We therefore reap our ON-DISK leftovers -- stale
     // per-session temp dirs (rendered .wsb files) under agentTempRoot() that no
     // tracked desk owns -- mirroring the Linux sweep's "tidy stale artifacts"
-    // step. Returns the number of stale session dirs removed.
+    // step -- plus any leftover reverse-tunnel firewall allow-rules from a prior
+    // abnormal exit (see sweepOrphanFirewallRules()). Returns the total number of
+    // stale artifacts removed (session dirs + firewall rules).
     QSet<QString> trackedDirs;
     for (const auto &[id, desk] : m_desks) {
         if (!desk->runtimeDir.isEmpty())
@@ -810,6 +851,7 @@ int AgentDesktop::sweepOrphans()
         if (QDir(abs).removeRecursively())
             ++reaped;
     }
+    reaped += sweepOrphanFirewallRules();
     return reaped;
 }
 
