@@ -25,6 +25,7 @@
 #include <QFileInfo>
 #include <QStandardPaths>
 #include <QHostAddress>
+#include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -35,7 +36,10 @@
 #include <QProcess>
 #include <QRandomGenerator>
 #include <QSaveFile>
+#include <QSharedPointer>
 #include <QSet>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTextStream>
 #include <QTimer>
 #include <QUrl>
@@ -554,6 +558,14 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleConnectorsList(req);
     else if (m == QStringLiteral("connectors.add"))
         resp = handleConnectorsAdd(req);
+    else if (m == QStringLiteral("connectors.set_client"))
+        resp = handleConnectorsSetClient(req);
+    else if (m == QStringLiteral("connectors.oauth_start"))
+        resp = handleConnectorsOAuthStart(req);
+    else if (m == QStringLiteral("connectors.oauth_status"))
+        resp = handleConnectorsOAuthStatus(req);
+    else if (m == QStringLiteral("connectors.remove"))
+        resp = handleConnectorsRemove(req);
     else if (m == QStringLiteral("plugins.catalog"))
         resp = handlePluginsCatalog(req);
     else if (m == QStringLiteral("plugins.install"))
@@ -4354,6 +4366,270 @@ Response ControlServer::handleConnectorsAdd(const Request &req)
     result.insert(QStringLiteral("name"), name);
     result.insert(QStringLiteral("enabled"), hasRealCreds);
     return Response::success(req.id, result);
+}
+
+// --- "Connect Google" OAuth (loopback authorization-code flow + PKCE) -------
+namespace {
+QString b64url(const QByteArray &b)
+{
+    return QString::fromLatin1(
+        b.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
+}
+QString randToken(int nbytes)
+{
+    QByteArray b(nbytes, Qt::Uninitialized);
+    for (int i = 0; i < nbytes; ++i)
+        b[i] = char(QRandomGenerator::system()->bounded(256));
+    return b64url(b);
+}
+const QLatin1String kGoogleClientIdKey("google_oauth:client_id");
+const QLatin1String kGoogleClientSecretKey("google_oauth:client_secret");
+} // namespace
+
+Response ControlServer::handleConnectorsSetClient(const Request &req)
+{
+    const QString clientId = req.params.value(QStringLiteral("client_id")).toString().trimmed();
+    const QString clientSecret =
+        req.params.value(QStringLiteral("client_secret")).toString().trimmed();
+    if (clientId.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("client_id is required"));
+    m_settings.setApiKey(QString(kGoogleClientIdKey), clientId);
+    if (!clientSecret.isEmpty())
+        m_settings.setApiKey(QString(kGoogleClientSecretKey), clientSecret);
+    m_settings.saveSecrets();
+    QJsonObject r;
+    r.insert(QStringLiteral("ok"), true);
+    r.insert(QStringLiteral("has_client_id"), true);
+    r.insert(QStringLiteral("has_client_secret"),
+             m_settings.hasApiKey(QString(kGoogleClientSecretKey)));
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleConnectorsOAuthStart(const Request &req)
+{
+    const QString service = req.params.value(QStringLiteral("service")).toString();
+    if (!Connectors::isKnownService(service))
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("unknown Google connector service: ") + service);
+    const QString clientId = m_settings.apiKey(QString(kGoogleClientIdKey));
+    const QString clientSecret = m_settings.apiKey(QString(kGoogleClientSecretKey));
+    if (clientId.isEmpty() || clientSecret.isEmpty())
+        return Response::failure(
+            req.id, QStringLiteral("no_client"),
+            QStringLiteral("set your Google OAuth client first (connectors.set_client)"));
+
+    // One flow at a time; tear down any stale listener first.
+    if (m_oauth) {
+        if (m_oauth->server) m_oauth->server->deleteLater();
+        delete m_oauth;
+        m_oauth = nullptr;
+    }
+    auto *server = new QTcpServer(this);
+    if (!server->listen(QHostAddress::LocalHost, 0)) {
+        server->deleteLater();
+        return Response::failure(
+            req.id, QStringLiteral("listen_failed"),
+            QStringLiteral("could not open a loopback port for the OAuth redirect"));
+    }
+    const quint16 port = server->serverPort();
+    m_oauth = new PendingOAuth{service, randToken(16), randToken(48),
+                               QStringLiteral("http://127.0.0.1:") + QString::number(port),
+                               clientId, clientSecret, server};
+    m_oauth->id = ++m_oauthSeq;
+    const quint64 flowId = m_oauth->id;
+    connect(server, &QTcpServer::newConnection, this, &ControlServer::onOAuthRedirect);
+    // 5-min wall so an abandoned consent never leaks the listener. Guard on the
+    // flow GENERATION (not the server pointer, which can be reused at the same
+    // address after a deleteLater) so a stale timer never aborts a newer flow.
+    QTimer::singleShot(5 * 60 * 1000, this, [this, flowId]() {
+        if (m_oauth && m_oauth->id == flowId)
+            finishOAuth(false, QStringLiteral("timed out"), QString());
+    });
+
+    const QByteArray challenge =
+        QCryptographicHash::hash(m_oauth->verifier.toLatin1(), QCryptographicHash::Sha256);
+    QUrl url(QStringLiteral("https://accounts.google.com/o/oauth2/v2/auth"));
+    QUrlQuery q;
+    q.addQueryItem(QStringLiteral("client_id"), clientId);
+    q.addQueryItem(QStringLiteral("redirect_uri"), m_oauth->redirectUri);
+    q.addQueryItem(QStringLiteral("response_type"), QStringLiteral("code"));
+    q.addQueryItem(QStringLiteral("scope"), Connectors::scopesFor(service));
+    q.addQueryItem(QStringLiteral("access_type"), QStringLiteral("offline"));
+    q.addQueryItem(QStringLiteral("prompt"), QStringLiteral("consent"));
+    q.addQueryItem(QStringLiteral("state"), m_oauth->state);
+    q.addQueryItem(QStringLiteral("code_challenge"), b64url(challenge));
+    q.addQueryItem(QStringLiteral("code_challenge_method"), QStringLiteral("S256"));
+    url.setQuery(q);
+
+    m_oauthResult = QJsonObject{{QStringLiteral("pending"), true},
+                                {QStringLiteral("service"), service}};
+    QJsonObject r;
+    r.insert(QStringLiteral("auth_url"), url.toString());
+    r.insert(QStringLiteral("service"), service);
+    return Response::success(req.id, r);
+}
+
+void ControlServer::onOAuthRedirect()
+{
+    if (!m_oauth || !m_oauth->server) return;
+    QTcpSocket *sock = m_oauth->server->nextPendingConnection();
+    if (!sock) return;
+    auto buf = QSharedPointer<QByteArray>::create();
+    connect(sock, &QTcpSocket::readyRead, this, [this, sock, buf]() {
+        buf->append(sock->readAll());
+        if (buf->size() > 8192) {   // a redirect GET line is tiny; cap the read
+            sock->abort();
+            return;
+        }
+        const int eol = buf->indexOf("\r\n");
+        if (eol < 0)
+            return;                 // wait until the full request line arrives
+        // First request line: "GET /?code=...&state=... HTTP/1.1"
+        const QString line = QString::fromLatin1(buf->left(eol));
+        const int sp1 = line.indexOf(QLatin1Char(' '));
+        const int sp2 = line.indexOf(QLatin1Char(' '), sp1 + 1);
+        const QString target =
+            (sp1 >= 0 && sp2 > sp1) ? line.mid(sp1 + 1, sp2 - sp1 - 1) : QString();
+        const QUrlQuery q(QUrl(QStringLiteral("http://x") + target).query());
+        const QString code = q.queryItemValue(QStringLiteral("code"));
+        const QString state = q.queryItemValue(QStringLiteral("state"));
+        const QString err = q.queryItemValue(QStringLiteral("error"));
+        const bool stateOk = m_oauth && state == m_oauth->state;
+
+        const QString bodyHtml =
+            stateOk && err.isEmpty() && !code.isEmpty()
+                ? QStringLiteral("<h2>Connected.</h2><p>You can close this tab and return to Orin.</p>")
+                : QStringLiteral("<h2>Sign-in failed.</h2><p>Return to Orin and try again.</p>");
+        const QByteArray html = bodyHtml.toUtf8();
+        sock->write("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
+                    "Connection: close\r\nContent-Length: "
+                    + QByteArray::number(html.size()) + "\r\n\r\n" + html);
+        sock->flush();
+        sock->disconnectFromHost();
+
+        if (!stateOk)
+            return; // stray/mismatched request — keep waiting for the real one
+        if (!err.isEmpty() || code.isEmpty()) {
+            finishOAuth(false, err.isEmpty() ? QStringLiteral("no authorization code") : err,
+                        QString());
+            return;
+        }
+        exchangeOAuthCode(code);
+    });
+}
+
+void ControlServer::exchangeOAuthCode(const QString &code)
+{
+    if (!m_oauth) return;
+    const quint64 flowId = m_oauth->id;
+    QUrlQuery form;
+    form.addQueryItem(QStringLiteral("code"), code);
+    form.addQueryItem(QStringLiteral("client_id"), m_oauth->clientId);
+    form.addQueryItem(QStringLiteral("client_secret"), m_oauth->clientSecret);
+    form.addQueryItem(QStringLiteral("redirect_uri"), m_oauth->redirectUri);
+    form.addQueryItem(QStringLiteral("grant_type"), QStringLiteral("authorization_code"));
+    form.addQueryItem(QStringLiteral("code_verifier"), m_oauth->verifier);
+
+    auto *nam = new QNetworkAccessManager(this);
+    QNetworkRequest rq(QUrl(QStringLiteral("https://oauth2.googleapis.com/token")));
+    rq.setHeader(QNetworkRequest::ContentTypeHeader,
+                 QStringLiteral("application/x-www-form-urlencoded"));
+    QNetworkReply *reply = nam->post(rq, form.toString(QUrl::FullyEncoded).toUtf8());
+    connect(reply, &QNetworkReply::finished, this, [this, reply, nam, flowId]() {
+        const QByteArray body = reply->readAll();
+        reply->deleteLater();
+        nam->deleteLater();
+        // A newer Connect flow may have superseded this exchange while Google was
+        // replying — bail so we never store a token under the wrong service.
+        if (!m_oauth || m_oauth->id != flowId)
+            return;
+        const QJsonObject o = QJsonDocument::fromJson(body).object();
+        const QString refresh = o.value(QStringLiteral("refresh_token")).toString();
+        if (refresh.isEmpty())
+            finishOAuth(false,
+                        o.value(QStringLiteral("error_description"))
+                            .toString(o.value(QStringLiteral("error"))
+                                          .toString(QStringLiteral("no refresh_token returned"))),
+                        QString());
+        else
+            finishOAuth(true, QString(), refresh);
+    });
+}
+
+void ControlServer::finishOAuth(bool ok, const QString &error, const QString &refreshToken)
+{
+    if (!m_oauth) return;
+    const QString service = m_oauth->service;
+    const QString clientId = m_oauth->clientId;
+    const QString clientSecret = m_oauth->clientSecret;
+    if (m_oauth->server) m_oauth->server->deleteLater();
+    delete m_oauth;
+    m_oauth = nullptr;
+
+    if (!ok) {
+        m_oauthResult = QJsonObject{{QStringLiteral("pending"), false},
+                                    {QStringLiteral("connected"), false},
+                                    {QStringLiteral("service"), service},
+                                    {QStringLiteral("error"), error}};
+        m_audit.record(QStringLiteral("connectors.oauth"), false, QStringLiteral("medium"),
+                       QStringLiteral("google ") + service + QStringLiteral(": ") + error,
+                       QString());
+        return;
+    }
+    // Remove any prior row for this service (so re-connect doesn't duplicate),
+    // then materialize + enable via the existing connectors.add wiring.
+    Request rm;
+    rm.id = 0;
+    rm.method = QStringLiteral("connectors.remove");
+    rm.params = QJsonObject{{QStringLiteral("service"), service}};
+    handleConnectorsRemove(rm);
+    Request add;
+    add.id = 0;
+    add.method = QStringLiteral("connectors.add");
+    add.params = QJsonObject{{QStringLiteral("service"), service},
+                             {QStringLiteral("client_id"), clientId},
+                             {QStringLiteral("client_secret"), clientSecret},
+                             {QStringLiteral("refresh_token"), refreshToken}};
+    handleConnectorsAdd(add);
+    m_oauthResult = QJsonObject{{QStringLiteral("pending"), false},
+                                {QStringLiteral("connected"), true},
+                                {QStringLiteral("service"), service}};
+    m_audit.record(QStringLiteral("connectors.oauth"), true, QStringLiteral("medium"),
+                   QStringLiteral("google ") + service + QStringLiteral(" connected"), QString());
+}
+
+Response ControlServer::handleConnectorsOAuthStatus(const Request &req)
+{
+    return Response::success(req.id, m_oauthResult);
+}
+
+Response ControlServer::handleConnectorsRemove(const Request &req)
+{
+    const QString service = req.params.value(QStringLiteral("service")).toString();
+    const QString rid = req.params.value(QStringLiteral("id")).toString();
+    if (service.isEmpty() && rid.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("service or id is required"));
+    int removed = 0;
+    const QVector<McpServerRow> rows = m_mcp->list();
+    for (const McpServerRow &row : rows) {
+        const QString svc = Connectors::serviceFromServerName(row.name);
+        if (svc.isEmpty())
+            continue;
+        if ((!service.isEmpty() && svc == service) || (!rid.isEmpty() && row.id == rid)) {
+            m_settings.setApiKey(Connectors::secretKey(row.id, QStringLiteral("client_id")), QString());
+            m_settings.setApiKey(Connectors::secretKey(row.id, QStringLiteral("client_secret")), QString());
+            m_settings.setApiKey(Connectors::secretKey(row.id, QStringLiteral("refresh_token")), QString());
+            m_mcp->remove(row.id);
+            ++removed;
+        }
+    }
+    if (removed)
+        m_settings.saveSecrets();
+    QJsonObject r;
+    r.insert(QStringLiteral("removed"), removed);
+    return Response::success(req.id, r);
 }
 
 // --- Contract A v2: plugins marketplace (delegates to PluginRegistry) ------

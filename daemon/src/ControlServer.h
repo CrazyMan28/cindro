@@ -50,6 +50,7 @@ QT_BEGIN_NAMESPACE
 class QWebSocketServer;
 class QWebSocket;
 class QNetworkAccessManager;
+class QTcpServer;
 QT_END_NAMESPACE
 
 namespace jarvis {
@@ -356,6 +357,26 @@ private:
     // are stored as write-only secrets and injected via the row's env map.
     Response handleConnectorsList(const Request &req);
     Response handleConnectorsAdd(const Request &req);
+    // "Connect Google" OAuth (control/loopback ONLY — writes/reads secrets):
+    // set_client stores the shared Google OAuth client (id+secret, write-only);
+    // oauth_start opens a loopback listener + returns the consent URL; the
+    // listener exchanges the code for a refresh token and enables the connector;
+    // oauth_status polls the in-flight result; remove disconnects a connector.
+    Response handleConnectorsSetClient(const Request &req);
+    Response handleConnectorsOAuthStart(const Request &req);
+    Response handleConnectorsOAuthStatus(const Request &req);
+    Response handleConnectorsRemove(const Request &req);
+    void onOAuthRedirect();                         // QTcpServer::newConnection slot
+    void exchangeOAuthCode(const QString &code);    // POST to Google token endpoint
+    void finishOAuth(bool ok, const QString &error, const QString &refreshToken);
+    struct PendingOAuth {
+        QString service, state, verifier, redirectUri, clientId, clientSecret;
+        QTcpServer *server = nullptr;
+        quint64 id = 0;                             // generation — guards stale callbacks
+    };
+    PendingOAuth *m_oauth = nullptr;                // at most one flow in flight
+    quint64 m_oauthSeq = 0;                         // monotonic flow-generation counter
+    QJsonObject m_oauthResult;                      // last {pending,connected,error,service}
     Response handlePluginsCatalog(const Request &req);
     Response handlePluginsInstall(const Request &req);
     Response handlePluginsSetEnabled(const Request &req);
