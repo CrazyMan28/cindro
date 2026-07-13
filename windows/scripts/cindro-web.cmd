@@ -36,7 +36,10 @@ if not exist "%~dp0web\server.ts" (
 
 echo Cindro web dashboard: http://127.0.0.1:%PORT%
 echo Close this window to stop the dashboard.
-rem Open the browser a couple seconds after the server binds (background, minimized).
-start "" /min powershell -NoProfile -Command "Start-Sleep 2; Start-Process 'http://127.0.0.1:%PORT%'"
+rem Open the browser only once the server is actually accepting connections on
+rem the port (up to ~15s), rather than after a blind fixed delay — otherwise a
+rem slow/failed start or a busy port lands the user on "connection refused".
+rem Runs in the background (minimized) so the server itself owns this console.
+start "" /min powershell -NoProfile -Command "$u='http://127.0.0.1:%PORT%'; foreach($i in 1..60){ try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',%PORT%); $c.Close(); break }catch{ Start-Sleep -Milliseconds 250 } }; Start-Process $u"
 "%~dp0bun\bun.exe" "%~dp0web\server.ts" --port %PORT%
 endlocal
