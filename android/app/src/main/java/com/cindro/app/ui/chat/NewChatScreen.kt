@@ -13,6 +13,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -214,6 +216,12 @@ fun NewChatScreen(
                 }
             }
 
+            // Bottom dock: model chip, pending attachments and the input row stay
+            // pinned just ABOVE the keyboard (imePadding) and clear of the
+            // gesture/nav bar (navigationBarsPadding) — same wrapper ChatScreen's
+            // bottom dock uses. Without it here, the keyboard could cover the
+            // send/attach controls before a session even exists.
+            Column(Modifier.imePadding().navigationBarsPadding()) {
             // The model chip lives in the chat bar (ChatGPT-style), same spot as
             // ChatScreen's — a REAL picker here since brain/model is still
             // choosable before the first message creates the session.
@@ -289,6 +297,7 @@ fun NewChatScreen(
                 onMicCancel = {},
                 onStopSpeaking = {},
             )
+            }
         }
     }
 
