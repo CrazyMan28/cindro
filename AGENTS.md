@@ -1047,6 +1047,40 @@ reproducible without an actual booting Windows Sandbox VM — see `docs/STATUS.m
   `try`/`catch`, not just `-ErrorAction`, or the launcher silently loses
   `JARVIS_WINDOWS_ISOLATION_MODE` on every non-elevated real-user launch.
 
+## New subsystems (2026-07-13) — chat-view fixes: streaming reveal, wheel scroll, large-session crash
+
+Three long-standing chat-transcript bugs (desktop QML + Android), all rooted in how the
+transcript recycles/renders rows:
+
+- **The typewriter reveal must be latched off in the MODEL when it finishes, or a
+  recycled delegate replays it.** `ChatDelegate.qml`'s reveal is gated purely on the
+  `streaming` model role, and `JarvisPanel.qml` set that role once at append and **never
+  cleared it**. With `reuseItems:true` + a finite `cacheBuffer`, any completed assistant
+  message that scrolled out and back re-derived `shown=0` and re-typed itself. Fix: the
+  delegate emits `revealed()` when `shown>=text.length`; the panel handles it with
+  `chatModel.setProperty(index, "streaming", false)`. Do NOT clear `streaming` on the
+  `"final"` turn-terminator instead — `final` usually arrives right after the single
+  full-text `message` event, so clearing there snaps the reveal to full and kills the
+  animation for the last message of every turn. Also reset `shown` in
+  `ChatDelegate`'s `ListView.onReused` — the Timer breaks the `shown` binding by assigning
+  it, so a pooled delegate keeps the previous row's count until re-derived.
+- **The chat `WheelHandler` must snap to the ends via `positionViewAtBeginning/End()`, not
+  clamp against `contentHeight`.** For a ListView of variable-height reused delegates
+  `contentHeight` is only an estimate (and the `busy` footer changes it 0↔58), so the old
+  `Math.min(maxY, …)` clamp overshot past the last message and never reliably hit the true
+  top/bottom. Also pick the wheel step per device: trackpads report smooth `ev.pixelDelta`,
+  mice report `ev.angleDelta` in 120-unit notches — the old fixed `*2.0` on angleDelta was
+  ~240px/notch for mice yet applied the same factor to fine trackpad deltas.
+- **Android: message + "thinking" bubbles were the only chat renderers with NO length cap.**
+  Every other renderer caps the string it hands to layout (tool `.take(2000)`, diff
+  `.take(400)`) because Compose measures/wraps the WHOLE string on the main thread; one very
+  long message (a pasted file / base64 dump) OOMs/ANRs the app the instant a large session
+  opens (small ones are fine — that's the "chat #1 crashes on phone" report). `ChatBubble.kt`
+  now caps the DISPLAYED text at `MAX_MESSAGE_RENDER_CHARS` (12k) with a truncation notice;
+  the full text stays in `item.text` so long-press → select → copy is unaffected. Note the
+  data layer already swallows an OOM during the whole-session JSON parse via `runCatching`
+  (history silently vanishes rather than crashes), so the render path was the visible crash.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

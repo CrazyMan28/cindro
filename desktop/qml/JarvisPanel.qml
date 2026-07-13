@@ -1133,12 +1133,31 @@ Item {
                 reuseItems: true
                 boundsBehavior: Flickable.StopAtBounds
 
-                // Fast mouse-wheel scrolling (the default Flickable step is a sliver).
+                // Mouse-wheel / trackpad scrolling. The old handler multiplied
+                // angleDelta by a fixed 2.0 (≈240px per mouse notch, but applied that
+                // same factor to fine-grained trackpad pixel deltas) and clamped against
+                // `contentHeight - height` — which for a ListView of variable-height,
+                // reused delegates is only an ESTIMATE, so it overshot past the last
+                // message and never reliably hit the true top/bottom. Instead: pick the
+                // step per device, and snap to the authoritative ends via the ListView
+                // positioning APIs rather than an estimated clamp.
                 WheelHandler {
                     acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                     onWheel: function(ev) {
+                        // Trackpads report smooth pixelDelta; mice report angleDelta in
+                        // 120-unit notches. Use pixels when present, else ~15% of a
+                        // viewport per notch (consistent feel, framerate-independent).
+                        var dy = (ev.pixelDelta.y !== 0)
+                                 ? ev.pixelDelta.y
+                                 : (ev.angleDelta.y / 120) * (chatView.height * 0.15)
                         var maxY = Math.max(0, chatView.contentHeight - chatView.height)
-                        chatView.contentY = Math.max(0, Math.min(maxY, chatView.contentY - ev.angleDelta.y * 2.0))
+                        var target = chatView.contentY - dy
+                        if (target <= 0)
+                            chatView.positionViewAtBeginning()   // exact top, no under-scroll
+                        else if (target >= maxY)
+                            chatView.positionViewAtEnd()          // exact bottom, no over-scroll past last msg
+                        else
+                            chatView.contentY = target
                         ev.accepted = true
                     }
                 }
@@ -1215,6 +1234,12 @@ Item {
                             || chatView.contentHeight <= chatView.height)
                             chatView.positionViewAtEnd()
                     }
+                    // Typewriter finished → latch this row as no-longer-streaming, so a
+                    // recycled delegate (reuseItems/cacheBuffer) can't replay the
+                    // word-by-word reveal when the message scrolls back into view. The
+                    // flag was set once at append (never cleared before), which is why
+                    // the reveal used to re-run on every scroll-in.
+                    onRevealed: chatModel.setProperty(index, "streaming", false)
                 }
 
                 // thinking indicator (footer): the spinning Jarvis orb with a rotating

@@ -31,6 +31,12 @@ Item {
     // Emitted as the typewriter reveal grows the bubble, so the panel can keep the
     // transcript pinned to the bottom while text streams in.
     signal grew()
+    // Emitted ONCE, when the typewriter has revealed the whole message. The panel
+    // latches the row's `streaming` model flag to false in response — otherwise a
+    // recycled delegate (reuseItems + finite cacheBuffer) re-derives `shown` from a
+    // still-true `streaming` flag and replays the word-by-word reveal every time the
+    // completed message scrolls back into view.
+    signal revealed()
 
     implicitHeight: loader.item ? loader.item.implicitHeight : 0
 
@@ -54,8 +60,18 @@ Item {
         onTriggered: {
             del.shown = Math.min(del.text.length, del.shown + 3)
             del.grew()
+            // Reveal done → tell the panel to clear this row's streaming flag so the
+            // reveal can never re-run when the delegate is recycled on scroll.
+            if (del.shown >= del.text.length)
+                del.revealed()
         }
     }
+
+    // reuseItems: a pooled delegate keeps the PREVIOUS row's imperatively-advanced
+    // `shown` (the Timer above breaks the `shown` binding by assigning it). Re-derive
+    // it from the NEW row's data on reuse, so a fresh streaming row can't start
+    // mid-word and a static row can't inherit a stale count.
+    ListView.onReused: del.shown = (del.streaming && del.isAssistant) ? 0 : del.text.length
 
     // entrance animation
     opacity: 0
