@@ -144,7 +144,16 @@ fun NewChatScreen(
         // single slot), and never discard an in-progress draft/attachment — the
         // mic is for a hands-free NEW chat, not a way to abandon what's typed.
         if (state.creating || draft.isNotBlank() || pending.isNotEmpty()) return
-        viewModel.createSession(onCreated = onOpenVoiceSession)
+        viewModel.createSession(
+            onCreated = onOpenVoiceSession,
+            onError = {
+                android.widget.Toast.makeText(
+                    context,
+                    "Couldn't start voice chat — check your connection and try again.",
+                    android.widget.Toast.LENGTH_SHORT,
+                ).show()
+            },
+        )
     }
 
     Scaffold(

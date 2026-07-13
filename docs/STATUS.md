@@ -68,6 +68,43 @@ actually behave, per user-supplied reference screenshots.
 
 ---
 
+## 🆕 Bug fix: phone-initiated sessions silently failed on Windows (jarvis#107) (2026-07-12)
+
+Filed during the redesign above as "Windows: session creation from phone hangs on
+cross-device unlock" — the desktop showed "check phone to unlock" and the new chat
+never opened, though `session.create` rows were confirmed landing in `jarvis.db`.
+Root-caused by re-reading the code (no live repro needed): **not** an unlock/2FA bug
+at all — `ControlServer::createSession()` treats a failed `AgentDesktop::ensure()` as
+FATAL for any explicit coworker+agent session, and the Android app's Home/Voice/new-chat
+flows default to exactly that profile (`JarvisRepository.createSession(profile =
+"coworker")`, no `target` override). `AgentDesktop::nestedDesktopSupported()` is
+`false` by default on Windows (ships as v1 real-screen take-over; the v2 Sandbox tier
+needs an explicit `JARVIS_ENABLE_V2` opt-in), so `ensure()` always returns `up=false`
+there — meaning **every** phone-initiated session hard-failed server-side on stock
+Windows (row committed, then immediately marked `error`) while working fine on Linux,
+where `nestedDesktopSupported()` is always `true`. `makeBrain()` already had a
+graceful global-`:8794`-engine fallback for exactly this case (`row.profile ==
+"coworker"` branches for codex/claude/api, added in the 2026-07-02 bug sweep below) —
+`createSession()`'s early fatal return just never gave it the chance to run.
+- **Fix:** the fatal-on-`explicitAgent` branch now only fires when
+  `nestedDesktopSupported()` is true (a REAL `ensure()` failure on a platform that
+  should support isolation); otherwise it degrades like the existing AUTO-computer
+  path, letting `makeBrain()`'s fallback inject the global engine.
+- **Also fixed:** `HomeScreen.kt`'s `onNewChat`/`onVoice` and `NewChatScreen.kt`'s
+  `startVoiceChat()` never passed `viewModel.createSession`'s `onError` callback, so
+  ANY `session.create` failure (not just this one) was swallowed with zero user
+  feedback — the exact silent-failure pattern already fixed for `sendFirst()` earlier
+  in this same redesign (see above). Both now toast on failure.
+- **Not verified end-to-end:** this box has no MSVC toolchain (Qt is `msvc2022_64`,
+  only MinGW g++ is installed — ABI-incompatible, confirmed by a failed trial build)
+  and no JDK, so neither the daemon nor the Android change could be compiled here.
+  The diff was reviewed by hand against the existing, already-compiling
+  `AgentDesktop::nestedDesktopSupported()` call site (`ControlServer.cpp:2066`) and
+  the existing `onError` pattern (`NewChatScreen.kt`'s `sendFirst()`). Needs a real
+  Windows build + phone repro to close out jarvis#107 for good.
+
+---
+
 ## 🆕 Dynamic model discovery: codex/claude model pickers stop going stale (2026-07-11)
 
 The codex/claude model lists shown in every picker (chat, Settings default

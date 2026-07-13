@@ -37,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -77,11 +78,19 @@ fun HomeScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val conn by viewModel.connection.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val onCreateError: () -> Unit = {
+        android.widget.Toast.makeText(
+            context,
+            "Couldn't start a new chat — check your connection and try again.",
+            android.widget.Toast.LENGTH_SHORT,
+        ).show()
+    }
     HomeContent(
         state = state,
         online = conn == DeviceClient.State.CONNECTED,
-        onNewChat = { viewModel.createSession(onCreated = onOpenSession) },
-        onVoice = { viewModel.createSession(onCreated = onOpenVoice) },
+        onNewChat = { viewModel.createSession(onCreated = onOpenSession, onError = onCreateError) },
+        onVoice = { viewModel.createSession(onCreated = onOpenVoice, onError = onCreateError) },
         onOpenSession = onOpenSession,
         onAllSessions = onAllSessions,
         onTakeOver = onTakeOver,

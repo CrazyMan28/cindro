@@ -2770,17 +2770,29 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
         QString deskErr;
         const AgentDesktopInfo desk = m_agentDesktops.ensure(row.id, &deskErr);
         if (!desk.up) {
-            if (explicitAgent) {
-                // Explicit co-work: failing to spin the desktop is fatal.
+            // Explicit co-work is fatal ONLY when this platform/build can
+            // actually provision an isolated desktop (AgentDesktop.h's
+            // nestedDesktopSupported()) and ensure() still failed — a REAL
+            // failure (crashed process, port conflict, ...). When isolation was
+            // never available in the first place (stock Windows without the v2
+            // sandbox opt-in — the shipped default), that's not a failure, it's
+            // the documented v1 take-over contract: degrade like the AUTO path
+            // below so makeBrain()'s existing `row.profile == "coworker"`
+            // fallback can inject the GLOBAL :8794 engine instead. Without this
+            // gate, EVERY phone-initiated session (the app's default profile is
+            // "coworker" with no target override) hard-fails server-side on
+            // stock Windows while working fine on Linux (jarvis#107).
+            if (explicitAgent && AgentDesktop::nestedDesktopSupported()) {
                 m_store.updateState(row.id, QStringLiteral("error"));
                 if (err)
                     *err = QStringLiteral("agent desktop failed: ") + deskErr;
                 return QString();
             }
-            // AUTO path: degrade gracefully — the chat session still runs without
-            // computer-use rather than failing the whole session.
-            qWarning("jarvisd: auto computer-use desktop unavailable for %s (%s); "
-                     "session continues without computer-use",
+            // AUTO path, or an explicit co-work request on a platform that
+            // can't isolate at all: degrade gracefully — the chat session still
+            // runs (via the global-engine fallback) rather than failing outright.
+            qWarning("jarvisd: agent desktop unavailable for %s (%s); session "
+                     "continues without an isolated desktop",
                      qPrintable(row.id), qPrintable(deskErr));
         } else {
             agentOverrides = agentMcpOverridesFor(desk);

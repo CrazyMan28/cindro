@@ -925,6 +925,22 @@ review, before this ever ran on a device:
   they're pushed routes now, each with its own `onBack` param wired to
   `nav.popBackStack()` and a `navigationIcon` back arrow — a screen promoted
   the same way in the future needs the same treatment, not just a route entry.
+- **The Home/`NewChatScreen` "coworker" default is a Windows landmine
+  (jarvis#107, see `docs/STATUS.md`'s matching bug-fix entry).** Every
+  phone-initiated `createSession()` (New chat, Voice, Home) defaults to
+  `profile = "coworker"` with no `target` override, which
+  `ControlServer::createSession()` resolves to `target = "agent"` — an
+  EXPLICIT co-work request. On Linux `AgentDesktop::nestedDesktopSupported()`
+  is always true so this quietly works; on stock Windows (no `JARVIS_ENABLE_V2`
+  opt-in) it's always false, and `createSession()` used to treat that as FATAL,
+  so every phone session hard-failed server-side there while the row still
+  landed in `jarvis.db` — a red herring that looked like a broken cross-device
+  unlock hand-off. Fixed by only treating `ensure()` failure as fatal when
+  `nestedDesktopSupported()` is true; otherwise it degrades to the global
+  `:8794` engine like the AUTO-computer path already did. Also: `onVoice`/
+  `onNewChat`/`startVoiceChat()` now pass `createSession`'s `onError` — it
+  didn't before, so this (or any other) `session.create` failure surfaced as
+  total silence on the phone.
 
 ## Conventions
 
