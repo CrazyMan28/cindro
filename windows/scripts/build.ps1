@@ -219,6 +219,7 @@ if ($bunExe) {
   Push-Location $tuiDir
   try {
     & $bunExe install --frozen-lockfile
+    if ($LASTEXITCODE -ne 0) { throw "bun install (tui) exited $LASTEXITCODE" }
     $tuiExe = Join-Path $tuiDir "dist\cindro-tui.exe"
     # Remove any stale exe first so a FAILED compile can't leave an old binary
     # for the Test-Path check below to stage (masking the failure).
@@ -247,6 +248,7 @@ if ($bunExe) {
   Push-Location $webSrc
   try {
     & $bunExe install --frozen-lockfile
+    if ($LASTEXITCODE -ne 0) { throw "bun install (web) exited $LASTEXITCODE" }
     $webDist = Join-Path $webSrc "dist"
     # Remove any stale dist first so a FAILED `bun run build` can't leave an old
     # dashboard for the index.html check below to stage (masking the failure).
