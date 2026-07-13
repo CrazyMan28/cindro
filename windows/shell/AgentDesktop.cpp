@@ -86,15 +86,24 @@ namespace {
 
 // sandbox | childsession | hyperv | takeover.
 //
-// v2 SHIP GATE: the isolated agent-desktop tiers (sandbox/hyperv/childsession) are not
-// yet validated on real Windows hardware (the CI runner is a nested VM that can't boot
-// nested Hyper-V, so they only COMPILE here). Until someone trials them on a real
-// Windows Pro box, they NEVER auto-activate: the daemon uses the shipping-safe v1
-// real-screen take-over unless the operator explicitly opts in with JARVIS_ENABLE_V2=1
-// (set it, then windows.isolation.mode / detect.ps1 pick the tier as usual). This keeps
-// an untested nested-Hyper-V path from hanging a release machine ~120s before it falls
-// back to v1. The installer/launcher still sets JARVIS_WINDOWS_ISOLATION_MODE from
-// windows/isolation/detect.ps1 — it's just ignored for the v2 tiers without the opt-in.
+// v2 SHIP GATE, LIFTED for `sandbox` (jarvis#104, 2026-07-13): the isolated
+// agent-desktop tiers used to NEVER auto-activate -- the daemon always fell back to
+// v1 real-screen take-over unless an operator explicitly opted in with
+// JARVIS_ENABLE_V2=1 -- because the CI runner can't boot nested Hyper-V, so this whole
+// code path only ever COMPILED, never RAN, before that date. It has since been
+// validated end-to-end on real Windows 11 Pro hardware (confirmed independently
+// multiple times: session.create -> agent_desktop.up=true, with the in-sandbox engine
+// itself corroborating a real screen capture) -- see docs/STATUS.md's 2026-07-13
+// entry for the four real bugs that surfaced and were fixed doing so. `sandbox` now
+// activates automatically whenever detect.ps1 recommends it (Pro/Ent/Edu +
+// virtualization + the Containers-DisposableClientVM feature); detect.ps1's own
+// capability check is what keeps this safe on a Home/no-virt/no-feature box, which
+// still correctly falls through to takeover below -- JARVIS_ENABLE_V2 is no longer
+// required for that. `childsession`/`hyperv` (Phases 2/3) are UNIMPLEMENTED stubs
+// regardless of this gate -- ensure() returns up=false with a typed reason for them
+// either way, so lifting the gate for them too is a no-op until they're actually
+// built. Kept as an explicit opt-OUT for anyone who wants v1-only behavior back
+// without recompiling: JARVIS_ENABLE_V2=0 (or false/no/off) forces takeover.
 QString resolveMode()
 {
     const QString m = qEnvironmentVariable("JARVIS_WINDOWS_ISOLATION_MODE")
@@ -105,9 +114,9 @@ QString resolveMode()
 
     const QString v2 =
         qEnvironmentVariable("JARVIS_ENABLE_V2").trimmed().toLower();
-    const bool v2optin = (v2 == QStringLiteral("1") || v2 == QStringLiteral("true") ||
-                          v2 == QStringLiteral("yes") || v2 == QStringLiteral("on"));
-    if (v2optin &&
+    const bool v2optOut = (v2 == QStringLiteral("0") || v2 == QStringLiteral("false") ||
+                           v2 == QStringLiteral("no") || v2 == QStringLiteral("off"));
+    if (!v2optOut &&
         (m == QStringLiteral("childsession") || m == QStringLiteral("hyperv") ||
          m == QStringLiteral("sandbox")))
         return m;

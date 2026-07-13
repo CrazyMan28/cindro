@@ -1033,8 +1033,19 @@ reproducible without an actual booting Windows Sandbox VM — see `docs/STATUS.m
   that thread's event loop is what accepts incoming connections; blocking it stalls the
   relay even though the underlying kernel-level TCP connect succeeds. Use
   `QEventLoop`/`QTimer` for any polling/delay logic sharing a thread with the tunnel.
-- Still gated behind `JARVIS_ENABLE_V2=1` (`resolveMode()`) — validated on one real
-  machine, not yet broadly enough to flip the default.
+- **Update, same day: the `JARVIS_ENABLE_V2=1` opt-in gate is lifted for `sandbox`.**
+  `resolveMode()` now activates it automatically whenever `detect.ps1` recommends it —
+  every future installer download gets it by default, no configuration. Keep
+  `JARVIS_ENABLE_V2=0`/`false`/`no`/`off` working as the opt-*out* escape hatch.
+- **`Get-WindowsOptionalFeature -Online -ErrorAction SilentlyContinue` can still throw.**
+  Its underlying DISM COM interop raises a raw `COMException` ("requires elevation") that
+  `-ErrorAction` does not suppress. Harmless at a script's own top level (PowerShell prints
+  and continues) but FATAL when the whole script is invoked via `& 'script.ps1'` from
+  inside a *caller's* `try` block (exactly what `jarvis-start.cmd`/`jarvis-launch.vbs` do
+  around `detect.ps1`) — the exception escapes and aborts the callee before it can produce
+  output. Any `Get-WindowsOptionalFeature`/DISM call in `detect.ps1` needs its own local
+  `try`/`catch`, not just `-ErrorAction`, or the launcher silently loses
+  `JARVIS_WINDOWS_ISOLATION_MODE` on every non-elevated real-user launch.
 
 ## Conventions
 

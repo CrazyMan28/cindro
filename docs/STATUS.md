@@ -59,9 +59,36 @@ passes, not after boot completes. Also removed a diagnostic TCP probe in `bootst
 could itself steal `ReverseTunnel`'s pairing slot from a real health-check client (the review's
 own explanation for why the fix for bug 3, above, sometimes still needed a retry).
 
-Still gated behind `JARVIS_ENABLE_V2=1` (see `resolveMode()` in `windows/shell/AgentDesktop.cpp`)
-— proven on one real machine tonight, not yet validated broadly enough to flip the default.
-`childsession`/`hyperv` (Phases 2/3) remain unbuilt.
+**Update, same day:** the `JARVIS_ENABLE_V2=1` opt-in gate has been lifted for the `sandbox`
+tier — `resolveMode()` in `windows/shell/AgentDesktop.cpp` now activates it automatically
+whenever `detect.ps1` recommends it (Pro/Ent/Edu + virtualization + the feature), with
+`JARVIS_ENABLE_V2=0`/`false`/`no`/`off` kept as an explicit opt-*out* for anyone who wants v1-only
+take-over back without recompiling. This means every future installer download from GitHub
+Releases gets the isolated agent desktop by default, with no manual configuration — the point of
+the whole feature. `detect.ps1` also gained a best-effort, marker-gated, one-time-ever elevated
+`dism.exe /Enable-Feature` attempt (a single UAC prompt) for a Pro/Ent/Edu + virtualization box
+that has the `Containers-DisposableClientVM` feature present but disabled (the common case — it
+ships off by default), so a capable box that would otherwise sit on `takeover` forever can
+self-upgrade to `sandbox` after one prompt + reboot.
+
+Re-verifying this default end-to-end (not just with `JARVIS_ENABLE_V2=1` hand-set, which bypasses
+the real launch path entirely) surfaced a fifth real bug, invisible until the zero-config default
+actually mattered: `detect.ps1`'s `Test-OptionalFeature` called `Get-WindowsOptionalFeature -Online
+-ErrorAction SilentlyContinue`, but that cmdlet's underlying DISM COM interop throws a raw
+`COMException` ("The requested operation requires elevation") that `-ErrorAction` does **not**
+suppress. At `detect.ps1`'s own top level this is harmless — PowerShell prints it and continues —
+but `jarvis-start.cmd`/`jarvis-launch.vbs` invoke the *whole script* via `& 'detect.ps1'` from
+*inside their own* `try` block, and there the same exception escapes `detect.ps1` entirely,
+aborting it before its final `ConvertTo-Json` ever runs — silently losing `recommendedMode` on
+every non-elevated launch (i.e. every real user, since the installer is deliberately
+non-admin/per-user). Fixed by wrapping the `Get-WindowsOptionalFeature` call in its own
+`try`/`catch` so the exception is always contained inside `detect.ps1`, regardless of how a caller
+invokes it. Re-verified end-to-end afterward with the exact real launcher flow (`jarvis-start.cmd`'s
+`for /f` one-liner, zero manually-set env vars) on the same real Windows 11 Pro box:
+`agent_desktop.up: true`.
+
+`childsession`/`hyperv` (Phases 2/3) remain unbuilt; `ensure()` still returns `up=false` with a
+typed reason for them regardless of this gate.
 
 ---
 
