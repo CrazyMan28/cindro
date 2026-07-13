@@ -13,7 +13,7 @@ Everything installs under `$HOME`. **No `sudo` is used or required.**
 |---------------------|-------------------------------------------------------------------------|
 | `install.sh`        | Builds the superbuild and installs all of the below. Idempotent.        |
 | `cindro.desktop`    | XDG launcher entry (`__HOME__` is replaced with your `$HOME` on install). |
-| `cindro.svg`        | Scalable app icon (arc-reactor "C", cyan `#19E3FF` on a dark disc).     |
+| `cindro.svg`        | App icon (glowing hex "C" emblem with an orbit-ring reticle, embedded as a raster PNG in an SVG wrapper). |
 | `jarvisd.service`   | `systemd --user` unit that runs the daemon headless.                    |
 | `sway-cindro.conf`  | Reference Sway snippet (the installer writes its own `config.d/90-cindro.conf`). |
 | `mako/config`       | mako notification styling (used in later waves).                        |

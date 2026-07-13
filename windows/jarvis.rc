@@ -1,9 +1,9 @@
-// Embeds the Cindro arc-reactor icon into cindro-sidebar.exe. Windows uses
-// the exe's first icon group for Explorer, the taskbar, the window class,
-// and the Start-menu shortcut (the Inno [Icons] entry points IconFilename at
+// Embeds the Cindro emblem icon into cindro-sidebar.exe. Windows uses the
+// exe's first icon group for Explorer, the taskbar, the window class, and
+// the Start-menu shortcut (the Inno [Icons] entry points IconFilename at
 // this exe) — before this file existed the Windows app shipped iconless
-// while Linux got packaging/cindro.svg via hicolor. jarvis.ico is regenerated
-// from packaging/cindro.svg (rasterized 16..256px, packed multi-res) — the
-// filename itself wasn't renamed since it's an internal build artifact, not
-// user-facing.
+// while Linux got packaging/cindro.svg via hicolor. jarvis.ico and
+// packaging/cindro.svg are both regenerated from the same source brand
+// artwork (rasterized 16..256px, packed multi-res) — the filename itself
+// wasn't renamed since it's an internal build artifact, not user-facing.
 IDI_ICON1 ICON "jarvis.ico"
