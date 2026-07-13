@@ -2,8 +2,8 @@
 // the exe's first icon group for Explorer, the taskbar, the window class,
 // and the Start-menu shortcut (the Inno [Icons] entry points IconFilename at
 // this exe) — before this file existed the Windows app shipped iconless
-// while Linux got packaging/cindro.svg via hicolor. jarvis.ico is generated
-// from packaging/cindro.svg (magick -define icon:auto-resize=256..16) — the
-// filename itself wasn't renamed since the shipped .ico still needs
-// regenerating from the new "C" mark artwork with real image tooling.
+// while Linux got packaging/cindro.svg via hicolor. jarvis.ico is regenerated
+// from packaging/cindro.svg (rasterized 16..256px, packed multi-res) — the
+// filename itself wasn't renamed since it's an internal build artifact, not
+// user-facing.
 IDI_ICON1 ICON "jarvis.ico"
