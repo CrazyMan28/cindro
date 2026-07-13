@@ -84,12 +84,23 @@ Item {
     ListView.onReused: {
         del.revealing = false
         del.shown = (del.streaming && del.isAssistant) ? 0 : del.text.length
+        del.latchIfNothingToReveal()
+    }
+
+    // A streaming assistant row with nothing to reveal (e.g. empty text) never ticks
+    // the Timer above — `shown` already equals `text.length` — so its model `streaming`
+    // flag would otherwise stay set forever and the row keep being treated as streaming
+    // across reuse (Cursor review: "streaming flag never clears empty"). Latch it done
+    // up front instead.
+    function latchIfNothingToReveal() {
+        if (del.streaming && del.isAssistant && del.shown >= del.text.length)
+            del.revealed()
     }
 
     // entrance animation
     opacity: 0
     transform: Translate { id: slide; y: 8 }
-    Component.onCompleted: appear.start()
+    Component.onCompleted: { appear.start(); del.latchIfNothingToReveal() }
     ParallelAnimation {
         id: appear
         NumberAnimation { target: del; property: "opacity"; from: 0; to: 1; duration: 220; easing.type: Easing.OutCubic }
