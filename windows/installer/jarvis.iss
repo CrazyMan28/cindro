@@ -78,9 +78,11 @@ Type: files; Name: "{app}\cindro-tui.exe"
 ; HIDDEN VBS launcher (wscript) — so jarvisd + the engine start with NO console
 ; window; only cindro-sidebar (the GUI) appears. Cindro icon kept.
 Name: "{group}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; IconFilename: "{app}\{#MyAppExeName}"
-; Terminal UI v2 (cindro-tui.exe) — a console app, launched directly. Only
-; created when the payload actually contains it (built on a bun-equipped runner).
-Name: "{group}\Cindro Terminal (TUI)"; Filename: "{app}\cindro-tui.exe"; IconFilename: "{app}\{#MyAppExeName}"; Check: FileExists(ExpandConstant('{app}\cindro-tui.exe'))
+; Terminal UI v2 — launched via cindro-tui.cmd, which brings the daemon (+engine)
+; up first if they aren't running (the TUI is a control-WS client; launched cold
+; after a reboot the raw exe would open offline) and then runs cindro-tui.exe.
+; Guarded on the exe so the shortcut only appears when the TUI was actually built.
+Name: "{group}\Cindro Terminal (TUI)"; Filename: "{app}\cindro-tui.cmd"; IconFilename: "{app}\{#MyAppExeName}"; Check: FileExists(ExpandConstant('{app}\cindro-tui.exe'))
 ; Web dashboard (SolidJS, served by the bundled bun runtime on :8788 via
 ; cindro-web.cmd). Guarded by WebDashboardStaged (server.ts AND bun.exe AND the
 ; built dist) — the launcher needs all three, so the shortcut must too, not just

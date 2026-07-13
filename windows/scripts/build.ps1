@@ -153,59 +153,75 @@ Copy-Item $sidebarExe $payload
 # the web server runs on a BARE machine (web/server.ts is a Bun.serve script;
 # no Node/bun install required — the same "bundle a portable runtime" model the
 # Node phone server already uses).
+# Returns a REAL, self-contained, SHA-verified portable bun.exe (cached at
+# C:\bun-portable). This is what gets SHIPPED into the payload — NEVER the runner's
+# PATH bun, which may be a Scoop/Chocolatey SHIM that works on the runner but has no
+# companion target on a bare user machine (the web server would then fail to start).
+# Idempotent; returns $null on failure (caller decides fatality).
+function Install-PortableBun($buildDir) {
+  $bunRoot = "C:\bun-portable"
+  $bunExe  = Join-Path $bunRoot "bun.exe"
+  if (Test-Path $bunExe) { return $bunExe }
+  try {
+    # Supply-chain integrity: resolve 'latest' to a concrete, LOGGED release tag
+    # (so the download is auditable, not a silently-moving target) and verify the
+    # zip against that release's published SHASUMS256.txt BEFORE trusting/running
+    # bun.exe. A mismatch throws -> $null -> the TUI/web are dropped rather than
+    # built/shipped with an unverified toolchain.
+    $bunZip  = Join-Path $buildDir "bun-windows-x64.zip"
+    $bunSums = Join-Path $buildDir "bun-SHASUMS256.txt"
+    $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/oven-sh/bun/releases/latest" `
+             -Headers @{ 'User-Agent' = 'cindro-build' }
+    $tag = $rel.tag_name
+    if (-not $tag) { throw "could not resolve the latest bun release tag" }
+    Write-Host "    bun release: $tag" -ForegroundColor Cyan
+    $dl = "https://github.com/oven-sh/bun/releases/download/$tag"
+    Invoke-WebRequest "$dl/bun-windows-x64.zip" -OutFile $bunZip
+    Invoke-WebRequest "$dl/SHASUMS256.txt"       -OutFile $bunSums
+    $line = Get-Content $bunSums | Where-Object { $_ -match 'bun-windows-x64\.zip\s*$' } | Select-Object -First 1
+    if (-not $line) { throw "bun-windows-x64.zip not listed in SHASUMS256.txt for $tag" }
+    $expected = (($line -split '\s+')[0]).ToLower()
+    $actual   = (Get-FileHash $bunZip -Algorithm SHA256).Hash.ToLower()
+    if ($expected -ne $actual) { throw "bun SHA256 mismatch for $tag (expected $expected, got $actual)" }
+    Write-Host "    bun-windows-x64.zip SHA256 verified" -ForegroundColor Green
+    Expand-Archive -Force $bunZip (Join-Path $buildDir "bun-extract")
+    $found = Get-ChildItem -Path (Join-Path $buildDir "bun-extract") -Recurse -Filter "bun.exe" | Select-Object -First 1
+    if (-not $found) { throw "bun.exe not found inside bun-windows-x64.zip" }
+    New-Item -ItemType Directory -Force -Path $bunRoot | Out-Null
+    Copy-Item $found.FullName $bunExe -Force
+    return $bunExe
+  } catch {
+    Write-Warning "portable bun install failed ($_)."
+    return $null
+  }
+}
+
+# bun for BUILDING (running `bun install` / `bun run build`). A PATH bun is fine
+# here even if it's a shim — it works on THIS runner — so prefer it to avoid a
+# download; else self-heal with the verified portable runtime (added to PATH so
+# subsequent `bun` calls resolve). NB: what ships is always Install-PortableBun's
+# output, never this — see the web staging block.
 function Resolve-BunExe($buildDir) {
   $cmd = Get-Command bun -ErrorAction SilentlyContinue
   if ($cmd) { return $cmd.Source }
   $userBun = Join-Path $env:USERPROFILE ".bun\bin\bun.exe"
   if (Test-Path $userBun) { return $userBun }
-  # SELF-HEAL: pull the portable Windows bun into C:\bun-portable and add to PATH.
   Write-Host "==> bun not found on this runner — installing portable bun (self-heal)…" -ForegroundColor Yellow
-  try {
-    $bunRoot = "C:\bun-portable"
-    $bunExe  = Join-Path $bunRoot "bun.exe"
-    if (-not (Test-Path $bunExe)) {
-      # Supply-chain integrity: resolve 'latest' to a concrete, LOGGED release tag
-      # (so the download is auditable, not a silently-moving target) and verify the
-      # zip against that release's published SHASUMS256.txt BEFORE trusting/running
-      # bun.exe. Any mismatch throws -> caught below -> bun is NOT used (fail-safe:
-      # the TUI/web are dropped rather than built with an unverified toolchain).
-      $bunZip  = Join-Path $buildDir "bun-windows-x64.zip"
-      $bunSums = Join-Path $buildDir "bun-SHASUMS256.txt"
-      $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/oven-sh/bun/releases/latest" `
-               -Headers @{ 'User-Agent' = 'cindro-build' }
-      $tag = $rel.tag_name
-      if (-not $tag) { throw "could not resolve the latest bun release tag" }
-      Write-Host "    bun release: $tag" -ForegroundColor Cyan
-      $dl = "https://github.com/oven-sh/bun/releases/download/$tag"
-      Invoke-WebRequest "$dl/bun-windows-x64.zip" -OutFile $bunZip
-      Invoke-WebRequest "$dl/SHASUMS256.txt"       -OutFile $bunSums
-      $line = Get-Content $bunSums | Where-Object { $_ -match 'bun-windows-x64\.zip\s*$' } | Select-Object -First 1
-      if (-not $line) { throw "bun-windows-x64.zip not listed in SHASUMS256.txt for $tag" }
-      $expected = (($line -split '\s+')[0]).ToLower()
-      $actual   = (Get-FileHash $bunZip -Algorithm SHA256).Hash.ToLower()
-      if ($expected -ne $actual) { throw "bun SHA256 mismatch for $tag (expected $expected, got $actual)" }
-      Write-Host "    bun-windows-x64.zip SHA256 verified" -ForegroundColor Green
-      Expand-Archive -Force $bunZip (Join-Path $buildDir "bun-extract")
-      $found = Get-ChildItem -Path (Join-Path $buildDir "bun-extract") -Recurse -Filter "bun.exe" | Select-Object -First 1
-      if (-not $found) { throw "bun.exe not found inside bun-windows-x64.zip" }
-      New-Item -ItemType Directory -Force -Path $bunRoot | Out-Null
-      Copy-Item $found.FullName $bunExe -Force
-    }
-    if (Test-Path $bunExe) {
-      $env:Path = "$bunRoot;$env:Path"
-      # Persist so the runner's future runs (+ the preflight) see bun too.
-      try {
-        $machPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-        if ($machPath -and ($machPath -notlike "*$bunRoot*")) {
-          [Environment]::SetEnvironmentVariable("Path", "$machPath;$bunRoot", "Machine")
-        }
-      } catch { Write-Host "WARN: could not persist bun machine PATH: $_" -ForegroundColor Yellow }
-      return $bunExe
-    }
-  } catch {
-    Write-Warning "bun self-heal failed ($_) — TUI v2 + web dashboard will be absent from this installer."
+  $portable = Install-PortableBun $buildDir
+  if ($portable) {
+    $bunRoot = Split-Path $portable -Parent
+    $env:Path = "$bunRoot;$env:Path"
+    # Persist so the runner's future runs (+ the preflight) see bun too.
+    try {
+      $machPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+      if ($machPath -and ($machPath -notlike "*$bunRoot*")) {
+        [Environment]::SetEnvironmentVariable("Path", "$machPath;$bunRoot", "Machine")
+      }
+    } catch { Write-Host "WARN: could not persist bun machine PATH: $_" -ForegroundColor Yellow }
+  } else {
+    Write-Warning "bun self-heal failed — TUI v2 + web dashboard will be absent from this installer."
   }
-  return $null
+  return $portable
 }
 $bunExe = Resolve-BunExe $build
 if ($bunExe) { Write-Host "==> bun: $bunExe" -ForegroundColor Cyan }
@@ -261,11 +277,17 @@ if ($bunExe) {
       Copy-Item -Recurse $webDist (Join-Path $webDst "dist")
       Copy-Item (Join-Path $webSrc "server.ts")   $webDst
       Copy-Item (Join-Path $webSrc "package.json") $webDst
-      # Portable bun runtime next to the exes so cindro-web.cmd can serve it on a
-      # machine with nothing installed (server.ts is Bun-native — Bun.serve/Bun.file).
+      # Ship the VERIFIED PORTABLE bun runtime next to the web app so cindro-web.cmd
+      # serves it on a machine with nothing installed (server.ts is Bun-native).
+      # Deliberately NOT $bunExe: the build bun may be a Scoop/Choco shim on the
+      # runner's PATH that has no target off the runner — copying that would ship a
+      # broken runtime. Install-PortableBun is cached, so this is instant if the
+      # self-heal already ran.
+      $portableBun = Install-PortableBun $build
+      if (-not $portableBun) { throw "no portable bun runtime available to stage for the web dashboard" }
       $bunDst = Join-Path $payload "bun"
       New-Item -ItemType Directory -Force -Path $bunDst | Out-Null
-      Copy-Item $bunExe (Join-Path $bunDst "bun.exe") -Force
+      Copy-Item $portableBun (Join-Path $bunDst "bun.exe") -Force
       Write-Host "  staged web dashboard + portable bun runtime"
     } else {
       Write-Warning "web/dist not produced — web dashboard will be absent from this installer"
@@ -283,8 +305,10 @@ Copy-Item (Join-Path $repo "LICENSE") (Join-Path $payload "LICENSE.txt")
 Copy-Item (Join-Path $win "scripts\jarvis-launch.vbs") $payload
 Copy-Item (Join-Path $win "scripts\jarvis-start.cmd") $payload
 # cindro-web.cmd — serves the web dashboard (payload\web) via payload\bun\bun.exe.
-# Also becomes a PATH-exposed `cindro-web` command (installer adds {app} to PATH).
+# cindro-tui.cmd — brings the daemon/engine up (if needed) then runs the TUI.
+# Both also become PATH-exposed commands (the installer adds {app} to PATH).
 Copy-Item (Join-Path $win "scripts\cindro-web.cmd") $payload
+Copy-Item (Join-Path $win "scripts\cindro-tui.cmd") $payload
 # The Chrome/Edge extension (unpacked) — staged so the in-app guide can point
 # Chrome at {app}\extension (chrome://extensions -> Developer mode -> Load unpacked).
 Copy-Item -Recurse (Join-Path $repo "extension") (Join-Path $payload "extension")
