@@ -48,30 +48,43 @@ Item {
     // assistant message it animates 0 -> text.length; otherwise it's the full
     // length immediately (history, user messages, tool rows).
     property int shown: (streaming && isAssistant) ? 0 : text.length
+    // Local latch: once the reveal has BEGUN on this delegate we keep animating even
+    // after the model's `streaming` flag is cleared. We clear that flag on the FIRST
+    // tick (not on completion), so if the row is scrolled off-screen and its delegate
+    // recycled/recreated mid-reveal, it re-renders as complete instead of restarting
+    // the typewriter from zero (Cursor review: "mid-stream scroll restarts reveal").
+    property bool revealing: false
     readonly property string displayText:
-        (streaming && isAssistant) ? text.substring(0, shown) : text
+        ((streaming || revealing) && isAssistant) ? text.substring(0, shown) : text
 
     Timer {
         id: typer
         // ~3 chars per tick at 12ms ≈ 250 chars/s — smooth but not sluggish.
         interval: 12
         repeat: true
-        running: del.streaming && del.isAssistant && del.shown < del.text.length
+        running: (del.streaming || del.revealing) && del.isAssistant && del.shown < del.text.length
         onTriggered: {
+            // First tick of a fresh reveal → latch locally and clear the MODEL's
+            // streaming flag now, so any later recycle of this row shows the full
+            // text rather than replaying (completed OR interrupted mid-reveal).
+            if (!del.revealing) {
+                del.revealing = true
+                del.revealed()
+            }
             del.shown = Math.min(del.text.length, del.shown + 3)
             del.grew()
-            // Reveal done → tell the panel to clear this row's streaming flag so the
-            // reveal can never re-run when the delegate is recycled on scroll.
-            if (del.shown >= del.text.length)
-                del.revealed()
         }
     }
 
-    // reuseItems: a pooled delegate keeps the PREVIOUS row's imperatively-advanced
-    // `shown` (the Timer above breaks the `shown` binding by assigning it). Re-derive
-    // it from the NEW row's data on reuse, so a fresh streaming row can't start
-    // mid-word and a static row can't inherit a stale count.
-    ListView.onReused: del.shown = (del.streaming && del.isAssistant) ? 0 : del.text.length
+    // reuseItems: a pooled delegate keeps the PREVIOUS row's transient reveal state
+    // (the Timer breaks the `shown` binding by assigning it; `revealing` latches). Re-
+    // derive both from the NEW row's model data on reuse: a row whose `streaming` flag
+    // is still set starts its reveal; any row whose flag was already cleared renders in
+    // full — so scrolling a completed or mid-reveal message back never replays it.
+    ListView.onReused: {
+        del.revealing = false
+        del.shown = (del.streaming && del.isAssistant) ? 0 : del.text.length
+    }
 
     // entrance animation
     opacity: 0

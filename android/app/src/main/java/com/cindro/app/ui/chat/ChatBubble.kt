@@ -256,8 +256,14 @@ private fun MessageBubble(
         // (~300+ chars/sec). The bubble GROWS as `revealed` climbs and the list
         // auto-scrolls to follow (ChatScreen keys its scroll off the live text),
         // so the reply flows DOWN like real typing.
-        while (revealed < item.text.length) {
-            val step = (item.text.length - revealed).coerceAtMost(REVEAL_BATCH)
+        // Only animate up to what we actually DISPLAY. Past the cap the bubble shows a
+        // truncation notice, so revealing further — and calling wordCount() over an
+        // ever-growing prefix every frame — would just burn the main thread and could
+        // ANR on a very long live reply even though only 12k chars render (Cursor +
+        // Codex review). Bound the reveal target (and thus the word-count prefix) to it.
+        val revealCap = item.text.length.coerceAtMost(MAX_MESSAGE_RENDER_CHARS)
+        while (revealed < revealCap) {
+            val step = (revealCap - revealed).coerceAtMost(REVEAL_BATCH)
             revealed += step
             // Fire a per-WORD haptic tick: when this step crossed one or more word
             // boundaries, tick once (the Haptics layer self-throttles bursts).
@@ -268,6 +274,9 @@ private fun MessageBubble(
             }
             delay(REVEAL_FRAME_MS)
         }
+        // Longer than the display cap → mark fully revealed so `shown` is the full text
+        // (which `display` truncates) and the streaming state clears instead of hanging.
+        if (revealed < item.text.length) revealed = item.text.length
     }
     val shown = if (revealed >= item.text.length) item.text else item.text.take(revealed)
     // Guard the string handed to Compose's text layout. A single very long message (a
