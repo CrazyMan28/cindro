@@ -1644,7 +1644,7 @@ Response ControlServer::handlePhoneMcp(const Request &req, int timeoutMs)
     // use ungated tools — notify_user / twilio_screening_* — so they're never
     // blocked by this.)
     m_phonePolicies.load();
-    if (m_phonePolicies.decisionForTool(name) == QStringLiteral("deny")) {
+    if (m_phonePolicies.decisionForTool(name, args) == QStringLiteral("deny")) {
         m_audit.record(QStringLiteral("phone.mcp.blocked"), false, QStringLiteral("high"),
                        name + QStringLiteral(" denied by phone permissions"), QString());
         return Response::failure(

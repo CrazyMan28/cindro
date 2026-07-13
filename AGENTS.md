@@ -964,7 +964,13 @@ vendored `phone/server`** (see docs/PHONE.md). Load-bearing truths:
   `core/src/PhonePolicyStore.cpp` `buildToolMap()` (C++, daemon deny-gate) and
   `computer-use/computer_use_mcp/policy.py` `_PHONE_TOOL_CAPS` + `_PHONE_CAP_DEFAULTS`
   (Python, brain ask-gate). Billed PSTN tools map to BOTH their per-action cap and
-  `spend_money`; `decisionForTool` returns the STRICTER. Same drift hazard as the
+  `spend_money`; `decisionForTool` returns the STRICTER. Two argument-dependent
+  refinements mirror across both readers too: `call_user_and_wait` with
+  `escalate_to_twilio=true` folds in `spend_money` (its plain in-app path is free),
+  and `twilio_screening_enable/disable` are DENIED when they'd contradict the
+  current `answer_calls` (so the brain can't desync that policy by toggling
+  screening directly — the internal `applyAnswerCallsScreening` push always calls
+  the MATCHING tool, so it is never self-blocked). Same drift hazard as the
   trust-policy engine — keep both readers aligned.
 - **`phone_policy.json` path must mirror `Config::configDir()`** (JARVIS_CONFIG_DIR-
   aware, NOT XDG). `policy.py` uses `daemon_client.py`'s idiom

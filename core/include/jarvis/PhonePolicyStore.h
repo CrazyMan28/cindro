@@ -87,7 +87,16 @@ public:
     // (deny > ask > allow) among the gating capabilities. A tool with no gating
     // capability returns "allow". This is what the daemon phone.mcp choke point
     // and the computer-use gate both consult.
-    QString decisionForTool(const QString &phoneToolName) const;
+    //
+    // `arguments` refines two argument-dependent cases:
+    //  - `call_user_and_wait` with `escalate_to_twilio=true` can fall back to a
+    //    REAL billable PSTN call, so it also gets gated by `spend_money`.
+    //  - the `twilio_screening_enable/disable` tools are gated against the current
+    //    `answer_calls` value so the brain can't desync the answer_calls policy by
+    //    flipping screening directly (the DENY is on the CONTRADICTING tool; the
+    //    internal push always calls the matching one, so it is never self-blocked).
+    QString decisionForTool(const QString &phoneToolName,
+                            const QJsonObject &arguments = QJsonObject()) const;
 
     QString lastError() const { return m_lastError; }
 

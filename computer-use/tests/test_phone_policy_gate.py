@@ -68,6 +68,31 @@ def test_ask_flow_allow_and_deny(tmp_path, monkeypatch):
         policy._phone_gate("device_sms", {})
 
 
+def test_screening_tools_gated_against_answer_calls(tmp_path, monkeypatch):
+    monkeypatch.setattr(policy, "_LOG_FILE", tmp_path / "log.jsonl")
+    # screen_unknown -> disabling screening would desync the policy: deny it.
+    write_phone_policy(tmp_path, monkeypatch, {"answer_calls": "screen_unknown"})
+    assert policy._phone_decision("twilio_screening_disable", {}) == "deny"
+    assert policy._phone_decision("twilio_screening_enable", {}) == "allow"
+    # allowed_only -> the reverse.
+    write_phone_policy(tmp_path, monkeypatch, {"answer_calls": "allowed_only"})
+    assert policy._phone_decision("twilio_screening_enable", {}) == "deny"
+    assert policy._phone_decision("twilio_screening_disable", {}) == "allow"
+
+
+def test_call_user_and_wait_escalation_is_billable(tmp_path, monkeypatch):
+    write_phone_policy(tmp_path, monkeypatch, {"spend_money": "deny", "outbound_calls": "allow"})
+    # Plain in-app call is free -> unaffected by spend_money.
+    assert policy._phone_decision("call_user_and_wait", {}) == "allow"
+    # escalate_to_twilio can fall back to a billable PSTN call -> deny.
+    assert policy._phone_decision("call_user_and_wait", {"escalate_to_twilio": True}) == "deny"
+    # ...including via the phone_tool escape hatch.
+    assert policy._phone_decision(
+        "phone_tool",
+        {"tool": "call_user_and_wait", "arguments_json": '{"escalate_to_twilio": true}'},
+    ) == "deny"
+
+
 def test_phone_tool_escape_hatch_unwraps_inner_name(tmp_path, monkeypatch):
     monkeypatch.setattr(policy, "_LOG_FILE", tmp_path / "log.jsonl")
     write_phone_policy(tmp_path, monkeypatch, {"send_sms": "deny"})

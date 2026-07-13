@@ -112,6 +112,33 @@ int main()
               "device_sms unaffected by spend_money (free SIM)");
     }
 
+    // --- 4b) argument-dependent gating: screening consistency + escalation -----
+    {
+        QTemporaryDir root3;
+        PhonePolicyStore p(root3.path()); // defaults: answer_calls=screen_unknown
+        // The screening tool that CONTRADICTS answer_calls is denied; the matching
+        // one is allowed (so the internal push is never self-blocked).
+        check(p.decisionForTool(QStringLiteral("twilio_screening_disable")) == QStringLiteral("deny"),
+              "screen_unknown: twilio_screening_disable denied (would desync)");
+        check(p.decisionForTool(QStringLiteral("twilio_screening_enable")) == QStringLiteral("allow"),
+              "screen_unknown: twilio_screening_enable allowed (matches)");
+        check(p.setValue(QStringLiteral("answer_calls"), QStringLiteral("allowed_only")),
+              "answer_calls=allowed_only");
+        check(p.decisionForTool(QStringLiteral("twilio_screening_enable")) == QStringLiteral("deny"),
+              "allowed_only: twilio_screening_enable denied (would desync)");
+        check(p.decisionForTool(QStringLiteral("twilio_screening_disable")) == QStringLiteral("allow"),
+              "allowed_only: twilio_screening_disable allowed (matches)");
+
+        // call_user_and_wait is free UNTIL escalate_to_twilio=true.
+        check(p.setValue(QStringLiteral("spend_money"), QStringLiteral("deny")), "spend_money=deny (4b)");
+        check(p.decisionForTool(QStringLiteral("call_user_and_wait")) == QStringLiteral("allow"),
+              "plain call_user_and_wait unaffected by spend_money");
+        QJsonObject esc;
+        esc.insert(QStringLiteral("escalate_to_twilio"), true);
+        check(p.decisionForTool(QStringLiteral("call_user_and_wait"), esc) == QStringLiteral("deny"),
+              "call_user_and_wait escalate_to_twilio -> deny via spend_money");
+    }
+
     // --- 5) reset restores defaults ------------------------------------------
     {
         PhonePolicyStore p(root.path());

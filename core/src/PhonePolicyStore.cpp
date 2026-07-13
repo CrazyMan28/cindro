@@ -259,9 +259,31 @@ bool PhonePolicyStore::reset()
     return save();
 }
 
-QString PhonePolicyStore::decisionForTool(const QString &phoneToolName) const
+QString PhonePolicyStore::decisionForTool(const QString &phoneToolName,
+                                          const QJsonObject &arguments) const
 {
-    const QStringList caps = capabilitiesForTool(phoneToolName);
+    // Screening tools are gated against answer_calls so the brain can't desync
+    // the answer_calls policy by toggling screening directly. Only the tool that
+    // CONTRADICTS the current answer_calls value is denied — the internal
+    // applyAnswerCallsScreening push always calls the MATCHING tool, so it is
+    // never self-blocked by this.
+    const QString ac = value(QStringLiteral("answer_calls"));
+    if (phoneToolName == QStringLiteral("twilio_screening_disable")
+        && ac == QStringLiteral("screen_unknown"))
+        return QStringLiteral("deny");
+    if (phoneToolName == QStringLiteral("twilio_screening_enable")
+        && ac == QStringLiteral("allowed_only"))
+        return QStringLiteral("deny");
+
+    QStringList caps = capabilitiesForTool(phoneToolName);
+    // call_user_and_wait is an in-app tool (free) UNTIL escalate_to_twilio=true,
+    // which can fall back to a REAL billable PSTN call — fold in spend_money for
+    // that argument only, so `spend_money=deny/ask` actually covers it.
+    if (phoneToolName == QStringLiteral("call_user_and_wait")
+        && arguments.value(QStringLiteral("escalate_to_twilio")).toBool()
+        && !caps.contains(QStringLiteral("spend_money")))
+        caps.append(QStringLiteral("spend_money"));
+
     if (caps.isEmpty())
         return QStringLiteral("allow"); // ungated tool
     QString worst = QStringLiteral("allow");

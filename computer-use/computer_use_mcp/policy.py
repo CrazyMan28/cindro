@@ -261,13 +261,41 @@ def _phone_inner_name(tool: str, arguments: Any) -> str:
     return tool
 
 
+def _phone_escalates(tool: str, arguments: Any) -> bool:
+    """True if a call_user_and_wait opts into the billable Twilio escalation
+    (escalate_to_twilio) — whether called directly or via the phone_tool hatch."""
+    if not isinstance(arguments, dict):
+        return False
+    if tool == "phone_tool":
+        try:
+            inner = json.loads(arguments.get("arguments_json") or "{}")
+        except Exception:
+            return False
+        return bool(isinstance(inner, dict) and inner.get("escalate_to_twilio"))
+    return bool(arguments.get("escalate_to_twilio"))
+
+
 def _phone_decision(tool: str, arguments: Any) -> str:
-    """-> allow|ask|deny for a phone tool (strictest of its gating capabilities)."""
+    """-> allow|ask|deny for a phone tool (strictest of its gating capabilities).
+
+    Mirrors core/src/PhonePolicyStore.cpp decisionForTool(), incl. the two
+    argument-dependent cases: screening tools gated against answer_calls, and
+    call_user_and_wait's escalate_to_twilio folding in spend_money."""
     name = _phone_inner_name(tool, arguments)
-    caps = _PHONE_TOOL_CAPS.get(name)
+    values = _phone_values()
+    # Screening tools gated against answer_calls so the brain can't desync the
+    # policy by flipping screening directly (deny the CONTRADICTING tool only).
+    ac = str(values.get("answer_calls", "screen_unknown"))
+    if name == "twilio_screening_disable" and ac == "screen_unknown":
+        return "deny"
+    if name == "twilio_screening_enable" and ac == "allowed_only":
+        return "deny"
+    caps = list(_PHONE_TOOL_CAPS.get(name, ()))
+    if name == "call_user_and_wait" and _phone_escalates(tool, arguments) \
+            and "spend_money" not in caps:
+        caps.append("spend_money")
     if not caps:
         return "allow"
-    values = _phone_values()
     worst = "allow"
     for cap in caps:
         v = str(values.get(cap, _PHONE_CAP_DEFAULTS.get(cap, "allow")))
