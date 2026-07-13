@@ -183,13 +183,7 @@ fun ChatScreen(
                 )
             } else {
                 TopAppBar(
-                    title = {
-                        ChatModelChip(
-                            brain = state.brain,
-                            model = state.model,
-                            onClick = { showModelInfo = true },
-                        )
-                    },
+                    title = {},
                     navigationIcon = {
                         HapticIconButton(onClick = onOpenDrawer) {
                             Icon(Icons.Filled.Menu, contentDescription = "Open menu")
@@ -281,11 +275,20 @@ fun ChatScreen(
             }
           }
 
-            // Bottom dock: the error banner, pending attachments and the input row
-            // stay pinned just ABOVE the keyboard (imePadding) and clear of the
-            // gesture/nav bar (navigationBarsPadding). The messages list above keeps
-            // its place; opening the IME never relocates the input to the top.
+            // Bottom dock: the model chip, error banner, pending attachments and
+            // the input row stay pinned just ABOVE the keyboard (imePadding) and
+            // clear of the gesture/nav bar (navigationBarsPadding). The messages
+            // list above keeps its place; opening the IME never relocates the
+            // input to the top. The model chip lives HERE (part of the chat bar,
+            // ChatGPT-style) rather than the top app bar.
             Column(Modifier.imePadding().navigationBarsPadding()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                    ChatModelChip(
+                        brain = state.brain,
+                        model = state.model,
+                        onClick = { showModelInfo = true },
+                    )
+                }
                 state.error?.let { err ->
                     Surface(color = JarvisPalette.Error.copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth()) {
                         Text(
@@ -445,11 +448,13 @@ private fun ChatSelectionBar(
     )
 }
 
-/** A compact "brain · model" pill in the chat top bar, echoing ChatGPT's model
- *  selector chip. Tapping shows an info card (see [ChatScreen]'s AlertDialog) —
- *  it's read-only here since a live session's brain/model can't be switched. */
+/** A compact "brain · model" pill that lives in the chat bar (bottom, above the
+ *  composer), echoing ChatGPT's model selector chip — not the top app bar.
+ *  Shared by [ChatScreen] (read-only there; tapping shows an info card since a
+ *  live session's brain/model can't be switched) and [NewChatScreen] (a real
+ *  picker there, since brain/model is still choosable before the first send). */
 @Composable
-private fun ChatModelChip(brain: String?, model: String?, onClick: () -> Unit) {
+fun ChatModelChip(brain: String?, model: String?, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(50),

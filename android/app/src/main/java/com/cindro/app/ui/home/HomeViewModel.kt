@@ -29,6 +29,10 @@ data class HomeUiState(
      *  start a chat and needs the same agent/skill picker. */
     val slashAgents: List<com.cindro.app.protocol.Agent> = emptyList(),
     val slashSkills: List<com.cindro.app.protocol.Skill> = emptyList(),
+    /** Models offered by the brain currently picked in NewChatScreen's model
+     *  chip (empty = daemon default) — same field SessionsUiState uses for its
+     *  create-session dialog. */
+    val models: List<com.cindro.app.protocol.ModelInfo> = emptyList(),
 )
 
 /** Backs the Home dashboard: recent sessions + the most recent live canvas + connection. */
@@ -84,6 +88,7 @@ class HomeViewModel(
     fun createSession(
         profile: String = "coworker",
         brain: String = "codex",
+        model: String? = null,
         onCreated: (String) -> Unit,
         onError: (() -> Unit)? = null,
     ) {
@@ -95,7 +100,7 @@ class HomeViewModel(
         if (_uiState.value.creating) return
         _uiState.update { it.copy(creating = true) }
         viewModelScope.launch {
-            runCatching { withContext(Dispatchers.IO) { repo.createSession(profile, brain, null) } }
+            runCatching { withContext(Dispatchers.IO) { repo.createSession(profile, brain, model) } }
                 .onSuccess { id -> _uiState.update { it.copy(creating = false) }; refresh(); onCreated(id) }
                 .onFailure { _uiState.update { it.copy(creating = false) }; onError?.invoke() }
         }
@@ -113,6 +118,17 @@ class HomeViewModel(
         viewModelScope.launch {
             runCatching { withContext(Dispatchers.IO) { repo.listSkills() } }
                 .onSuccess { s -> _uiState.update { it.copy(slashSkills = s) } }
+        }
+    }
+
+    /** Load the models a brain offers, for NewChatScreen's model chip — mirrors
+     *  SessionsViewModel.loadModels() exactly. On failure just clears the list so
+     *  the picker falls back to the daemon default — never blocks. */
+    fun loadModels(brain: String) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.listModels(brain) } }
+                .onSuccess { list -> _uiState.update { it.copy(models = list) } }
+                .onFailure { _uiState.update { it.copy(models = emptyList()) } }
         }
     }
 

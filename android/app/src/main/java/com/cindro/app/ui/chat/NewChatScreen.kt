@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.SuggestionChipDefaults
@@ -38,6 +39,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,6 +55,7 @@ import com.cindro.app.net.DeviceClient
 import com.cindro.app.ui.canvas.CanvasItem
 import com.cindro.app.ui.home.HomeUiState
 import com.cindro.app.ui.home.HomeViewModel
+import com.cindro.app.ui.sessions.BrainModelPicker
 import com.cindro.app.ui.theme.GlowCard
 import com.cindro.app.ui.theme.JarvisPalette
 import com.cindro.app.ui.util.HapticIconButton
@@ -93,6 +96,13 @@ fun NewChatScreen(
     val scope = rememberCoroutineScope()
     var draft by remember { mutableStateOf("") }
     var pending by remember { mutableStateOf<List<PendingImage>>(emptyList()) }
+    // The brain/model for the NEXT chat this composer creates — a real, live
+    // picker (unlike ChatModelChip on an already-created ChatScreen, which is
+    // read-only since there's no daemon RPC to switch a live session's brain).
+    var brain by remember { mutableStateOf("codex") }
+    var model by remember { mutableStateOf<String?>(null) }
+    var showModelPicker by remember { mutableStateOf(false) }
+    LaunchedEffect(brain) { viewModel.loadModels(brain) }
 
     val pickImage = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent(),
@@ -122,6 +132,8 @@ fun NewChatScreen(
         // a failed createSession() used to silently wipe the typed message with
         // no error shown; now it stays in the composer and the user can retry.
         viewModel.createSession(
+            brain = brain,
+            model = model,
             onCreated = { id ->
                 draft = ""
                 pending = emptyList()
@@ -145,6 +157,8 @@ fun NewChatScreen(
         // mic is for a hands-free NEW chat, not a way to abandon what's typed.
         if (state.creating || draft.isNotBlank() || pending.isNotEmpty()) return
         viewModel.createSession(
+            brain = brain,
+            model = model,
             onCreated = onOpenVoiceSession,
             onError = {
                 android.widget.Toast.makeText(
@@ -198,6 +212,13 @@ fun NewChatScreen(
                         CollapsibleLiveWidget(canvas, onOpenCanvas = onCanvas)
                     }
                 }
+            }
+
+            // The model chip lives in the chat bar (ChatGPT-style), same spot as
+            // ChatScreen's — a REAL picker here since brain/model is still
+            // choosable before the first message creates the session.
+            Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                ChatModelChip(brain = brain, model = model, onClick = { showModelPicker = true })
             }
 
             // Attached-photo preview, mirroring ChatScreen's pending row — without
@@ -268,6 +289,31 @@ fun NewChatScreen(
                 onMicCancel = {},
                 onStopSpeaking = {},
             )
+        }
+    }
+
+    if (showModelPicker) {
+        ModalBottomSheet(
+            onDismissRequest = { showModelPicker = false },
+            containerColor = JarvisPalette.Surface,
+        ) {
+            Column(Modifier.padding(20.dp)) {
+                Text(
+                    "Brain for this chat",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = JarvisPalette.TextPrimary,
+                )
+                Spacer(Modifier.height(12.dp))
+                BrainModelPicker(
+                    brain = brain,
+                    model = model,
+                    models = state.models,
+                    onBrainChange = { brain = it; model = null },
+                    onModelChange = { model = it },
+                )
+                Spacer(Modifier.height(16.dp))
+                TextButton(onClick = { showModelPicker = false }) { Text("Done") }
+            }
         }
     }
 }
