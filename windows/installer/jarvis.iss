@@ -34,7 +34,7 @@ OutputDir=..\dist
 OutputBaseFilename=Cindro-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
-; Cindro arc-reactor icon on the installer itself + Add/Remove Programs
+; Cindro emblem icon on the installer itself + Add/Remove Programs
 ; (the app/shortcut/taskbar icon comes from the exe's embedded RC icon —
 ; windows/jarvis.rc — which didn't exist before, hence the iconless app).
 SetupIconFile=..\jarvis.ico
