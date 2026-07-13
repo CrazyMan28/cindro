@@ -134,8 +134,12 @@ add_local_bin_to_path() {
   # $1 = rc file, $2 = line to append if the file doesn't already reference the dir
   [ -n "$1" ] || return 0
   mkdir -p "$(dirname "$1")" 2>/dev/null || true
-  if [ -f "$1" ] && grep -qF '.local/bin' "$1" 2>/dev/null; then
-    return 0   # already references it (ours or the distro's) — leave it alone
+  # Match an actual PATH *assignment* that references the dir (our own line, or
+  # the distro's / user's) — not a bare mention of ".local/bin" in a comment or
+  # unrelated text, which a plain substring grep would false-match and then skip
+  # the real update. Tolerates `PATH=`, `PATH =`, and pwsh's `$env:PATH = `.
+  if [ -f "$1" ] && grep -qE 'PATH[[:space:]]*=.*\.local/bin' "$1" 2>/dev/null; then
+    return 0   # already puts ~/.local/bin on PATH — leave it alone
   fi
   {
     printf '\n# Added by Cindro install.sh — put ~/.local/bin on PATH\n'

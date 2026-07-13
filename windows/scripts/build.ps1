@@ -200,8 +200,11 @@ if ($bunExe) {
   Push-Location $tuiDir
   try {
     & $bunExe install --frozen-lockfile
-    & $bunExe run build win
     $tuiExe = Join-Path $tuiDir "dist\cindro-tui.exe"
+    # Remove any stale exe first so a FAILED compile can't leave an old binary
+    # for the Test-Path check below to stage (masking the failure).
+    if (Test-Path $tuiExe) { Remove-Item -Force $tuiExe }
+    & $bunExe run build win
     if (Test-Path $tuiExe) { Copy-Item $tuiExe $payload; Write-Host "  staged cindro-tui.exe" }
     else { Write-Warning "cindro-tui.exe not produced — TUI v2 will be absent from this installer" }
   } catch {
@@ -224,8 +227,11 @@ if ($bunExe) {
   Push-Location $webSrc
   try {
     & $bunExe install --frozen-lockfile
-    & $bunExe run build
     $webDist = Join-Path $webSrc "dist"
+    # Remove any stale dist first so a FAILED `bun run build` can't leave an old
+    # dashboard for the index.html check below to stage (masking the failure).
+    if (Test-Path $webDist) { Remove-Item -Recurse -Force $webDist }
+    & $bunExe run build
     if (Test-Path (Join-Path $webDist "index.html")) {
       $webDst = Join-Path $payload "web"
       New-Item -ItemType Directory -Force -Path $webDst | Out-Null
