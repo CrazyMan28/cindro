@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -36,7 +37,7 @@ import com.cindro.app.ui.theme.JarvisPalette
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PluginsScreen(viewModel: PluginsViewModel) {
+fun PluginsScreen(viewModel: PluginsViewModel, onOpenDrawer: () -> Unit) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     Scaffold(
@@ -44,6 +45,11 @@ fun PluginsScreen(viewModel: PluginsViewModel) {
         topBar = {
             TopAppBar(
                 title = { Text("Plugins") },
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open menu")
+                    }
+                },
                 actions = {
                     IconButton(onClick = viewModel::refresh) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh")

@@ -82,3 +82,33 @@ sealed interface ChatItem {
 
 /** Locally-attached photo pending send (mime + base64 + a thumbnail uri string). */
 data class PendingImage(val mime: String, val b64: String, val previewUri: String)
+
+/**
+ * One-shot handoff from [com.cindro.app.ui.chat.NewChatScreen]'s blank composer to
+ * the real [ChatViewModel] once its session exists: NewChatScreen has no session id
+ * to send against until `session.create` returns, so it stashes the draft the user
+ * already typed and [ChatViewModel.init] consumes it (a normal [ChatViewModel.send]
+ * call — same optimistic bubble / haptics / slash-command handling as any other
+ * message) the moment it mounts for that session id. Not for anything else.
+ */
+object PendingFirstMessage {
+    private var sessionId: String? = null
+    private var text: String = ""
+    private var images: List<PendingImage> = emptyList()
+
+    fun stash(sessionId: String, text: String, images: List<PendingImage>) {
+        this.sessionId = sessionId
+        this.text = text
+        this.images = images
+    }
+
+    /** Returns and clears the stashed draft only if it matches [sessionId]. */
+    fun consume(sessionId: String): Pair<String, List<PendingImage>>? {
+        if (this.sessionId != sessionId) return null
+        val result = text to images
+        this.sessionId = null
+        text = ""
+        images = emptyList()
+        return result
+    }
+}

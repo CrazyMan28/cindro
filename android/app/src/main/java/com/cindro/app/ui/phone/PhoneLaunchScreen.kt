@@ -14,11 +14,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
@@ -32,31 +38,49 @@ import androidx.compose.ui.unit.sp
 import com.cindro.app.ui.theme.JarvisPalette
 
 /**
- * Cindro's Phone tab. The full Agent Phone app is vendored verbatim into this one
- * APK under [com.agentphone] — every screen, setting and flow. Rather than re-skin
- * or reimplement any of it, the Phone tab simply launches the real
- * [com.agentphone.MainActivity], which renders the original `AppRoot()` (Calls /
+ * Cindro's Phone destination (reached from the drawer). The full Agent Phone app is
+ * vendored verbatim into this one APK under [com.agentphone] — every screen, setting
+ * and flow. Rather than re-skin or reimplement any of it, this simply launches the
+ * real [com.agentphone.MainActivity], which renders the original `AppRoot()` (Calls /
  * Inbox / Agents / HUD / Settings + setup wizard + call screens) full-screen.
  *
- * It opens automatically the first time the tab is shown, and the button reopens it
- * after the user backs out — the Cindro bottom nav stays visible here so this is
- * never a dead end.
+ * It opens automatically the first time this screen is shown, and the button reopens
+ * it after the user backs out; the hamburger opens the drawer to jump anywhere else.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PhoneLaunchScreen() {
+fun PhoneLaunchScreen(onOpenDrawer: () -> Unit) {
     val context = LocalContext.current
 
     fun openPhone() {
         context.startActivity(Intent(context, com.agentphone.MainActivity::class.java))
     }
 
-    // Auto-open the full Agent Phone the first time the Phone tab is shown.
+    // Auto-open the full Agent Phone the first time this screen is shown.
     LaunchedEffect(Unit) { openPhone() }
 
+    Scaffold(
+        containerColor = JarvisPalette.Background,
+        topBar = {
+            TopAppBar(
+                title = { Text("Phone") },
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open menu")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = JarvisPalette.Background,
+                    titleContentColor = JarvisPalette.TextPrimary,
+                ),
+            )
+        },
+    ) { padding ->
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(JarvisPalette.Background)
+            .padding(padding)
             .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
@@ -106,5 +130,6 @@ fun PhoneLaunchScreen() {
             Spacer(Modifier.width(10.dp))
             Text("Open Phone", fontSize = 16.sp, fontWeight = FontWeight.Medium)
         }
+    }
     }
 }

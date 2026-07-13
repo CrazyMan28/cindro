@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.CircularProgressIndicator
@@ -40,7 +41,7 @@ import com.cindro.app.ui.theme.JarvisPalette
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun QueueScreen(viewModel: QueueViewModel) {
+fun QueueScreen(viewModel: QueueViewModel, onOpenDrawer: () -> Unit) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var draft by remember { mutableStateOf("") }
 
@@ -49,6 +50,11 @@ fun QueueScreen(viewModel: QueueViewModel) {
         topBar = {
             TopAppBar(
                 title = { Text("Queue") },
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open menu")
+                    }
+                },
                 actions = {
                     IconButton(onClick = viewModel::refresh) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh")

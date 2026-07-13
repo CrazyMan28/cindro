@@ -24,6 +24,15 @@ data class HomeUiState(
     val sessions: List<Session> = emptyList(),
     val latestCanvas: CanvasItem? = null,
     val creating: Boolean = false,
+    /** "/" command palette catalog for the blank composer — same shape/lazy-load
+     *  pattern as ChatViewModel's, since this screen is now the default place to
+     *  start a chat and needs the same agent/skill picker. */
+    val slashAgents: List<com.cindro.app.protocol.Agent> = emptyList(),
+    val slashSkills: List<com.cindro.app.protocol.Skill> = emptyList(),
+    /** Models offered by the brain currently picked in NewChatScreen's model
+     *  chip (empty = daemon default) — same field SessionsUiState uses for its
+     *  create-session dialog. */
+    val models: List<com.cindro.app.protocol.ModelInfo> = emptyList(),
 )
 
 /** Backs the Home dashboard: recent sessions + the most recent live canvas + connection. */
@@ -64,16 +73,62 @@ class HomeViewModel(
     fun refresh() {
         viewModelScope.launch {
             runCatching { withContext(Dispatchers.IO) { repo.listSessions() } }
-                .onSuccess { list -> _uiState.update { it.copy(sessions = list) } }
+                .onSuccess { list ->
+                    // Subagent child sessions are not normal chats: they belong to
+                    // their parent chat and disappear when done — never top-level
+                    // rows, on any surface (jarvis#72; see SessionsViewModel for the
+                    // same filter). The drawer's Recents list reads this state, so
+                    // without it a running subagent would show up as an openable
+                    // top-level chat in the sidebar.
+                    _uiState.update { it.copy(sessions = list.filterNot(Session::isSubagent)) }
+                }
         }
     }
 
-    fun createSession(profile: String = "coworker", brain: String = "codex", onCreated: (String) -> Unit) {
+    fun createSession(
+        profile: String = "coworker",
+        brain: String = "codex",
+        model: String? = null,
+        onCreated: (String) -> Unit,
+        onError: (() -> Unit)? = null,
+    ) {
+        // Guarded here, not just at the call site: PendingFirstMessage is a
+        // single-slot handoff, so two rapid createSession() calls before the
+        // UI recomposes (the caller's own `state.creating` check hasn't taken
+        // effect yet) could both fire session.create — the second stash()
+        // would silently overwrite the first chat's typed message.
+        if (_uiState.value.creating) return
         _uiState.update { it.copy(creating = true) }
         viewModelScope.launch {
-            runCatching { withContext(Dispatchers.IO) { repo.createSession(profile, brain, null) } }
+            runCatching { withContext(Dispatchers.IO) { repo.createSession(profile, brain, model) } }
                 .onSuccess { id -> _uiState.update { it.copy(creating = false) }; refresh(); onCreated(id) }
-                .onFailure { _uiState.update { it.copy(creating = false) } }
+                .onFailure { _uiState.update { it.copy(creating = false) }; onError?.invoke() }
+        }
+    }
+
+    /** Lazily load the "/" palette catalog (agents + skills) the first time the
+     *  user opens it, so the dropdown has live data to filter — mirrors
+     *  ChatViewModel.loadSlashCatalog() exactly. */
+    fun loadSlashCatalog() {
+        if (_uiState.value.slashAgents.isNotEmpty() || _uiState.value.slashSkills.isNotEmpty()) return
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.listAgents() } }
+                .onSuccess { a -> _uiState.update { it.copy(slashAgents = a) } }
+        }
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.listSkills() } }
+                .onSuccess { s -> _uiState.update { it.copy(slashSkills = s) } }
+        }
+    }
+
+    /** Load the models a brain offers, for NewChatScreen's model chip — mirrors
+     *  SessionsViewModel.loadModels() exactly. On failure just clears the list so
+     *  the picker falls back to the daemon default — never blocks. */
+    fun loadModels(brain: String) {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.listModels(brain) } }
+                .onSuccess { list -> _uiState.update { it.copy(models = list) } }
+                .onFailure { _uiState.update { it.copy(models = emptyList()) } }
         }
     }
 

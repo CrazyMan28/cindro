@@ -4,7 +4,104 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-07-11._
+_Last updated: 2026-07-12._
+
+---
+
+## 🆕 Android: Claude/ChatGPT-style redesign — drawer nav + chat-first launch (2026-07-12)
+
+The Android app's navigation was rebuilt from scratch to read as a professional,
+first-party chat app (v0.15.0): a Material3 navigation **drawer** replaces the old
+fixed 6-tab bottom bar, and the app now **opens straight into an active chat
+composer** instead of a Home dashboard — matching how Claude and ChatGPT mobile
+actually behave, per user-supplied reference screenshots.
+
+- **One flat, drawer-driven nav graph.** The old two-tier nav (an outer graph +
+  an inner bottom-tab `Shell()`) collapsed into one flat `NavHost` in
+  `AppNav.kt`. Every former tab (Canvas/Computer/Phone/Settings) AND every
+  former "More" hub entry (Skills/Agents/Queue/MCP/Plugins/Memory/Files) is now
+  a plain sibling route reached from the sidebar — tapping a drawer item pushes
+  that screen over chat; its own back arrow returns to chat.
+- **`CHAT_HOME`** (new, blank landing composer) replaces `Routes.HOME` as the
+  graph's start destination. Reuses the existing `HomeViewModel` unchanged
+  (sessions/latestCanvas/createSession) and `ChatScreen`'s `ChatEmptyState`/
+  `InputRow` (both promoted from `private` to shared). Home's old 2×2 quick
+  actions became a `SuggestionChip` row; the live-widget card survives,
+  collapsed by default.
+- **First-message handoff (`PendingFirstMessage`, `ChatModels.kt`).** The blank
+  composer has no session id to send against until `session.create` returns —
+  it stashes the typed draft/photos keyed by the new session id, and
+  `ChatViewModel.init()` consumes+sends it the moment it mounts, going through
+  the SAME `send()` path (optimistic bubble, haptics, slash commands) as any
+  other message.
+- **Chat top bar**: hamburger (opens drawer) replaces the back arrow; a
+  `ChatModelChip` shows the session's brain/model (read-only — no daemon RPC
+  exists to switch brain/model on a live session; tapping it explains that and
+  points at New chat).
+- **Caught in code review before this shipped** (8-angle high-effort pass +
+  independent feature-parity subagent, both run against the diff): promoting
+  Sessions/Canvas/Computer/Phone/Settings out of the old gated `Shell()` into
+  top-level routes had silently DROPPED the biometric app-open gate on all
+  five (plus a pre-existing gap on Skills/Agents/Queue/MCP/Plugins/Memory/Files
+  that had never been gated at all) — fixed with a shared `Gated()` wrapper
+  applied to every non-pairing route. Also fixed: the new chat composer's mic
+  button fired instantly on press and discarded any already-typed draft/photos
+  while creating an unwanted session; `sendFirst()` cleared the draft before
+  `session.create` was known to succeed, silently losing the message on
+  failure with no error shown; the drawer's destination navigation had dropped
+  the old tab-switcher's `popUpTo`/`saveState`/`restoreState`, so hopping
+  between drawer screens grew the back stack unboundedly; and four promoted
+  screens (Sessions/Canvas/Computer/Settings) had no on-screen way back at all
+  (system back only) since they used to rely on being a bottom tab. See
+  `AGENTS.md`'s matching entry for the load-bearing details.
+- Deliberately **out of scope for this pass** (filed as follow-up, not a
+  regression): Voice mode, Browser control, Schedules/Workflows, Memory Graph,
+  Activity log, Replay, and Google Connectors still have no dedicated Android
+  page — desktop/web already have them, Android didn't before this redesign
+  either, and the drawer's IA has room for them later.
+- Verified: `./gradlew assembleDebug testDebugUnitTest` clean (portable JDK +
+  Android SDK cmdline-tools, no local toolchain was preinstalled on this box),
+  an independent feature-parity subagent audit (cold review against
+  `git show HEAD:...` for every old screen/callback/gate) found zero gaps. No
+  device/emulator was available to smoke-test the live UI — that's still
+  outstanding before this should be considered fully verified end-to-end.
+
+---
+
+## 🆕 Bug fix: phone-initiated sessions silently failed on Windows (jarvis#107) (2026-07-12)
+
+Filed during the redesign above as "Windows: session creation from phone hangs on
+cross-device unlock" — the desktop showed "check phone to unlock" and the new chat
+never opened, though `session.create` rows were confirmed landing in `jarvis.db`.
+Root-caused by re-reading the code (no live repro needed): **not** an unlock/2FA bug
+at all — `ControlServer::createSession()` treats a failed `AgentDesktop::ensure()` as
+FATAL for any explicit coworker+agent session, and the Android app's Home/Voice/new-chat
+flows default to exactly that profile (`JarvisRepository.createSession(profile =
+"coworker")`, no `target` override). `AgentDesktop::nestedDesktopSupported()` is
+`false` by default on Windows (ships as v1 real-screen take-over; the v2 Sandbox tier
+needs an explicit `JARVIS_ENABLE_V2` opt-in), so `ensure()` always returns `up=false`
+there — meaning **every** phone-initiated session hard-failed server-side on stock
+Windows (row committed, then immediately marked `error`) while working fine on Linux,
+where `nestedDesktopSupported()` is always `true`. `makeBrain()` already had a
+graceful global-`:8794`-engine fallback for exactly this case (`row.profile ==
+"coworker"` branches for codex/claude/api, added in the 2026-07-02 bug sweep below) —
+`createSession()`'s early fatal return just never gave it the chance to run.
+- **Fix:** the fatal-on-`explicitAgent` branch now only fires when
+  `nestedDesktopSupported()` is true (a REAL `ensure()` failure on a platform that
+  should support isolation); otherwise it degrades like the existing AUTO-computer
+  path, letting `makeBrain()`'s fallback inject the global engine.
+- **Also fixed:** `HomeScreen.kt`'s `onNewChat`/`onVoice` and `NewChatScreen.kt`'s
+  `startVoiceChat()` never passed `viewModel.createSession`'s `onError` callback, so
+  ANY `session.create` failure (not just this one) was swallowed with zero user
+  feedback — the exact silent-failure pattern already fixed for `sendFirst()` earlier
+  in this same redesign (see above). Both now toast on failure.
+- **Not verified end-to-end:** this box has no MSVC toolchain (Qt is `msvc2022_64`,
+  only MinGW g++ is installed — ABI-incompatible, confirmed by a failed trial build)
+  and no JDK, so neither the daemon nor the Android change could be compiled here.
+  The diff was reviewed by hand against the existing, already-compiling
+  `AgentDesktop::nestedDesktopSupported()` call site (`ControlServer.cpp:2066`) and
+  the existing `onError` pattern (`NewChatScreen.kt`'s `sendFirst()`). Needs a real
+  Windows build + phone repro to close out jarvis#107 for good.
 
 ---
 

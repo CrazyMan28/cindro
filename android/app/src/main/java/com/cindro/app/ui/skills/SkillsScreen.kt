@@ -13,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Today
 import androidx.compose.material3.AlertDialog
@@ -44,7 +45,7 @@ import com.cindro.app.ui.theme.JarvisPalette
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SkillsScreen(viewModel: SkillsViewModel) {
+fun SkillsScreen(viewModel: SkillsViewModel, onOpenDrawer: () -> Unit) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var showCreate by remember { mutableStateOf(false) }
     var invokeFor by remember { mutableStateOf<Skill?>(null) }
@@ -54,6 +55,11 @@ fun SkillsScreen(viewModel: SkillsViewModel) {
         topBar = {
             TopAppBar(
                 title = { Text("Skills") },
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open menu")
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = JarvisPalette.Background,
                     titleContentColor = JarvisPalette.TextPrimary,

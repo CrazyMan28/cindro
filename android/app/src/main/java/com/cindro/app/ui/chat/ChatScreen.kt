@@ -7,7 +7,11 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,21 +26,24 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,6 +51,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
@@ -60,6 +68,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
@@ -68,6 +77,8 @@ import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
@@ -84,12 +95,18 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** Mirrors LazyColumn's own built-in `animateItem()` default placement spring —
+ *  used explicitly (not the parameterless default) so it can be swapped for
+ *  `null` per-item while a bubble is still streaming (see the message list). */
+private val DefaultBubblePlacementSpec: FiniteAnimationSpec<IntOffset> =
+    spring(stiffness = Spring.StiffnessMediumLow)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     viewModel: ChatViewModel,
     activity: FragmentActivity,
-    onBack: () -> Unit,
+    onOpenDrawer: () -> Unit,
     autoStartVoice: Boolean = false,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -98,6 +115,7 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var draft by remember { mutableStateOf("") }
+    var showModelInfo by remember { mutableStateOf(false) }
     var micGranted by remember {
         mutableStateOf(
             androidx.core.content.ContextCompat.checkSelfPermission(
@@ -128,11 +146,20 @@ fun ChatScreen(
 
     val requestMic = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { granted -> micGranted = granted }
+    ) { granted ->
+        micGranted = granted
+        // If this permission prompt was triggered by the auto-voice entry below
+        // (not the manual mic button), finish that flow once granted.
+        if (granted && autoStartVoice) viewModel.startRecording()
+    }
 
-    // "Hey Cindro" wake deep-link: start a push-to-talk capture on entry.
+    // "Hey Cindro" wake deep-link / the New Chat screen's Voice suggestion chip:
+    // start a push-to-talk capture on entry. Used to silently do nothing when mic
+    // permission had never been granted (a fresh install) — now requests it, same
+    // as the manual mic button already does, instead of looking like a dead button.
     LaunchedEffect(autoStartVoice) {
-        if (autoStartVoice && micGranted) viewModel.startRecording()
+        if (!autoStartVoice) return@LaunchedEffect
+        if (micGranted) viewModel.startRecording() else requestMic.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     // Auto-scroll to the newest item; also follows streaming text growth while busy.
@@ -156,10 +183,10 @@ fun ChatScreen(
                 )
             } else {
                 TopAppBar(
-                    title = { Text("Chat", fontFamily = FontFamily.Monospace) },
+                    title = {},
                     navigationIcon = {
-                        HapticIconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        HapticIconButton(onClick = onOpenDrawer) {
+                            Icon(Icons.Filled.Menu, contentDescription = "Open menu")
                         }
                     },
                     actions = {
@@ -188,57 +215,80 @@ fun ChatScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(state.items, key = { it.id }) { item ->
-                    ChatBubble(
-                        item = item,
-                        onApprove = { approval, decision ->
-                            scope.launch {
-                                val ok = Biometric.authenticate(
-                                    activity,
-                                    title = "Confirm action",
-                                    subtitle = approval.summary,
-                                )
-                                if (ok) viewModel.respondApproval(approval.approvalId, decision)
-                            }
-                        },
-                        selecting = state.selecting,
-                        selected = item.id in state.selected,
-                        onClick = { if (state.selecting) viewModel.toggleSelection(item.id) },
-                        onLongClick = {
-                            if (state.selecting) viewModel.toggleSelection(item.id)
-                            else viewModel.startSelection(item.id)
-                        },
-                        onStreamReveal = viewModel::onStreamReveal,
-                        onWidgetAction = { action ->
-                            val open = action.get("open")?.asString
-                            if (!open.isNullOrBlank() &&
-                                (open.startsWith("http://") || open.startsWith("https://"))
-                            ) {
-                                runCatching {
-                                    context.startActivity(
-                                        android.content.Intent(
-                                            android.content.Intent.ACTION_VIEW,
-                                            android.net.Uri.parse(open),
-                                        ),
+                    // Each new bubble fades + slides in as it's added (and animates
+                    // out of the way on delete) instead of just popping into place.
+                    // A streaming assistant bubble's height keeps growing every
+                    // ~20ms via ChatBubble's own typewriter reveal — animating ITS
+                    // placement too would have the list-item spring fighting that
+                    // growth for the whole reveal, so placement animation is
+                    // skipped until the bubble finishes (fade in/out still apply).
+                    val streaming = item is ChatItem.Message && item.streaming
+                    Box(
+                        Modifier.animateItem(
+                            placementSpec = if (streaming) null else DefaultBubblePlacementSpec,
+                        ),
+                    ) {
+                        ChatBubble(
+                            item = item,
+                            onApprove = { approval, decision ->
+                                scope.launch {
+                                    val ok = Biometric.authenticate(
+                                        activity,
+                                        title = "Confirm action",
+                                        subtitle = approval.summary,
                                     )
+                                    if (ok) viewModel.respondApproval(approval.approvalId, decision)
                                 }
-                            } else {
-                                viewModel.onWidgetAction(action)
-                            }
-                        },
-                    )
+                            },
+                            selecting = state.selecting,
+                            selected = item.id in state.selected,
+                            onClick = { if (state.selecting) viewModel.toggleSelection(item.id) },
+                            onLongClick = {
+                                if (state.selecting) viewModel.toggleSelection(item.id)
+                                else viewModel.startSelection(item.id)
+                            },
+                            onStreamReveal = viewModel::onStreamReveal,
+                            onWidgetAction = { action ->
+                                val open = action.get("open")?.asString
+                                if (!open.isNullOrBlank() &&
+                                    (open.startsWith("http://") || open.startsWith("https://"))
+                                ) {
+                                    runCatching {
+                                        context.startActivity(
+                                            android.content.Intent(
+                                                android.content.Intent.ACTION_VIEW,
+                                                android.net.Uri.parse(open),
+                                            ),
+                                        )
+                                    }
+                                } else {
+                                    viewModel.onWidgetAction(action)
+                                }
+                            },
+                        )
+                    }
                 }
                 // Pulsing "typing" indicator while the brain works (no streamed text yet).
                 if (state.busy) {
-                    item(key = "typing") { TypingIndicator() }
+                    item(key = "typing") { TypingIndicator(Modifier.animateItem()) }
                 }
             }
           }
 
-            // Bottom dock: the error banner, pending attachments and the input row
-            // stay pinned just ABOVE the keyboard (imePadding) and clear of the
-            // gesture/nav bar (navigationBarsPadding). The messages list above keeps
-            // its place; opening the IME never relocates the input to the top.
+            // Bottom dock: the model chip, error banner, pending attachments and
+            // the input row stay pinned just ABOVE the keyboard (imePadding) and
+            // clear of the gesture/nav bar (navigationBarsPadding). The messages
+            // list above keeps its place; opening the IME never relocates the
+            // input to the top. The model chip lives HERE (part of the chat bar,
+            // ChatGPT-style) rather than the top app bar.
             Column(Modifier.imePadding().navigationBarsPadding()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                    ChatModelChip(
+                        brain = state.brain,
+                        model = state.model,
+                        onClick = { showModelInfo = true },
+                    )
+                }
                 state.error?.let { err ->
                     Surface(color = JarvisPalette.Error.copy(alpha = 0.15f), modifier = Modifier.fillMaxWidth()) {
                         Text(
@@ -282,6 +332,7 @@ fun ChatScreen(
                     },
                     sending = state.sending,
                     busy = state.busy,
+                    hasAttachment = state.pending.isNotEmpty(),
                     voicePhase = voicePhase,
                     slashAgents = state.slashAgents,
                     slashSkills = state.slashSkills,
@@ -336,6 +387,35 @@ fun ChatScreen(
             }
         }
     }
+
+    // Brain/model are fixed for a chat's whole lifetime (no daemon RPC to switch
+    // them mid-session) — this is an info card, not a picker. Start a New chat
+    // from the sidebar to pick a different one.
+    if (showModelInfo) {
+        AlertDialog(
+            onDismissRequest = { showModelInfo = false },
+            containerColor = JarvisPalette.Surface,
+            title = { Text("This chat's brain", color = JarvisPalette.TextPrimary) },
+            text = {
+                Column {
+                    Text(
+                        (state.brain?.replaceFirstChar(Char::uppercase) ?: "Cindro default") +
+                            (state.model?.let { "  ·  $it" } ?: ""),
+                        color = JarvisPalette.Accent,
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Brain and model are fixed for a chat's lifetime. Start a New chat from " +
+                            "the sidebar to pick a different one.",
+                        color = JarvisPalette.TextSecondary,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { showModelInfo = false }) { Text("Got it") } },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -368,6 +448,50 @@ private fun ChatSelectionBar(
     )
 }
 
+/** A compact "brain · model" pill that lives in the chat bar (bottom, above the
+ *  composer), echoing ChatGPT's model selector chip — not the top app bar.
+ *  Shared by [ChatScreen] (read-only there; tapping shows an info card since a
+ *  live session's brain/model can't be switched) and [NewChatScreen] (a real
+ *  picker there, since brain/model is still choosable before the first send). */
+@Composable
+fun ChatModelChip(brain: String?, model: String?, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = JarvisPalette.SurfaceVariant,
+        border = BorderStroke(1.dp, JarvisPalette.Outline),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                brain?.replaceFirstChar(Char::uppercase) ?: "Cindro",
+                style = MaterialTheme.typography.titleSmall,
+                color = JarvisPalette.TextPrimary,
+                maxLines = 1,
+            )
+            if (!model.isNullOrBlank()) {
+                Text(
+                    "  ·  $model",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = JarvisPalette.TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 140.dp),
+                )
+            }
+            Spacer(Modifier.width(2.dp))
+            Icon(
+                Icons.Filled.KeyboardArrowDown,
+                contentDescription = null,
+                tint = JarvisPalette.TextSecondary,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
 /** Concatenate the text of the currently-selected message bubbles, in order. */
 private fun selectedText(state: ChatUiState): String =
     state.items
@@ -392,11 +516,14 @@ private fun copyToClipboard(context: Context, text: String) {
 }
 
 @Composable
-private fun InputRow(
+fun InputRow(
     draft: String,
     onDraftChange: (String) -> Unit,
     sending: Boolean,
     busy: Boolean,
+    // Whether a photo is already attached — a picture-only message (no typed
+    // text) is valid and must still be sendable, not just gated on draft text.
+    hasAttachment: Boolean = false,
     voicePhase: com.cindro.app.voice.VoiceController.Phase,
     slashAgents: List<com.cindro.app.protocol.Agent>,
     slashSkills: List<com.cindro.app.protocol.Skill>,
@@ -531,12 +658,12 @@ private fun InputRow(
             } else {
                 HapticIconButton(
                     onClick = onSend,
-                    enabled = !sending && draft.isNotBlank(),
+                    enabled = !sending && (draft.isNotBlank() || hasAttachment),
                 ) {
                     Icon(
                         Icons.AutoMirrored.Filled.Send,
                         contentDescription = "Send",
-                        tint = if (draft.isNotBlank()) JarvisPalette.Accent else JarvisPalette.TextSecondary,
+                        tint = if (draft.isNotBlank() || hasAttachment) JarvisPalette.Accent else JarvisPalette.TextSecondary,
                     )
                 }
             }
@@ -545,10 +672,25 @@ private fun InputRow(
 }
 
 // ---- animated empty state for a fresh chat --------------------------------
-@androidx.compose.runtime.Composable
-private fun ChatEmptyState(modifier: Modifier = Modifier) {
+/**
+ * Shared between an existing session with no messages yet and [NewChatScreen]'s
+ * blank landing composer, so both read as the same "Cindro" moment. Fades +
+ * slides up on first appearance (same [androidx.compose.animation.core.Animatable]
+ * idiom used for the old Home header) instead of just popping in.
+ */
+@Composable
+fun ChatEmptyState(modifier: Modifier = Modifier, subtitle: String = DEFAULT_EMPTY_SUBTITLE) {
+    val appear = remember { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(Unit) {
+        appear.animateTo(1f, androidx.compose.animation.core.tween(420))
+    }
     androidx.compose.foundation.layout.Column(
-        modifier = modifier.padding(32.dp),
+        modifier = modifier
+            .padding(32.dp)
+            .graphicsLayer {
+                alpha = appear.value
+                translationY = (1f - appear.value) * 18f
+            },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         JarvisOrb(size = 132.dp)
@@ -562,10 +704,12 @@ private fun ChatEmptyState(modifier: Modifier = Modifier) {
         )
         androidx.compose.foundation.layout.Spacer(Modifier.height(8.dp))
         Text(
-            "Ask anything, attach a photo, or have Cindro use its computer.",
+            subtitle,
             color = JarvisPalette.TextSecondary,
             fontSize = 13.sp,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
     }
 }
+
+private const val DEFAULT_EMPTY_SUBTITLE = "Ask anything, attach a photo, or have Cindro use its computer."

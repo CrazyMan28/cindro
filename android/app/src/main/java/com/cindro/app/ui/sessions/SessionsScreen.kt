@@ -25,8 +25,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SelectAll
@@ -68,7 +68,7 @@ import com.cindro.app.ui.theme.JarvisPalette
 fun SessionsScreen(
     viewModel: SessionsViewModel,
     onOpenSession: (String) -> Unit,
-    onOpenMore: () -> Unit,
+    onOpenDrawer: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val conn by viewModel.connection.collectAsStateWithLifecycle()
@@ -115,6 +115,11 @@ fun SessionsScreen(
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.Bold)
                     },
+                    navigationIcon = {
+                        IconButton(onClick = onOpenDrawer) {
+                            Icon(Icons.Filled.Menu, contentDescription = "Open menu")
+                        }
+                    },
                     actions = {
                         ConnectionPill(conn)
                         Spacer(Modifier.height(0.dp))
@@ -125,9 +130,6 @@ fun SessionsScreen(
                         }
                         IconButton(onClick = { viewModel.refresh() }) {
                             Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
-                        }
-                        IconButton(onClick = onOpenMore) {
-                            Icon(Icons.Filled.MoreHoriz, contentDescription = "More")
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
@@ -343,6 +345,44 @@ private fun EmptyState(error: String?, onReconnect: () -> Unit) {
     }
 }
 
+/** The brain + model FilterChip picker used by [CreateSessionDialog] when starting
+ *  a new session (the chat top-bar's model chip is a separate, read-only display —
+ *  there's no daemon RPC to switch brain/model on a session already in flight). */
+@Composable
+fun BrainModelPicker(
+    brain: String,
+    model: String?,
+    models: List<ModelInfo>,
+    onBrainChange: (String) -> Unit,
+    onModelChange: (String?) -> Unit,
+) {
+    Column {
+        Text("Brain", style = MaterialTheme.typography.labelLarge, color = JarvisPalette.TextSecondary)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("codex", "claude", "api").forEach { b ->
+                FilterChip(selected = brain == b, onClick = { onBrainChange(b) }, label = { Text(b) })
+            }
+        }
+        if (models.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Text("Model", style = MaterialTheme.typography.labelLarge, color = JarvisPalette.TextSecondary)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+            ) {
+                FilterChip(selected = model == null, onClick = { onModelChange(null) }, label = { Text("Default") })
+                models.forEach { m ->
+                    FilterChip(
+                        selected = model == m.id,
+                        onClick = { onModelChange(m.id) },
+                        label = { Text(m.display) },
+                    )
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun CreateSessionDialog(
     creating: Boolean,
@@ -372,34 +412,13 @@ private fun CreateSessionDialog(
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                Text("Brain", style = MaterialTheme.typography.labelLarge, color = JarvisPalette.TextSecondary)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("codex", "claude", "api").forEach { b ->
-                        FilterChip(
-                            selected = brain == b,
-                            // Switching brains resets the model back to the daemon default.
-                            onClick = { brain = b; model = null },
-                            label = { Text(b) },
-                        )
-                    }
-                }
-                if (models.isNotEmpty()) {
-                    Spacer(Modifier.height(12.dp))
-                    Text("Model", style = MaterialTheme.typography.labelLarge, color = JarvisPalette.TextSecondary)
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    ) {
-                        FilterChip(selected = model == null, onClick = { model = null }, label = { Text("Default") })
-                        models.forEach { m ->
-                            FilterChip(
-                                selected = model == m.id,
-                                onClick = { model = m.id },
-                                label = { Text(m.display) },
-                            )
-                        }
-                    }
-                }
+                BrainModelPicker(
+                    brain = brain,
+                    model = model,
+                    models = models,
+                    onBrainChange = { brain = it; model = null },
+                    onModelChange = { model = it },
+                )
             }
         },
         confirmButton = {
