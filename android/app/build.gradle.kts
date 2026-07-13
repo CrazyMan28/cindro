@@ -24,8 +24,8 @@ android {
         applicationId = "com.cindro.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 51
-        versionName = "0.16.1"
+        versionCode = 52
+        versionName = "0.16.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
