@@ -212,8 +212,32 @@ export function PhoneAgentsTab() {
     const vres = await phoneHttp(app.client, "GET", "/api/voices")
     if (!alive) return
     const vfail = httpFailure(vres)
-    const arr = vfail ? [] : asList(vres.data, "voices")
-    setVoices(arr.length > 0 ? arr.map((v, i) => parseVoice(v, i)) : DEFAULT_VOICES)
+    const raw = vfail ? [] : asList(vres.data, "voices")
+    // Skip clones from /api/voices — they come from the VoiceLibrary below as a
+    // dedicated "Your voices" group (avoids duplicates).
+    const catalog = raw
+      .filter((v) => {
+        const id = str(v.id)
+        return id.indexOf("clone:") !== 0 && id !== "jarvice"
+      })
+      .map((v, i) => parseVoice(v, i))
+    // The user's NAMED cloned voices (Settings → Voice / VoiceLibrary), merged in
+    // FIRST so an agent (e.g. ext 101) can speak on calls with a clone:<slug>.
+    let clones: VoiceEntry[] = []
+    try {
+      const lv = (await app.client.call("voice.list_voices", {}, 15000)) as { voices?: Row[] }
+      clones = (lv.voices ?? [])
+        .filter((v) => v.custom === true && str(v.id))
+        .map((v) => {
+          const label = str(v.label) || str(v.id)
+          return { vid: str(v.id), vname: label, speaker: "Your voices", emotion: label }
+        })
+    } catch {
+      /* voice.list_voices unavailable — just show the catalog */
+    }
+    if (!alive) return
+    const merged = [...clones, ...catalog]
+    setVoices(merged.length > 0 ? merged : DEFAULT_VOICES)
     if (vfail) setCfgStatus(`voices: ${vfail} — using built-in list`)
 
     const pres = await phoneHttp(app.client, "GET", `/api/extensions/${agent.ext}/voice`)

@@ -352,6 +352,12 @@ export function PhoneSettingsTab() {
 
   const [newAllowNum, setNewAllowNum] = createSignal("")
   const [newAllowLbl, setNewAllowLbl] = createSignal("")
+  // Twilio Verified Caller IDs (trial-account outbound gate; control-only RPCs)
+  const [callerIds, setCallerIds] = createSignal<Array<{ num: string; name: string }>>([])
+  const [verifyNum, setVerifyNum] = createSignal("")
+  const [verifyLabel, setVerifyLabel] = createSignal("")
+  const [verifyCode, setVerifyCode] = createSignal("")
+  const [verifyStatus, setVerifyStatus] = createSignal("")
   const [enrollExt, setEnrollExt] = createSignal("")
   const [enrollName, setEnrollName] = createSignal("")
   const [enrollToken, setEnrollToken] = createSignal("")
@@ -360,6 +366,7 @@ export function PhoneSettingsTab() {
   const note = (msg: string) => setStatus(msg)
 
   const refresh = async () => {
+    void loadCallerIds()
     const tw = await phoneMcp(app.client, "twilio_status")
     if (tw.error) note(`twilio_status: ${tw.error.message}`)
     else {
@@ -468,6 +475,36 @@ export function PhoneSettingsTab() {
       note(`User number set: ${n}`)
       setUserNumber(n)
       setUserNumberInput("")
+    }
+  }
+
+  // Twilio Verified Caller IDs — control-only phone.twilio_verify_* RPCs.
+  const loadCallerIds = async () => {
+    try {
+      const res = (await app.client.call("phone.twilio_caller_ids_list", {}, 30000)) as {
+        caller_ids?: Array<{ phone_number?: string; friendly_name?: string }>
+      }
+      setCallerIds((res.caller_ids ?? []).map((c) => ({ num: str(c.phone_number), name: str(c.friendly_name) })))
+    } catch {
+      /* twilio_not_configured / transport — leave the list empty */
+    }
+  }
+  const verifyNumber = async () => {
+    const num = verifyNum().trim()
+    if (!num) return
+    setVerifyStatus("Requesting verification…")
+    setVerifyCode("")
+    try {
+      const res = (await app.client.call(
+        "phone.twilio_verify_start",
+        { phone_number: num, friendly_name: verifyLabel().trim() },
+        30000,
+      )) as { validation_code?: string; note?: string }
+      setVerifyCode(str(res.validation_code))
+      setVerifyStatus(str(res.note, `Twilio is calling ${num} — enter the code when prompted.`))
+      void loadCallerIds()
+    } catch (e) {
+      setVerifyStatus("Error: " + String(e))
     }
   }
 
@@ -887,6 +924,58 @@ export function PhoneSettingsTab() {
               ADD
             </button>
           </div>
+        </div>
+
+        <SectionLabel>VERIFIED CALLER IDs (TWILIO)</SectionLabel>
+        <div class="card">
+          <div class="phset-hint" style={{ "margin-bottom": "10px" }}>
+            On a Twilio trial, Cindro can only call/text VERIFIED numbers. Verify one — Twilio calls it with a code; the number is also added to the allowlist.
+          </div>
+          <div class="phset-field-row">
+            <input class="phset-input" placeholder="+1XXXXXXXXXX" value={verifyNum()} onInput={(e) => setVerifyNum(e.currentTarget.value)} />
+            <input
+              class="phset-input"
+              style={{ flex: "0 0 140px" }}
+              placeholder="label (optional)"
+              value={verifyLabel()}
+              onInput={(e) => setVerifyLabel(e.currentTarget.value)}
+            />
+            <button type="button" class="phset-btn" disabled={!verifyNum().trim()} onClick={() => void verifyNumber()}>
+              VERIFY
+            </button>
+          </div>
+          <Show when={verifyCode()}>
+            <div
+              class="card"
+              style={{
+                "margin-top": "10px",
+                display: "flex",
+                "align-items": "center",
+                gap: "10px",
+                border: "1px solid var(--accent)",
+                background: "var(--accent-dim)",
+              }}
+            >
+              <span style={{ color: "var(--text-muted)", "font-size": "11px" }}>Enter code on the call:</span>
+              <span class="phset-mono" style={{ color: "var(--accent-bright)", "font-size": "20px", "font-weight": 700 }}>{verifyCode()}</span>
+            </div>
+          </Show>
+          <Show when={verifyStatus() && !verifyCode()}>
+            <div class="phset-hint" style={{ "margin-top": "8px", color: verifyStatus().startsWith("Error") ? "var(--danger)" : "var(--accent)" }}>
+              {verifyStatus()}
+            </div>
+          </Show>
+          <Show when={callerIds().length > 0} fallback={<div class="phset-hint" style={{ "margin-top": "10px" }}>No verified caller IDs yet (or Twilio not configured).</div>}>
+            <div class="phset-allow-list" style={{ "margin-top": "10px" }}>
+              <For each={callerIds()}>
+                {(row) => (
+                  <div class="phset-allow-row">
+                    <span class="phset-mono phset-allow-num">✓ {row.num}{row.name ? `  ${row.name}` : ""}</span>
+                  </div>
+                )}
+              </For>
+            </div>
+          </Show>
         </div>
 
         <SectionLabel>ADD NEW AGENT</SectionLabel>

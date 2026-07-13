@@ -31,6 +31,7 @@
 #include "jarvis/HookStore.h"
 #include "jarvis/ToolLoopGuard.h"
 #include "jarvis/TrustPolicyStore.h"
+#include "jarvis/PhonePolicyStore.h"
 #include "jarvis/Updater.h"
 #include "jarvis/VoiceProvider.h"
 #include "jarvis/VoiceService.h"
@@ -318,6 +319,22 @@ private:
     // phone.config get/set/test — read/write the Jarvis-managed phone.env
     // (Twilio creds, server tokens, port). Control/loopback channel ONLY.
     Response handlePhoneConfig(const Request &req);
+    // phone.policy.* — phone-scoped capability policy ("what Cindro may do over
+    // the phone"). list/set/reset/test. HARD-enforced for outbound tool actions
+    // at the phone.mcp choke point below (deny) + the computer-use gate (ask);
+    // answer_calls is HARD via screening config; the inbound-agent capabilities
+    // are soft (guidance). Mirrored to the phone (Phone → Permissions).
+    Response handlePhonePolicyList(const Request &req);
+    Response handlePhonePolicySet(const Request &req);
+    Response handlePhonePolicyReset(const Request &req);
+    Response handlePhonePolicyTest(const Request &req);
+    // phone.twilio_verify_* — Twilio Verified Caller ID automation via the Twilio
+    // REST API (2010-04-01 OutgoingCallerIds). Control/loopback channel ONLY (it
+    // reads the Twilio auth token from phone.env). verify_start ALSO adds the
+    // number to the app allowlist.
+    Response handleTwilioVerifyStart(const Request &req);
+    Response handleTwilioVerifyStatus(const Request &req);
+    Response handleTwilioCallerIdsList(const Request &req);
     // Real-time phone events (jarvis#76 item 3): persistent client socket to
     // the phone server's WS (authed as user ext 100) + opt-in control fan-out.
     void connectPhoneWs();
@@ -762,6 +779,9 @@ private:
     // Trust policies (jarvis#71): daemon-side CRUD over the same
     // trust_policies.json the engine's tool gate enforces.
     TrustPolicyStore m_trustPolicies;
+    // Phone-scoped capability policy ("what Cindro may do over the phone"):
+    // consulted by handlePhoneMcp's deny-gate + surfaced via phone.policy.*.
+    PhonePolicyStore m_phonePolicies;
     // Seed the built-in "internal_docs" capability-catalog skill (once).
     void seedInternalDocsSkill();
     // Seed the built-in "phone" skill — the playbook for calling/texting the user

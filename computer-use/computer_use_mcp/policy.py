@@ -200,6 +200,113 @@ def gate(tool: str) -> None:
     )
 
 
+# --- phone permissions gate (Phone → Permissions) ---------------------------
+# PhonePolicyStore (~/.config/jarvis/phone_policy.json) restricts what Cindro may
+# do over the phone. The daemon HARD-denies gated phone MCP tools at its phone.mcp
+# choke point for EVERY surface (incl. the brain, whose tools_phone.py forwards
+# through phone.mcp). Here — the ONLY layer with an ask-bus — we enforce the
+# interactive "ask" for the brain and fail fast on "deny".
+#
+# The tool->capability map + defaults MUST match core/src/PhonePolicyStore.cpp
+# (buildToolMap + the catalog defaults). Only the tri-state, tool-gated
+# capabilities appear (answer_calls is config-driven, not a tool gate).
+_PHONE_POLICY_DEFAULT_FILE = Path(
+    os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
+) / "jarvis" / "phone_policy.json"
+
+_PHONE_TOOL_CAPS = {
+    "twilio_sms": ("send_sms", "spend_money"),
+    "device_sms": ("send_sms",),
+    "twilio_call_and_wait": ("outbound_calls", "spend_money"),
+    "call_user": ("outbound_calls",),
+    "call_user_and_wait": ("outbound_calls",),
+    "call_extension": ("outbound_calls",),
+    "store_memory": ("access_memory",),
+    "search_memory": ("access_memory",),
+}
+_PHONE_CAP_DEFAULTS = {
+    "send_sms": "ask", "outbound_calls": "allow", "spend_money": "ask",
+    "access_memory": "allow",
+}
+_PHONE_STRICT = {"allow": 0, "ask": 1, "deny": 2}
+
+
+def phone_policy_file() -> Path:
+    override = os.environ.get("JARVIS_PHONE_POLICY_FILE")
+    return Path(override) if override else _PHONE_POLICY_DEFAULT_FILE
+
+
+def _phone_values() -> dict:
+    """Load the phone_policy.json capability map. Missing/corrupt => all defaults."""
+    try:
+        doc = json.loads(phone_policy_file().read_text(encoding="utf-8"))
+        caps = doc.get("capabilities")
+        return caps if isinstance(caps, dict) else {}
+    except Exception:
+        return {}
+
+
+def _phone_inner_name(tool: str, arguments: Any) -> str:
+    """Resolve the real phone tool name, unwrapping the phone_tool(tool=...) hatch."""
+    if tool == "phone_tool" and isinstance(arguments, dict):
+        inner = arguments.get("tool")  # phone_tool's arg key is `tool`, not `name`
+        if isinstance(inner, str) and inner.strip():
+            return inner.strip()
+    return tool
+
+
+def _phone_decision(tool: str, arguments: Any) -> str:
+    """-> allow|ask|deny for a phone tool (strictest of its gating capabilities)."""
+    name = _phone_inner_name(tool, arguments)
+    caps = _PHONE_TOOL_CAPS.get(name)
+    if not caps:
+        return "allow"
+    values = _phone_values()
+    worst = "allow"
+    for cap in caps:
+        v = str(values.get(cap, _PHONE_CAP_DEFAULTS.get(cap, "allow")))
+        if v not in _PHONE_STRICT:
+            v = "allow"
+        if _PHONE_STRICT[v] > _PHONE_STRICT[worst]:
+            worst = v
+    return worst
+
+
+def _phone_gate(tool: str, arguments: Any) -> None:
+    """Enforce Phone → Permissions for the brain's phone tools (deny + ask).
+
+    The daemon already hard-denies at phone.mcp; this fails fast on deny AND is
+    the only place the interactive 'ask' is enforced for the brain (the daemon
+    has no ask-bus). Ungated tools return immediately.
+    """
+    decision = _phone_decision(tool, arguments)
+    if decision == "allow":
+        return
+    inner = _phone_inner_name(tool, arguments)
+    if decision == "deny":
+        _log(inner, "phone", "deny", {"id": "phone_policy"}, False)
+        raise PermissionError(
+            f"Blocked by Phone Permissions: '{inner}' is set to Deny. Do not"
+            " retry; tell the user it's disabled in Phone → Permissions."
+        )
+    # ask
+    q = f"Cindro wants to use the phone tool '{inner}'. Allow it?"
+    try:
+        res = ask_bus.ask(q, ["Allow", "Deny"], timeout=_ASK_TIMEOUT)
+        answer = str((res or {}).get("answer", "")).strip().lower()
+    except Exception:
+        answer = ""
+    if answer == "allow":
+        _log(inner, "phone", "ask", {"id": "phone_policy"}, True)
+        return
+    _log(inner, "phone", "ask", {"id": "phone_policy"}, False)
+    raise PermissionError(
+        f"Phone Permissions required approval for '{inner}' and the user"
+        f" {'denied it' if answer == 'deny' else 'did not approve in time'}."
+        " Do not retry."
+    )
+
+
 # --- pre-exec command scanner (jarvis#76 feature 12) ------------------------
 # The free-form command tools run their `command` arg via subprocess(shell=True)
 # in a DETACHED runner — this call_tool wrapper is the ONLY window to inspect it.
@@ -339,6 +446,7 @@ def install(mcp) -> None:
 
     async def gated_call_tool(name: str, arguments: dict, *args, **kwargs):
         gate(name)  # trust policy: raises to reject; FastMCP turns it into an error
+        _phone_gate(name, arguments)  # phone permissions: deny + interactive ask
         _scan_command(name, arguments)  # command scanner: raises to reject
         _scan_tui_layout(name, arguments)  # tui log-page path approval: raises to reject
         return await orig(name, arguments, *args, **kwargs)

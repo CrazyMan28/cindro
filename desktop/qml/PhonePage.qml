@@ -26,8 +26,8 @@ Item {
     property bool callerBusy: false
 
     // ---- tab state ---------------------------------------------------------
-    property int tabIndex: 0   // 0=CALLS 1=AGENTS 2=INBOX 3=HUD 4=SETTINGS 5=SCREENING
-    readonly property var _tabLabels: ["CALLS","AGENTS","INBOX","HUD","SETTINGS","SCREENING"]
+    property int tabIndex: 0   // 0=CALLS 1=AGENTS 2=INBOX 3=HUD 4=SETTINGS 5=SCREENING 6=PERMISSIONS
+    readonly property var _tabLabels: ["CALLS","AGENTS","INBOX","HUD","SETTINGS","SCREENING","PERMISSIONS"]
 
     function onTabActivated(idx) {
         if (!bridge.connected) return
@@ -38,6 +38,7 @@ Item {
         case 3: hudTab.refresh();    break
         case 4: settingsTab.refresh(); break
         case 5: screeningTab.refresh(); break
+        case 6: permissionsTab.refresh(); break
         }
     }
 
@@ -75,7 +76,7 @@ Item {
                     font.pixelSize: 18; font.letterSpacing: Theme.trackWide; font.weight: Font.Bold
                 }
                 Text {
-                    text: "Dialer · Agents · Inbox · Ops HUD · Settings · Screening"
+                    text: "Dialer · Agents · Inbox · Ops HUD · Settings · Screening · Permissions"
                     color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11
                 }
             }
@@ -135,6 +136,7 @@ Item {
             PhoneHudTab      { id: hudTab;       anchors.fill: parent; visible: page.tabIndex === 3; phonePage: page }
             PhoneSettingsTab { id: settingsTab;  anchors.fill: parent; visible: page.tabIndex === 4; phonePage: page }
             PhoneScreeningTab { id: screeningTab; anchors.fill: parent; visible: page.tabIndex === 5; phonePage: page }
+            PhonePermissionsTab { id: permissionsTab; anchors.fill: parent; visible: page.tabIndex === 6; phonePage: page }
 
             // Incoming / active call overlay — sits on top of all tabs.
             // Polls list_active_calls and becomes visible whenever a call is live.

@@ -1658,6 +1658,62 @@ void Bridge::phoneConfigTest()
     request(QStringLiteral("phone.config"), params, QStringLiteral("test"));
 }
 
+// ---- Phone Permissions (Contract A phone.policy.*) -------------------------
+// Each reply is routed back to QML tagged with the caller's callId (ctx), like
+// phoneMcp/phoneHttp, via phonePolicyResult().
+
+void Bridge::phonePolicyList(const QString &callId)
+{
+    request(QStringLiteral("phone.policy.list"), {}, callId);
+}
+
+void Bridge::phonePolicySet(const QString &callId, const QString &id,
+                            const QString &value)
+{
+    if (id.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("id"), id);
+    params.insert(QStringLiteral("value"), value);
+    request(QStringLiteral("phone.policy.set"), params, callId);
+}
+
+void Bridge::phonePolicyReset(const QString &callId)
+{
+    request(QStringLiteral("phone.policy.reset"), {}, callId);
+}
+
+// ---- Twilio Verified Caller ID (Contract A phone.twilio_verify_*) ----------
+
+void Bridge::twilioVerifyStart(const QString &callId, const QString &phoneNumber,
+                               const QString &friendlyName)
+{
+    if (phoneNumber.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("phone_number"), phoneNumber);
+    if (!friendlyName.isEmpty())
+        params.insert(QStringLiteral("friendly_name"), friendlyName);
+    request(QStringLiteral("phone.twilio_verify_start"), params, callId);
+}
+
+void Bridge::twilioVerifyStatus(const QString &callId, const QString &phoneNumber)
+{
+    if (phoneNumber.isEmpty())
+        return;
+    QVariantMap params;
+    params.insert(QStringLiteral("phone_number"), phoneNumber);
+    request(QStringLiteral("phone.twilio_verify_status"), params, callId);
+}
+
+void Bridge::twilioCallerIdsList(const QString &callId, const QString &phoneNumber)
+{
+    QVariantMap params;
+    if (!phoneNumber.isEmpty())
+        params.insert(QStringLiteral("phone_number"), phoneNumber);
+    request(QStringLiteral("phone.twilio_caller_ids_list"), params, callId);
+}
+
 // ---- Notifications ---------------------------------------------------------
 
 void Bridge::setNotificationsEnabled(bool enabled)
@@ -4003,6 +4059,21 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                 emit phoneConfigLoaded(QVariantMap());
             return;
         }
+        // phone.policy.* / phone.twilio_verify_* errors: surface through their
+        // generic result signals (never a toast) so the Permissions / verify UI
+        // shows the reason inline (e.g. twilio_not_configured, bad_request).
+        if (method.startsWith(QStringLiteral("phone.policy."))) {
+            QVariantMap r;
+            r.insert(QStringLiteral("error"), error);
+            emit phonePolicyResult(ctx, r);
+            return;
+        }
+        if (method.startsWith(QStringLiteral("phone.twilio_"))) {
+            QVariantMap r;
+            r.insert(QStringLiteral("error"), error);
+            emit twilioVerifyResult(ctx, r);
+            return;
+        }
         // Outpost exec/screenshot can fail with the daemon's pairing / gating
         // tier errors; route those to the console/card rather than a toast so
         // the user sees the reason.
@@ -4616,6 +4687,17 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
         } else {
             emit phoneConfigLoaded(result);
         }
+    } else if (method == QStringLiteral("phone.policy.list")
+               || method == QStringLiteral("phone.policy.set")
+               || method == QStringLiteral("phone.policy.reset")
+               || method == QStringLiteral("phone.policy.test")) {
+        // list/set/reset all return the enriched capability map; echo it back
+        // tagged with the caller's callId (ctx).
+        emit phonePolicyResult(ctx, result);
+    } else if (method == QStringLiteral("phone.twilio_verify_start")
+               || method == QStringLiteral("phone.twilio_verify_status")
+               || method == QStringLiteral("phone.twilio_caller_ids_list")) {
+        emit twilioVerifyResult(ctx, result);
     }
     // ping / session.send / session.cancel / approval.respond: ack only.
 }

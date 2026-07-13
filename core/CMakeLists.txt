@@ -41,6 +41,10 @@ add_library(jarvis-core STATIC
     src/SkillStore.cpp
     src/HookStore.cpp
     src/TrustPolicyStore.cpp
+    # Phone-scoped capability policy ("what Cindro may do over the phone") —
+    # ~/.config/jarvis/phone_policy.json, consulted by the daemon phone.mcp choke
+    # point + the computer-use gate. Mirrors TrustPolicyStore's file conventions.
+    src/PhonePolicyStore.cpp
     src/AgentStore.cpp
     src/DeviceRegistry.cpp
     src/PairingManager.cpp
@@ -312,6 +316,15 @@ add_test(NAME trust_policy_test
 add_executable(voice_library_test tests/voice_library_test.cpp)
 target_link_libraries(voice_library_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME voice_library_test COMMAND voice_library_test)
+
+# PhonePolicyStore: phone-scoped capability policy — default seeding, load/save
+# round-trip against a QTemporaryDir root, setValue validation (reject values
+# outside a capability's choices + unknown capabilities), decisionForTool
+# tool->capability mapping incl. the spend_money stricter-of rule, and a
+# non-empty preambleClause when constrained. Hermetic.
+add_executable(phone_policy_test tests/phone_policy_test.cpp)
+target_link_libraries(phone_policy_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME phone_policy_test COMMAND phone_policy_test)
 
 # SettingsStore: auth-lock is ON by default (no-brick) on a FRESH config; the
 # default + an explicit user OFF round-trip through saveConfig->load against a

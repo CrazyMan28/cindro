@@ -51,6 +51,25 @@ Item {
             if (!tab.configMode || brain !== tab.configBrain) return
             tab.configModelOptions = models
         }
+        // The user's NAMED cloned voices (Settings → Voice / VoiceLibrary), merged
+        // in as a "Your voices" group shown FIRST so an agent (e.g. ext 101) can
+        // speak on calls with a clone (clone:<slug> / jarvice). listVoices() is a
+        // broadcast, so only apply while a config panel is open.
+        function onVoicesListed(voices) {
+            if (!tab.configMode) return
+            var arr = voices || []
+            var insertAt = 0
+            for (var i = 0; i < arr.length; i++) {
+                var v = arr[i]
+                if (!v || v.custom !== true) continue   // only the user's clones
+                var vid = v.id || ""
+                if (!vid || tab._hasVid(vid)) continue
+                voicesModel.insert(insertAt++, {
+                    "vid": vid, "vname": v.label || vid,
+                    "speaker": "Your voices", "emotion": v.label || vid
+                })
+            }
+        }
     }
 
     // Which daemon brain (if any) the open agent's model picker should query
@@ -127,8 +146,10 @@ Item {
         tab.configMode = true
         if (tab.configBrain !== "" && bridge.connected) bridge.listModels(tab.configBrain)
 
-        // load voices — GET /api/voices
+        // load voices — GET /api/voices (Mistral + on-device catalog) and, merged
+        // in via voice.list_voices, the user's own cloned voices (see onVoicesListed).
         voicesModel.clear()
+        bridge.listVoices()
         tab.callHttp("GET", "/api/voices", {}, function(r) {
             var arr = null
             if (!r.error) {
@@ -139,6 +160,11 @@ Item {
             if (arr && arr.length > 0) {
                 for (var i = 0; i < arr.length; i++) {
                     var v = arr[i]
+                    // Clones come from voice.list_voices as the "Your voices" group;
+                    // skip the copies the phone server also lists to avoid dupes.
+                    var vidRaw = "" + (v.id || "")
+                    if (vidRaw.indexOf("clone:") === 0 || vidRaw === "jarvice") continue
+                    if (tab._hasVid(vidRaw)) continue
                     var nm = v.label || v.name || ("Voice " + i)
                     var sp = v.speaker || (nm.indexOf(" - ") >= 0 ? nm.split(" - ")[0].trim() : nm.replace(/ *\(.*\)/, "").trim())
                     var em = v.emotion || (nm.indexOf(" - ") >= 0 ? nm.split(" - ")[1].trim() : "Default")
@@ -241,6 +267,14 @@ Item {
     }
 
     // ── helpers ────────────────────────────────────────────────────────────────
+
+    // True if a voice id is already in voicesModel (de-dupe across the /api/voices
+    // catalog and the merged VoiceLibrary clones).
+    function _hasVid(vid) {
+        for (var i = 0; i < voicesModel.count; i++)
+            if (voicesModel.get(i).vid === vid) return true
+        return false
+    }
 
     // Return an array of unique speaker names from voicesModel
     function _speakers() {

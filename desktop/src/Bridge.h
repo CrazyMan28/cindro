@@ -569,6 +569,31 @@ public:
     // A REAL connectivity probe (the daemon calls the phone server).
     Q_INVOKABLE void phoneConfigTest();
 
+    // ---- Phone Permissions (Contract A phone.policy.*) ----------------------
+    // "What Cindro may do over the phone." Each reply echoes back through
+    // phonePolicyResult(callId, result); result is the enriched capability list
+    // ({version, capabilities:[{id,label,value,choices,choiceLabels,enforcement,
+    // note}]}). Exposed on control AND device channels (surfaced on every surface
+    // incl. the phone).
+    Q_INVOKABLE void phonePolicyList(const QString &callId);
+    Q_INVOKABLE void phonePolicySet(const QString &callId,
+                                    const QString &id, const QString &value);
+    Q_INVOKABLE void phonePolicyReset(const QString &callId);
+
+    // ---- Twilio Verified Caller ID (Contract A phone.twilio_verify_*) --------
+    // Automates Twilio's OutgoingCallerIds verification (the trial-account gate
+    // for outbound). CONTROL channel ONLY (reads the Twilio auth token from
+    // phone.env, like phone.config). Replies echo through twilioVerifyResult(
+    // callId, result). verifyStart returns {validation_code, call_sid, note} and
+    // also adds the number to the app allowlist.
+    Q_INVOKABLE void twilioVerifyStart(const QString &callId,
+                                       const QString &phoneNumber,
+                                       const QString &friendlyName);
+    Q_INVOKABLE void twilioVerifyStatus(const QString &callId,
+                                        const QString &phoneNumber);
+    Q_INVOKABLE void twilioCallerIdsList(const QString &callId,
+                                         const QString &phoneNumber);
+
     // ---- Notifications ------------------------------------------------------
     // Toggle desktop notify-send on attention events. Persisted via settings.set so
     // the daemon's NotifyService honors it too.
@@ -906,6 +931,12 @@ signals:
     void phoneConfigSaved(bool ok, bool restarted, const QString &note);
     // phone.config test result — a real connectivity probe to the phone server.
     void phoneConfigTested(bool reachable, bool twilioConfigured);
+    // Phone Permissions (phone.policy.*): result echoed with the caller's callId
+    // (an {error} map on failure, like phoneResult).
+    void phonePolicyResult(const QString &callId, const QVariantMap &result);
+    // Twilio Verified Caller ID (phone.twilio_verify_*): result echoed with the
+    // caller's callId (an {error} map on failure).
+    void twilioVerifyResult(const QString &callId, const QVariantMap &result);
 
     // ---- Notifications ------------------------------------------------------
     void notificationsChanged();

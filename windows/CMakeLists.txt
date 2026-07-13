@@ -106,6 +106,7 @@ add_library(jarvis-core STATIC
     ${CORE_DIR}/src/SkillStore.cpp
     ${CORE_DIR}/src/HookStore.cpp
     ${CORE_DIR}/src/TrustPolicyStore.cpp    # jarvis#71 trust policies (must match core/CMakeLists.txt)
+    ${CORE_DIR}/src/PhonePolicyStore.cpp    # phone-scoped capability policy (must match core/CMakeLists.txt)
     ${CORE_DIR}/src/AgentStore.cpp
     ${CORE_DIR}/src/DeviceRegistry.cpp
     ${CORE_DIR}/src/PairingManager.cpp

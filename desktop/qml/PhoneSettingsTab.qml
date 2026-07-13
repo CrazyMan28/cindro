@@ -84,6 +84,11 @@ Item {
                 ? ("Reachable" + (twilioConfigured ? " · Twilio ready" : " · Twilio not configured"))
                 : "Unreachable — is the phone server running?"
         }
+        // Twilio Verified Caller ID (phone.twilio_verify_*) replies route by callId.
+        function onTwilioVerifyResult(callId, result) {
+            var cb = tab._pending[callId]
+            if (cb) { delete tab._pending[callId]; cb(result) }
+        }
     }
 
     // ---- state ----------------------------------------------------------------
@@ -119,6 +124,10 @@ Item {
     ListModel { id: callHistoryModel }
     // Allowlist
     ListModel { id: allowlistModel }
+    // Twilio Verified Caller IDs (trial-account outbound gate)
+    ListModel { id: callerIdsModel }   // {num, name}
+    property string verifyStatus: ""
+    property string verifyCode:   ""
     // Agents (for picker cards)
     ListModel { id: agentsModel }
 
@@ -186,6 +195,7 @@ Item {
     // ---- functions ------------------------------------------------------------
     function refresh() {
         tab.loadConfig()
+        tab.loadCallerIds()
         tab.callTool("twilio_status", {}, function(r) {
             if (!r.error) {
                 var d = r.data || {}
@@ -343,6 +353,27 @@ Item {
     }
     function setUserNumber(num) {
         tab.callTool("twilio_set_user_number", { phone_number: num }, function(r) { if (!r.error) tab.refresh() })
+    }
+    // ---- Twilio Verified Caller IDs (phone.twilio_verify_*, control-only) ------
+    function _vtag(cb) { var id = "verify_" + (++tab._seq); tab._pending[id] = cb || null; return id }
+    function loadCallerIds() {
+        callerIdsModel.clear()
+        bridge.twilioCallerIdsList(tab._vtag(function(r) {
+            if (r.error) return   // e.g. twilio_not_configured — leave the list empty
+            var arr = (r.caller_ids instanceof Array) ? r.caller_ids : []
+            for (var i = 0; i < arr.length; i++)
+                callerIdsModel.append({ "num": arr[i].phone_number || "", "name": arr[i].friendly_name || "" })
+        }), "")
+    }
+    function verifyNumber(num, label) {
+        if (!num) return
+        tab.verifyStatus = "Requesting verification…"; tab.verifyCode = ""
+        bridge.twilioVerifyStart(tab._vtag(function(r) {
+            if (r.error) { tab.verifyStatus = "Error: " + (r.error.message || r.error.code || "unknown"); return }
+            tab.verifyCode   = r.validation_code || ""
+            tab.verifyStatus = r.note || ("Twilio is calling " + num + " — enter the code when prompted.")
+            tab.loadCallerIds()
+        }), num, label)
     }
     function setScreening(enable) {
         tab.callTool(enable ? "twilio_screening_enable" : "twilio_screening_disable", {}, function(r) { if (!r.error) tab.screeningOn = enable })
@@ -898,6 +929,82 @@ Item {
                         Behavior on color { ColorAnimation { duration: Theme.durFast } }
                         Text { id: _unLbl; anchors.centerIn: parent; text: "SET"; color: Theme.inkOnAccent; font.family: Theme.fontDisplay; font.pixelSize: 10; font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold }
                         MouseArea { id: _unMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { if (_unField.text.trim()) tab.setUserNumber(_unField.text.trim()) } }
+                    }
+                }
+
+                // ── Twilio Verified Caller IDs ────────────────────────────────
+                Text { text: "VERIFIED CALLER IDs (TWILIO)"; color: Theme.textFaint; font.family: Theme.fontDisplay; font.pixelSize: 9; font.letterSpacing: 2.0; font.weight: Font.DemiBold }
+                Rectangle {
+                    Layout.fillWidth: true; height: _vcCard.implicitHeight + 20
+                    color: Theme.surface; radius: Theme.radiusSm; border.color: Theme.hairlineSoft; border.width: 1
+                    ColumnLayout {
+                        id: _vcCard
+                        anchors { left: parent.left; right: parent.right; top: parent.top; margins: 12 }
+                        spacing: 10
+
+                        Text {
+                            text: "On a Twilio trial, Cindro can only call/text VERIFIED numbers. Verify one here — Twilio calls it with a code; the number is also added to the allowlist."
+                            color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 10
+                            wrapMode: Text.WordWrap; Layout.fillWidth: true
+                        }
+
+                        // number + label + verify
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 8
+                            TextField {
+                                id: _vcNumField; Layout.fillWidth: true; placeholderText: "+1XXXXXXXXXX"
+                                background: Rectangle { color: Theme.surfaceInput; radius: Theme.radiusXs; border.color: _vcNumField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1 }
+                                color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 12; leftPadding: 10; height: 32
+                            }
+                            TextField {
+                                id: _vcLabelField; Layout.preferredWidth: 120; placeholderText: "label (optional)"
+                                background: Rectangle { color: Theme.surfaceInput; radius: Theme.radiusXs; border.color: _vcLabelField.activeFocus ? Theme.accent : Theme.hairlineSoft; border.width: 1 }
+                                color: Theme.text; font.family: Theme.fontSans; font.pixelSize: 12; leftPadding: 10; height: 32
+                            }
+                            Rectangle {
+                                height: 32; implicitWidth: _vcBtnLbl.implicitWidth + 20; radius: Theme.radiusXs
+                                color: _vcBtnMa.containsMouse ? Theme.accent : Theme.accentDim
+                                Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                                Text { id: _vcBtnLbl; anchors.centerIn: parent; text: "VERIFY"; color: Theme.inkOnAccent; font.family: Theme.fontDisplay; font.pixelSize: 10; font.letterSpacing: Theme.trackMid; font.weight: Font.DemiBold }
+                                MouseArea { id: _vcBtnMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                            onClicked: { if (_vcNumField.text.trim()) tab.verifyNumber(_vcNumField.text.trim(), _vcLabelField.text.trim()) } }
+                            }
+                        }
+
+                        // validation code (prominent) + status
+                        Rectangle {
+                            visible: tab.verifyCode.length > 0
+                            Layout.fillWidth: true; height: _vcCodeRow.implicitHeight + 16
+                            color: Theme.accentDim; radius: Theme.radiusXs; border.color: Theme.accent; border.width: 1
+                            RowLayout {
+                                id: _vcCodeRow
+                                anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; margins: 10 }
+                                spacing: 10
+                                Text { text: "Enter code on the call:"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11 }
+                                Text { text: tab.verifyCode; color: Theme.accentBright; font.family: Theme.fontMono; font.pixelSize: 20; font.weight: Font.Bold; Layout.fillWidth: true }
+                            }
+                        }
+                        Text {
+                            visible: tab.verifyStatus.length > 0 && tab.verifyCode.length === 0
+                            text: tab.verifyStatus
+                            color: tab.verifyStatus.indexOf("Error") >= 0 ? Theme.danger : Theme.accent
+                            font.family: Theme.fontMono; font.pixelSize: 10; wrapMode: Text.WordWrap; Layout.fillWidth: true
+                        }
+
+                        // verified list
+                        Text { text: "Verified numbers"; color: Theme.textMuted; font.family: Theme.fontSans; font.pixelSize: 11; font.weight: Font.Medium; visible: callerIdsModel.count > 0 }
+                        Text { text: "No verified caller IDs yet (or Twilio not configured)."; color: Theme.textFaint; font.family: Theme.fontSans; font.pixelSize: 10; visible: callerIdsModel.count === 0 }
+                        Repeater {
+                            model: callerIdsModel
+                            delegate: RowLayout {
+                                required property string num
+                                required property string name
+                                Layout.fillWidth: true; spacing: 8
+                                Text { text: "✓"; color: Theme.success; font.pixelSize: 12 }
+                                Text { text: num; color: Theme.text; font.family: Theme.fontMono; font.pixelSize: 11 }
+                                Text { text: name; color: Theme.textFaint; font.family: Theme.fontSans; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideRight }
+                            }
+                        }
                     }
                 }
 
