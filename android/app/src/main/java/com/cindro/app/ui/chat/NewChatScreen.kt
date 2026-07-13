@@ -222,6 +222,7 @@ fun NewChatScreen(
                 onDraftChange = { draft = it },
                 sending = state.creating,
                 busy = false,
+                hasAttachment = pending.isNotEmpty(),
                 voicePhase = VoiceController.Phase.IDLE,
                 slashAgents = emptyList(),
                 slashSkills = emptyList(),

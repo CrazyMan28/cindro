@@ -329,6 +329,7 @@ fun ChatScreen(
                     },
                     sending = state.sending,
                     busy = state.busy,
+                    hasAttachment = state.pending.isNotEmpty(),
                     voicePhase = voicePhase,
                     slashAgents = state.slashAgents,
                     slashSkills = state.slashSkills,
@@ -515,6 +516,9 @@ fun InputRow(
     onDraftChange: (String) -> Unit,
     sending: Boolean,
     busy: Boolean,
+    // Whether a photo is already attached — a picture-only message (no typed
+    // text) is valid and must still be sendable, not just gated on draft text.
+    hasAttachment: Boolean = false,
     voicePhase: com.cindro.app.voice.VoiceController.Phase,
     slashAgents: List<com.cindro.app.protocol.Agent>,
     slashSkills: List<com.cindro.app.protocol.Skill>,
@@ -649,12 +653,12 @@ fun InputRow(
             } else {
                 HapticIconButton(
                     onClick = onSend,
-                    enabled = !sending && draft.isNotBlank(),
+                    enabled = !sending && (draft.isNotBlank() || hasAttachment),
                 ) {
                     Icon(
                         Icons.AutoMirrored.Filled.Send,
                         contentDescription = "Send",
-                        tint = if (draft.isNotBlank()) JarvisPalette.Accent else JarvisPalette.TextSecondary,
+                        tint = if (draft.isNotBlank() || hasAttachment) JarvisPalette.Accent else JarvisPalette.TextSecondary,
                     )
                 }
             }

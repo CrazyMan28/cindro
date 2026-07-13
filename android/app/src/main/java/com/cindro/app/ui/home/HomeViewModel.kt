@@ -82,6 +82,12 @@ class HomeViewModel(
         onCreated: (String) -> Unit,
         onError: (() -> Unit)? = null,
     ) {
+        // Guarded here, not just at the call site: PendingFirstMessage is a
+        // single-slot handoff, so two rapid createSession() calls before the
+        // UI recomposes (the caller's own `state.creating` check hasn't taken
+        // effect yet) could both fire session.create — the second stash()
+        // would silently overwrite the first chat's typed message.
+        if (_uiState.value.creating) return
         _uiState.update { it.copy(creating = true) }
         viewModelScope.launch {
             runCatching { withContext(Dispatchers.IO) { repo.createSession(profile, brain, null) } }

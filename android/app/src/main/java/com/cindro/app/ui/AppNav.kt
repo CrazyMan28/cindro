@@ -239,9 +239,15 @@ fun AppNav(
 
     ModalNavigationDrawer(
         drawerState = drawerState,
-        // No edge-swipe on the pre-pairing/2FA screens — there's nothing useful
-        // in the drawer yet and neither screen has a hamburger to open it anyway.
-        gesturesEnabled = currentRoute != Routes.PAIR && currentRoute != Routes.APPROVE,
+        // No edge-swipe on the pre-pairing/2FA screens (nothing useful in the
+        // drawer yet, no hamburger either), and — critically — none while the
+        // app-open biometric gate is locked: `currentRoute` stays "chat_home"
+        // even while GateScreen is what's actually showing (Gated() swaps the
+        // CONTENT, not the route), so without `appUnlocked` here an edge-swipe
+        // could open the drawer OVER the lock screen and expose Recents (chat
+        // titles/brains, populated from homeState.sessions before unlock) to
+        // anyone holding the phone. Caught by review on the open PR.
+        gesturesEnabled = appUnlocked && currentRoute != Routes.PAIR && currentRoute != Routes.APPROVE,
         drawerContent = {
             AppDrawerContent(
                 connection = conn,
