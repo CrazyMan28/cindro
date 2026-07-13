@@ -62,13 +62,16 @@ Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubd
 
 [InstallDelete]
 ; [Files] only ADDS/overwrites — it never removes payload entries that vanished
-; between builds. So a reinstall/upgrade whose build DROPPED the web dashboard
-; (e.g. bun was unavailable that run) would otherwise leave the PREVIOUS install's
-; stale web\ + bun\ behind, and the "Cindro Web Dashboard" shortcut's guard would
-; still see them. Wipe both BEFORE copying the new payload (InstallDelete runs
-; before [Files]) so the shortcut and the on-disk dashboard reflect THIS build.
+; between builds. So a reinstall/upgrade whose build DROPPED a conditionally-built
+; surface (the web dashboard or the TUI — e.g. bun was unavailable that run) would
+; otherwise leave the PREVIOUS install's stale files behind, and the shortcuts'
+; FileExists guards would still see them (launching an outdated version). Wipe the
+; three bun-gated payload pieces BEFORE copying the new payload (InstallDelete runs
+; before [Files]) so the shortcuts + on-disk surfaces reflect THIS build; the new
+; payload re-adds whatever it actually built.
 Type: filesandordirs; Name: "{app}\web"
 Type: filesandordirs; Name: "{app}\bun"
+Type: files; Name: "{app}\cindro-tui.exe"
 
 [Icons]
 ; The shortcut launches the WHOLE stack (engine + phone + daemon + UI) via the
@@ -195,20 +198,28 @@ procedure EnvRemovePath(Path: string);
 var
   Paths: string;
   Owned: Cardinal;
+  Cleared: Boolean;
 begin
   // Only remove {app} if THIS installer added it (ownership marker) — never a
   // pre-existing user entry.
   if not RegQueryDWordValue(HKEY_CURRENT_USER, AppRegKey, 'AddedToPath', Owned) then exit;
   if Owned <> 1 then exit;
+  Cleared := True;   // nothing-to-remove is a valid "cleared" state
   if RegQueryStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) and PathHas(Paths, Path) then
   begin
     // REG_EXPAND_SZ on the way out too (same reason as EnvAddPath).
     if RegWriteExpandStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', PathWithout(Paths, Path)) then
       Log(Format('Removed [%s] from PATH', [Path]))
     else
+    begin
+      // Write failed -> {app} is STILL on PATH. Keep the ownership marker so a
+      // later uninstall/reinstall can retry, instead of orphaning the entry.
+      Cleared := False;
       Log(Format('Error removing [%s] from PATH', [Path]));
+    end;
   end;
-  RegDeleteValue(HKEY_CURRENT_USER, AppRegKey, 'AddedToPath');   // clear ownership
+  if Cleared then
+    RegDeleteValue(HKEY_CURRENT_USER, AppRegKey, 'AddedToPath');   // clear ownership
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
