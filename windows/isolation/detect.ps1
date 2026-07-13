@@ -99,10 +99,23 @@ function Test-OptionalFeature([string]$name) {
 # command. Enabling it needs elevation and a reboot to take effect either way, so
 # "seamless" isn't achievable -- this gets as close as Windows allows: exactly ONE
 # UAC prompt, ever, tracked by a marker so a declined/failed/cancelled attempt
-# never repeats and never blocks the launch. Best-effort and silent on any
-# failure; this run's own $sandboxFeat is re-read afterward so recommendedMode
-# below can reflect an enable that happens to finish before this run's own
-# feature check (rare -- usually needs the reboot first).
+# never repeats. Best-effort and silent on any failure.
+#
+# MUST NOT BLOCK (jarvis#104 Codex review follow-up): both jarvis-launch.vbs and
+# jarvis-start.cmd run detect.ps1 SYNCHRONOUSLY and wait for it to finish before
+# starting jarvisd/the UI. An earlier version of this function used
+# `Start-Process -Verb RunAs -Wait`, which waits for both the UAC prompt AND
+# dism.exe's multi-second run to complete -- if the UAC prompt just sits there
+# un-clicked (the user stepped away, missed it, whatever), the ENTIRE APP LAUNCH
+# hangs indefinitely, silently, with no indication why. Fixed by dropping -Wait:
+# the marker is written BEFORE launching (this is a one-time-ever attempt
+# regardless of outcome, not one gated on confirming success), and dism.exe is
+# fired off detached -- the UAC prompt, if it appears, shows up alongside the app
+# starting rather than blocking it. If the enable succeeds, the NEXT detect.ps1
+# run sees currentState=Enabled and skips this function entirely (see the guard
+# above); this run's own re-read of $sandboxFeat below only catches an enable
+# that happens to finish (rare) before this same run's second Test-OptionalFeature
+# call -- it never depends on waiting for dism.exe here.
 function Try-AutoEnableSandboxFeature([bool]$proEntEdu, [bool]$virtEnabled, [string]$currentState) {
     if (-not $proEntEdu -or -not $virtEnabled) { return }
     if ($currentState -ne "Disabled") { return }
@@ -111,13 +124,17 @@ function Try-AutoEnableSandboxFeature([bool]$proEntEdu, [bool]$virtEnabled, [str
     if (Test-Path $marker) { return }
     New-Item -ItemType Directory -Force -Path $markerDir | Out-Null
     try {
-        $p = Start-Process -FilePath "dism.exe" -ArgumentList `
-            "/Online","/Enable-Feature","/FeatureName:Containers-DisposableClientVM","/All","/NoRestart" `
-            -Verb RunAs -PassThru -Wait -WindowStyle Hidden -ErrorAction Stop
-        Set-Content -Path $marker -Value ("attempted {0} exit={1}" -f (Get-Date -Format "s"), $p.ExitCode) -Encoding ascii
+        Set-Content -Path $marker -Value ("attempted {0}" -f (Get-Date -Format "s")) -Encoding ascii
     } catch {
-        # UAC declined, or dism.exe itself failed to launch -- record and never retry.
-        Set-Content -Path $marker -Value ("attempted {0} failed: {1}" -f (Get-Date -Format "s"), $_.Exception.Message) -Encoding ascii
+        return
+    }
+    try {
+        Start-Process -FilePath "dism.exe" -ArgumentList `
+            "/Online","/Enable-Feature","/FeatureName:Containers-DisposableClientVM","/All","/NoRestart" `
+            -Verb RunAs -WindowStyle Hidden -ErrorAction Stop | Out-Null
+    } catch {
+        # UAC declined, or dism.exe itself failed to launch -- already marked
+        # above, so this never retries regardless.
     }
 }
 

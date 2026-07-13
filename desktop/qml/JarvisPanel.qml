@@ -827,6 +827,23 @@ Item {
                 }
             }
 
+            // End this session's isolated agent desktop (sandbox/nested compositor)
+            // without deleting the chat. The regular send button only turns into a
+            // Stop control while a turn is in flight (see sendWrap below) -- an
+            // operator asking to release an IDLE session's desktop (e.g. after a
+            // multi-turn co-work conversation finishes) had no way to do that short
+            // of deleting the whole session. Reuses the same session.cancel path the
+            // in-flight Stop button already uses (it always tears down the agent
+            // desktop as part of cancelling); only shown when there's actually a
+            // desktop to release.
+            Widgets.PillButton {
+                label: "⏻ End Desktop"
+                danger: true
+                visible: bridge.hasAgentDesktop
+                Layout.alignment: Qt.AlignVCenter
+                onClicked: bridge.cancelSession()
+            }
+
             // + New chat — wipe the transcript and drop the current session so the
             // next message spins up a fresh one (same path AppShell uses for the
             // Sessions-page "New chat").

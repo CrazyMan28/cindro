@@ -43,6 +43,20 @@
 
 #include "ReverseTunnel.h" // windows/isolation/relay (added to the include path)
 
+// <windows.h> (with NOMINMAX/WIN32_LEAN_AND_MEAN) is force-included via
+// windows/shell/posix_compat.h for every Windows target; include both
+// explicitly too so this file is self-describing and also compiles if the
+// /FI is ever dropped. tlhelp32.h (process snapshotting) is not pulled in by
+// windows.h alone.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN 1
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX 1
+#endif
+#include <windows.h>
+#include <tlhelp32.h>
+
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -50,7 +64,9 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonObject>
+#include <QList>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRandomGenerator>
@@ -328,9 +344,17 @@ int sweepOrphanFirewallRules()
 // one (ours-after-a-crash or the USER's own) so ensure() can refuse a 2nd launch
 // with a typed reason instead of spawning a WindowsSandbox.exe that fails opaquely.
 // Best-effort: returns false when the probe can't run (we then fall through to the
-// normal launch, which still fails safely if a sandbox truly exists). The broad
-// "WindowsSandbox" substring covers WindowsSandbox.exe / WindowsSandboxClient.exe /
-// WindowsSandboxServer.exe.
+// normal launch, which still fails safely if a sandbox truly exists). Matches each
+// tasklist row's image name EXACTLY against the real session processes
+// (WindowsSandbox.exe / WindowsSandboxClient.exe / WindowsSandboxServer.exe /
+// WindowsSandboxRemoteSession.exe) -- NOT a blanket "contains WindowsSandbox"
+// substring, which also matches vmmemWindowsSandbox.exe (it DOES contain that
+// substring). vmmemWindowsSandbox is the Hyper-V VM worker that can linger
+// 5-15 minutes after a real teardown (see closeSandboxHostProcesses()'s
+// header) even once the session itself is fully gone; reproduced directly
+// during testing -- a launch immediately following a clean teardown was
+// refused as sandbox_busy solely because vmmemWindowsSandbox hadn't released
+// yet, with WindowsSandboxClient/Server/RemoteSession already gone.
 bool sandboxAlreadyRunning()
 {
     if (qEnvironmentVariableIsSet("JARVIS_SANDBOX_SKIP_RUNNING_CHECK"))
@@ -346,7 +370,17 @@ bool sandboxAlreadyRunning()
         return false;
     }
     const QString out = QString::fromLocal8Bit(ps.readAllStandardOutput());
-    return out.contains(QStringLiteral("WindowsSandbox"), Qt::CaseInsensitive);
+    for (const QString &line : out.split(QStringLiteral("\r\n"), Qt::SkipEmptyParts)) {
+        const QString name =
+            line.section(QLatin1Char(','), 0, 0).remove(QLatin1Char('"')).trimmed();
+        if (name.compare(QStringLiteral("WindowsSandbox.exe"), Qt::CaseInsensitive) == 0 ||
+            name.compare(QStringLiteral("WindowsSandboxClient.exe"), Qt::CaseInsensitive) == 0 ||
+            name.compare(QStringLiteral("WindowsSandboxServer.exe"), Qt::CaseInsensitive) == 0 ||
+            name.compare(QStringLiteral("WindowsSandboxRemoteSession.exe"),
+                         Qt::CaseInsensitive) == 0)
+            return true;
+    }
+    return false;
 }
 
 // --- in-process provisioning lock -------------------------------------------
@@ -373,6 +407,51 @@ struct ProvisioningLock
     ~ProvisioningLock() { g_sandboxProvisioning = false; }
 };
 
+// sessionId -> the REAL session-host PIDs captured right after THIS session's
+// sandbox was confirmed healthy (see closeSandboxHostProcesses()'s header).
+// Windows-only bookkeeping kept OUT of the shared Desk struct
+// (core/include/jarvis/AgentDesktop.h, also used by the Linux implementation)
+// since Linux never needs it.
+QHash<QString, QList<qint64>> g_sandboxHostPids;
+
+// Snapshot the PIDs of the REAL Windows Sandbox session-host processes right
+// now (WindowsSandboxRemoteSession/Server/Client -- NOT WindowsSandbox.exe,
+// which has already exited by the time this is ever called, and NOT
+// vmmemWindowsSandbox, the VM worker that's never targeted -- see
+// closeSandboxHostProcesses()'s header). Returns an empty list if the probe
+// fails or nothing matches; callers must treat empty as "unknown," not "safe
+// to broad-kill by name."
+QList<qint64> captureSandboxHostPids()
+{
+    QList<qint64> pids;
+    QProcess ps;
+    ps.start(QStringLiteral("tasklist"),
+             {QStringLiteral("/nh"), QStringLiteral("/fo"), QStringLiteral("csv")});
+    if (!ps.waitForStarted(3000))
+        return pids;
+    if (!ps.waitForFinished(5000)) {
+        ps.kill();
+        ps.waitForFinished(1000);
+        return pids;
+    }
+    const QString out = QString::fromLocal8Bit(ps.readAllStandardOutput());
+    for (const QString &line : out.split(QStringLiteral("\r\n"), Qt::SkipEmptyParts)) {
+        const QStringList fields = line.split(QLatin1Char(','));
+        if (fields.size() < 2)
+            continue;
+        const QString name = QString(fields[0]).remove(QLatin1Char('"')).trimmed();
+        if (name.compare(QStringLiteral("WindowsSandboxRemoteSession.exe"), Qt::CaseInsensitive) == 0 ||
+            name.compare(QStringLiteral("WindowsSandboxServer.exe"), Qt::CaseInsensitive) == 0 ||
+            name.compare(QStringLiteral("WindowsSandboxClient.exe"), Qt::CaseInsensitive) == 0) {
+            bool ok = false;
+            const qint64 pid = QString(fields[1]).remove(QLatin1Char('"')).trimmed().toLongLong(&ok);
+            if (ok)
+                pids.append(pid);
+        }
+    }
+    return pids;
+}
+
 // --- closing the REAL sandbox (teardown) ------------------------------------
 // REAL-HARDWARE CORRECTION. The Linux-mirror design assumed WindowsSandbox.exe
 // (our d.sway launcher) is the long-lived sandbox host, so teardown could just
@@ -382,24 +461,45 @@ struct ProvisioningLock
 // exit tears the box down), WindowsSandboxServer.exe, WindowsSandboxClient.exe --
 // plus the Hyper-V VM worker vmmemWindowsSandbox. So killProc(d.sway) is a no-op
 // that ORPHANS the running box (a stale one then trips sandboxAlreadyRunning() and
-// blocks the next launch as sandbox_busy). We close it by killing those host
-// processes by IMAGE NAME: they aren't children of our launcher and we never
-// captured their PIDs, but the single-instance guard guarantees any running box is
-// the one WE launched, so an image-name kill can't hit a stranger's sandbox. /T
-// also reaps their child trees. vmmemWindowsSandbox is deliberately NOT targeted:
-// it's the vmcompute-managed VM worker (resists even an elevated taskkill /F on
-// this hardware) and releases on its own once the session host is gone. Requires an
-// elevated token to fully take effect -- best-effort, and bounded so teardown never
-// blocks a session tear-down on a slow kill.
-void closeSandboxHostProcesses()
+// blocks the next launch as sandbox_busy).
+//
+// SCOPED BY PID (jarvis#104 Codex review follow-up), not a blind image-name kill:
+// an earlier version killed by IMAGE NAME only, reasoning "the single-instance
+// guard guarantees any running box is the one WE launched." That guarantee holds
+// only at the MOMENT ensure() checks it -- if this session's box later dies
+// outside our control (crash, user closes the sandbox window) while m_desks
+// still thinks it's up, and the user THEN manually opens their OWN separate
+// Windows Sandbox for unrelated work, a later teardown/cleanup call for the
+// long-dead session would have killed that unrelated, currently-live sandbox by
+// name and lost the user's work in it. Now scoped to the specific PIDs
+// captureSandboxHostPids() recorded for THIS session right after its own health
+// check passed (see the ensure() call site) -- a stale/reused PID just fails
+// silently ("not found"), never touching a process we weren't told about.
+// Falls back to the old broad-by-name kill ONLY when no PIDs were ever captured
+// (the session never reached a confirmed-healthy state, so nothing to scope to
+// yet -- the residual risk there matches pre-fix behavior, but only in that
+// narrow early window). /T also reaps child trees. vmmemWindowsSandbox is
+// deliberately NOT targeted either way: it's the vmcompute-managed VM worker
+// (resists even an elevated taskkill /F on this hardware) and releases on its
+// own once the session host is gone. Requires an elevated token to fully take
+// effect -- best-effort, and bounded so teardown never blocks a session
+// tear-down on a slow kill.
+void closeSandboxHostProcesses(const QList<qint64> &scopedPids = {})
 {
+    QStringList args;
+    if (!scopedPids.isEmpty()) {
+        args << QStringLiteral("/F") << QStringLiteral("/T");
+        for (qint64 pid : scopedPids)
+            args << QStringLiteral("/PID") << QString::number(pid);
+    } else {
+        args << QStringLiteral("/F") << QStringLiteral("/T")
+             << QStringLiteral("/IM") << QStringLiteral("WindowsSandboxRemoteSession.exe")
+             << QStringLiteral("/IM") << QStringLiteral("WindowsSandboxServer.exe")
+             << QStringLiteral("/IM") << QStringLiteral("WindowsSandboxClient.exe")
+             << QStringLiteral("/IM") << QStringLiteral("WindowsSandbox.exe");
+    }
     QProcess p;
-    p.start(QStringLiteral("taskkill"),
-            {QStringLiteral("/F"), QStringLiteral("/T"),
-             QStringLiteral("/IM"), QStringLiteral("WindowsSandboxRemoteSession.exe"),
-             QStringLiteral("/IM"), QStringLiteral("WindowsSandboxServer.exe"),
-             QStringLiteral("/IM"), QStringLiteral("WindowsSandboxClient.exe"),
-             QStringLiteral("/IM"), QStringLiteral("WindowsSandbox.exe")});
+    p.start(QStringLiteral("taskkill"), args);
     if (!p.waitForStarted(2000))
         return;
     if (!p.waitForFinished(4000)) {
@@ -652,6 +752,103 @@ bool waitForHttpOk(int port, const QString &bearer, const QString &path,
 }
 } // namespace
 
+// --- hiding the sandbox's own RDP-style window ------------------------------
+// Windows Sandbox renders its guest desktop through a host-side RDP session
+// host (WindowsSandboxRemoteSession.exe) that pops up a normal, visible,
+// moveable "Windows Sandbox" window on the HOST desktop -- there is no .wsb
+// config knob or launch flag to suppress it. That's fine for a human manually
+// poking at a sandbox, but wrong for an AGENT's own isolated desktop: the
+// whole point is that the user's screen stays theirs, with the agent's screen
+// visible only on demand via the Cindro app's WATCH feature (the in-sandbox
+// engine's own screen capture, piped out over /video/frame + /video/mjpeg --
+// entirely independent of this host-side window's visibility, since that
+// capture reads pixels from INSIDE the guest, not from the host-side RDP
+// window's client area). Hiding this window is therefore safe: it cannot
+// affect the video feed the app actually uses. Best-effort and non-fatal --
+// if the window can't be found/hidden the sandbox just stays visible, same as
+// before this existed.
+//
+// CORRECTION (jarvis#104 follow-up): this was briefly reverted after a single
+// A/B sample seemed to show hiding the window caused /ready to fail with
+// "ScreenShotError: ... BitBlt". A multi-agent investigation (live re-test +
+// log analysis across multiple runs) found TWO runs with hiding DISABLED in
+// BOTH that still diverged from 60/60 BitBlt failures to passing in 2 probes
+// -- proving that specific symptom is environmental/load-based flakiness in
+// the sandbox guest's own screenshot library (`mss`'s ScreenShotError, not
+// code in this repo), uncorrelated with window visibility. Restored.
+namespace {
+struct HideWindowCtx {
+    DWORD targetPid = 0;
+    bool hid = false;
+};
+
+BOOL CALLBACK hideWindowIfOwnedByPid(HWND hwnd, LPARAM lparam)
+{
+    auto *ctx = reinterpret_cast<HideWindowCtx *>(lparam);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != ctx->targetPid || !IsWindowVisible(hwnd))
+        return TRUE;
+    ShowWindow(hwnd, SW_HIDE);
+    ctx->hid = true;
+    return TRUE; // keep enumerating -- the client can own more than one window
+}
+
+DWORD findPidByImageName(const wchar_t *imageName)
+{
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return 0;
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    DWORD pid = 0;
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, imageName) == 0) {
+                pid = pe.th32ProcessID;
+                break;
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return pid;
+}
+
+// Repeating, self-stopping QTimer (not a blocking loop -- see pumpingDelay()'s
+// header for why a blocking wait on this thread is off the table) that polls
+// for WindowsSandboxRemoteSession.exe's window and hides it as soon as it
+// appears. That process doesn't exist yet at the moment WindowsSandbox.exe
+// launches, so this has to poll rather than fire once. Budget matches the
+// same sandboxStartupBudgetMs() the health/ready waiters use, at a 1s
+// cadence, so it stays alive at least as long as boot itself is allowed to
+// take (a cold boot can take 60-90s+ before the RDP session host even
+// exists).
+//
+// Parented to `sway` (the launcher QProcess) so killProc()/teardown()
+// destroying it also destroys and stops this timer -- it never outlives the
+// session it belongs to.
+void hideSandboxWindowSoon(QProcess *sway, int budgetMs)
+{
+    auto *timer = new QTimer(sway);
+    timer->setInterval(1000);
+    int attemptsLeft = qMax(1, budgetMs / 1000);
+    QObject::connect(timer, &QTimer::timeout, sway, [timer, attemptsLeft]() mutable {
+        --attemptsLeft;
+        const DWORD pid = findPidByImageName(L"WindowsSandboxRemoteSession.exe");
+        bool hid = false;
+        if (pid != 0) {
+            HideWindowCtx ctx;
+            ctx.targetPid = pid;
+            EnumWindows(hideWindowIfOwnedByPid, reinterpret_cast<LPARAM>(&ctx));
+            hid = ctx.hid;
+        }
+        if (hid || attemptsLeft <= 0)
+            timer->stop();
+    });
+    timer->start();
+}
+} // namespace
+
 bool AgentDesktop::waitForEngineHealth(const Desk &d, int timeoutMs)
 {
     return waitForHttpOk(d.info.port, d.info.bearer, QStringLiteral("/health"), 1000, 300,
@@ -774,6 +971,12 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
         auto *tunnel = new ReverseTunnel(this);
         tunnel->setObjectName(QStringLiteral("jarvis-relay-") + sessionId);
         tunnel->setPairTimeoutMs(startupMs);
+        // AUTH GATE (jarvis#104 Codex review follow-up): require the in-sandbox
+        // dialer to present this session's bearer before its rendezvous
+        // connection is ever admitted to the pairing pool -- see
+        // ReverseTunnel::setExpectedHandshake()'s header. bootstrap.ps1 passes
+        // the matching --bearer to jarvis-relay.exe dial.
+        tunnel->setExpectedHandshake(d.info.bearer);
         if (!tunnel->start(quint16(d.info.port), rport)) {
             m_lastError = QStringLiteral(
                               "reverse tunnel failed to bind 127.0.0.1:%1 / "
@@ -957,6 +1160,11 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
         return {};
     }
     d.info.swayPid = qint64(d.sway->processId());
+    // Best-effort, non-blocking: hide the sandbox's own RDP-client window as
+    // soon as it appears (see hideSandboxWindowSoon()'s header). Started here,
+    // not awaited -- it polls opportunistically while the health/ready waiters
+    // below pump this same thread's event loop.
+    hideSandboxWindowSoon(d.sway, startupMs);
 
     // --- wait for the in-box engine via the relay --------------------------
     if (!waitForEngineHealth(d, startupMs)) {
@@ -975,6 +1183,12 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
             *err = m_lastError;
         return {};
     }
+    // Health passed -- the box is genuinely ours (single-instance guard) and up.
+    // Capture its host PIDs NOW so any later close (this ready-check failure
+    // path, or teardown() much further down the line) can be scoped to exactly
+    // these processes instead of a blind by-name kill (see
+    // closeSandboxHostProcesses()'s header for why that matters).
+    g_sandboxHostPids[sessionId] = captureSandboxHostPids();
     if (!waitForEngineReady(d, startupMs)) {
         m_lastError = QStringLiteral(
                           "agent sandbox engine /ready (capture not serviceable) "
@@ -982,7 +1196,7 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
                           .arg(d.info.port);
         killProc(d.sway);
         d.sway = nullptr;
-        closeSandboxHostProcesses(); // close the real box (untracked desk; see above)
+        closeSandboxHostProcesses(g_sandboxHostPids.take(sessionId)); // close the real box (untracked desk; see above)
         teardown(sessionId);
         if (err)
             *err = m_lastError;
@@ -1055,7 +1269,11 @@ void AgentDesktop::teardown(const QString &sessionId)
     // Close the REAL sandbox first: d.sway is only the launcher (long since exited,
     // see the ensure() launch note), so killing it does NOT stop the running box --
     // the service-hosted WindowsSandbox* processes do (see closeSandboxHostProcesses).
-    closeSandboxHostProcesses();
+    // Scoped to the PIDs captured for THIS session when it went healthy -- see
+    // closeSandboxHostProcesses()'s header for why a blind by-name kill here is
+    // unsafe once a session has been alive long enough for the user to plausibly
+    // have started their own separate sandbox in the meantime.
+    closeSandboxHostProcesses(g_sandboxHostPids.take(sessionId));
     killProc(d.sway); // just cleans up the (already-exited) launcher QProcess handle
     d.sway = nullptr;
     killProc(d.engine); // null on Windows (engine lives in the box); safe no-op

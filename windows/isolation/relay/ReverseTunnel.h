@@ -69,6 +69,21 @@ public:
     // and close it (ms). Generous: the sandbox may still be booting.
     void setPairTimeoutMs(int ms) { m_pairTimeoutMs = ms; }
 
+    // AUTH GATE (jarvis#104 Codex review follow-up): the rendezvous listener binds
+    // 0.0.0.0 so the sandbox's NAT'd dialer can reach it via the host gateway --
+    // which also means any device on the same LAN can open a TCP connection to
+    // it. Without this, pairing was FIFO with no verification: a LAN peer that
+    // connected before the real in-sandbox relay would get paired with the
+    // host's own client (which sends the session bearer in its first HTTP
+    // request), leaking it, or just blackhole readiness by never responding.
+    // Set to the session's bearer so every rendezvous connection must present it
+    // as its first line before being admitted to the pairing pool; anything
+    // else (wrong token, no token, timeout) is dropped before it ever touches
+    // m_idleTunnels. Empty (the default) preserves the old unauthenticated
+    // behavior, used only by the standalone `jarvis-relay host` diagnostic CLI
+    // when run without --bearer.
+    void setExpectedHandshake(const QString &token) { m_expectedHandshake = token; }
+
 private slots:
     void onPublicConnection();
     void onRendezvousConnection();
@@ -76,6 +91,7 @@ private slots:
 private:
     void tryPair();
     void dropDead();
+    void admitRendezvousTunnel(QTcpSocket *tunnel);
 
     QTcpServer *m_public = nullptr;     // 127.0.0.1:<publicPort> (daemon side)
     QTcpServer *m_rendezvous = nullptr; // 0.0.0.0:<rendezvousPort> (sandbox side)
@@ -84,6 +100,7 @@ private:
     quint16 m_publicPort = 0;
     quint16 m_rendezvousPort = 0;
     int m_pairTimeoutMs = 60000;
+    QString m_expectedHandshake;
 };
 
 // Sandbox side of the reverse tunnel. Run by jarvis-relay.exe in `dial` mode
@@ -102,6 +119,12 @@ public:
                const QHostAddress &engineHost, quint16 enginePort,
                int poolSize = 4);
 
+    // AUTH GATE: the token this dialer presents as the first line on every newly
+    // dialed rendezvous connection, matching ReverseTunnel::setExpectedHandshake()
+    // on the host. Must be set BEFORE start() dials the initial pool. Empty (the
+    // default) sends no handshake, matching a host with no expected token set.
+    void setHandshakeToken(const QString &token) { m_handshakeToken = token; }
+
 private:
     void replenish();
     void onTunnelActivated(QTcpSocket *tunnel);
@@ -113,6 +136,7 @@ private:
     quint16 m_enginePort = 0;
     int m_poolSize = 4;
     int m_outstanding = 0; // connecting-or-idle tunnels not yet activated
+    QString m_handshakeToken;
 };
 
 } // namespace jarvis

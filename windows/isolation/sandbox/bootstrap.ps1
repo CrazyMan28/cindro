@@ -45,6 +45,28 @@ try {
 
 Log ("bootstrap start: session={0} port={1} rendezvous={2} hostip={3}" -f $Session, $Port, $Rendezvous, $HostIp)
 
+# 0. Pre-trust: this whole box is disposable and non-interactive (LogonCommand
+#    has no console/desktop input, per the Write-Host deadlock lesson above), so
+#    ANY interactive Windows consent prompt here -- Firewall's first-run "allow
+#    this app?" dialog, or a privacy consent prompt for microphone/camera --
+#    would sit forever with nobody able to click it, silently stalling whatever
+#    triggered it. Pre-authorize everything the engine could plausibly need
+#    BEFORE starting it. Best-effort: the sandbox's default user (WDAGUtility-
+#    Account) is a local admin, but this still must never fail bootstrap if a
+#    command errors -- each is wrapped individually. These are machine/registry
+#    settings inside the DISPOSABLE box only; they never touch the host and
+#    reset on every fresh sandbox instance, so this runs every single boot.
+try {
+    $privacyPolicyKey = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy"
+    New-Item -Path $privacyPolicyKey -Force | Out-Null
+    # 1 = force-allow (0 = user-prompted, 2 = force-deny).
+    Set-ItemProperty -Path $privacyPolicyKey -Name "LetAppsAccessMicrophone" -Value 1 -Type DWord
+    Set-ItemProperty -Path $privacyPolicyKey -Name "LetAppsAccessCamera" -Value 1 -Type DWord
+    Log "pre-trust: forced microphone/camera privacy policy to allow"
+} catch {
+    Log ("pre-trust: privacy policy step failed (non-fatal): {0}" -f $_.Exception.Message)
+}
+
 # 1. In-sandbox marker so which='agent' resolves to THIS desktop. Set on the
 #    process env so the engine + relay children inherit it.
 $env:JARVIS_AGENT_INSANDBOX = "1"
@@ -95,6 +117,13 @@ if (-not (Test-Path $engineExe)) {
     Log ("FATAL: engine not found at {0}" -f $engineExe)
     exit 1
 }
+try {
+    netsh advfirewall firewall add rule name="Jarvis engine (sandbox)" dir=in action=allow `
+        program="$engineExe" enable=yes profile=any | Out-Null
+    Log "pre-trust: added firewall allow rule for jarvis-engine.exe"
+} catch {
+    Log ("pre-trust: firewall rule for engine failed (non-fatal): {0}" -f $_.Exception.Message)
+}
 Start-Process -FilePath $engineExe -WorkingDirectory $env:USERPROFILE -WindowStyle Hidden `
     -RedirectStandardOutput (Join-Path $diag "engine.out") -RedirectStandardError (Join-Path $diag "engine.err")
 Log "started jarvis-engine.exe"
@@ -108,13 +137,27 @@ Log "started jarvis-engine.exe"
 #    exactly the kind of self-inflicted stall this issue was already about.
 $relayExe = Join-Path $engineDir "jarvis-relay.exe"
 if ((Test-Path $relayExe) -and -not [string]::IsNullOrWhiteSpace($HostIp)) {
+    try {
+        netsh advfirewall firewall add rule name="Jarvis relay (sandbox)" dir=in action=allow `
+            program="$relayExe" enable=yes profile=any | Out-Null
+        Log "pre-trust: added firewall allow rule for jarvis-relay.exe"
+    } catch {
+        Log ("pre-trust: firewall rule for relay failed (non-fatal): {0}" -f $_.Exception.Message)
+    }
     $relayArgs = @(
         "dial",
         "--host", $HostIp,
         "--rendezvous", "$Rendezvous",
         "--engine-port", "$Port",
         "--engine-host", "127.0.0.1",
-        "--pool", "4"
+        "--pool", "4",
+        # AUTH GATE (jarvis#104 Codex review follow-up): matches
+        # ReverseTunnel::setExpectedHandshake($Bearer) on the host side -- without
+        # this, the host admits any rendezvous connection unconditionally, which
+        # matters now that the rendezvous port is reachable from the whole LAN,
+        # not just this sandbox. Same $Bearer already used for the engine config
+        # above.
+        "--bearer", $Bearer
     )
     Start-Process -FilePath $relayExe -ArgumentList $relayArgs -WindowStyle Hidden `
         -RedirectStandardOutput (Join-Path $diag "relay.out") -RedirectStandardError (Join-Path $diag "relay.err")
@@ -186,4 +229,14 @@ if ($diag -eq "C:\hostlog") {
     # the host instead of silently vanishing (LogonCommand has no console).
     try { Add-Content -Path $log -Value ("EXCEPTION: {0}`n{1}" -f $_.Exception.Message, $_.ScriptStackTrace) -Encoding ascii } catch {}
     try { Set-Content -Path (Join-Path $diag "EXCEPTION.txt") -Value ($_ | Out-String) -Encoding ascii } catch {}
+    # Cursor review follow-up (jarvis#104): this catch used to swallow the
+    # exception silently -- LogonCommand saw powershell.exe exit 0 regardless,
+    # reporting the sandbox as "bootstrapped fine" even when this script died
+    # partway through and never started the engine or relay. That's the exact
+    # failure mode /health then reports as a mysterious, unexplained timeout on
+    # the host side, with no clue anything went wrong inside the box. Exit
+    # non-zero so a real failure is at least visible in the LogonCommand's own
+    # exit code (still nothing interactive can act on it -- the box still boots
+    # either way -- but it stops a real crash from masquerading as success).
+    exit 1
 }
