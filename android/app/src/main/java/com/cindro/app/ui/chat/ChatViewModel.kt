@@ -34,6 +34,11 @@ data class ChatUiState(
     /** "/" command palette catalog (loaded lazily when the user types "/"). */
     val slashAgents: List<com.cindro.app.protocol.Agent> = emptyList(),
     val slashSkills: List<com.cindro.app.protocol.Skill> = emptyList(),
+    /** This session's brain/model, for the chat top-bar chip (read-only display —
+     *  there is no daemon RPC to switch brain/model on a live session; picking a
+     *  different one starts a New chat instead). Loaded once, best-effort. */
+    val brain: String? = null,
+    val model: String? = null,
 )
 
 /**
@@ -81,6 +86,13 @@ class ChatViewModel(
         loadSessionInfo()
         subscribe()
         holdWidgetViewingLease()
+        // NewChatScreen's blank composer created this session and stashed the first
+        // message the user already typed — send it now via the normal send() path
+        // (optimistic bubble, haptics, slash-command handling all apply as usual).
+        PendingFirstMessage.consume(sessionId)?.let { (text, images) ->
+            _uiState.update { it.copy(pending = images) }
+            send(text)
+        }
     }
 
     private fun loadSessionInfo() {
@@ -90,6 +102,7 @@ class ChatViewModel(
                     sessions.firstOrNull { it.id == _uiState.value.sessionId }?.let {
                         sessionBrain = it.brain
                         sessionModel = it.model
+                        _uiState.update { st -> st.copy(brain = it.brain, model = it.model) }
                     }
                 }
         }

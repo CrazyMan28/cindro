@@ -68,12 +68,17 @@ class HomeViewModel(
         }
     }
 
-    fun createSession(profile: String = "coworker", brain: String = "codex", onCreated: (String) -> Unit) {
+    fun createSession(
+        profile: String = "coworker",
+        brain: String = "codex",
+        onCreated: (String) -> Unit,
+        onError: (() -> Unit)? = null,
+    ) {
         _uiState.update { it.copy(creating = true) }
         viewModelScope.launch {
             runCatching { withContext(Dispatchers.IO) { repo.createSession(profile, brain, null) } }
                 .onSuccess { id -> _uiState.update { it.copy(creating = false) }; refresh(); onCreated(id) }
-                .onFailure { _uiState.update { it.copy(creating = false) } }
+                .onFailure { _uiState.update { it.copy(creating = false) }; onError?.invoke() }
         }
     }
 

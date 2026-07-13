@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,21 +23,24 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,6 +48,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
@@ -60,6 +65,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
@@ -68,6 +74,7 @@ import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
@@ -89,7 +96,7 @@ import kotlinx.coroutines.withContext
 fun ChatScreen(
     viewModel: ChatViewModel,
     activity: FragmentActivity,
-    onBack: () -> Unit,
+    onOpenDrawer: () -> Unit,
     autoStartVoice: Boolean = false,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -98,6 +105,7 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     var draft by remember { mutableStateOf("") }
+    var showModelInfo by remember { mutableStateOf(false) }
     var micGranted by remember {
         mutableStateOf(
             androidx.core.content.ContextCompat.checkSelfPermission(
@@ -156,10 +164,16 @@ fun ChatScreen(
                 )
             } else {
                 TopAppBar(
-                    title = { Text("Chat", fontFamily = FontFamily.Monospace) },
+                    title = {
+                        ChatModelChip(
+                            brain = state.brain,
+                            model = state.model,
+                            onClick = { showModelInfo = true },
+                        )
+                    },
                     navigationIcon = {
-                        HapticIconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        HapticIconButton(onClick = onOpenDrawer) {
+                            Icon(Icons.Filled.Menu, contentDescription = "Open menu")
                         }
                     },
                     actions = {
@@ -188,48 +202,52 @@ fun ChatScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(state.items, key = { it.id }) { item ->
-                    ChatBubble(
-                        item = item,
-                        onApprove = { approval, decision ->
-                            scope.launch {
-                                val ok = Biometric.authenticate(
-                                    activity,
-                                    title = "Confirm action",
-                                    subtitle = approval.summary,
-                                )
-                                if (ok) viewModel.respondApproval(approval.approvalId, decision)
-                            }
-                        },
-                        selecting = state.selecting,
-                        selected = item.id in state.selected,
-                        onClick = { if (state.selecting) viewModel.toggleSelection(item.id) },
-                        onLongClick = {
-                            if (state.selecting) viewModel.toggleSelection(item.id)
-                            else viewModel.startSelection(item.id)
-                        },
-                        onStreamReveal = viewModel::onStreamReveal,
-                        onWidgetAction = { action ->
-                            val open = action.get("open")?.asString
-                            if (!open.isNullOrBlank() &&
-                                (open.startsWith("http://") || open.startsWith("https://"))
-                            ) {
-                                runCatching {
-                                    context.startActivity(
-                                        android.content.Intent(
-                                            android.content.Intent.ACTION_VIEW,
-                                            android.net.Uri.parse(open),
-                                        ),
+                    // Each new bubble fades + slides in as it's added (and animates
+                    // out of the way on delete) instead of just popping into place.
+                    Box(Modifier.animateItem()) {
+                        ChatBubble(
+                            item = item,
+                            onApprove = { approval, decision ->
+                                scope.launch {
+                                    val ok = Biometric.authenticate(
+                                        activity,
+                                        title = "Confirm action",
+                                        subtitle = approval.summary,
                                     )
+                                    if (ok) viewModel.respondApproval(approval.approvalId, decision)
                                 }
-                            } else {
-                                viewModel.onWidgetAction(action)
-                            }
-                        },
-                    )
+                            },
+                            selecting = state.selecting,
+                            selected = item.id in state.selected,
+                            onClick = { if (state.selecting) viewModel.toggleSelection(item.id) },
+                            onLongClick = {
+                                if (state.selecting) viewModel.toggleSelection(item.id)
+                                else viewModel.startSelection(item.id)
+                            },
+                            onStreamReveal = viewModel::onStreamReveal,
+                            onWidgetAction = { action ->
+                                val open = action.get("open")?.asString
+                                if (!open.isNullOrBlank() &&
+                                    (open.startsWith("http://") || open.startsWith("https://"))
+                                ) {
+                                    runCatching {
+                                        context.startActivity(
+                                            android.content.Intent(
+                                                android.content.Intent.ACTION_VIEW,
+                                                android.net.Uri.parse(open),
+                                            ),
+                                        )
+                                    }
+                                } else {
+                                    viewModel.onWidgetAction(action)
+                                }
+                            },
+                        )
+                    }
                 }
                 // Pulsing "typing" indicator while the brain works (no streamed text yet).
                 if (state.busy) {
-                    item(key = "typing") { TypingIndicator() }
+                    item(key = "typing") { TypingIndicator(Modifier.animateItem()) }
                 }
             }
           }
@@ -336,6 +354,35 @@ fun ChatScreen(
             }
         }
     }
+
+    // Brain/model are fixed for a chat's whole lifetime (no daemon RPC to switch
+    // them mid-session) — this is an info card, not a picker. Start a New chat
+    // from the sidebar to pick a different one.
+    if (showModelInfo) {
+        AlertDialog(
+            onDismissRequest = { showModelInfo = false },
+            containerColor = JarvisPalette.Surface,
+            title = { Text("This chat's brain", color = JarvisPalette.TextPrimary) },
+            text = {
+                Column {
+                    Text(
+                        (state.brain?.replaceFirstChar(Char::uppercase) ?: "Cindro default") +
+                            (state.model?.let { "  ·  $it" } ?: ""),
+                        color = JarvisPalette.Accent,
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Brain and model are fixed for a chat's lifetime. Start a New chat from " +
+                            "the sidebar to pick a different one.",
+                        color = JarvisPalette.TextSecondary,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            },
+            confirmButton = { TextButton(onClick = { showModelInfo = false }) { Text("Got it") } },
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -368,6 +415,48 @@ private fun ChatSelectionBar(
     )
 }
 
+/** A compact "brain · model" pill in the chat top bar, echoing ChatGPT's model
+ *  selector chip. Tapping shows an info card (see [ChatScreen]'s AlertDialog) —
+ *  it's read-only here since a live session's brain/model can't be switched. */
+@Composable
+private fun ChatModelChip(brain: String?, model: String?, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(50),
+        color = JarvisPalette.SurfaceVariant,
+        border = BorderStroke(1.dp, JarvisPalette.Outline),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                brain?.replaceFirstChar(Char::uppercase) ?: "Cindro",
+                style = MaterialTheme.typography.titleSmall,
+                color = JarvisPalette.TextPrimary,
+                maxLines = 1,
+            )
+            if (!model.isNullOrBlank()) {
+                Text(
+                    "  ·  $model",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = JarvisPalette.TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 140.dp),
+                )
+            }
+            Spacer(Modifier.width(2.dp))
+            Icon(
+                Icons.Filled.KeyboardArrowDown,
+                contentDescription = null,
+                tint = JarvisPalette.TextSecondary,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
 /** Concatenate the text of the currently-selected message bubbles, in order. */
 private fun selectedText(state: ChatUiState): String =
     state.items
@@ -392,7 +481,7 @@ private fun copyToClipboard(context: Context, text: String) {
 }
 
 @Composable
-private fun InputRow(
+fun InputRow(
     draft: String,
     onDraftChange: (String) -> Unit,
     sending: Boolean,
@@ -545,10 +634,25 @@ private fun InputRow(
 }
 
 // ---- animated empty state for a fresh chat --------------------------------
-@androidx.compose.runtime.Composable
-private fun ChatEmptyState(modifier: Modifier = Modifier) {
+/**
+ * Shared between an existing session with no messages yet and [NewChatScreen]'s
+ * blank landing composer, so both read as the same "Cindro" moment. Fades +
+ * slides up on first appearance (same [androidx.compose.animation.core.Animatable]
+ * idiom used for the old Home header) instead of just popping in.
+ */
+@Composable
+fun ChatEmptyState(modifier: Modifier = Modifier, subtitle: String = DEFAULT_EMPTY_SUBTITLE) {
+    val appear = remember { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(Unit) {
+        appear.animateTo(1f, androidx.compose.animation.core.tween(420))
+    }
     androidx.compose.foundation.layout.Column(
-        modifier = modifier.padding(32.dp),
+        modifier = modifier
+            .padding(32.dp)
+            .graphicsLayer {
+                alpha = appear.value
+                translationY = (1f - appear.value) * 18f
+            },
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         JarvisOrb(size = 132.dp)
@@ -562,10 +666,12 @@ private fun ChatEmptyState(modifier: Modifier = Modifier) {
         )
         androidx.compose.foundation.layout.Spacer(Modifier.height(8.dp))
         Text(
-            "Ask anything, attach a photo, or have Cindro use its computer.",
+            subtitle,
             color = JarvisPalette.TextSecondary,
             fontSize = 13.sp,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
     }
 }
+
+private const val DEFAULT_EMPTY_SUBTITLE = "Ask anything, attach a photo, or have Cindro use its computer."

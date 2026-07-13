@@ -879,6 +879,53 @@ regress them:
   AgentDesktop / PluginSandbox) needs the same mirror or the Windows build won't
   link (compile-only checks miss it — link `jarvisd` to catch it).
 
+## New subsystems (2026-07-12) — Android drawer redesign gotchas
+
+The Android app's bottom-tab bar + Home dashboard were replaced with a
+Claude/ChatGPT-style navigation drawer + chat-first launch (see `docs/STATUS.md`
+for the feature writeup). Load-bearing details found the hard way, in code
+review, before this ever ran on a device:
+
+- **Every non-pairing/non-approve route MUST go through `Gated()`** (bottom of
+  `android/app/src/main/java/com/cindro/app/ui/AppNav.kt`) — the same
+  `appUnlocked` biometric app-open check `CHAT_HOME`/`CHAT` apply inline.
+  `appUnlocked` is plain `remember` state, not `rememberSaveable`, so it resets
+  to locked on process recreation; Navigation-Compose's saved back stack can
+  restore straight onto a non-start destination after process death, and a
+  route with no `Gated()` wrapper renders its private content with zero gate.
+  A NEW top-level route added to this graph needs `Gated()` too — this is easy
+  to forget since the old `Shell()` was a single gate point for six screens at
+  once and that's gone now.
+- **Drawer destinations are pushed FROM chat, not siblings under one shared
+  start like the old bottom tabs were.** The `onNavigate` callback in both the
+  `CHAT_HOME` and `CHAT` composable blocks does
+  `nav.navigate(route) { popUpTo(entry.destination.id) { inclusive = false }; launchSingleTop = true }`
+  — popping back to THIS chat entry before pushing, so repeated drawer hops
+  never grow the back stack past `[chat, oneDestination]`. This relies on the
+  drawer only ever being reachable from a chat screen (it isn't rendered on
+  Sessions/Canvas/etc.) — if you add a drawer to another screen, its
+  `onNavigate` needs the same `popUpTo(thatEntry.destination.id)` pattern, not
+  a bare `launchSingleTop`.
+- **`PendingFirstMessage` (`android/app/src/main/java/com/cindro/app/ui/chat/ChatModels.kt`)
+  is a one-shot, single-slot global handoff — NOT a queue.** `NewChatScreen`
+  has no session id to send against until `session.create` returns, so it
+  stashes the typed draft/photos keyed by the new session id;
+  `ChatViewModel.init()` consumes it (a normal `send()` call — same optimistic
+  bubble/haptics/slash-command handling as any other message). Because it's a
+  single overwritable slot, `NewChatScreen` must never let two `createSession()`
+  calls race (that clobbers slot 1 with slot 2's session id, and session 1's
+  `consume()` returns null — a silent "ghost" empty session) — guarded by
+  checking `state.creating` before firing `sendFirst()`/`startVoiceChat()`, and
+  by the mic button no longer firing while a draft/attachment is already
+  pending. Don't add a third path that can call `createSession()` from
+  `NewChatScreen` without the same guard.
+- **Promoting a screen out of a gated shell into a top-level route also drops
+  its "how do I get back" story if you don't add one.** Sessions/Canvas/
+  Computer/Phone/Settings used to be bottom tabs (no back concept needed);
+  they're pushed routes now, each with its own `onBack` param wired to
+  `nav.popBackStack()` and a `navigationIcon` back arrow — a screen promoted
+  the same way in the future needs the same treatment, not just a route entry.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.
