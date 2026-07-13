@@ -96,16 +96,32 @@ if (Test-Path $goExe) { Log ("Go OK: " + (& $goExe version)) } else { Log "GO IN
 $bunDir = "C:\bun"
 $bunExe = "$bunDir\bun.exe"
 if (-not (Test-Path $bunExe)) {
-    $url = "https://github.com/oven-sh/bun/releases/latest/download/bun-windows-x64.zip"
-    $o = "$env:TEMP\bun-windows-x64.zip"
-    Log "downloading bun (portable)..."
-    Invoke-WebRequest -Uri $url -OutFile $o
-    Expand-Archive -Force $o "$env:TEMP\bun-extract"
-    $found = Get-ChildItem -Path "$env:TEMP\bun-extract" -Recurse -Filter "bun.exe" | Select-Object -First 1
-    if ($found) {
-        New-Item -ItemType Directory -Force -Path $bunDir | Out-Null
-        Copy-Item $found.FullName $bunExe -Force
-    }
+    # Resolve 'latest' to a concrete LOGGED tag and verify the zip against that
+    # release's SHASUMS256.txt before trusting bun.exe (same integrity gate as
+    # windows/scripts/build.ps1's self-heal). A mismatch/error leaves bun absent
+    # so the build's self-heal can retry rather than caching a bad binary.
+    try {
+        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/oven-sh/bun/releases/latest" -Headers @{ 'User-Agent' = 'cindro-runner' }
+        $tag = $rel.tag_name
+        if (-not $tag) { throw "could not resolve latest bun tag" }
+        Log "downloading bun $tag (portable)..."
+        $o = "$env:TEMP\bun-windows-x64.zip"
+        $sums = "$env:TEMP\bun-SHASUMS256.txt"
+        $dl = "https://github.com/oven-sh/bun/releases/download/$tag"
+        Invoke-WebRequest -Uri "$dl/bun-windows-x64.zip" -OutFile $o
+        Invoke-WebRequest -Uri "$dl/SHASUMS256.txt"       -OutFile $sums
+        $line = Get-Content $sums | Where-Object { $_ -match 'bun-windows-x64\.zip\s*$' } | Select-Object -First 1
+        if (-not $line) { throw "bun-windows-x64.zip not listed in SHASUMS256.txt for $tag" }
+        $expected = (($line -split '\s+')[0]).ToLower()
+        $actual   = (Get-FileHash $o -Algorithm SHA256).Hash.ToLower()
+        if ($expected -ne $actual) { throw "bun SHA256 mismatch for $tag (expected $expected, got $actual)" }
+        Expand-Archive -Force $o "$env:TEMP\bun-extract"
+        $found = Get-ChildItem -Path "$env:TEMP\bun-extract" -Recurse -Filter "bun.exe" | Select-Object -First 1
+        if ($found) {
+            New-Item -ItemType Directory -Force -Path $bunDir | Out-Null
+            Copy-Item $found.FullName $bunExe -Force
+        }
+    } catch { Log "bun install skipped ($_) — build.ps1 self-heal will retry" }
 }
 if (Test-Path $bunExe) { Log ("bun OK: " + (& $bunExe --version)) } else { Log "BUN INSTALL FAILED" }
 
