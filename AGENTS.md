@@ -1081,6 +1081,45 @@ transcript recycles/renders rows:
   data layer already swallows an OOM during the whole-session JSON parse via `runCatching`
   (history silently vanishes rather than crashes), so the render path was the visible crash.
 
+## New subsystems (2026-07-13) — Windows installer now ships the TUI + web dashboard
+
+The single `Cindro-Setup-<ver>.exe` (the ONLY artifact the `windows-build`
+Action attaches to the Release) previously shipped just the GUI + engine +
+phone + outpost. It now also bundles the **terminal UI** (`cindro-tui.exe`) and
+the **SolidJS web dashboard** (`web/`). Load-bearing details:
+
+- **The common dependency is `bun`, and it was silently absent.** Both the TUI
+  (`tui/` → `bun run build win`) and the web dashboard (`web/` → `vite build`)
+  are built with bun. `windows/scripts/build.ps1` gated the TUI behind a bare
+  `if (Get-Command bun)` — with NO self-heal, unlike the Qt and Go blocks — and
+  `windows-build.yml`'s toolchain-verify step never provisioned bun. So on the
+  self-hosted runner the TUI just warned-and-skipped, and web was never wired in
+  at all. Fix: a `Resolve-BunExe` self-heal (mirrors the Qt/Go pattern —
+  downloads the portable `bun-windows-x64.zip` to `C:\bun-portable` when bun is
+  absent) drives BOTH builds, so they always ship. `setup-runner-buildtools.ps1`
+  also pre-installs bun now (fast path); the self-heal is the safety net. Do NOT
+  add `bun` to the `windows-build.yml` hard-requirement preflight — a runner not
+  yet re-provisioned would fail there before build.ps1 could self-heal.
+- **The web dashboard needs a runtime, not just static files.** `web/server.ts`
+  is a `Bun.serve` script (not Node), so a portable `bun.exe` is staged into
+  `payload\bun\bun.exe` next to `payload\web\{dist,server.ts,package.json}`. The
+  new `windows/scripts/cindro-web.cmd` launcher runs `bun\bun.exe web\server.ts
+  --port 8788` and opens the browser — the Windows analogue of Linux's `cindro
+  web start`, running the SAME `server.ts`. The control token resolves
+  identically on both (`%USERPROFILE%\.config\jarvis\control_token`), so the
+  launcher prints it for the Setup screen with no extra wiring.
+- **Both installer shortcuts are `Check: FileExists(...)`-guarded**, so a build
+  on a runner where bun genuinely can't be installed still produces a valid
+  GUI-only installer instead of a shortcut to a missing file. Every bun-driven
+  block in build.ps1 is `try/catch` non-fatal, same resilience as the phone/
+  outpost stages.
+- **The installer now adds `{app}` to the per-user PATH** (`ChangesEnvironment=yes`
+  + the canonical HKCU\Environment add/remove `[Code]` recipe in `jarvis.iss`),
+  so `cindro-tui` and `cindro-web` are callable from cmd/PowerShell/git-bash/WSL.
+  The Linux counterpart is `packaging/install.sh`'s new `add_local_bin_to_path`
+  step, which seeds `~/.local/bin` into `~/.bashrc`, `~/.zshrc`, and the pwsh
+  profile (zsh/pwsh don't read `~/.profile`) — idempotent, guarded by a marker.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

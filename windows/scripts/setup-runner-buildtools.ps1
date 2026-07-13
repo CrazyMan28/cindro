@@ -5,7 +5,8 @@
 #   - Ninja (CMake generator)
 #   - Node 20 (npm ci for the phone server)
 #   - Go (latest stable, cross-compiles outpost-agent for all 6 pairing targets)
-# and sets machine env: CMAKE_PREFIX_PATH + PATH (Qt\bin, ninja, node, go\bin).
+#   - bun (builds cindro-tui.exe AND the web/ SolidJS dashboard)
+# and sets machine env: CMAKE_PREFIX_PATH + PATH (Qt\bin, ninja, node, go\bin, bun).
 # VS Build Tools, git, vcpkg(+libs), Inno, pwsh are already provisioned.
 # Idempotent. Run: powershell -ExecutionPolicy Bypass -File setup-runner-buildtools.ps1
 $ProgressPreference = 'SilentlyContinue'
@@ -88,11 +89,31 @@ if (-not (Test-Path $goExe)) {
 }
 if (Test-Path $goExe) { Log ("Go OK: " + (& $goExe version)) } else { Log "GO INSTALL FAILED" }
 
+# ---- 4d. bun (builds cindro-tui.exe + the web/ SolidJS dashboard) ----------
+# build.ps1 also self-heals bun if it's missing, but pre-installing it here
+# avoids a ~90 MB per-run download and keeps the TUI + web dashboard in the
+# installer even on a cold cache. Portable zip from GitHub releases -> C:\bun.
+$bunDir = "C:\bun"
+$bunExe = "$bunDir\bun.exe"
+if (-not (Test-Path $bunExe)) {
+    $url = "https://github.com/oven-sh/bun/releases/latest/download/bun-windows-x64.zip"
+    $o = "$env:TEMP\bun-windows-x64.zip"
+    Log "downloading bun (portable)..."
+    Invoke-WebRequest -Uri $url -OutFile $o
+    Expand-Archive -Force $o "$env:TEMP\bun-extract"
+    $found = Get-ChildItem -Path "$env:TEMP\bun-extract" -Recurse -Filter "bun.exe" | Select-Object -First 1
+    if ($found) {
+        New-Item -ItemType Directory -Force -Path $bunDir | Out-Null
+        Copy-Item $found.FullName $bunExe -Force
+    }
+}
+if (Test-Path $bunExe) { Log ("bun OK: " + (& $bunExe --version)) } else { Log "BUN INSTALL FAILED" }
+
 # ---- 5. machine env: CMAKE_PREFIX_PATH + PATH -----------------------------
 [Environment]::SetEnvironmentVariable("CMAKE_PREFIX_PATH", $qtDir, "Machine")
 [Environment]::SetEnvironmentVariable("Qt6_DIR", "$qtDir\lib\cmake\Qt6", "Machine")
 $machPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-foreach ($d in @("$qtDir\bin", $ninjaDir, $nodeDir, "C:\Program Files\CMake\bin", "C:\Program Files\Python312", "C:\Program Files\Python312\Scripts", "$goDir\go\bin")) {
+foreach ($d in @("$qtDir\bin", $ninjaDir, $nodeDir, "C:\Program Files\CMake\bin", "C:\Program Files\Python312", "C:\Program Files\Python312\Scripts", "$goDir\go\bin", $bunDir)) {
     if ((Test-Path $d) -and ($machPath -notlike "*$d*")) { $machPath = "$machPath;$d"; Log "PATH += $d" }
 }
 [Environment]::SetEnvironmentVariable("Path", $machPath, "Machine")

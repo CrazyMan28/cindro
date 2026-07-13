@@ -143,22 +143,109 @@ if (-not $sidebarExe) { throw "cindro-sidebar.exe not found under $build" }
 Copy-Item $jarvisdExe $payload
 Copy-Item $sidebarExe $payload
 
-# cindro-tui.exe — the TypeScript/OpenTUI terminal UI v2, compiled here on
-# Windows (bun install pulls @opentui/core-win32-x64, which can't extract on
-# Linux). Non-fatal if bun is absent so the GUI-only installer still builds.
+# --- Bun-built UI surfaces: TUI v2 + web dashboard ----------------------------
+# BOTH the TypeScript/OpenTUI terminal UI (cindro-tui.exe) and the SolidJS web
+# dashboard (web/) are built with bun. bun is NOT part of the runner's verified
+# toolchain (setup-runner-buildtools.ps1 / windows-build.yml preflight), so —
+# exactly like the Qt and Go self-heals above — fetch a portable bun.exe when
+# it's absent, so these two surfaces ALWAYS ship instead of silently dropping
+# out of the ONE installer. The same bun.exe is also bundled into the payload so
+# the web server runs on a BARE machine (web/server.ts is a Bun.serve script;
+# no Node/bun install required — the same "bundle a portable runtime" model the
+# Node phone server already uses).
+function Resolve-BunExe($buildDir) {
+  $cmd = Get-Command bun -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
+  $userBun = Join-Path $env:USERPROFILE ".bun\bin\bun.exe"
+  if (Test-Path $userBun) { return $userBun }
+  # SELF-HEAL: pull the portable Windows bun into C:\bun-portable and add to PATH.
+  Write-Host "==> bun not found on this runner — installing portable bun (self-heal)…" -ForegroundColor Yellow
+  try {
+    $bunRoot = "C:\bun-portable"
+    $bunExe  = Join-Path $bunRoot "bun.exe"
+    if (-not (Test-Path $bunExe)) {
+      $bunZip = Join-Path $buildDir "bun-windows-x64.zip"
+      Invoke-WebRequest "https://github.com/oven-sh/bun/releases/latest/download/bun-windows-x64.zip" -OutFile $bunZip
+      Expand-Archive -Force $bunZip (Join-Path $buildDir "bun-extract")
+      $found = Get-ChildItem -Path (Join-Path $buildDir "bun-extract") -Recurse -Filter "bun.exe" | Select-Object -First 1
+      if (-not $found) { throw "bun.exe not found inside bun-windows-x64.zip" }
+      New-Item -ItemType Directory -Force -Path $bunRoot | Out-Null
+      Copy-Item $found.FullName $bunExe -Force
+    }
+    if (Test-Path $bunExe) {
+      $env:Path = "$bunRoot;$env:Path"
+      # Persist so the runner's future runs (+ the preflight) see bun too.
+      try {
+        $machPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+        if ($machPath -and ($machPath -notlike "*$bunRoot*")) {
+          [Environment]::SetEnvironmentVariable("Path", "$machPath;$bunRoot", "Machine")
+        }
+      } catch { Write-Host "WARN: could not persist bun machine PATH: $_" -ForegroundColor Yellow }
+      return $bunExe
+    }
+  } catch {
+    Write-Warning "bun self-heal failed ($_) — TUI v2 + web dashboard will be absent from this installer."
+  }
+  return $null
+}
+$bunExe = Resolve-BunExe $build
+if ($bunExe) { Write-Host "==> bun: $bunExe" -ForegroundColor Cyan }
+
+# 2a. cindro-tui.exe — TS/OpenTUI terminal UI v2, cross-compiled here on Windows
+# (bun install pulls @opentui/core-win32-x64, which can't extract on Linux).
+# Non-fatal (warn + skip) so a bun-less runner still ships the GUI-only installer.
 $tuiDir = Join-Path $repo "tui"
-if (Get-Command bun -ErrorAction SilentlyContinue) {
+if ($bunExe) {
   Write-Host "Building cindro-tui.exe (TS TUI v2)…"
   Push-Location $tuiDir
   try {
-    bun install --frozen-lockfile
-    bun run build win
+    & $bunExe install --frozen-lockfile
+    & $bunExe run build win
     $tuiExe = Join-Path $tuiDir "dist\cindro-tui.exe"
     if (Test-Path $tuiExe) { Copy-Item $tuiExe $payload; Write-Host "  staged cindro-tui.exe" }
     else { Write-Warning "cindro-tui.exe not produced — TUI v2 will be absent from this installer" }
+  } catch {
+    Write-Warning "cindro-tui.exe build failed ($_) — TUI v2 absent from this installer."
   } finally { Pop-Location }
 } else {
-  Write-Warning "bun not found — cindro-tui.exe (TUI v2) NOT bundled. Install bun on the runner."
+  Write-Warning "bun unavailable — cindro-tui.exe (TUI v2) NOT bundled."
+}
+
+# 2b. web dashboard — the SolidJS console (web/), built to static files and
+# served on a bare machine by the bundled bun runtime. Staged as:
+#   {app}\web\dist\      the vite build output (the static SPA)
+#   {app}\web\server.ts  the Bun.serve static server (prints the control token)
+#   {app}\bun\bun.exe    the portable bun runtime cindro-web.cmd runs server.ts with
+# So the ONE installer ships the GUI, the TUI, AND the web dashboard — no second
+# artifact, no runtime prerequisites. Non-fatal like the TUI above.
+$webSrc = Join-Path $repo "web"
+if ($bunExe) {
+  Write-Host "Building web dashboard (SolidJS)…"
+  Push-Location $webSrc
+  try {
+    & $bunExe install --frozen-lockfile
+    & $bunExe run build
+    $webDist = Join-Path $webSrc "dist"
+    if (Test-Path (Join-Path $webDist "index.html")) {
+      $webDst = Join-Path $payload "web"
+      New-Item -ItemType Directory -Force -Path $webDst | Out-Null
+      Copy-Item -Recurse $webDist (Join-Path $webDst "dist")
+      Copy-Item (Join-Path $webSrc "server.ts")   $webDst
+      Copy-Item (Join-Path $webSrc "package.json") $webDst
+      # Portable bun runtime next to the exes so cindro-web.cmd can serve it on a
+      # machine with nothing installed (server.ts is Bun-native — Bun.serve/Bun.file).
+      $bunDst = Join-Path $payload "bun"
+      New-Item -ItemType Directory -Force -Path $bunDst | Out-Null
+      Copy-Item $bunExe (Join-Path $bunDst "bun.exe") -Force
+      Write-Host "  staged web dashboard + portable bun runtime"
+    } else {
+      Write-Warning "web/dist not produced — web dashboard will be absent from this installer"
+    }
+  } catch {
+    Write-Warning "web dashboard build failed ($_) — web dashboard absent from this installer."
+  } finally { Pop-Location }
+} else {
+  Write-Warning "bun unavailable — web dashboard NOT bundled."
 }
 
 Copy-Item (Join-Path $repo "LICENSE") (Join-Path $payload "LICENSE.txt")
@@ -166,6 +253,9 @@ Copy-Item (Join-Path $repo "LICENSE") (Join-Path $payload "LICENSE.txt")
 # + jarvis-start.cmd (visible, for manual/debug use).
 Copy-Item (Join-Path $win "scripts\jarvis-launch.vbs") $payload
 Copy-Item (Join-Path $win "scripts\jarvis-start.cmd") $payload
+# cindro-web.cmd — serves the web dashboard (payload\web) via payload\bun\bun.exe.
+# Also becomes a PATH-exposed `cindro-web` command (installer adds {app} to PATH).
+Copy-Item (Join-Path $win "scripts\cindro-web.cmd") $payload
 # The Chrome/Edge extension (unpacked) — staged so the in-app guide can point
 # Chrome at {app}\extension (chrome://extensions -> Developer mode -> Load unpacked).
 Copy-Item -Recurse (Join-Path $repo "extension") (Join-Path $payload "extension")

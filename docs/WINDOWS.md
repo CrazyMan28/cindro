@@ -30,6 +30,8 @@ platform guards; it never changes how Linux/Android build or run.
 | 2FA / biometric cross-device unlock + local PIN | ✅ | ✅ | Desktop side portable; the biometric approver stays the phone. |
 | Chrome extension (side-panel + in-page agent) | ✅ | ✅ | Loads in Chrome/Edge on Windows unchanged. |
 | First-launch setup wizard (name, voice, key) | ✅ | ✅ | Shared flow; see the installer. |
+| **Terminal UI** (`cindro-tui.exe`) — the full-screen terminal agent | ✅ | ✅ | The TS/OpenTUI TUI v2, cross-compiled to `cindro-tui.exe` and shipped inside the **same** installer. Start-menu **"Cindro Terminal (TUI)"**, or run `cindro-tui` from any terminal (it's on PATH). |
+| **Web dashboard** — every GUI page in the browser | ✅ | ✅ | The SolidJS console (`web/`) built to static files and served by a **bundled portable `bun` runtime** on `http://127.0.0.1:8788`. Start-menu **"Cindro Web Dashboard"**, or run `cindro-web` (on PATH). Talks straight to the loopback control WS — nothing to install. |
 
 **Honest limits (no Win32 equivalent):** the KWin multi-seat cursor and the Wayland
 layer-shell dock are Linux-only outright. The nested agent desktop now *does* have a
@@ -56,17 +58,32 @@ selected by `platform.system()`); the model-facing MCP tool schema is **byte-ide
 
 ## Install (end users) — assumes a BARE machine, bundles everything
 
-**You need nothing pre-installed** — no Python, no Node.js, no Qt, no Visual C++ runtime.
-`Cindro-Setup.exe` ships them all (the Qt runtime + MSVC runtime via `windeployqt
---compiler-runtime`, the computer-use engine frozen with PyInstaller incl. its own Python, and
-a portable Node runtime under `node\`). Just:
+**You need nothing pre-installed** — no Python, no Node.js, no Qt, no Visual C++ runtime,
+no bun. **One** `Cindro-Setup.exe` (the single artifact the release Action attaches) ships
+them all: the Qt runtime + MSVC runtime via `windeployqt --compiler-runtime`, the
+computer-use engine frozen with PyInstaller (incl. its own Python), a portable Node runtime
+under `node\`, the **terminal UI** (`cindro-tui.exe`), and the **web dashboard** (`web\`)
+with a portable **bun** runtime under `bun\` to serve it. Just:
 
 1. Download **`Cindro-Setup-x.y.z.exe`** from the Releases page.
 2. Run it. (Unsigned for now → Windows SmartScreen shows "More info → Run anyway"; a signing
-   cert is a future item.) It installs to `%ProgramFiles%\Jarvis`, adds a Start-menu entry,
-   and offers autostart.
+   cert is a future item.) It installs to `%ProgramFiles%\Jarvis`, adds Start-menu entries,
+   adds the install dir to your PATH, and offers autostart.
 3. Launch **Cindro** from the Start menu. The first-launch **setup wizard** asks your
    assistant's name, a voice, and (if you have no Codex/Claude CLI) a Mistral API key.
+
+### The three front-ends, all in the one installer
+
+The installer creates three Start-menu entries — the desktop **GUI** (default), **Cindro
+Terminal (TUI)**, and **Cindro Web Dashboard** — and puts the install dir on your PATH, so
+from any terminal (cmd, PowerShell, git-bash, WSL) you can also run:
+
+- `cindro-tui` — the full-screen terminal agent (`cindro-tui.exe`).
+- `cindro-web` — build-free launcher that serves the dashboard on
+  `http://127.0.0.1:8788` via the bundled bun and opens your browser (close the window to
+  stop it; override the port with `%JARVIS_WEB_PORT%`). It prints the control token to paste
+  into the dashboard's Setup screen — or pair with a code from the desktop app's *Settings →
+  Browser Extension*.
 
 Config lives in `%APPDATA%\Jarvis`. See [`MISTRAL_SETUP.md`](MISTRAL_SETUP.md).
 
@@ -110,7 +127,10 @@ desktop is Linux-only, so on Windows computer-use drives the real screen; and th
 ## Build from source (Windows)
 
 Prereqs: **Visual Studio 2022** (or MinGW-w64), **CMake 3.24+**, **vcpkg** (for
-libsodium/libqrencode), **Qt 6.5+** (MSVC), **Python 3.12**, **Node 18+**.
+libsodium/libqrencode), **Qt 6.5+** (MSVC), **Python 3.12**, **Node 18+**, and **bun**
+(builds `cindro-tui.exe` + the web dashboard). If bun is missing, `build.ps1` self-heals it
+(downloads the portable `bun-windows-x64.zip`), the same way it self-heals Qt and Go — so a
+runner without bun still produces the full installer rather than dropping the TUI/web.
 
 ```powershell
 # from the repo root
