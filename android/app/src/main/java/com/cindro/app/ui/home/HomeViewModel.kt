@@ -24,6 +24,11 @@ data class HomeUiState(
     val sessions: List<Session> = emptyList(),
     val latestCanvas: CanvasItem? = null,
     val creating: Boolean = false,
+    /** "/" command palette catalog for the blank composer — same shape/lazy-load
+     *  pattern as ChatViewModel's, since this screen is now the default place to
+     *  start a chat and needs the same agent/skill picker. */
+    val slashAgents: List<com.cindro.app.protocol.Agent> = emptyList(),
+    val slashSkills: List<com.cindro.app.protocol.Skill> = emptyList(),
 )
 
 /** Backs the Home dashboard: recent sessions + the most recent live canvas + connection. */
@@ -93,6 +98,21 @@ class HomeViewModel(
             runCatching { withContext(Dispatchers.IO) { repo.createSession(profile, brain, null) } }
                 .onSuccess { id -> _uiState.update { it.copy(creating = false) }; refresh(); onCreated(id) }
                 .onFailure { _uiState.update { it.copy(creating = false) }; onError?.invoke() }
+        }
+    }
+
+    /** Lazily load the "/" palette catalog (agents + skills) the first time the
+     *  user opens it, so the dropdown has live data to filter — mirrors
+     *  ChatViewModel.loadSlashCatalog() exactly. */
+    fun loadSlashCatalog() {
+        if (_uiState.value.slashAgents.isNotEmpty() || _uiState.value.slashSkills.isNotEmpty()) return
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.listAgents() } }
+                .onSuccess { a -> _uiState.update { it.copy(slashAgents = a) } }
+        }
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { repo.listSkills() } }
+                .onSuccess { s -> _uiState.update { it.copy(slashSkills = s) } }
         }
     }
 

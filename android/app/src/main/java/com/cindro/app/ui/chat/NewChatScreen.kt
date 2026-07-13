@@ -219,13 +219,19 @@ fun NewChatScreen(
 
             InputRow(
                 draft = draft,
-                onDraftChange = { draft = it },
+                onDraftChange = {
+                    draft = it
+                    // Lazily fetch agents+skills the moment a "/" menu opens —
+                    // this screen is the default landing place to start a chat
+                    // now, so it needs the same catalog load ChatScreen does.
+                    if (it.startsWith("/") && !it.contains(" ")) viewModel.loadSlashCatalog()
+                },
                 sending = state.creating,
                 busy = false,
                 hasAttachment = pending.isNotEmpty(),
                 voicePhase = VoiceController.Phase.IDLE,
-                slashAgents = emptyList(),
-                slashSkills = emptyList(),
+                slashAgents = state.slashAgents,
+                slashSkills = state.slashSkills,
                 onSlashPick = { draft = it },
                 onAttach = { pickImage.launch("image/*") },
                 onPasteImage = {
