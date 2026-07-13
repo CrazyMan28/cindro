@@ -331,6 +331,11 @@ private:
     Response handlePhonePolicySet(const Request &req);
     Response handlePhonePolicyReset(const Request &req);
     Response handlePhonePolicyTest(const Request &req);
+    // Push the phone server's screening config to match an answer_calls value
+    // (screen_unknown->enable, allowed_only->disable). Best-effort, short-timeout;
+    // called by BOTH phone.policy.set and reset so a reset can't leave the phone
+    // server in the pre-reset screening state while the UI shows the default.
+    void applyAnswerCallsScreening(const QString &value);
     // phone.twilio_verify_* — Twilio Verified Caller ID automation via the Twilio
     // REST API (2010-04-01 OutgoingCallerIds). Control/loopback channel ONLY (it
     // reads the Twilio auth token from phone.env). verify_start ALSO adds the

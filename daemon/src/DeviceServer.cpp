@@ -450,6 +450,9 @@ QString DeviceServer::tierFor(const QString &method)
         // Trust-policy reads/previews (jarvis#71).
         method == QStringLiteral("policy.list") ||
         method == QStringLiteral("policy.test") ||
+        // Phone Permissions reads/previews (mutations are biometric, below).
+        method == QStringLiteral("phone.policy.list") ||
+        method == QStringLiteral("phone.policy.test") ||
         // Full config surface — reads are read tier.
         method == QStringLiteral("settings.get") ||
         method == QStringLiteral("model.list") ||
@@ -521,6 +524,11 @@ QString DeviceServer::tierFor(const QString &method)
         method == QStringLiteral("policy.update") ||
         method == QStringLiteral("policy.remove") ||
         method == QStringLiteral("policy.set_default") ||
+        // Editing the PHONE permission guardrails is equally security-sensitive:
+        // flipping Deny/Ask -> Allow before invoking a high-risk phone action
+        // must require a fresh BiometricPrompt on the phone, same as policy.*.
+        method == QStringLiteral("phone.policy.set") ||
+        method == QStringLiteral("phone.policy.reset") ||
         method == QStringLiteral("take_over.request") ||
         // Wave 8: a scheduled job runs unattended — biometric-tier on the phone.
         // schedule.update is equivalent risk to schedule.create (it can rewrite
@@ -607,6 +615,10 @@ QJsonObject DeviceServer::capabilityMap()
         QStringLiteral("policy.list"),     QStringLiteral("policy.add"),
         QStringLiteral("policy.update"),   QStringLiteral("policy.remove"),
         QStringLiteral("policy.set_default"), QStringLiteral("policy.test"),
+        // Phone Permissions (Phone -> Permissions on the phone). set/reset are
+        // biometric-tier per tierFor(); list/test are read tier.
+        QStringLiteral("phone.policy.list"),  QStringLiteral("phone.policy.set"),
+        QStringLiteral("phone.policy.reset"), QStringLiteral("phone.policy.test"),
         QStringLiteral("file.push"),       QStringLiteral("file.get"),
         // Live-widget viewer leases + home-screen widget pin/unpin.
         QStringLiteral("widget.viewing"),  QStringLiteral("widget.pin"),

@@ -23,20 +23,26 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.cindro.app.ui.theme.GlowCard
 import com.cindro.app.ui.theme.JarvisPalette
+import com.cindro.app.ui.util.Biometric
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PhonePermissionsScreen(
     viewModel: PhonePermissionsViewModel,
+    activity: FragmentActivity,
     onOpenDrawer: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val scope = rememberCoroutineScope()
 
     Scaffold(
         containerColor = JarvisPalette.Background,
@@ -79,7 +85,21 @@ fun PhonePermissionsScreen(
             state.status?.let {
                 Text(it, color = JarvisPalette.Accent, style = MaterialTheme.typography.bodySmall)
             }
-            TextButton(onClick = viewModel::resetAll) { Text("Reset to defaults") }
+            TextButton(onClick = {
+                scope.launch {
+                    // Editing phone guardrails is biometric-tier (mirrors policy.*
+                    // + DeviceServer::tierFor): require a fresh BiometricPrompt so
+                    // an already-unlocked app can't weaken permissions silently.
+                    if (Biometric.authenticate(
+                            activity,
+                            title = "Reset phone permissions",
+                            subtitle = "Restore the defaults",
+                        )
+                    ) {
+                        viewModel.resetAll()
+                    }
+                }
+            }) { Text("Reset to defaults") }
 
             state.capabilities.forEach { cap ->
                 GlowCard(modifier = Modifier.fillMaxWidth()) {
@@ -108,7 +128,21 @@ fun PhonePermissionsScreen(
                             cap.choices.forEach { choice ->
                                 FilterChip(
                                     selected = cap.value == choice,
-                                    onClick = { if (cap.value != choice) viewModel.setValue(cap.id, choice) },
+                                    onClick = {
+                                        if (cap.value != choice) {
+                                            scope.launch {
+                                                // Biometric-gate the guardrail change (see reset above).
+                                                if (Biometric.authenticate(
+                                                        activity,
+                                                        title = "Change phone permission",
+                                                        subtitle = "${cap.label}: ${cap.labelFor(choice)}",
+                                                    )
+                                                ) {
+                                                    viewModel.setValue(cap.id, choice)
+                                                }
+                                            }
+                                        }
+                                    },
                                     label = { Text(cap.labelFor(choice)) },
                                 )
                             }

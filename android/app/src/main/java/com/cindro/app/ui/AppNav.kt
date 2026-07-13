@@ -438,7 +438,7 @@ fun AppNav(
                     // permissions live here as their own drawer destination.
                     val vm: PhonePermissionsViewModel =
                         viewModel(factory = PhonePermissionsViewModel.factory(app))
-                    PhonePermissionsScreen(viewModel = vm, onOpenDrawer = ::openDrawer)
+                    PhonePermissionsScreen(viewModel = vm, activity = activity, onOpenDrawer = ::openDrawer)
                 }
             }
             composable(Routes.SETTINGS) {

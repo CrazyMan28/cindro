@@ -1936,34 +1936,38 @@ Response ControlServer::handlePhonePolicySet(const Request &req)
                                  m_phonePolicies.lastError());
     m_audit.record(QStringLiteral("phone.policy.set"), true, QStringLiteral("high"),
                    QStringLiteral("set %1=%2").arg(id, value), QString());
-    // answer_calls is HARD-enforced by driving the phone server's OWN screening
-    // config (the daemon can't edit the vendored server, but it CAN flip its
-    // runtime settings via the proxy): 'screen_unknown' => screening ON (unknown
-    // callers screened, allow-listed answered directly); 'allowed_only' =>
-    // screening OFF (unknown callers rejected; only the allowlist connects).
-    // Best-effort through phone.mcp (twilio_screening_* is ungated, never denied).
-    if (id == QStringLiteral("answer_calls")) {
-        const QString tool = (value == QStringLiteral("screen_unknown"))
-            ? QStringLiteral("twilio_screening_enable")
-            : QStringLiteral("twilio_screening_disable");
-        Request p;
-        p.id = 0;
-        p.method = QStringLiteral("phone.mcp");
-        QJsonObject pp;
-        pp.insert(QStringLiteral("name"), tool);
-        pp.insert(QStringLiteral("arguments"), QJsonObject());
-        p.params = pp;
-        // 20s cap (not the 5-min *_and_wait default). handlePhoneMcp returns
-        // ok=true even for an MCP-LEVEL error (it tucks it into result["error"]),
-        // so a screening push that reaches the server but fails there is only
-        // caught by checking that key too — otherwise the daemon would think the
-        // 'config'-enforced answer_calls change stuck when it silently didn't.
-        const Response hr = handlePhoneMcp(p, 20000);
-        if (!hr.ok || hr.result.contains(QStringLiteral("error")))
-            qWarning("jarvisd: phone.policy answer_calls could not update screening (%s)",
-                     qUtf8Printable(tool));
-    }
+    if (id == QStringLiteral("answer_calls"))
+        applyAnswerCallsScreening(value);
     return Response::success(req.id, m_phonePolicies.toJson());
+}
+
+// answer_calls is HARD-enforced by driving the phone server's OWN screening
+// config (the daemon can't edit the vendored server, but it CAN flip its runtime
+// settings via the proxy): 'screen_unknown' => screening ON (unknown callers
+// screened, allow-listed answered directly); 'allowed_only' => screening OFF
+// (unknown callers rejected; only the allowlist connects). Best-effort through
+// phone.mcp (twilio_screening_* is ungated, never denied).
+void ControlServer::applyAnswerCallsScreening(const QString &value)
+{
+    const QString tool = (value == QStringLiteral("screen_unknown"))
+        ? QStringLiteral("twilio_screening_enable")
+        : QStringLiteral("twilio_screening_disable");
+    Request p;
+    p.id = 0;
+    p.method = QStringLiteral("phone.mcp");
+    QJsonObject pp;
+    pp.insert(QStringLiteral("name"), tool);
+    pp.insert(QStringLiteral("arguments"), QJsonObject());
+    p.params = pp;
+    // 20s cap (not the 5-min *_and_wait default). handlePhoneMcp returns ok=true
+    // even for an MCP-LEVEL error (it tucks it into result["error"]), so a
+    // screening push that reaches the server but fails there is only caught by
+    // checking that key too — otherwise the daemon would think the
+    // 'config'-enforced answer_calls change stuck when it silently didn't.
+    const Response hr = handlePhoneMcp(p, 20000);
+    if (!hr.ok || hr.result.contains(QStringLiteral("error")))
+        qWarning("jarvisd: phone.policy answer_calls could not update screening (%s)",
+                 qUtf8Printable(tool));
 }
 
 Response ControlServer::handlePhonePolicyReset(const Request &req)
@@ -1974,6 +1978,10 @@ Response ControlServer::handlePhonePolicyReset(const Request &req)
                                  m_phonePolicies.lastError());
     m_audit.record(QStringLiteral("phone.policy.reset"), true, QStringLiteral("high"),
                    QStringLiteral("reset phone permissions to defaults"), QString());
+    // Reset flips answer_calls back to its default — reapply the screening config
+    // (like set does) so the phone server can't stay in the pre-reset screening
+    // state while the UI shows the reset default.
+    applyAnswerCallsScreening(m_phonePolicies.value(QStringLiteral("answer_calls")));
     return Response::success(req.id, m_phonePolicies.toJson());
 }
 
@@ -2095,6 +2103,11 @@ Response ControlServer::handleTwilioVerifyStart(const Request &req)
     const QString code = tw.value(QStringLiteral("validation_code")).toString();
     const QString callSid = tw.value(QStringLiteral("call_sid")).toString();
     // Also add it to the app allowlist so Cindro will call/text it once verified.
+    // Capture the result: if the phone server is down or rejects it, report
+    // allowlisted:false (and say so in the note) rather than claiming it was
+    // allow-listed when it wasn't — otherwise later calls/SMS to that number
+    // would still fail the phone server's allowlist check with no explanation.
+    bool allowlisted = false;
     {
         Request p;
         p.id = 0;
@@ -2107,19 +2120,22 @@ Response ControlServer::handleTwilioVerifyStart(const Request &req)
         pp.insert(QStringLiteral("name"), QStringLiteral("twilio_allowlist_add"));
         pp.insert(QStringLiteral("arguments"), args);
         p.params = pp;
-        handlePhoneMcp(p, 20000); // best-effort; verification is the primary result
+        const Response ar = handlePhoneMcp(p, 20000); // best-effort; verify is primary
+        allowlisted = ar.ok && !ar.result.contains(QStringLiteral("error"));
     }
     m_audit.record(QStringLiteral("phone.twilio_verify_start"), true, QStringLiteral("high"),
                    QStringLiteral("started verified-caller-id for ") + number, QString());
+    QString note = QStringLiteral("Twilio is calling ") + number
+                 + QStringLiteral("; enter this code when prompted: ") + code;
+    if (!allowlisted)
+        note += QStringLiteral(" (couldn't add it to the allowlist — is the phone server running?)");
     QJsonObject r;
     r.insert(QStringLiteral("ok"), true);
     r.insert(QStringLiteral("phone_number"), number);
     r.insert(QStringLiteral("validation_code"), code);
     r.insert(QStringLiteral("call_sid"), callSid);
-    r.insert(QStringLiteral("allowlisted"), true);
-    r.insert(QStringLiteral("note"),
-             QStringLiteral("Twilio is calling ") + number
-                 + QStringLiteral("; enter this code when prompted: ") + code);
+    r.insert(QStringLiteral("allowlisted"), allowlisted);
+    r.insert(QStringLiteral("note"), note);
     return Response::success(req.id, r);
 }
 
