@@ -122,6 +122,42 @@ if [ -d "${REPO_ROOT}/cli" ]; then
   fi
 fi
 
+# --- 6e. Ensure ~/.local/bin is on PATH (bash / zsh / PowerShell) ------------
+# The symlinks above (cindro, cindro-sidebar, outpost-mcp) live in ${BIN_DIR}
+# (~/.local/bin). Many distros already put that on PATH via ~/.profile, but not
+# all — and zsh and PowerShell (pwsh) don't read ~/.profile at all. So `cindro`
+# would be installed yet "command not found" in those shells. Idempotently add
+# ~/.local/bin to each installed shell's rc, guarded so re-running install.sh
+# never duplicates the line. (The Windows installer does the equivalent by
+# adding {app} to the user PATH — see windows/installer/jarvis.iss.)
+add_local_bin_to_path() {
+  # $1 = rc file, $2 = line to append if the file doesn't already reference the dir
+  [ -n "$1" ] || return 0
+  mkdir -p "$(dirname "$1")" 2>/dev/null || true
+  # Match an actual PATH *assignment* that references the dir (our own line, or
+  # the distro's / user's) — not a bare mention of ".local/bin" in a comment or
+  # unrelated text, which a plain substring grep would false-match and then skip
+  # the real update. Tolerates `PATH=`, `PATH =`, and pwsh's `$env:PATH = `.
+  if [ -f "$1" ] && grep -qE 'PATH[[:space:]]*=.*\.local/bin' "$1" 2>/dev/null; then
+    return 0   # already puts ~/.local/bin on PATH — leave it alone
+  fi
+  {
+    printf '\n# Added by Cindro install.sh — put ~/.local/bin on PATH\n'
+    printf '%s\n' "$2"
+  } >> "$1" && log "PATH: added ~/.local/bin to $(basename "$1")"
+}
+POSIX_PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'   # bash + zsh share this
+if command -v bash >/dev/null 2>&1 || [ -f "${HOME}/.bashrc" ]; then
+  add_local_bin_to_path "${HOME}/.bashrc" "${POSIX_PATH_LINE}"
+fi
+if command -v zsh >/dev/null 2>&1 || [ -f "${HOME}/.zshrc" ]; then
+  add_local_bin_to_path "${HOME}/.zshrc" "${POSIX_PATH_LINE}"
+fi
+if command -v pwsh >/dev/null 2>&1; then
+  add_local_bin_to_path "${HOME}/.config/powershell/Microsoft.PowerShell_profile.ps1" \
+    '$env:PATH = "$HOME/.local/bin:$env:PATH"'
+fi
+
 # --- 6.5 outpost-agent binaries ---------------------------------------------
 # The compiled outpost-agent binaries (outpost-mcp/agent-bin/) are gitignored, so
 # a from-source install has none and every outpost pairing 404s. Pre-build them

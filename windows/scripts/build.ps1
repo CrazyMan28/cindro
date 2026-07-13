@@ -143,22 +143,160 @@ if (-not $sidebarExe) { throw "cindro-sidebar.exe not found under $build" }
 Copy-Item $jarvisdExe $payload
 Copy-Item $sidebarExe $payload
 
-# cindro-tui.exe — the TypeScript/OpenTUI terminal UI v2, compiled here on
-# Windows (bun install pulls @opentui/core-win32-x64, which can't extract on
-# Linux). Non-fatal if bun is absent so the GUI-only installer still builds.
+# --- Bun-built UI surfaces: TUI v2 + web dashboard ----------------------------
+# BOTH the TypeScript/OpenTUI terminal UI (cindro-tui.exe) and the SolidJS web
+# dashboard (web/) are built with bun. bun is NOT part of the runner's verified
+# toolchain (setup-runner-buildtools.ps1 / windows-build.yml preflight), so —
+# exactly like the Qt and Go self-heals above — fetch a portable bun.exe when
+# it's absent, so these two surfaces ALWAYS ship instead of silently dropping
+# out of the ONE installer. The same bun.exe is also bundled into the payload so
+# the web server runs on a BARE machine (web/server.ts is a Bun.serve script;
+# no Node/bun install required — the same "bundle a portable runtime" model the
+# Node phone server already uses).
+# Returns a REAL, self-contained, SHA-verified portable bun.exe (cached at
+# C:\bun-portable). This is what gets SHIPPED into the payload — NEVER the runner's
+# PATH bun, which may be a Scoop/Chocolatey SHIM that works on the runner but has no
+# companion target on a bare user machine (the web server would then fail to start).
+# Idempotent; returns $null on failure (caller decides fatality).
+function Install-PortableBun($buildDir) {
+  $bunRoot = "C:\bun-portable"
+  $bunExe  = Join-Path $bunRoot "bun.exe"
+  if (Test-Path $bunExe) { return $bunExe }
+  try {
+    # Supply-chain integrity: resolve 'latest' to a concrete, LOGGED release tag
+    # (so the download is auditable, not a silently-moving target) and verify the
+    # zip against that release's published SHASUMS256.txt BEFORE trusting/running
+    # bun.exe. A mismatch throws -> $null -> the TUI/web are dropped rather than
+    # built/shipped with an unverified toolchain.
+    $bunZip  = Join-Path $buildDir "bun-windows-x64.zip"
+    $bunSums = Join-Path $buildDir "bun-SHASUMS256.txt"
+    $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/oven-sh/bun/releases/latest" `
+             -Headers @{ 'User-Agent' = 'cindro-build' }
+    $tag = $rel.tag_name
+    if (-not $tag) { throw "could not resolve the latest bun release tag" }
+    Write-Host "    bun release: $tag" -ForegroundColor Cyan
+    $dl = "https://github.com/oven-sh/bun/releases/download/$tag"
+    Invoke-WebRequest "$dl/bun-windows-x64.zip" -OutFile $bunZip
+    Invoke-WebRequest "$dl/SHASUMS256.txt"       -OutFile $bunSums
+    $line = Get-Content $bunSums | Where-Object { $_ -match 'bun-windows-x64\.zip\s*$' } | Select-Object -First 1
+    if (-not $line) { throw "bun-windows-x64.zip not listed in SHASUMS256.txt for $tag" }
+    $expected = (($line -split '\s+')[0]).ToLower()
+    $actual   = (Get-FileHash $bunZip -Algorithm SHA256).Hash.ToLower()
+    if ($expected -ne $actual) { throw "bun SHA256 mismatch for $tag (expected $expected, got $actual)" }
+    Write-Host "    bun-windows-x64.zip SHA256 verified" -ForegroundColor Green
+    Expand-Archive -Force $bunZip (Join-Path $buildDir "bun-extract")
+    $found = Get-ChildItem -Path (Join-Path $buildDir "bun-extract") -Recurse -Filter "bun.exe" | Select-Object -First 1
+    if (-not $found) { throw "bun.exe not found inside bun-windows-x64.zip" }
+    New-Item -ItemType Directory -Force -Path $bunRoot | Out-Null
+    Copy-Item $found.FullName $bunExe -Force
+    return $bunExe
+  } catch {
+    Write-Warning "portable bun install failed ($_)."
+    return $null
+  }
+}
+
+# bun for BUILDING (running `bun install` / `bun run build`). A PATH bun is fine
+# here even if it's a shim — it works on THIS runner — so prefer it to avoid a
+# download; else self-heal with the verified portable runtime (added to PATH so
+# subsequent `bun` calls resolve). NB: what ships is always Install-PortableBun's
+# output, never this — see the web staging block.
+function Resolve-BunExe($buildDir) {
+  $cmd = Get-Command bun -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
+  $userBun = Join-Path $env:USERPROFILE ".bun\bin\bun.exe"
+  if (Test-Path $userBun) { return $userBun }
+  Write-Host "==> bun not found on this runner — installing portable bun (self-heal)…" -ForegroundColor Yellow
+  $portable = Install-PortableBun $buildDir
+  if ($portable) {
+    $bunRoot = Split-Path $portable -Parent
+    $env:Path = "$bunRoot;$env:Path"
+    # Persist so the runner's future runs (+ the preflight) see bun too.
+    try {
+      $machPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+      if ($machPath -and ($machPath -notlike "*$bunRoot*")) {
+        [Environment]::SetEnvironmentVariable("Path", "$machPath;$bunRoot", "Machine")
+      }
+    } catch { Write-Host "WARN: could not persist bun machine PATH: $_" -ForegroundColor Yellow }
+  } else {
+    Write-Warning "bun self-heal failed — TUI v2 + web dashboard will be absent from this installer."
+  }
+  return $portable
+}
+$bunExe = Resolve-BunExe $build
+if ($bunExe) { Write-Host "==> bun: $bunExe" -ForegroundColor Cyan }
+
+# 2a. cindro-tui.exe — TS/OpenTUI terminal UI v2, cross-compiled here on Windows
+# (bun install pulls @opentui/core-win32-x64, which can't extract on Linux).
+# Non-fatal (warn + skip) so a bun-less runner still ships the GUI-only installer.
 $tuiDir = Join-Path $repo "tui"
-if (Get-Command bun -ErrorAction SilentlyContinue) {
+if ($bunExe) {
   Write-Host "Building cindro-tui.exe (TS TUI v2)…"
   Push-Location $tuiDir
   try {
-    bun install --frozen-lockfile
-    bun run build win
+    & $bunExe install --frozen-lockfile
+    if ($LASTEXITCODE -ne 0) { throw "bun install (tui) exited $LASTEXITCODE" }
     $tuiExe = Join-Path $tuiDir "dist\cindro-tui.exe"
+    # Remove any stale exe first so a FAILED compile can't leave an old binary
+    # for the Test-Path check below to stage (masking the failure).
+    if (Test-Path $tuiExe) { Remove-Item -Force $tuiExe }
+    & $bunExe run build win
+    if ($LASTEXITCODE -ne 0) { throw "bun run build win exited $LASTEXITCODE" }
     if (Test-Path $tuiExe) { Copy-Item $tuiExe $payload; Write-Host "  staged cindro-tui.exe" }
     else { Write-Warning "cindro-tui.exe not produced — TUI v2 will be absent from this installer" }
+  } catch {
+    Write-Warning "cindro-tui.exe build failed ($_) — TUI v2 absent from this installer."
   } finally { Pop-Location }
 } else {
-  Write-Warning "bun not found — cindro-tui.exe (TUI v2) NOT bundled. Install bun on the runner."
+  Write-Warning "bun unavailable — cindro-tui.exe (TUI v2) NOT bundled."
+}
+
+# 2b. web dashboard — the SolidJS console (web/), built to static files and
+# served on a bare machine by the bundled bun runtime. Staged as:
+#   {app}\web\dist\      the vite build output (the static SPA)
+#   {app}\web\server.ts  the Bun.serve static server (prints the control token)
+#   {app}\bun\bun.exe    the portable bun runtime cindro-web.cmd runs server.ts with
+# So the ONE installer ships the GUI, the TUI, AND the web dashboard — no second
+# artifact, no runtime prerequisites. Non-fatal like the TUI above.
+$webSrc = Join-Path $repo "web"
+if ($bunExe) {
+  Write-Host "Building web dashboard (SolidJS)…"
+  Push-Location $webSrc
+  try {
+    & $bunExe install --frozen-lockfile
+    if ($LASTEXITCODE -ne 0) { throw "bun install (web) exited $LASTEXITCODE" }
+    $webDist = Join-Path $webSrc "dist"
+    # Remove any stale dist first so a FAILED `bun run build` can't leave an old
+    # dashboard for the index.html check below to stage (masking the failure).
+    if (Test-Path $webDist) { Remove-Item -Recurse -Force $webDist }
+    & $bunExe run build
+    if ($LASTEXITCODE -ne 0) { throw "bun run build (web) exited $LASTEXITCODE" }
+    if (Test-Path (Join-Path $webDist "index.html")) {
+      $webDst = Join-Path $payload "web"
+      New-Item -ItemType Directory -Force -Path $webDst | Out-Null
+      Copy-Item -Recurse $webDist (Join-Path $webDst "dist")
+      Copy-Item (Join-Path $webSrc "server.ts")   $webDst
+      Copy-Item (Join-Path $webSrc "package.json") $webDst
+      # Ship the VERIFIED PORTABLE bun runtime next to the web app so cindro-web.cmd
+      # serves it on a machine with nothing installed (server.ts is Bun-native).
+      # Deliberately NOT $bunExe: the build bun may be a Scoop/Choco shim on the
+      # runner's PATH that has no target off the runner — copying that would ship a
+      # broken runtime. Install-PortableBun is cached, so this is instant if the
+      # self-heal already ran.
+      $portableBun = Install-PortableBun $build
+      if (-not $portableBun) { throw "no portable bun runtime available to stage for the web dashboard" }
+      $bunDst = Join-Path $payload "bun"
+      New-Item -ItemType Directory -Force -Path $bunDst | Out-Null
+      Copy-Item $portableBun (Join-Path $bunDst "bun.exe") -Force
+      Write-Host "  staged web dashboard + portable bun runtime"
+    } else {
+      Write-Warning "web/dist not produced — web dashboard will be absent from this installer"
+    }
+  } catch {
+    Write-Warning "web dashboard build failed ($_) — web dashboard absent from this installer."
+  } finally { Pop-Location }
+} else {
+  Write-Warning "bun unavailable — web dashboard NOT bundled."
 }
 
 Copy-Item (Join-Path $repo "LICENSE") (Join-Path $payload "LICENSE.txt")
@@ -166,6 +304,11 @@ Copy-Item (Join-Path $repo "LICENSE") (Join-Path $payload "LICENSE.txt")
 # + jarvis-start.cmd (visible, for manual/debug use).
 Copy-Item (Join-Path $win "scripts\jarvis-launch.vbs") $payload
 Copy-Item (Join-Path $win "scripts\jarvis-start.cmd") $payload
+# cindro-web.cmd — serves the web dashboard (payload\web) via payload\bun\bun.exe.
+# cindro-tui.cmd — brings the daemon/engine up (if needed) then runs the TUI.
+# Both also become PATH-exposed commands (the installer adds {app} to PATH).
+Copy-Item (Join-Path $win "scripts\cindro-web.cmd") $payload
+Copy-Item (Join-Path $win "scripts\cindro-tui.cmd") $payload
 # The Chrome/Edge extension (unpacked) — staged so the in-app guide can point
 # Chrome at {app}\extension (chrome://extensions -> Developer mode -> Load unpacked).
 Copy-Item -Recurse (Join-Path $repo "extension") (Join-Path $payload "extension")

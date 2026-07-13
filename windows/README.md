@@ -18,7 +18,9 @@ windows/
   shell/         Native Windows Qt window controller (tray + global hotkey) that reuses
                  the existing ~60 desktop/qml/* pages (no LayerShellQt).
   installer/     Inno Setup script (jarvis.iss) -> Cindro-Setup-x.y.z.exe
-  scripts/       build.ps1 — one-shot: build daemon + shell, bundle engine + node, make .exe
+  scripts/       build.ps1 — one-shot: build daemon + shell, bundle engine + node + the
+                 terminal UI (cindro-tui.exe) + the web dashboard (web\ + a portable
+                 bun\bun.exe), make the .exe. cindro-web.cmd launches the dashboard.
   dist/          build output (gitignored)
 ```
 
@@ -51,7 +53,8 @@ windows/
 
 ## Build (Windows)
 
-Prereqs: Visual Studio 2022 (or MinGW-w64), CMake 3.24+, vcpkg, Qt 6.5+ (MSVC), Python 3.12, Node 18+.
+Prereqs: Visual Studio 2022 (or MinGW-w64), CMake 3.24+, vcpkg, Qt 6.5+ (MSVC), Python 3.12,
+Node 18+, and bun (for cindro-tui.exe + the web dashboard; build.ps1 self-heals it if absent).
 
 ```powershell
 # Self-contained: configure windows/, NOT the repo root.

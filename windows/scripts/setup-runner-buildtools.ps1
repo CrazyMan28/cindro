@@ -5,7 +5,8 @@
 #   - Ninja (CMake generator)
 #   - Node 20 (npm ci for the phone server)
 #   - Go (latest stable, cross-compiles outpost-agent for all 6 pairing targets)
-# and sets machine env: CMAKE_PREFIX_PATH + PATH (Qt\bin, ninja, node, go\bin).
+#   - bun (builds cindro-tui.exe AND the web/ SolidJS dashboard)
+# and sets machine env: CMAKE_PREFIX_PATH + PATH (Qt\bin, ninja, node, go\bin, bun).
 # VS Build Tools, git, vcpkg(+libs), Inno, pwsh are already provisioned.
 # Idempotent. Run: powershell -ExecutionPolicy Bypass -File setup-runner-buildtools.ps1
 $ProgressPreference = 'SilentlyContinue'
@@ -88,11 +89,47 @@ if (-not (Test-Path $goExe)) {
 }
 if (Test-Path $goExe) { Log ("Go OK: " + (& $goExe version)) } else { Log "GO INSTALL FAILED" }
 
+# ---- 4d. bun (builds cindro-tui.exe + the web/ SolidJS dashboard) ----------
+# build.ps1 also self-heals bun if it's missing, but pre-installing it here
+# avoids a ~90 MB per-run download and keeps the TUI + web dashboard in the
+# installer even on a cold cache. Portable zip from GitHub releases -> C:\bun.
+$bunDir = "C:\bun"
+$bunExe = "$bunDir\bun.exe"
+if (-not (Test-Path $bunExe)) {
+    # Resolve 'latest' to a concrete LOGGED tag and verify the zip against that
+    # release's SHASUMS256.txt before trusting bun.exe (same integrity gate as
+    # windows/scripts/build.ps1's self-heal). A mismatch/error leaves bun absent
+    # so the build's self-heal can retry rather than caching a bad binary.
+    try {
+        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/oven-sh/bun/releases/latest" -Headers @{ 'User-Agent' = 'cindro-runner' }
+        $tag = $rel.tag_name
+        if (-not $tag) { throw "could not resolve latest bun tag" }
+        Log "downloading bun $tag (portable)..."
+        $o = "$env:TEMP\bun-windows-x64.zip"
+        $sums = "$env:TEMP\bun-SHASUMS256.txt"
+        $dl = "https://github.com/oven-sh/bun/releases/download/$tag"
+        Invoke-WebRequest -Uri "$dl/bun-windows-x64.zip" -OutFile $o
+        Invoke-WebRequest -Uri "$dl/SHASUMS256.txt"       -OutFile $sums
+        $line = Get-Content $sums | Where-Object { $_ -match 'bun-windows-x64\.zip\s*$' } | Select-Object -First 1
+        if (-not $line) { throw "bun-windows-x64.zip not listed in SHASUMS256.txt for $tag" }
+        $expected = (($line -split '\s+')[0]).ToLower()
+        $actual   = (Get-FileHash $o -Algorithm SHA256).Hash.ToLower()
+        if ($expected -ne $actual) { throw "bun SHA256 mismatch for $tag (expected $expected, got $actual)" }
+        Expand-Archive -Force $o "$env:TEMP\bun-extract"
+        $found = Get-ChildItem -Path "$env:TEMP\bun-extract" -Recurse -Filter "bun.exe" | Select-Object -First 1
+        if ($found) {
+            New-Item -ItemType Directory -Force -Path $bunDir | Out-Null
+            Copy-Item $found.FullName $bunExe -Force
+        }
+    } catch { Log "bun install skipped ($_) — build.ps1 self-heal will retry" }
+}
+if (Test-Path $bunExe) { Log ("bun OK: " + (& $bunExe --version)) } else { Log "BUN INSTALL FAILED" }
+
 # ---- 5. machine env: CMAKE_PREFIX_PATH + PATH -----------------------------
 [Environment]::SetEnvironmentVariable("CMAKE_PREFIX_PATH", $qtDir, "Machine")
 [Environment]::SetEnvironmentVariable("Qt6_DIR", "$qtDir\lib\cmake\Qt6", "Machine")
 $machPath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-foreach ($d in @("$qtDir\bin", $ninjaDir, $nodeDir, "C:\Program Files\CMake\bin", "C:\Program Files\Python312", "C:\Program Files\Python312\Scripts", "$goDir\go\bin")) {
+foreach ($d in @("$qtDir\bin", $ninjaDir, $nodeDir, "C:\Program Files\CMake\bin", "C:\Program Files\Python312", "C:\Program Files\Python312\Scripts", "$goDir\go\bin", $bunDir)) {
     if ((Test-Path $d) -and ($machPath -notlike "*$d*")) { $machPath = "$machPath;$d"; Log "PATH += $d" }
 }
 [Environment]::SetEnvironmentVariable("Path", $machPath, "Machine")
