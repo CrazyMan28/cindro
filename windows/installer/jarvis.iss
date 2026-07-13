@@ -1,7 +1,12 @@
 ; Cindro — Windows installer (Inno Setup 6).
-; Produces windows\dist\Cindro-Setup-<version>.exe.
+; Produces windows\dist\Cindro-Setup-<version>.exe — ONE installer / ONE app
+; image that the windows-build GitHub Action attaches to the Release.
 ; Bundles: jarvisd.exe, cindro-sidebar.exe (Windows Qt shell), the PyInstaller
-; computer-use engine (one-folder), the Node phone server, and the Qt runtime.
+; computer-use engine (one-folder), the Node phone server, the Qt runtime,
+; cindro-tui.exe (the terminal UI), and the SolidJS web dashboard (web\ + a
+; portable bun\bun.exe that serves it via cindro-web.cmd). The installer also
+; adds {app} to the user PATH so `cindro-tui` / `cindro-web` are callable from
+; any terminal (cmd / PowerShell / git-bash / WSL).
 ; Build the payload first with windows\scripts\build.ps1, which stages everything
 ; into windows\dist\payload\ and then invokes ISCC on this script.
 
@@ -40,6 +45,9 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; Per-user install needs no admin (avoids the UAC + lets %APPDATA% config work cleanly).
 PrivilegesRequiredOverridesAllowed=dialog
 LicenseFile={#PayloadDir}\LICENSE.txt
+; We add {app} to the per-user PATH (see [Code]); this makes Inno broadcast
+; WM_SETTINGCHANGE so open shells pick the change up without a reboot.
+ChangesEnvironment=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -60,6 +68,9 @@ Name: "{group}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app
 ; Terminal UI v2 (cindro-tui.exe) — a console app, launched directly. Only
 ; created when the payload actually contains it (built on a bun-equipped runner).
 Name: "{group}\Cindro Terminal (TUI)"; Filename: "{app}\cindro-tui.exe"; IconFilename: "{app}\{#MyAppExeName}"; Check: FileExists(ExpandConstant('{app}\cindro-tui.exe'))
+; Web dashboard (SolidJS, served by the bundled bun runtime on :8788 via
+; cindro-web.cmd). Only created when the payload actually contains the web app.
+Name: "{group}\Cindro Web Dashboard"; Filename: "{app}\cindro-web.cmd"; IconFilename: "{app}\{#MyAppExeName}"; Check: FileExists(ExpandConstant('{app}\web\server.ts'))
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
@@ -76,3 +87,60 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [UninstallDelete]
 ; Leave %APPDATA%\Jarvis (user config/keys) in place on uninstall by default.
 Type: filesandordirs; Name: "{app}\engine\__pycache__"
+
+[Code]
+{ Add {app} to the per-user PATH so the bundled terminal surfaces —
+  cindro-tui.exe (the TUI) and cindro-web.cmd (the web dashboard) — are callable
+  by name from any shell that inherits the Windows environment: cmd, PowerShell,
+  git-bash, and WSL. Per-user (HKCU\Environment) matches the per-user install and
+  needs no admin. ChangesEnvironment=yes makes Inno broadcast WM_SETTINGCHANGE so
+  newly-opened shells see it without a reboot. Removed again on uninstall.
+  This is the canonical Inno "modify PATH" recipe (idempotent add + clean remove). }
+const
+  EnvironmentKey = 'Environment';
+
+procedure EnvAddPath(Path: string);
+var
+  Paths: string;
+begin
+  if not RegQueryStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
+    Paths := '';
+  { Skip if this exact directory is already present (case-insensitive). }
+  if Pos(';' + Uppercase(Path) + ';', ';' + Uppercase(Paths) + ';') > 0 then exit;
+  if Paths = '' then
+    Paths := Path
+  else
+    Paths := Paths + ';' + Path;
+  if RegWriteStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
+    Log(Format('Added [%s] to PATH', [Path]))
+  else
+    Log(Format('Error adding [%s] to PATH', [Path]));
+end;
+
+procedure EnvRemovePath(Path: string);
+var
+  Paths: string;
+  P: Integer;
+begin
+  if not RegQueryStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
+    exit;
+  P := Pos(';' + Uppercase(Path) + ';', ';' + Uppercase(Paths) + ';');
+  if P = 0 then exit;
+  Delete(Paths, P - 1, Length(Path) + 1);
+  if RegWriteStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
+    Log(Format('Removed [%s] from PATH', [Path]))
+  else
+    Log(Format('Error removing [%s] from PATH', [Path]));
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    EnvAddPath(ExpandConstant('{app}'));
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    EnvRemovePath(ExpandConstant('{app}'));
+end;
