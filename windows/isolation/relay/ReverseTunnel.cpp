@@ -1,8 +1,18 @@
 #include "ReverseTunnel.h"
 
+#include <QDebug>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTimer>
+
+// DIAG: both sides of the pairing logic below were completely silent (no
+// qDebug/qWarning anywhere in this file) until issue-104 debugging needed to
+// distinguish "the sandbox-side dial never reaches the host" from "it reaches the
+// host but pairing itself never completes" -- a raw TCP probe from bootstrap.ps1
+// proved the rendezvous port IS reachable, yet /health still timed out, so the
+// remaining fault has to be visible only from inside this pairing state machine.
+// Left in permanently (stderr-only, negligible cost) since this is genuinely
+// useful ongoing operability logging for a component that had none.
 
 namespace jarvis {
 
@@ -83,6 +93,8 @@ bool ReverseTunnel::start(quint16 publicPort, quint16 rendezvousPort)
     // Loopback only: the daemon (and engineBase()) reach the engine at
     // 127.0.0.1:<publicPort>. Never exposed off-box.
     if (!m_public->listen(QHostAddress::LocalHost, publicPort)) {
+        qWarning() << "ReverseTunnel: failed to bind public 127.0.0.1:" << publicPort
+                   << m_public->errorString();
         stop();
         return false;
     }
@@ -93,9 +105,13 @@ bool ReverseTunnel::start(quint16 publicPort, quint16 rendezvousPort)
     // AnyIPv4 so the in-sandbox dialer can reach it via the host gateway (the
     // sandbox sees the host on its NAT subnet, not on loopback).
     if (!m_rendezvous->listen(QHostAddress::AnyIPv4, rendezvousPort)) {
+        qWarning() << "ReverseTunnel: failed to bind rendezvous 0.0.0.0:" << rendezvousPort
+                   << m_rendezvous->errorString();
         stop();
         return false;
     }
+    qDebug() << "ReverseTunnel: listening public 127.0.0.1:" << publicPort
+             << "rendezvous 0.0.0.0:" << rendezvousPort;
     return true;
 }
 
@@ -133,6 +149,9 @@ void ReverseTunnel::onPublicConnection()
         QTcpSocket *client = m_public->nextPendingConnection();
         client->setParent(this);
         m_waitingClients.enqueue(client);
+        qDebug() << "ReverseTunnel: public client connected from"
+                 << client->peerAddress().toString() << "waitingClients="
+                 << m_waitingClients.size() << "idleTunnels=" << m_idleTunnels.size();
         // If no tunnel turns up in time, close the client rather than hang.
         QPointer<QTcpSocket> guard(client);
         QTimer::singleShot(m_pairTimeoutMs, this, [this, guard]() {
@@ -151,12 +170,15 @@ void ReverseTunnel::onRendezvousConnection()
     while (m_rendezvous && m_rendezvous->hasPendingConnections()) {
         QTcpSocket *tunnel = m_rendezvous->nextPendingConnection();
         tunnel->setParent(this);
+        qDebug() << "ReverseTunnel: rendezvous tunnel connected from"
+                 << tunnel->peerAddress().toString();
         // If an idle tunnel drops before it is paired, drop it from the pool.
         QPointer<QTcpSocket> guard(tunnel);
         connect(tunnel, &QTcpSocket::disconnected, this, [this, guard]() {
             if (guard && m_idleTunnels.contains(guard)) {
                 m_idleTunnels.removeOne(guard);
                 guard->deleteLater();
+                qDebug() << "ReverseTunnel: idle tunnel disconnected before pairing";
             }
         });
         m_idleTunnels.enqueue(tunnel);
@@ -191,6 +213,7 @@ void ReverseTunnel::tryPair()
         // Hand both sockets to a self-owning bridge; drop our disconnected hook
         // on the tunnel first so the bridge fully owns its lifetime.
         tunnel->disconnect(this);
+        qDebug() << "ReverseTunnel: paired client<->tunnel";
         new SocketBridge(client.data(), tunnel.data(), this);
     }
 }
@@ -221,9 +244,17 @@ void TunnelDialer::replenish()
         connect(tunnel, &QTcpSocket::readyRead, this,
                 [this, tunnel]() { onTunnelActivated(tunnel); });
         connect(tunnel, &QAbstractSocket::errorOccurred, this,
-                [this, tunnel]() { retireBeforeActivation(tunnel); });
+                [this, tunnel](QAbstractSocket::SocketError) {
+                    qWarning() << "TunnelDialer: tunnel connect/IO error:"
+                               << tunnel->errorString();
+                    retireBeforeActivation(tunnel);
+                });
         connect(tunnel, &QTcpSocket::disconnected, this,
                 [this, tunnel]() { retireBeforeActivation(tunnel); });
+        connect(tunnel, &QTcpSocket::connected, this, [this, tunnel]() {
+            qDebug() << "TunnelDialer: tunnel connected to"
+                     << tunnel->peerAddress().toString() << ":" << tunnel->peerPort();
+        });
 
         tunnel->connectToHost(m_host, m_rendezvousPort);
     }
@@ -238,6 +269,8 @@ void TunnelDialer::onTunnelActivated(QTcpSocket *tunnel)
     // Detach our own handlers so retireBeforeActivation / readyRead can't double-fire.
     tunnel->disconnect(this);
     --m_outstanding;
+    qDebug() << "TunnelDialer: tunnel activated (paired by host); dialing engine"
+             << m_engineHost.toString() << ":" << m_enginePort;
 
     auto *engine = new QTcpSocket(this);
     engine->connectToHost(m_engineHost, m_enginePort);

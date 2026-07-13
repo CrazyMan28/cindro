@@ -18,7 +18,14 @@
     @HOSTIP@      host gateway as seen from the box, or "auto" (bootstrap resolves
                   the default gateway).
     @SESSION@     owning coworker session id (diagnostics marker).
+
+  Everything above this line is stripped before the file is launched (Windows
+  Sandbox's config parser silently no-ops LogonCommand if anything precedes
+  <Configuration> -- see AgentDesktop.cpp::ensure()). The stripping searches for
+  the sentinel line below, not the literal text "<Configuration", specifically
+  so this docs prose can safely mention that string without confusing it.
 -->
+<!-- WSB-TEMPLATE-DOCS-END -->
 <Configuration>
   <MappedFolders>
     <MappedFolder>
@@ -29,6 +36,6 @@
   </MappedFolders>
   <Networking>Enable</Networking>
   <LogonCommand>
-    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\engine\bootstrap.ps1 -Port @PORT@ -Bearer @BEARER@ -Rendezvous @RENDEZVOUS@ -HostIp @HOSTIP@ -Session @SESSION@</Command>
+    <Command>cmd.exe /c powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\engine\bootstrap.ps1 -Port @PORT@ -Bearer @BEARER@ -Rendezvous @RENDEZVOUS@ -HostIp @HOSTIP@ -Session @SESSION@ &gt; C:\Users\WDAGUtilityAccount\jarvis-bootstrap-stdout.log 2&gt;&amp;1</Command>
   </LogonCommand>
 </Configuration>

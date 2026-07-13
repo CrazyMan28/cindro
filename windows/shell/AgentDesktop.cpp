@@ -51,14 +51,12 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonObject>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QNetworkRequest>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRandomGenerator>
 #include <QSet>
 #include <QStringList>
+#include <QTcpSocket>
 #include <QTimer>
 #include <QUrl>
 
@@ -172,6 +170,45 @@ QString isolationDir()
     const QString dev = QDir(QCoreApplication::applicationDirPath())
                             .absoluteFilePath(QStringLiteral("../windows/isolation"));
     return QDir(dev).absolutePath();
+}
+
+// XML-escapes a string for safe insertion into the rendered .wsb's element text
+// content. @BEARER@/@SESSION@/@ENGINEDIR@/@HOSTIP@ are opaque host-generated (or
+// operator env-var) strings, not attacker-controlled in the threat model, but
+// escaping them is cheap insurance against a stray '&'/'<' (e.g. a Windows path,
+// or an operator-set JARVIS_HOST_IP) corrupting the XML -- see the REPORT 3 fix in
+// ensure() for why a malformed rendered .wsb reproduces the exact "boots, no
+// LogonCommand, no error" symptom this issue is about.
+QString xmlEscape(const QString &s)
+{
+    // toHtmlEscaped() covers &/</>/" in one correct pass (no double-escape
+    // ordering hazard); only the apostrophe needs adding on top.
+    return s.toHtmlEscaped().replace(QLatin1Char('\''), QStringLiteral("&apos;"));
+}
+
+// Optional diagnostics MappedFolder, injected into the rendered .wsb ONLY when
+// JARVIS_SANDBOX_DIAG_DIR is set. REPORT 6: earlier tonight this was a MappedFolder
+// hand-patched directly into the payload's jarvis-agent.wsb.in with a hardcoded
+// personal host path (C:\Users\<user>\jarvis-sbx-diag) that diverged from source and
+// would have been silently wiped by the next build.ps1 run. Making it an explicit,
+// env-gated opt-in means: (a) a personal path never ships in the template, (b) the
+// mechanism survives rebuilds, (c) it's still one env var away for the next live
+// debugging session. Host dir is created on demand; mapped READ-WRITE to C:\hostlog
+// inside the box, which bootstrap.ps1 already self-detects (Test-Path "C:\hostlog")
+// and uses in place of %USERPROFILE% for its trace log + IMMEDIATE-MARKER.txt +
+// EXCEPTION.txt + engine/relay stdout -- see windows/isolation/sandbox/bootstrap.ps1.
+QString diagMappedFolderXml()
+{
+    const QString diagDir = qEnvironmentVariable("JARVIS_SANDBOX_DIAG_DIR");
+    if (diagDir.isEmpty())
+        return QString();
+    QDir().mkpath(diagDir);
+    return QStringLiteral("    <MappedFolder>\n"
+                           "      <HostFolder>%1</HostFolder>\n"
+                           "      <SandboxFolder>C:\\hostlog</SandboxFolder>\n"
+                           "      <ReadOnly>false</ReadOnly>\n"
+                           "    </MappedFolder>\n")
+        .arg(xmlEscape(QDir::toNativeSeparators(diagDir)));
 }
 
 // Per-user writable root for rendered .wsb files + per-session temp dirs.
@@ -303,6 +340,65 @@ bool sandboxAlreadyRunning()
     return out.contains(QStringLiteral("WindowsSandbox"), Qt::CaseInsensitive);
 }
 
+// --- in-process provisioning lock -------------------------------------------
+// Closes a real concurrency gap in the single-instance guard below: m_desks
+// isn't populated for a session until ITS sandbox is fully up (after both HTTP
+// waiters succeed, tens of seconds to minutes later), so two ensure() calls
+// arriving close together can both pass the m_desks/sandboxAlreadyRunning()
+// guard while the first is still mid-boot. This is reachable, not theoretical:
+// httpGetOk()'s event-loop-pumping (needed so ReverseTunnel can pair) lets a
+// second incoming session.create RPC be dispatched on the SAME thread while the
+// first ensure() call is still on the stack, inside the window between
+// d.sway->start() and the service-hosted sandbox processes actually appearing
+// in tasklist. Without this lock, a second call that slips through would race a
+// doomed second WindowsSandbox.exe launch, and its OWN failure-path cleanup
+// (closeSandboxHostProcesses(), host-wide by image name -- see above) could
+// kill the first session's genuinely live, healthy sandbox. RAII'd via
+// ProvisioningLock so every ensure() return path (there are several) releases
+// it automatically.
+bool g_sandboxProvisioning = false;
+
+struct ProvisioningLock
+{
+    ProvisioningLock() { g_sandboxProvisioning = true; }
+    ~ProvisioningLock() { g_sandboxProvisioning = false; }
+};
+
+// --- closing the REAL sandbox (teardown) ------------------------------------
+// REAL-HARDWARE CORRECTION. The Linux-mirror design assumed WindowsSandbox.exe
+// (our d.sway launcher) is the long-lived sandbox host, so teardown could just
+// killProc(d.sway) to destroy the box. On a real Win11 Pro box that is FALSE:
+// WindowsSandbox.exe fork-and-exits within ~1s and the live box is hosted by a set
+// of service processes -- WindowsSandboxRemoteSession.exe (the session host, whose
+// exit tears the box down), WindowsSandboxServer.exe, WindowsSandboxClient.exe --
+// plus the Hyper-V VM worker vmmemWindowsSandbox. So killProc(d.sway) is a no-op
+// that ORPHANS the running box (a stale one then trips sandboxAlreadyRunning() and
+// blocks the next launch as sandbox_busy). We close it by killing those host
+// processes by IMAGE NAME: they aren't children of our launcher and we never
+// captured their PIDs, but the single-instance guard guarantees any running box is
+// the one WE launched, so an image-name kill can't hit a stranger's sandbox. /T
+// also reaps their child trees. vmmemWindowsSandbox is deliberately NOT targeted:
+// it's the vmcompute-managed VM worker (resists even an elevated taskkill /F on
+// this hardware) and releases on its own once the session host is gone. Requires an
+// elevated token to fully take effect -- best-effort, and bounded so teardown never
+// blocks a session tear-down on a slow kill.
+void closeSandboxHostProcesses()
+{
+    QProcess p;
+    p.start(QStringLiteral("taskkill"),
+            {QStringLiteral("/F"), QStringLiteral("/T"),
+             QStringLiteral("/IM"), QStringLiteral("WindowsSandboxRemoteSession.exe"),
+             QStringLiteral("/IM"), QStringLiteral("WindowsSandboxServer.exe"),
+             QStringLiteral("/IM"), QStringLiteral("WindowsSandboxClient.exe"),
+             QStringLiteral("/IM"), QStringLiteral("WindowsSandbox.exe")});
+    if (!p.waitForStarted(2000))
+        return;
+    if (!p.waitForFinished(4000)) {
+        p.kill();
+        p.waitForFinished(1000);
+    }
+}
+
 // --- sandbox cold-boot startup budget ---------------------------------------
 // A cold Windows Sandbox boots a FULL Windows image (often 60-90s) BEFORE
 // bootstrap.ps1 even starts the engine, so the Linux `uv run` budget (Options
@@ -403,85 +499,160 @@ void AgentDesktop::killProc(QProcess *p, int graceMs)
 }
 
 // ---------------------------------------------------------------------------
-// Engine readiness waiters -- copied VERBATIM from core/src/AgentDesktop.cpp.
-// The ONLY change: the "process exited early" probe targets the sandbox process
-// (d.sway) instead of the Linux engine process (d.engine), because on Windows the
-// engine runs INSIDE the sandbox (no host-side engine QProcess); d.sway is the
-// WindowsSandbox.exe host handle. The HTTP probes hit 127.0.0.1:<port>, which the
-// reverse tunnel forwards into the box, so the contract is unchanged.
+// Engine readiness waiters -- adapted from core/src/AgentDesktop.cpp.
+// The Linux twin's waiters short-circuit when the process they own (d.engine)
+// exits, treating that as "the desktop died, fail fast". The obvious Windows
+// mirror was to probe d.sway (the WindowsSandbox.exe launcher) the same way -- but
+// that probe is a FALSE liveness signal on real Win11 hardware and has been REMOVED.
+// WindowsSandbox.exe is only a thin launcher: it fork-and-exits within ~1s of start
+// (handing the live box off to service-hosted WindowsSandbox* processes + the
+// vmmemWindowsSandbox VM worker -- see closeSandboxHostProcesses()), so
+// d.sway->state() reads NotRunning almost immediately, long before the box has even
+// finished booting, let alone started the engine. Keeping the probe made both
+// waiters bail on the very first poll on every real launch (confirmed on a Win11 Pro
+// box: ~9 attempts all failed the same way regardless of payload). With no reliable
+// host-side liveness handle for the box, we rely PURELY on the HTTP poll + the
+// (generous, cold-boot-sized) timeout budget: if the box never comes up, /health
+// simply never returns 200 and the wait times out with its typed reason -- slower to
+// fail than the Linux twin, but correct. The HTTP probes hit 127.0.0.1:<port>, which
+// the reverse tunnel forwards into the box, so the contract is unchanged.
 // ---------------------------------------------------------------------------
-bool AgentDesktop::waitForEngineHealth(const Desk &d, int timeoutMs)
+// Event-loop-DRIVEN, minimal HTTP/1.1 GET over a QTcpSocket -- deliberately NOT
+// QNetworkAccessManager, and (as of issue 104's live-hardware debugging) NOT
+// QTcpSocket's blocking waitFor* family either. History:
+//   1. The original implementation created a fresh QNetworkReply + QEventLoop +
+//      QTimer PER ITERATION, driven via nested QEventLoop::exec() calls. On real
+//      Windows Sandbox hardware that crashed jarvisd.exe with a deterministic
+//      access violation at a fixed offset inside Qt6Core.dll (confirmed via
+//      Windows Error Reporting: identical fault address across multiple
+//      independent runs) -- reproducible only under sustained real polling, since
+//      CI never exercises this loop (it can't boot nested Hyper-V).
+//   2. That was "fixed" by swapping in QTcpSocket's blocking waitForConnected /
+//      waitForBytesWritten / waitForReadyRead (Qt's documented pattern for
+//      synchronous I/O without an event loop) plus QThread::msleep() between
+//      polls. This built cleanly and no longer crashed, but introduced a WORSE,
+//      more subtle bug: waitFor*() blocks the calling thread on a raw
+//      select()/poll() scoped to just that one socket and does NOT pump Qt's
+//      event loop -- so it starves every OTHER QObject on this thread for the
+//      full timeoutMs of each call. ensure() runs synchronously on jarvisd's
+//      single Qt thread (no worker thread / QtConcurrent), and that SAME thread
+//      also owns the in-process ReverseTunnel this waiter exists to wait for
+//      (see gap #2 in ensure()). Confirmed on real hardware via the ReverseTunnel/
+//      TunnelDialer qDebug trail: the sandbox-side relay's TCP connects to the
+//      rendezvous port succeed at the kernel level (accepted into the OS backlog,
+//      relay logs "tunnel connected") but ReverseTunnel::onRendezvousConnection()
+//      NEVER fires and the pairing never happens -- a genuine self-deadlock where
+//      waiting for the tunnel to pair is exactly what prevents it from ever
+//      pairing. (The connections then die with "remote host closed" once
+//      teardown() finally runs after the health wait times out and tears the
+//      tunnel's sockets down.)
+// The fix: go back to an event-loop-driven wait (so ReverseTunnel's signals get
+// a chance to dispatch between -- and while waiting on -- each step) but keep it
+// built on QTcpSocket, never QNetworkAccessManager/QNetworkReply, so the original
+// crash's suspected trigger (their abort()+deleteLater() lifecycle) stays out of
+// the loop entirely.
+bool httpGetOk(const QString &host, quint16 port, const QString &path,
+               const QString &bearer, int timeoutMs)
 {
-    QNetworkAccessManager nam;
-    const QString url =
-        QStringLiteral("http://127.0.0.1:%1/health").arg(d.info.port);
+    QTcpSocket sock;
     QElapsedTimer clock;
     clock.start();
-    while (clock.elapsed() < timeoutMs) {
-        if (d.sway && d.sway->state() == QProcess::NotRunning)
-            return false; // sandbox exited early
-        QNetworkRequest rq{QUrl(url)};
-        if (!d.info.bearer.isEmpty())
-            rq.setRawHeader("Authorization", QByteArray("Bearer ") + d.info.bearer.toUtf8());
-        QNetworkReply *reply = nam.get(rq);
+
+    {
         QEventLoop loop;
-        QTimer t;
-        t.setSingleShot(true);
-        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-        QObject::connect(&t, &QTimer::timeout, &loop, [&]() {
-            reply->abort();
-            loop.quit();
-        });
-        t.start(1000);
+        QTimer timer;
+        timer.setSingleShot(true);
+        QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+        QObject::connect(&sock, &QAbstractSocket::connected, &loop, &QEventLoop::quit);
+        QObject::connect(&sock, &QAbstractSocket::errorOccurred, &loop, &QEventLoop::quit);
+        sock.connectToHost(host, port);
+        timer.start(timeoutMs);
         loop.exec();
-        const bool ok = reply->isFinished() &&
-                        reply->error() == QNetworkReply::NoError &&
-                        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 200;
-        reply->deleteLater();
-        if (ok)
+    }
+    if (sock.state() != QAbstractSocket::ConnectedState)
+        return false;
+
+    QString req = QStringLiteral("GET %1 HTTP/1.1\r\nHost: %2:%3\r\nConnection: close\r\n")
+                      .arg(path, host, QString::number(port));
+    if (!bearer.isEmpty())
+        req += QStringLiteral("Authorization: Bearer %1\r\n").arg(bearer);
+    req += QStringLiteral("\r\n");
+    sock.write(req.toUtf8());
+
+    QByteArray resp;
+    while (clock.elapsed() < timeoutMs) {
+        const int remaining = timeoutMs - int(clock.elapsed());
+        if (resp.contains("\r\n\r\n") || remaining <= 0)
+            break;
+        QEventLoop loop;
+        QTimer timer;
+        timer.setSingleShot(true);
+        QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+        QObject::connect(&sock, &QTcpSocket::readyRead, &loop, &QEventLoop::quit);
+        QObject::connect(&sock, &QAbstractSocket::disconnected, &loop, &QEventLoop::quit);
+        timer.start(qMax(50, remaining));
+        loop.exec();
+        if (sock.bytesAvailable() > 0)
+            resp += sock.readAll();
+        else if (sock.state() != QAbstractSocket::ConnectedState)
+            break;
+    }
+    sock.disconnectFromHost();
+    if (!resp.startsWith("HTTP/1."))
+        return false;
+    const int sp = resp.indexOf(' ');
+    if (sp < 0)
+        return false;
+    return resp.mid(sp + 1, 3).toInt() == 200;
+}
+
+// Event-loop-driven inter-poll delay -- see httpGetOk()'s header. A plain
+// QThread::msleep() here would (and did) starve the same thread's ReverseTunnel
+// just as much as a blocking socket wait; QTimer::singleShot + QEventLoop::exec()
+// pumps Qt's event loop for the delay instead of freezing it.
+void pumpingDelay(int ms)
+{
+    QEventLoop loop;
+    QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+    loop.exec();
+}
+
+namespace {
+// Shared body for both public waiters below -- they must stay separate methods
+// (the name/signature pair is fixed by the shared jarvis/AgentDesktop.h header,
+// same as the Linux twin), but the polling loop itself is identical modulo the
+// path/timeout/delay, so it's factored here rather than duplicated twice. Takes
+// the port/bearer directly rather than a `const Desk &` since Desk is a private
+// nested type of AgentDesktop, not visible to a free function at file scope.
+// NB: no d.sway liveness short-circuit -- WindowsSandbox.exe exits ~1s after
+// launch while the box keeps running, so its state is a false signal (see the
+// waiter header above). The HTTP poll + timeout budget is the only readiness
+// signal.
+bool waitForHttpOk(int port, const QString &bearer, const QString &path,
+                    int perRequestTimeoutMs, int pollDelayMs, int totalTimeoutMs)
+{
+    QElapsedTimer clock;
+    clock.start();
+    while (clock.elapsed() < totalTimeoutMs) {
+        if (httpGetOk(QStringLiteral("127.0.0.1"), quint16(port), path, bearer,
+                      perRequestTimeoutMs))
             return true;
-        QEventLoop wait;
-        QTimer::singleShot(300, &wait, &QEventLoop::quit);
-        wait.exec();
+        pumpingDelay(pollDelayMs);
     }
     return false;
+}
+} // namespace
+
+bool AgentDesktop::waitForEngineHealth(const Desk &d, int timeoutMs)
+{
+    return waitForHttpOk(d.info.port, d.info.bearer, QStringLiteral("/health"), 1000, 300,
+                          timeoutMs);
 }
 
 bool AgentDesktop::waitForEngineReady(const Desk &d, int timeoutMs)
 {
-    QNetworkAccessManager nam;
-    const QString url =
-        QStringLiteral("http://127.0.0.1:%1/ready").arg(d.info.port);
-    QElapsedTimer clock;
-    clock.start();
-    while (clock.elapsed() < timeoutMs) {
-        if (d.sway && d.sway->state() == QProcess::NotRunning)
-            return false; // sandbox exited early
-        QNetworkRequest rq{QUrl(url)};
-        if (!d.info.bearer.isEmpty())
-            rq.setRawHeader("Authorization", QByteArray("Bearer ") + d.info.bearer.toUtf8());
-        QNetworkReply *reply = nam.get(rq);
-        QEventLoop loop;
-        QTimer t;
-        t.setSingleShot(true);
-        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-        QObject::connect(&t, &QTimer::timeout, &loop, [&]() {
-            reply->abort();
-            loop.quit();
-        });
-        t.start(5000);
-        loop.exec();
-        const bool ok = reply->isFinished() &&
-                        reply->error() == QNetworkReply::NoError &&
-                        reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 200;
-        reply->deleteLater();
-        if (ok)
-            return true;
-        QEventLoop wait;
-        QTimer::singleShot(350, &wait, &QEventLoop::quit);
-        wait.exec();
-    }
-    return false;
+    return waitForHttpOk(d.info.port, d.info.bearer, QStringLiteral("/ready"), 5000, 350,
+                          timeoutMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -516,13 +687,15 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
 
     // --- single-instance guard (Windows Sandbox is one-per-host) ----------
     // This session's own up desk already early-returned above, so a non-empty
-    // m_desks here is ALWAYS a DIFFERENT session's live sandbox. Also refuse if a
-    // WindowsSandbox.exe is already running out-of-band (the user's own, or ours
-    // orphaned by a daemon crash -- we can't safely taskkill it). A typed
-    // 'sandbox_busy' reason tells ControlServer to degrade to v1 take-over rather
-    // than launch a doomed 2nd WindowsSandbox.exe. sweepOrphans() only tidies our
-    // on-disk artifacts, never a running sandbox, so this guard is the enforcement.
-    if (!m_desks.empty() || sandboxAlreadyRunning()) {
+    // m_desks here is ALWAYS a DIFFERENT session's live sandbox. g_sandboxProvisioning
+    // catches a second call that's still mid-boot (m_desks not populated yet -- see
+    // ProvisioningLock above). Also refuse if a WindowsSandbox.exe is already running
+    // out-of-band (the user's own, or ours orphaned by a daemon crash -- we can't
+    // safely taskkill it). A typed 'sandbox_busy' reason tells ControlServer to
+    // degrade to v1 take-over rather than launch a doomed 2nd WindowsSandbox.exe.
+    // sweepOrphans() only tidies our on-disk artifacts, never a running sandbox, so
+    // this guard is the enforcement.
+    if (!m_desks.empty() || g_sandboxProvisioning || sandboxAlreadyRunning()) {
         m_lastError = QStringLiteral(
             "sandbox_busy: a Windows Sandbox agent desktop is already running "
             "(Windows Sandbox allows only one instance per host); using v1 "
@@ -531,6 +704,7 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
             *err = m_lastError;
         return {};
     }
+    ProvisioningLock provisioningLock;
 
     // --- reservation (VERBATIM from the Linux twin) -----------------------
     auto desk = std::make_unique<Desk>();
@@ -646,16 +820,66 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
         wsb = QString::fromUtf8(tf.readAll());
         tf.close();
     }
-    wsb.replace(QStringLiteral("@ENGINEDIR@"), QDir::toNativeSeparators(engDir));
+    // REPORT 3 fix: emit the rendered .wsb starting directly at <Configuration> --
+    // no XML prolog, no leading doc comment. Both stay in jarvis-agent.wsb.in for
+    // humans; Windows Sandbox's own config parser is undocumented and strict, and a
+    // prolog+comment ahead of the root element was the ONE thing identical across
+    // every failed launch tonight (trivial-echo test AND the real engine test),
+    // matching the symptom exactly: VM boots, LogonCommand silently never fires, no
+    // error surfaced anywhere. Stripping here (rather than trying to keep the
+    // comment and injecting tokens only inside <Configuration>) also removes any
+    // chance of a token value containing "--" corrupting an XML comment, since no
+    // comment reaches the rendered file at all.
+    //
+    // Split on a dedicated sentinel line, NOT a literal "<Configuration" search: an
+    // indexOf("<Configuration") is one accidental doc-prose edit away from matching
+    // INSIDE the leading comment instead of the real element (e.g. a future sentence
+    // mentioning "the <Configuration> element") and silently reintroducing this exact
+    // bug with no error. The sentinel can't collide with prose by construction.
+    const QString sentinel = QStringLiteral("<!-- WSB-TEMPLATE-DOCS-END -->");
+    const int sentinelPos = wsb.indexOf(sentinel);
+    if (sentinelPos < 0) {
+        m_lastError = QStringLiteral("sandbox template malformed (missing '") + sentinel +
+                      QStringLiteral("' marker): ") + wsbTemplate;
+        teardown(sessionId);
+        if (err)
+            *err = m_lastError;
+        return {};
+    }
+    wsb = wsb.mid(sentinelPos + sentinel.length()).trimmed();
+    if (!wsb.startsWith(QStringLiteral("<Configuration"))) {
+        m_lastError = QStringLiteral("sandbox template malformed (no <Configuration> "
+                                      "element immediately after the docs-end marker): ") +
+                      wsbTemplate;
+        teardown(sessionId);
+        if (err)
+            *err = m_lastError;
+        return {};
+    }
+    wsb.replace(QStringLiteral("@ENGINEDIR@"),
+                xmlEscape(QDir::toNativeSeparators(engDir)));
     wsb.replace(QStringLiteral("@PORT@"), QString::number(d.info.port));
-    wsb.replace(QStringLiteral("@BEARER@"), d.info.bearer);
+    wsb.replace(QStringLiteral("@BEARER@"), xmlEscape(d.info.bearer));
     wsb.replace(QStringLiteral("@RENDEZVOUS@"), QString::number(rport));
     // The host gateway as seen from inside the box is the sandbox's default
     // gateway -- bootstrap.ps1 resolves it ("auto") unless an operator pins it.
     const QString hostIp = qEnvironmentVariable("JARVIS_HOST_IP");
     wsb.replace(QStringLiteral("@HOSTIP@"),
-                hostIp.isEmpty() ? QStringLiteral("auto") : hostIp);
-    wsb.replace(QStringLiteral("@SESSION@"), sessionId);
+                xmlEscape(hostIp.isEmpty() ? QStringLiteral("auto") : hostIp));
+    wsb.replace(QStringLiteral("@SESSION@"), xmlEscape(sessionId));
+
+    // Optional diagnostics MappedFolder (REPORT 6: NOT hardcoded -- opt-in via
+    // JARVIS_SANDBOX_DIAG_DIR so a personal host path never ships in the template).
+    // Inserted right before </MappedFolders> so it's additive to whatever the
+    // template already declares. bootstrap.ps1 self-detects C:\hostlog and mirrors
+    // its trace there instead of %USERPROFILE% when present -- see
+    // windows/isolation/sandbox/bootstrap.ps1.
+    const QString diagXml = diagMappedFolderXml();
+    if (!diagXml.isEmpty()) {
+        const int closeIdx = wsb.indexOf(QStringLiteral("</MappedFolders>"));
+        if (closeIdx >= 0)
+            wsb.insert(closeIdx, diagXml);
+    }
 
     d.confPath = QDir(d.runtimeDir)
                      .absoluteFilePath(QStringLiteral("jarvis-agent-") + sessionId +
@@ -669,19 +893,43 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
                 *err = m_lastError;
             return {};
         }
-        wf.write(wsb.toUtf8());
+        // REPORT 3 #4 fix: check the write actually landed. A short/failed write
+        // (disk full, AV lock, etc.) would launch WindowsSandbox.exe against a
+        // truncated/garbage .wsb -- the same silent "boots, no LogonCommand" symptom
+        // as the XML bug above, just from a different cause; catch it here instead
+        // of burning a whole sandbox launch to discover it.
+        const QByteArray bytes = wsb.toUtf8();
+        const qint64 written = wf.write(bytes);
+        const bool flushed = wf.flush();
         wf.close();
+        if (written != qint64(bytes.size()) || !flushed || wf.error() != QFile::NoError) {
+            m_lastError = QStringLiteral(
+                              "short/failed write of rendered .wsb (%1 of %2 bytes, "
+                              "error=%3): ")
+                              .arg(written)
+                              .arg(bytes.size())
+                              .arg(wf.errorString()) +
+                          d.confPath;
+            teardown(sessionId);
+            if (err)
+                *err = m_lastError;
+            return {};
+        }
     }
 
     // --- launch the sandbox ------------------------------------------------
-    // WindowsSandbox.exe <wsb> STAYS RUNNING as the sandbox's host window process
-    // for the whole session -- it does NOT fork-and-exit; closing it destroys the
-    // disposable box (nothing persists). So our QProcess handle (d.sway) tracks the
-    // sandbox's lifetime: the health/ready waiters probe d.sway->state() as the
-    // "boundary gone" signal and teardown() kills d.sway to close the box. (This is
-    // the single riskiest mirror assumption -- verify on a real Win Pro/Ent box;
-    // see windows/isolation/DESIGN.md's honest constraint.) The LogonCommand
-    // (bootstrap.ps1) runs INSIDE the box, so no host-side engine QProcess exists.
+    // REAL-HARDWARE CORRECTION: the Linux-mirror design ASSUMED WindowsSandbox.exe
+    // stays running as a long-lived host-window process for the whole session -- so
+    // d.sway could track the box's lifetime and closing it would destroy the box.
+    // On a real Win11 Pro box that is FALSE: WindowsSandbox.exe is a thin launcher
+    // that fork-and-exits within ~1s, handing the live box off to service-hosted
+    // processes (WindowsSandboxRemoteSession/Server/Client + the vmmemWindowsSandbox
+    // VM worker). So d.sway goes NotRunning almost immediately while the box keeps
+    // running -- which is why the waiters no longer probe it (see the waiter header)
+    // and teardown() closes the box via those host processes, NOT via d.sway (see
+    // closeSandboxHostProcesses()). We still keep d.sway to catch a launch that
+    // fails to even start. The LogonCommand (bootstrap.ps1) runs INSIDE the box, so
+    // there is no host-side engine QProcess.
     d.sway = new QProcess(this);
     d.sway->setProgram(sbExe);
     d.sway->setArguments({d.confPath});
@@ -709,6 +957,10 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
                           .arg(d.info.port);
         killProc(d.sway);
         d.sway = nullptr;
+        // The desk isn't tracked yet, so the teardown() below won't reach its
+        // sandbox-close branch -- close the real box here (d.sway is just the
+        // already-exited launcher, see closeSandboxHostProcesses()).
+        closeSandboxHostProcesses();
         teardown(sessionId);
         if (err)
             *err = m_lastError;
@@ -721,6 +973,7 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
                           .arg(d.info.port);
         killProc(d.sway);
         d.sway = nullptr;
+        closeSandboxHostProcesses(); // close the real box (untracked desk; see above)
         teardown(sessionId);
         if (err)
             *err = m_lastError;
@@ -790,7 +1043,11 @@ void AgentDesktop::teardown(const QString &sessionId)
         return;
     }
     Desk &d = *it->second;
-    killProc(d.sway); // closes the Windows Sandbox (disposable -> nothing persists)
+    // Close the REAL sandbox first: d.sway is only the launcher (long since exited,
+    // see the ensure() launch note), so killing it does NOT stop the running box --
+    // the service-hosted WindowsSandbox* processes do (see closeSandboxHostProcesses).
+    closeSandboxHostProcesses();
+    killProc(d.sway); // just cleans up the (already-exited) launcher QProcess handle
     d.sway = nullptr;
     killProc(d.engine); // null on Windows (engine lives in the box); safe no-op
     d.engine = nullptr;

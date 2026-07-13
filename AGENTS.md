@@ -997,6 +997,45 @@ vendored `phone/server`** (see docs/PHONE.md). Load-bearing truths:
   Android is a Cindro-native `ui/phone/PhonePermissions{Screen,ViewModel}.kt` (its
   own drawer destination, `Gated()`), version bumped 0.15.0→0.16.0.
 
+## New subsystems (2026-07-13) — Windows Sandbox v2 real-hardware validation, jarvis#104
+
+First-ever real-hardware run of `windows/shell/AgentDesktop.cpp`'s sandbox tier (CI can't
+boot nested Hyper-V, so this path only ever compiled before). Four bugs surfaced, none
+reproducible without an actual booting Windows Sandbox VM — see `docs/STATUS.md`'s
+2026-07-13 entry for the full writeup. Gotchas worth carrying forward:
+
+- **`WindowsSandbox.exe` is NOT a long-lived process — it exits ~1s after a successful
+  launch.** The original design assumed it stayed resident for the sandbox's whole
+  lifetime (a plausible mirror of "the process handle IS the boundary," true for the
+  Linux nested-Sway twin) and tracked it as the liveness signal for the health/ready
+  waiters. Wrong on real Windows: it's a thin launcher that hands the live box off to
+  service-hosted `WindowsSandboxRemoteSession`/`WindowsSandboxServer`/
+  `vmmemWindowsSandbox` processes and exits. Treating its exit as "the box died" failed
+  every real launch on the very first poll. If you ever need to check "is the sandbox
+  actually still up," check for those THREE process names, not `WindowsSandbox.exe`
+  itself — and expect `vmmemWindowsSandbox` in particular to linger 5-15 minutes after
+  teardown even when everything else is cleaned up (a real Hyper-V VM-worker-release
+  delay, not a bug to chase).
+- **A rendered `.wsb` with anything before `<Configuration>` (XML prolog, doc comments)
+  is silently treated as unparseable by Windows Sandbox**, which then boots a bare
+  default sandbox with NO `LogonCommand` — no error anywhere, the VM just boots and
+  sits there. `jarvisd` runs headless/Session 0 so even a GUI parse-error dialog, if
+  one exists, is never seen. Any future edit to `windows/isolation/sandbox/jarvis-agent.wsb.in`
+  or its rendering in `AgentDesktop.cpp::ensure()` must keep the emitted file starting
+  directly at `<Configuration>` — keep documentation only in the `.wsb.in` source, never
+  in the rendered output.
+- **`Write-Host` inside anything invoked by Windows Sandbox's `LogonCommand` deadlocks
+  forever** — no attached console to drain it in that non-interactive context. Any script
+  reached via `LogonCommand` (`bootstrap.ps1` today, anything added later) must log via
+  `Add-Content`/`Out-File` only, never a console cmdlet.
+- **Don't block the Qt thread that owns an in-process `QTcpServer`/`QTcpSocket` relay**
+  (`windows/isolation/relay/ReverseTunnel.cpp`) **with `QThread::msleep()` or similar** —
+  that thread's event loop is what accepts incoming connections; blocking it stalls the
+  relay even though the underlying kernel-level TCP connect succeeds. Use
+  `QEventLoop`/`QTimer` for any polling/delay logic sharing a thread with the tunnel.
+- Still gated behind `JARVIS_ENABLE_V2=1` (`resolveMode()`) — validated on one real
+  machine, not yet broadly enough to flip the default.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

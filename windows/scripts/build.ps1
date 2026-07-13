@@ -272,6 +272,25 @@ if ($LASTEXITCODE -ne 0) { throw "video deps import probe failed (faster-whisper
   --paths (Join-Path $win "engine") (Join-Path $win "engine\server_windows.py")
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller (engine) failed" }
 
+# PyInstaller's one-folder mode ALWAYS nests its output under a --name subdirectory
+# (--distpath payload\engine --name jarvis-engine -> payload\engine\jarvis-engine\
+# jarvis-engine.exe), but AgentDesktop.cpp's enginePayloadDir() and bootstrap.ps1 both
+# expect a FLAT layout (C:\engine\jarvis-engine.exe, mirroring the isolation/ dir's own
+# flat convention) -- confirmed on a real Win11 Pro box: with the nested layout,
+# enginePayloadDir()'s existence check for the flat path fails, @ENGINEDIR@ falls back
+# to a bogus dev-mode guess, the sandbox's C:\engine MappedFolder maps nothing useful,
+# bootstrap.ps1 never runs, and the reverse tunnel never dials out (health check times
+# out with no explanation). Flatten the PyInstaller output up one level to match.
+$engineNested = Join-Path $payload "engine\jarvis-engine"
+if (Test-Path $engineNested) {
+  Get-ChildItem -Path $engineNested -Force | Move-Item -Destination (Join-Path $payload "engine") -Force
+  Remove-Item $engineNested -Force -Recurse
+  Write-Host "    flattened PyInstaller output: engine\jarvis-engine\* -> engine\" -ForegroundColor Green
+}
+if (-not (Test-Path (Join-Path $payload "engine\jarvis-engine.exe"))) {
+  throw "engine\jarvis-engine.exe missing after flattening -- PyInstaller output layout changed?"
+}
+
 # 3b. Windows v2 isolation assets ----------------------------------------------
 # The "beside-you" agent desktop (windows/isolation). Two destinations:
 #   {app}\isolation : the .wsb template + bootstrap.ps1 + detect.ps1 (AgentDesktop
@@ -297,6 +316,19 @@ if ($relayExe) {
   if (Get-Command windeployqt -ErrorAction SilentlyContinue) {
     windeployqt --release --compiler-runtime --no-translations (Join-Path $engineDst "jarvis-relay.exe")
   } else { Write-Warning "windeployqt not found; jarvis-relay.exe Qt DLLs must be staged manually." }
+  # windeployqt --compiler-runtime ships vc_redist.x64.exe (an INSTALLER) here too, not
+  # loose CRT DLLs -- same gotcha as the main payload above, but sharper here: Windows
+  # Sandbox is a genuinely BARE image with no VC++ Redistributable preinstalled, so
+  # jarvis-relay.exe silently dies at launch ("MSVCP140.dll was not found") and the
+  # reverse tunnel never dials the rendezvous port -- confirmed on a real Win11 Pro box
+  # (the health-check client pairs with nothing and times out after the full sandbox
+  # cold-boot budget). Reuse the $crt resolved above (same script scope).
+  if ($crt) {
+    Get-ChildItem $crt.FullName -Filter *.dll | ForEach-Object { Copy-Item $_.FullName $engineDst -Force }
+    Write-Host "    bundled MSVC CRT DLLs for jarvis-relay.exe from $($crt.FullName)" -ForegroundColor Green
+  } else {
+    Write-Warning "MSVC CRT redist dir not found -- jarvis-relay.exe will fail to start inside the sandbox."
+  }
 } else {
   Write-Warning "jarvis-relay.exe not found under $build -- the sandbox reverse tunnel will be unavailable."
 }
