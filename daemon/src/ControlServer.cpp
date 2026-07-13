@@ -1625,7 +1625,7 @@ bool restartPhoneService()
 }
 } // namespace
 
-Response ControlServer::handlePhoneMcp(const Request &req)
+Response ControlServer::handlePhoneMcp(const Request &req, int timeoutMs)
 {
     const QString name = req.params.value(QStringLiteral("name")).toString();
     if (name.isEmpty())
@@ -1679,8 +1679,9 @@ Response ControlServer::handlePhoneMcp(const Request &req)
     // The *_and_wait phone tools (call_user_and_wait, twilio_call_and_wait,
     // notify_user_and_wait, wait_for_message_reply, …) BLOCK until the user answers
     // — that can take minutes. A 35s cap timed those out ("phone server: timeout");
-    // give the proxy 5 minutes so a real call/wait can complete.
-    QTimer::singleShot(300000, &loop, &QEventLoop::quit);
+    // give the proxy 5 minutes (default) so a real call/wait can complete;
+    // internal quick pushes override with a short timeoutMs.
+    QTimer::singleShot(timeoutMs, &loop, &QEventLoop::quit);
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     loop.exec();
     if (!reply->isFinished() || reply->error() != QNetworkReply::NoError) {
@@ -1952,7 +1953,13 @@ Response ControlServer::handlePhonePolicySet(const Request &req)
         pp.insert(QStringLiteral("name"), tool);
         pp.insert(QStringLiteral("arguments"), QJsonObject());
         p.params = pp;
-        if (!handlePhoneMcp(p).ok)
+        // 20s cap (not the 5-min *_and_wait default). handlePhoneMcp returns
+        // ok=true even for an MCP-LEVEL error (it tucks it into result["error"]),
+        // so a screening push that reaches the server but fails there is only
+        // caught by checking that key too — otherwise the daemon would think the
+        // 'config'-enforced answer_calls change stuck when it silently didn't.
+        const Response hr = handlePhoneMcp(p, 20000);
+        if (!hr.ok || hr.result.contains(QStringLiteral("error")))
             qWarning("jarvisd: phone.policy answer_calls could not update screening (%s)",
                      qUtf8Printable(tool));
     }
@@ -1994,12 +2001,29 @@ namespace {
 // 30s cap so a hung endpoint can't pin the daemon's single event loop open.
 QJsonObject twilioApiRequest(const QString &sid, const QString &authToken,
                              const QString &method, const QString &path,
-                             const QUrlQuery &form, int *httpStatus, QString *err)
+                             const QList<QPair<QString, QString>> &form,
+                             int *httpStatus, QString *err)
 {
+    // Build the x-www-form-urlencoded string percent-encoding EVERY byte of each
+    // key/value (QUrl::toPercentEncoding). QUrlQuery/FullyEncoded leaves '+'
+    // literal, and a form/query decoder reads '+' as a space — so an E.164
+    // number like "+15551234567" would arrive as " 15551234567" and Twilio would
+    // reject it. toPercentEncoding emits "%2B" for the leading '+'.
+    QByteArray encoded;
+    for (const auto &kv : form) {
+        if (!encoded.isEmpty())
+            encoded += '&';
+        encoded += QUrl::toPercentEncoding(kv.first);
+        encoded += '=';
+        encoded += QUrl::toPercentEncoding(kv.second);
+    }
     QNetworkAccessManager nam;
-    QUrl url(QStringLiteral("https://api.twilio.com") + path);
-    if (method != QStringLiteral("POST") && !form.isEmpty())
-        url.setQuery(form);
+    const QByteArray base = (QStringLiteral("https://api.twilio.com") + path).toUtf8();
+    // fromEncoded so the already-percent-encoded query is stored verbatim (no
+    // re-decoding of the %2B we just wrote).
+    const QUrl url = (method == QStringLiteral("POST") || encoded.isEmpty())
+        ? QUrl::fromEncoded(base)
+        : QUrl::fromEncoded(base + "?" + encoded);
     QNetworkRequest rq(url);
     const QByteArray basic =
         QByteArray(sid.toUtf8() + ":" + authToken.toUtf8()).toBase64();
@@ -2008,7 +2032,7 @@ QJsonObject twilioApiRequest(const QString &sid, const QString &authToken,
     if (method == QStringLiteral("POST")) {
         rq.setHeader(QNetworkRequest::ContentTypeHeader,
                      QStringLiteral("application/x-www-form-urlencoded"));
-        reply = nam.post(rq, form.toString(QUrl::FullyEncoded).toUtf8());
+        reply = nam.post(rq, encoded);
     } else {
         reply = nam.get(rq);
     }
@@ -2051,9 +2075,9 @@ Response ControlServer::handleTwilioVerifyStart(const Request &req)
         return Response::failure(req.id, QStringLiteral("twilio_not_configured"),
                                  QStringLiteral("Twilio Account SID + Auth Token must be set "
                                                 "(Phone → Settings) before verifying a number."));
-    QUrlQuery form;
-    form.addQueryItem(QStringLiteral("PhoneNumber"), number);
-    form.addQueryItem(QStringLiteral("FriendlyName"), friendly.isEmpty() ? number : friendly);
+    QList<QPair<QString, QString>> form;
+    form.append({QStringLiteral("PhoneNumber"), number});
+    form.append({QStringLiteral("FriendlyName"), friendly.isEmpty() ? number : friendly});
     int status = 0;
     QString err;
     const QJsonObject tw = twilioApiRequest(
@@ -2083,7 +2107,7 @@ Response ControlServer::handleTwilioVerifyStart(const Request &req)
         pp.insert(QStringLiteral("name"), QStringLiteral("twilio_allowlist_add"));
         pp.insert(QStringLiteral("arguments"), args);
         p.params = pp;
-        handlePhoneMcp(p); // best-effort; verification is the primary result
+        handlePhoneMcp(p, 20000); // best-effort; verification is the primary result
     }
     m_audit.record(QStringLiteral("phone.twilio_verify_start"), true, QStringLiteral("high"),
                    QStringLiteral("started verified-caller-id for ") + number, QString());
@@ -2107,9 +2131,9 @@ Response ControlServer::handleTwilioCallerIdsList(const Request &req)
                                  QStringLiteral("Twilio Account SID + Auth Token must be set "
                                                 "(Phone → Settings)."));
     const QString filter = req.params.value(QStringLiteral("phone_number")).toString().trimmed();
-    QUrlQuery q;
+    QList<QPair<QString, QString>> q;
     if (!filter.isEmpty())
-        q.addQueryItem(QStringLiteral("PhoneNumber"), filter);
+        q.append({QStringLiteral("PhoneNumber"), filter});
     int status = 0;
     QString err;
     const QJsonObject tw = twilioApiRequest(

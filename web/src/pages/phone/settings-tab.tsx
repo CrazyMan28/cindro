@@ -366,7 +366,6 @@ export function PhoneSettingsTab() {
   const note = (msg: string) => setStatus(msg)
 
   const refresh = async () => {
-    void loadCallerIds()
     const tw = await phoneMcp(app.client, "twilio_status")
     if (tw.error) note(`twilio_status: ${tw.error.message}`)
     else {
@@ -421,7 +420,13 @@ export function PhoneSettingsTab() {
 
   createEffect(() => {
     shell.refreshNonce()
-    if (active()) void refresh()
+    if (active()) {
+      void refresh()
+      // Verified-caller-id list rarely changes and hits the Twilio REST API on
+      // the daemon — refresh it on mount + the manual refresh button only, NOT on
+      // the 20s status poll below.
+      void loadCallerIds()
+    }
   })
 
   onMount(() => {

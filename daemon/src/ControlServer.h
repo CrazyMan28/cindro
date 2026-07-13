@@ -308,8 +308,11 @@ private:
     // phone.mcp — proxy a phone-subsystem MCP tool call ({name, arguments}) to the
     // native phone server, keeping its bearer inside the daemon. Lets every surface
     // (desktop/Android/Chrome) drive all 55 phone tools over its existing Contract A
-    // connection. Returns {data|text, tool, error?}.
-    Response handlePhoneMcp(const Request &req);
+    // connection. Returns {data|text, tool, error?}. `timeoutMs` bounds the
+    // nested event loop — the 5-min default suits the *_and_wait call tools, but
+    // internal quick pushes (screening config, allowlist add) pass a short one so
+    // a half-open phone server can't pin the daemon's event loop for minutes.
+    Response handlePhoneMcp(const Request &req, int timeoutMs = 300000);
     // phone.http — proxy an arbitrary REST call ({method, path, body}) to the
     // native phone server's HTTP API (e.g. PUT /api/extensions/:ext/voice or
     // /model, GET/POST /api/screening, /api/sms-agent, /api/voices, /api/calls),

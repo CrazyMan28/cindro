@@ -118,10 +118,11 @@ Item {
                 font.family: Theme.fontMono; font.pixelSize: 10; Layout.fillWidth: true
             }
 
-            // loading / empty
+            // loading / empty — only when there are no cards yet, so a re-refresh
+            // over already-loaded capabilities doesn't flash the spinner on top.
             Item {
                 Layout.fillWidth: true; Layout.preferredHeight: 80
-                visible: tab.loading || capsModel.count === 0
+                visible: capsModel.count === 0
                 ColumnLayout {
                     anchors.centerIn: parent; spacing: 8
                     ArcReactor { size: 44; tint: Theme.textFaint; spinning: tab.loading

@@ -58,7 +58,9 @@ class PhonePermissionsViewModel(private val repo: JarvisRepository) : ViewModel(
             val labels = mutableMapOf<String, String>()
             o.getAsJsonArray("choiceLabels")?.forEach {
                 val lo = it.asJsonObject
-                labels[lo.get("value").asString] = lo.get("label").asString
+                val v = lo.get("value")?.asString
+                val l = lo.get("label")?.asString
+                if (v != null && l != null) labels[v] = l
             }
             out.add(
                 PhoneCapability(
@@ -75,11 +77,15 @@ class PhonePermissionsViewModel(private val repo: JarvisRepository) : ViewModel(
         return out
     }
 
+    // parse() runs INSIDE runCatching so a JSON-shape surprise (JsonNull, a
+    // non-array "capabilities", a missing field) surfaces as a graceful error
+    // state instead of an uncaught throw in viewModelScope that crashes the app
+    // and leaves loading=true stuck.
     fun refresh() {
         _uiState.update { it.copy(loading = true, error = null) }
         viewModelScope.launch {
-            runCatching { withContext(Dispatchers.IO) { repo.phonePolicyList() } }
-                .onSuccess { obj -> _uiState.update { it.copy(capabilities = parse(obj), loading = false) } }
+            runCatching { parse(withContext(Dispatchers.IO) { repo.phonePolicyList() }) }
+                .onSuccess { caps -> _uiState.update { it.copy(capabilities = caps, loading = false) } }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message, loading = false) } }
         }
     }
@@ -87,8 +93,8 @@ class PhonePermissionsViewModel(private val repo: JarvisRepository) : ViewModel(
     fun setValue(id: String, value: String) {
         _uiState.update { it.copy(status = "Saving…", error = null) }
         viewModelScope.launch {
-            runCatching { withContext(Dispatchers.IO) { repo.phonePolicySet(id, value) } }
-                .onSuccess { obj -> _uiState.update { it.copy(capabilities = parse(obj), status = null) } }
+            runCatching { parse(withContext(Dispatchers.IO) { repo.phonePolicySet(id, value) }) }
+                .onSuccess { caps -> _uiState.update { it.copy(capabilities = caps, status = null) } }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message, status = null) } }
         }
     }
@@ -96,8 +102,8 @@ class PhonePermissionsViewModel(private val repo: JarvisRepository) : ViewModel(
     fun resetAll() {
         _uiState.update { it.copy(status = "Resetting…", error = null) }
         viewModelScope.launch {
-            runCatching { withContext(Dispatchers.IO) { repo.phonePolicyReset() } }
-                .onSuccess { obj -> _uiState.update { it.copy(capabilities = parse(obj), status = null) } }
+            runCatching { parse(withContext(Dispatchers.IO) { repo.phonePolicyReset() }) }
+                .onSuccess { caps -> _uiState.update { it.copy(capabilities = caps, status = null) } }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message, status = null) } }
         }
     }

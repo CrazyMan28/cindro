@@ -210,9 +210,15 @@ def gate(tool: str) -> None:
 # The tool->capability map + defaults MUST match core/src/PhonePolicyStore.cpp
 # (buildToolMap + the catalog defaults). Only the tri-state, tool-gated
 # capabilities appear (answer_calls is config-driven, not a tool gate).
+# Mirror the daemon's Config::configDir() (JARVIS_CONFIG_DIR profile-aware, and
+# deliberately NOT XDG-overridable — see core/src/TrustPolicyStore.cpp) exactly
+# as daemon_client.py does. Using XDG_CONFIG_HOME here instead would make the
+# daemon write one phone_policy.json while this engine-side 'ask' gate reads
+# another under a profile/XDG override — silently failing 'ask' OPEN (deny is
+# still caught daemon-side, but the interactive ask is only enforced HERE).
 _PHONE_POLICY_DEFAULT_FILE = Path(
-    os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
-) / "jarvis" / "phone_policy.json"
+    os.environ.get("JARVIS_CONFIG_DIR") or os.path.expanduser("~/.config/jarvis")
+) / "phone_policy.json"
 
 _PHONE_TOOL_CAPS = {
     "twilio_sms": ("send_sms", "spend_money"),
