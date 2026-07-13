@@ -86,8 +86,10 @@ class PhonePane(Vertical):
     DIAL_HINT = "type an extension (e.g. 101) or free text + enter: call · r: refresh calls"
     CONFIG_HINT = ("edit fields (blank secret = keep current) · s: save · "
                    "t: test connectivity · r: refresh")
+    PERMS_HINT = "↑/↓ select · c: cycle setting · z: reset all · r: refresh"
     COLUMNS = ("device", "id", "last seen")
     CALL_COLUMNS = ("call", "state", "route", "reason")
+    PERMS_COLUMNS = ("capability", "setting", "enforcement")
 
     DEFAULT_CSS = """
     PhonePane #phone-config-status {
@@ -147,6 +149,7 @@ class PhonePane(Vertical):
         self._calls_timer = None
         self._screening_timer = None
         self.phone_config: dict = {}  # last phone.config action:"get" result
+        self.perms: list[dict] = []   # last phone.policy.list capabilities
 
     @property
     def client(self):
@@ -197,6 +200,15 @@ class PhonePane(Vertical):
                     yield Input(placeholder="Inbound ext (101)", id="cfg-twilio-inbound")
                     yield Input(placeholder="Screening ext", id="cfg-twilio-screening")
                 yield Static("", id="phone-config-result")
+            with TabPane("Permissions", id="phone-tab-perms"):
+                yield Static(Text(self.PERMS_HINT, style="bright_black"), classes="pane-hint")
+                yield Static("What Cindro may do over the phone. Deny blocks the "
+                             "action; Ask requires your approval first.",
+                             classes="pane-hint")
+                perms_table = DataTable(cursor_type="row", id="phone-perms-table")
+                perms_table.add_columns(*self.PERMS_COLUMNS)
+                yield perms_table
+                yield Static("", id="phone-perms-status")
 
     def on_mount(self) -> None:
         # refresh_data is a plain async method (no @work decorator, unlike
@@ -208,6 +220,7 @@ class PhonePane(Vertical):
         self.call_later(self._poll_calls_and_banner)
         self.call_later(self._poll_screening)
         self.call_later(self._refresh_phone_config)
+        self.call_later(self._refresh_perms)
         # Poll-based (not event-driven): ControlClient.on_broadcast_extra is a
         # SINGLE slot already claimed by CanvasPane (tui/canvas_pane.py) for
         # widget.* broadcasts — a second claimant here would silently clobber
@@ -657,6 +670,79 @@ class PhonePane(Vertical):
                + ("  ·  Twilio configured" if tw_ok else "  ·  Twilio not configured"))
         self._set_config_result(msg, "green" if reachable else "red")
 
+    # -- Permissions (phone.policy.list/set/reset) -------------------------------
+    async def _refresh_perms(self) -> None:
+        """Populate the Permissions table from phone.policy.list. Quiet degrade
+        on an older daemon that predates phone.policy (unknown_method)."""
+        if not self.client.connected:
+            return
+        res = await call_degrading(
+            self.client, "phone.policy.list", {},
+            on_unknown_method=lambda exc: None,
+            on_error=lambda exc: None)
+        if not res:
+            return
+        self.perms = list(res.get("capabilities", []))
+        self._render_perms()
+
+    def _render_perms(self, keep_row: int | None = None) -> None:
+        try:
+            table = self.query_one("#phone-perms-table", DataTable)
+        except Exception:
+            return
+        table.clear()
+        for c in self.perms:
+            val = str(c.get("value", ""))
+            label = val
+            for cl in c.get("choiceLabels", []) or []:
+                if cl.get("value") == val:
+                    label = str(cl.get("label", val))
+                    break
+            enforced = "ENFORCED" if c.get("enforcement") in ("hard", "config") else "guidance"
+            table.add_row(str(c.get("label", c.get("id", ""))), label, enforced)
+        if keep_row is not None and self.perms:
+            table.move_cursor(row=max(0, min(keep_row, len(self.perms) - 1)))
+
+    def _set_perms_status(self, text: str, style: str = "") -> None:
+        try:
+            widget = self.query_one("#phone-perms-status", Static)
+        except Exception:
+            return
+        widget.update(Text(text, style=style) if style else text)
+
+    async def _cycle_perm(self) -> None:
+        """Cycle the selected capability to its next choice via phone.policy.set."""
+        try:
+            table = self.query_one("#phone-perms-table", DataTable)
+        except Exception:
+            return
+        row = table.cursor_row
+        if not self.perms or row is None or not (0 <= row < len(self.perms)):
+            return
+        cap = self.perms[row]
+        choices = cap.get("choices", []) or []
+        if not choices:
+            return
+        cur = str(cap.get("value", ""))
+        idx = choices.index(cur) if cur in choices else -1
+        nxt = choices[(idx + 1) % len(choices)]
+        res = await call_degrading(
+            self.client, "phone.policy.set", {"id": cap.get("id"), "value": nxt},
+            on_error=lambda exc: self._set_perms_status(str(exc), "red"))
+        if res:
+            self.perms = list(res.get("capabilities", self.perms))
+            self._render_perms(keep_row=row)
+            self._set_perms_status(f"{cap.get('id')} → {nxt}", "green")
+
+    async def _reset_perms(self) -> None:
+        res = await call_degrading(
+            self.client, "phone.policy.reset", {},
+            on_error=lambda exc: self._set_perms_status(str(exc), "red"))
+        if res:
+            self.perms = list(res.get("capabilities", []))
+            self._render_perms()
+            self._set_perms_status("reset to defaults", "green")
+
     # -- key handling (gated by which sub-tab is active) -------------------------
     async def on_key(self, event) -> None:
         try:
@@ -697,3 +783,10 @@ class PhonePane(Vertical):
                 await self._save_phone_config()
             elif event.key == "t":
                 await self._test_phone_config()
+        elif active == "phone-tab-perms":
+            if event.key == "r":
+                await self._refresh_perms()
+            elif event.key in ("c", "space"):
+                await self._cycle_perm()
+            elif event.key == "z":
+                await self._reset_perms()

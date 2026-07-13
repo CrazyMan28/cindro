@@ -15,6 +15,7 @@ import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Folder
@@ -74,6 +75,7 @@ val AppDrawerDestinations = listOf(
     DrawerDestination("canvas", "Canvas", Icons.Filled.Dashboard),
     DrawerDestination("computer", "Computer", Icons.Filled.Computer),
     DrawerDestination("phone", "Phone", Icons.Filled.Phone),
+    DrawerDestination("phone_permissions", "Phone Permissions", Icons.Filled.Lock),
     DrawerDestination("skills", "Skills", Icons.Filled.AutoAwesome),
     DrawerDestination("agents", "Agents", Icons.Filled.SmartToy),
     DrawerDestination("queue", "Queue", Icons.Filled.Schedule),

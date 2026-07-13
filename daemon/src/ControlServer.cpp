@@ -530,6 +530,20 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handlePhoneHttp(req);
     else if (m == QStringLiteral("phone.config"))
         resp = handlePhoneConfig(req);
+    else if (m == QStringLiteral("phone.policy.list"))
+        resp = handlePhonePolicyList(req);
+    else if (m == QStringLiteral("phone.policy.set"))
+        resp = handlePhonePolicySet(req);
+    else if (m == QStringLiteral("phone.policy.reset"))
+        resp = handlePhonePolicyReset(req);
+    else if (m == QStringLiteral("phone.policy.test"))
+        resp = handlePhonePolicyTest(req);
+    else if (m == QStringLiteral("phone.twilio_verify_start"))
+        resp = handleTwilioVerifyStart(req);
+    else if (m == QStringLiteral("phone.twilio_verify_status"))
+        resp = handleTwilioVerifyStatus(req);
+    else if (m == QStringLiteral("phone.twilio_caller_ids_list"))
+        resp = handleTwilioCallerIdsList(req);
     else if (m == QStringLiteral("session.subscribe"))
         resp = handleSessionSubscribe(client, req);
     else if (m == QStringLiteral("widget.viewing"))
@@ -1611,13 +1625,33 @@ bool restartPhoneService()
 }
 } // namespace
 
-Response ControlServer::handlePhoneMcp(const Request &req)
+Response ControlServer::handlePhoneMcp(const Request &req, int timeoutMs)
 {
     const QString name = req.params.value(QStringLiteral("name")).toString();
     if (name.isEmpty())
         return Response::failure(req.id, QStringLiteral("bad_request"),
                                  QStringLiteral("name (a phone MCP tool) is required"));
     const QJsonObject args = req.params.value(QStringLiteral("arguments")).toObject();
+
+    // Phone Permissions (PhonePolicyStore) HARD deny-gate. This is the single
+    // choke point EVERY surface (desktop/web/CLI/Android) AND the brain's
+    // computer-use tools_phone.py funnel through, so a 'deny' here is a real
+    // cross-surface kill-switch on high-risk phone actions (send SMS, place
+    // calls, spend money, touch memory). 'ask' passes here and is finished
+    // interactively brain-side in the computer-use policy gate (which owns the
+    // ask-bus); we only load per-call so a policy change takes effect at once.
+    // (Internal callers like phoneNotifyUser / the answer_calls screening push
+    // use ungated tools — notify_user / twilio_screening_* — so they're never
+    // blocked by this.)
+    m_phonePolicies.load();
+    if (m_phonePolicies.decisionForTool(name, args) == QStringLiteral("deny")) {
+        m_audit.record(QStringLiteral("phone.mcp.blocked"), false, QStringLiteral("high"),
+                       name + QStringLiteral(" denied by phone permissions"), QString());
+        return Response::failure(
+            req.id, QStringLiteral("blocked_by_phone_policy"),
+            QStringLiteral("Blocked by Phone Permissions: '") + name
+                + QStringLiteral("' is set to Deny. Change it in Phone → Permissions."));
+    }
 
     // The bearer never leaves the daemon — clients call phone.mcp and we forward.
     const PhoneEnv penv = readPhoneEnv();
@@ -1645,8 +1679,9 @@ Response ControlServer::handlePhoneMcp(const Request &req)
     // The *_and_wait phone tools (call_user_and_wait, twilio_call_and_wait,
     // notify_user_and_wait, wait_for_message_reply, …) BLOCK until the user answers
     // — that can take minutes. A 35s cap timed those out ("phone server: timeout");
-    // give the proxy 5 minutes so a real call/wait can complete.
-    QTimer::singleShot(300000, &loop, &QEventLoop::quit);
+    // give the proxy 5 minutes (default) so a real call/wait can complete;
+    // internal quick pushes override with a short timeoutMs.
+    QTimer::singleShot(timeoutMs, &loop, &QEventLoop::quit);
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     loop.exec();
     if (!reply->isFinished() || reply->error() != QNetworkReply::NoError) {
@@ -1881,6 +1916,288 @@ Response ControlServer::handlePhoneConfig(const Request &req)
 
     return Response::failure(req.id, QStringLiteral("bad_request"),
                              QStringLiteral("action must be get|set|test"));
+}
+
+// --- Phone Permissions (PhonePolicyStore) -----------------------------------
+
+Response ControlServer::handlePhonePolicyList(const Request &req)
+{
+    m_phonePolicies.load();
+    return Response::success(req.id, m_phonePolicies.toJson());
+}
+
+Response ControlServer::handlePhonePolicySet(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    const QString value = req.params.value(QStringLiteral("value")).toString();
+    m_phonePolicies.load();
+    if (!m_phonePolicies.setValue(id, value))
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 m_phonePolicies.lastError());
+    m_audit.record(QStringLiteral("phone.policy.set"), true, QStringLiteral("high"),
+                   QStringLiteral("set %1=%2").arg(id, value), QString());
+    if (id == QStringLiteral("answer_calls"))
+        applyAnswerCallsScreening(value);
+    return Response::success(req.id, m_phonePolicies.toJson());
+}
+
+// answer_calls is HARD-enforced by driving the phone server's OWN screening
+// config (the daemon can't edit the vendored server, but it CAN flip its runtime
+// settings via the proxy): 'screen_unknown' => screening ON (unknown callers
+// screened, allow-listed answered directly); 'allowed_only' => screening OFF
+// (unknown callers rejected; only the allowlist connects). Best-effort through
+// phone.mcp (twilio_screening_* is ungated, never denied).
+void ControlServer::applyAnswerCallsScreening(const QString &value)
+{
+    const QString tool = (value == QStringLiteral("screen_unknown"))
+        ? QStringLiteral("twilio_screening_enable")
+        : QStringLiteral("twilio_screening_disable");
+    Request p;
+    p.id = 0;
+    p.method = QStringLiteral("phone.mcp");
+    QJsonObject pp;
+    pp.insert(QStringLiteral("name"), tool);
+    pp.insert(QStringLiteral("arguments"), QJsonObject());
+    p.params = pp;
+    // 20s cap (not the 5-min *_and_wait default). handlePhoneMcp returns ok=true
+    // even for an MCP-LEVEL error (it tucks it into result["error"]), so a
+    // screening push that reaches the server but fails there is only caught by
+    // checking that key too — otherwise the daemon would think the
+    // 'config'-enforced answer_calls change stuck when it silently didn't.
+    const Response hr = handlePhoneMcp(p, 20000);
+    if (!hr.ok || hr.result.contains(QStringLiteral("error")))
+        qWarning("jarvisd: phone.policy answer_calls could not update screening (%s)",
+                 qUtf8Printable(tool));
+}
+
+Response ControlServer::handlePhonePolicyReset(const Request &req)
+{
+    m_phonePolicies.load();
+    if (!m_phonePolicies.reset())
+        return Response::failure(req.id, QStringLiteral("write_error"),
+                                 m_phonePolicies.lastError());
+    m_audit.record(QStringLiteral("phone.policy.reset"), true, QStringLiteral("high"),
+                   QStringLiteral("reset phone permissions to defaults"), QString());
+    // Reset flips answer_calls back to its default — reapply the screening config
+    // (like set does) so the phone server can't stay in the pre-reset screening
+    // state while the UI shows the reset default.
+    applyAnswerCallsScreening(m_phonePolicies.value(QStringLiteral("answer_calls")));
+    return Response::success(req.id, m_phonePolicies.toJson());
+}
+
+Response ControlServer::handlePhonePolicyTest(const Request &req)
+{
+    m_phonePolicies.load();
+    const QString tool = req.params.value(QStringLiteral("tool")).toString();
+    QJsonObject r;
+    r.insert(QStringLiteral("tool"), tool);
+    QJsonArray caps;
+    for (const QString &c : PhonePolicyStore::capabilitiesForTool(tool))
+        caps.append(c);
+    r.insert(QStringLiteral("capabilities"), caps);
+    r.insert(QStringLiteral("decision"), m_phonePolicies.decisionForTool(tool));
+    return Response::success(req.id, r);
+}
+
+// --- Twilio Verified Caller ID automation -----------------------------------
+
+namespace {
+// One Twilio REST helper for the verify handlers. HTTP Basic-auths with the
+// account SID + auth token (from phone.env) and returns the parsed JSON body.
+// `form` empty => GET; non-empty + method POST => form-encoded body. Sets
+// *httpStatus to the real HTTP code and *err to Twilio's {message} on failure.
+// 30s cap so a hung endpoint can't pin the daemon's single event loop open.
+QJsonObject twilioApiRequest(const QString &sid, const QString &authToken,
+                             const QString &method, const QString &path,
+                             const QList<QPair<QString, QString>> &form,
+                             int *httpStatus, QString *err)
+{
+    // Build the x-www-form-urlencoded string percent-encoding EVERY byte of each
+    // key/value (QUrl::toPercentEncoding). QUrlQuery/FullyEncoded leaves '+'
+    // literal, and a form/query decoder reads '+' as a space — so an E.164
+    // number like "+15551234567" would arrive as " 15551234567" and Twilio would
+    // reject it. toPercentEncoding emits "%2B" for the leading '+'.
+    QByteArray encoded;
+    for (const auto &kv : form) {
+        if (!encoded.isEmpty())
+            encoded += '&';
+        encoded += QUrl::toPercentEncoding(kv.first);
+        encoded += '=';
+        encoded += QUrl::toPercentEncoding(kv.second);
+    }
+    QNetworkAccessManager nam;
+    const QByteArray base = (QStringLiteral("https://api.twilio.com") + path).toUtf8();
+    // fromEncoded so the already-percent-encoded query is stored verbatim (no
+    // re-decoding of the %2B we just wrote).
+    const QUrl url = (method == QStringLiteral("POST") || encoded.isEmpty())
+        ? QUrl::fromEncoded(base)
+        : QUrl::fromEncoded(base + "?" + encoded);
+    QNetworkRequest rq(url);
+    const QByteArray basic =
+        QByteArray(sid.toUtf8() + ":" + authToken.toUtf8()).toBase64();
+    rq.setRawHeader("Authorization", QByteArray("Basic ") + basic);
+    QNetworkReply *reply = nullptr;
+    if (method == QStringLiteral("POST")) {
+        rq.setHeader(QNetworkRequest::ContentTypeHeader,
+                     QStringLiteral("application/x-www-form-urlencoded"));
+        reply = nam.post(rq, encoded);
+    } else {
+        reply = nam.get(rq);
+    }
+    QEventLoop loop;
+    QTimer::singleShot(30000, &loop, &QEventLoop::quit);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    QJsonObject out;
+    if (!reply->isFinished()) {
+        if (err) *err = QStringLiteral("timeout");
+        if (httpStatus) *httpStatus = 0;
+        reply->deleteLater();
+        return out;
+    }
+    if (httpStatus)
+        *httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    const QByteArray body = reply->readAll();
+    const QNetworkReply::NetworkError netErr = reply->error();
+    reply->deleteLater();
+    const QJsonDocument doc = QJsonDocument::fromJson(body);
+    if (doc.isObject())
+        out = doc.object();
+    if (netErr != QNetworkReply::NoError && err)
+        *err = out.value(QStringLiteral("message"))
+                   .toString(QStringLiteral("Twilio HTTP error"));
+    return out;
+}
+} // namespace
+
+Response ControlServer::handleTwilioVerifyStart(const Request &req)
+{
+    const QString number = req.params.value(QStringLiteral("phone_number")).toString().trimmed();
+    const QString friendly = req.params.value(QStringLiteral("friendly_name")).toString().trimmed();
+    if (number.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("phone_number is required"));
+    const PhoneEnv penv = readPhoneEnv();
+    if (penv.twilioAccountSid.isEmpty() || penv.twilioAuthToken.isEmpty())
+        return Response::failure(req.id, QStringLiteral("twilio_not_configured"),
+                                 QStringLiteral("Twilio Account SID + Auth Token must be set "
+                                                "(Phone → Settings) before verifying a number."));
+    QList<QPair<QString, QString>> form;
+    form.append({QStringLiteral("PhoneNumber"), number});
+    form.append({QStringLiteral("FriendlyName"), friendly.isEmpty() ? number : friendly});
+    int status = 0;
+    QString err;
+    const QJsonObject tw = twilioApiRequest(
+        penv.twilioAccountSid, penv.twilioAuthToken, QStringLiteral("POST"),
+        QStringLiteral("/2010-04-01/Accounts/") + penv.twilioAccountSid
+            + QStringLiteral("/OutgoingCallerIds.json"),
+        form, &status, &err);
+    if (status < 200 || status >= 300) {
+        m_audit.record(QStringLiteral("phone.twilio_verify_start"), false, QStringLiteral("high"),
+                       QStringLiteral("verify %1 failed: %2").arg(number, err), QString());
+        return Response::failure(req.id, QStringLiteral("twilio_error"),
+                                 err.isEmpty() ? QStringLiteral("Twilio rejected the request") : err);
+    }
+    // Twilio is now calling `number`; the person answering reads back this code.
+    const QString code = tw.value(QStringLiteral("validation_code")).toString();
+    const QString callSid = tw.value(QStringLiteral("call_sid")).toString();
+    // Also add it to the app allowlist so Cindro will call/text it once verified.
+    // Capture the result: if the phone server is down or rejects it, report
+    // allowlisted:false (and say so in the note) rather than claiming it was
+    // allow-listed when it wasn't — otherwise later calls/SMS to that number
+    // would still fail the phone server's allowlist check with no explanation.
+    bool allowlisted = false;
+    {
+        Request p;
+        p.id = 0;
+        p.method = QStringLiteral("phone.mcp");
+        QJsonObject args;
+        args.insert(QStringLiteral("phone_number"), number);
+        if (!friendly.isEmpty())
+            args.insert(QStringLiteral("label"), friendly);
+        QJsonObject pp;
+        pp.insert(QStringLiteral("name"), QStringLiteral("twilio_allowlist_add"));
+        pp.insert(QStringLiteral("arguments"), args);
+        p.params = pp;
+        const Response ar = handlePhoneMcp(p, 20000); // best-effort; verify is primary
+        allowlisted = ar.ok && !ar.result.contains(QStringLiteral("error"));
+    }
+    m_audit.record(QStringLiteral("phone.twilio_verify_start"), true, QStringLiteral("high"),
+                   QStringLiteral("started verified-caller-id for ") + number, QString());
+    QString note = QStringLiteral("Twilio is calling ") + number
+                 + QStringLiteral("; enter this code when prompted: ") + code;
+    if (!allowlisted)
+        note += QStringLiteral(" (couldn't add it to the allowlist — is the phone server running?)");
+    QJsonObject r;
+    r.insert(QStringLiteral("ok"), true);
+    r.insert(QStringLiteral("phone_number"), number);
+    r.insert(QStringLiteral("validation_code"), code);
+    r.insert(QStringLiteral("call_sid"), callSid);
+    r.insert(QStringLiteral("allowlisted"), allowlisted);
+    r.insert(QStringLiteral("note"), note);
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleTwilioCallerIdsList(const Request &req)
+{
+    const PhoneEnv penv = readPhoneEnv();
+    if (penv.twilioAccountSid.isEmpty() || penv.twilioAuthToken.isEmpty())
+        return Response::failure(req.id, QStringLiteral("twilio_not_configured"),
+                                 QStringLiteral("Twilio Account SID + Auth Token must be set "
+                                                "(Phone → Settings)."));
+    const QString filter = req.params.value(QStringLiteral("phone_number")).toString().trimmed();
+    QList<QPair<QString, QString>> q;
+    if (!filter.isEmpty())
+        q.append({QStringLiteral("PhoneNumber"), filter});
+    int status = 0;
+    QString err;
+    const QJsonObject tw = twilioApiRequest(
+        penv.twilioAccountSid, penv.twilioAuthToken, QStringLiteral("GET"),
+        QStringLiteral("/2010-04-01/Accounts/") + penv.twilioAccountSid
+            + QStringLiteral("/OutgoingCallerIds.json"),
+        q, &status, &err);
+    if (status < 200 || status >= 300)
+        return Response::failure(req.id, QStringLiteral("twilio_error"),
+                                 err.isEmpty() ? QStringLiteral("Twilio request failed") : err);
+    QJsonArray ids;
+    for (const QJsonValue &v : tw.value(QStringLiteral("outgoing_caller_ids")).toArray()) {
+        const QJsonObject o = v.toObject();
+        QJsonObject e;
+        e.insert(QStringLiteral("phone_number"), o.value(QStringLiteral("phone_number")).toString());
+        e.insert(QStringLiteral("friendly_name"), o.value(QStringLiteral("friendly_name")).toString());
+        e.insert(QStringLiteral("sid"), o.value(QStringLiteral("sid")).toString());
+        ids.append(e);
+    }
+    QJsonObject r;
+    r.insert(QStringLiteral("caller_ids"), ids);
+    if (!filter.isEmpty())
+        r.insert(QStringLiteral("verified"), !ids.isEmpty());
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleTwilioVerifyStatus(const Request &req)
+{
+    // A number is "verified" once it appears in the OutgoingCallerIds list.
+    const QString number = req.params.value(QStringLiteral("phone_number")).toString().trimmed();
+    if (number.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("phone_number is required"));
+    Request q;
+    q.id = req.id;
+    q.method = QStringLiteral("phone.twilio_caller_ids_list");
+    QJsonObject pp;
+    pp.insert(QStringLiteral("phone_number"), number);
+    q.params = pp;
+    const Response lr = handleTwilioCallerIdsList(q);
+    if (!lr.ok)
+        return lr;
+    QJsonObject r;
+    r.insert(QStringLiteral("phone_number"), number);
+    r.insert(QStringLiteral("verified"),
+             !lr.result.value(QStringLiteral("caller_ids")).toArray().isEmpty());
+    r.insert(QStringLiteral("caller_ids"), lr.result.value(QStringLiteral("caller_ids")));
+    return Response::success(req.id, r);
 }
 
 void ControlServer::onPhoneWsMessage(const QString &raw)
@@ -5782,7 +6099,7 @@ void ControlServer::seedPhoneSkill()
 {
     // Builtin "phone" playbook. Versioned like internal_docs so an install picks up
     // updates, but never clobbers a user's own edits to a same-named skill.
-    const QString kMarker = QStringLiteral("[phone skill v2]");
+    const QString kMarker = QStringLiteral("[phone skill v3]");
     if (auto existing = m_skills.get(QStringLiteral("phone"))) {
         QFile f(existing->path);
         if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -5796,7 +6113,7 @@ void ControlServer::seedPhoneSkill()
         m_skills.remove(QStringLiteral("phone")); // stale builtin -> refresh
     }
     const QString body = QStringLiteral(
-        "[phone skill v2] Use this when calling/texting the user, when they call or text "
+        "[phone skill v3] Use this when calling/texting the user, when they call or text "
         "you, or when working with the phone subsystem.\n\n"
         "# Phone — call & text the user, and answer when they reach you\n\n"
         "Cindro has a NATIVE phone subsystem (vendored in the repo; MCP gateway on :8801). "
@@ -5820,6 +6137,14 @@ void ControlServer::seedPhoneSkill()
         "conversational, no markdown — they're spoken aloud). When they TEXT it you wake and reply "
         "as a text message. You can call/text them back mid-conversation with the tools above. "
         "Unknown callers are SCREENED first (read-only, talk-only) before reaching you.\n\n"
+        "## Phone Permissions (respect the user's limits)\n"
+        "The user can restrict what you may do over the phone in Phone → Permissions. These are "
+        "ENFORCED, not suggestions: a capability set to Deny makes the matching tool FAIL with "
+        "`blocked_by_phone_policy` (e.g. send_sms→`twilio_sms`/`device_sms`, outbound_calls→"
+        "`twilio_call_and_wait`, spend_money→any billed PSTN call/SMS) — do NOT retry a blocked "
+        "tool; instead tell the caller you're not allowed to do that right now. A capability set to "
+        "Ask will pause for the user's approval before it runs. Answer-policy (who you pick up for) "
+        "is handled upstream by call screening, so you may not even see screened/blocked callers.\n\n"
         "## Agents & extensions\n"
         "- `list_extensions` / `list_agents` — who's reachable (101 Cindro, 102 Codex, 103 Copilot, "
         "…, 107 screener).\n"
@@ -6779,6 +7104,11 @@ bool ControlServer::isConfigMethod(const QString &method)
         // Native phone subsystem proxy + lifecycle hooks (the phone app drives
         // calls/inbox via phone.mcp; the daemon holds the phone bearer).
         QStringLiteral("phone.mcp"),         QStringLiteral("phone.http"),
+        // Phone Permissions (Phone → Permissions on every surface, incl. the
+        // phone). NOT phone.config / phone.twilio_verify_* — those touch Twilio
+        // secrets and stay control/loopback-only, like phone.config.
+        QStringLiteral("phone.policy.list"), QStringLiteral("phone.policy.set"),
+        QStringLiteral("phone.policy.reset"), QStringLiteral("phone.policy.test"),
         QStringLiteral("hooks.list"),        QStringLiteral("hooks.add"),
         QStringLiteral("hooks.remove"),      QStringLiteral("hooks.test"),
     };
@@ -6794,6 +7124,10 @@ Response ControlServer::dispatchConfigMethod(const Request &req, bool remote)
     if (m == QStringLiteral("ui.manifest.get")) return handleUiManifestGet(req);
     if (m == QStringLiteral("phone.mcp"))       return handlePhoneMcp(req);
     if (m == QStringLiteral("phone.http"))      return handlePhoneHttp(req);
+    if (m == QStringLiteral("phone.policy.list"))  return handlePhonePolicyList(req);
+    if (m == QStringLiteral("phone.policy.set"))   return handlePhonePolicySet(req);
+    if (m == QStringLiteral("phone.policy.reset")) return handlePhonePolicyReset(req);
+    if (m == QStringLiteral("phone.policy.test"))  return handlePhonePolicyTest(req);
     if (m == QStringLiteral("hooks.list"))      return handleHooksList(req);
     if (m == QStringLiteral("hooks.add"))       return handleHooksAdd(req);
     if (m == QStringLiteral("hooks.remove"))    return handleHooksRemove(req);

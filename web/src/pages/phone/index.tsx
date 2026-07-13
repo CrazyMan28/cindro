@@ -26,8 +26,9 @@ import { PhoneDialerTab } from "./dialer"
 import { PhoneAgentsTab } from "./agents-tab"
 import { PhoneInboxTab } from "./inbox"
 import { PhoneHudTab } from "./hud"
+import { PhonePermissionsTab } from "./permissions-tab"
 
-export type PhoneTabKey = "calls" | "agents" | "inbox" | "hud" | "settings" | "screening"
+export type PhoneTabKey = "calls" | "agents" | "inbox" | "hud" | "settings" | "screening" | "permissions"
 
 export interface PhoneTabDef {
   key: PhoneTabKey
@@ -51,6 +52,7 @@ export const PHONE_TABS: PhoneTabDef[] = [
     blurb: "SMS agent, call screening, carrier forwarding (incl. Verizon *72/*73), allowlist, diagnostics.",
   },
   { key: "screening", label: "SCREENING", glyph: "voice", blurb: "Live caller/agent transcript while a call is being screened." },
+  { key: "permissions", label: "PERMISSIONS", glyph: "settings", blurb: "What Cindro may do over the phone (answer/SMS/calls/spend/memory)." },
 ]
 
 interface PhoneShellCtx {
@@ -216,6 +218,7 @@ function PhoneShell() {
               if (def.key === "hud") return <PhoneHudTab />
               if (def.key === "settings") return <PhoneSettingsTab />
               if (def.key === "screening") return <PhoneScreeningTab />
+              if (def.key === "permissions") return <PhonePermissionsTab />
               return <TabPlaceholder {...def} />
             }}
           </Show>

@@ -69,6 +69,7 @@ qt_add_qml_module(cindro-sidebar
         qml/PhoneHudTab.qml
         qml/PhoneSettingsTab.qml
         qml/PhoneScreeningTab.qml
+        qml/PhonePermissionsTab.qml
         qml/PhoneCallOverlay.qml
         qml/OutpostPage.qml
         qml/ActivityPage.qml

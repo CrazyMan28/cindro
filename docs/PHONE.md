@@ -121,6 +121,58 @@ for the extension's width constraints.
 | **HUD** | Live call HUD (transcription, agent state machine, mute/hold); diagnostics; Bluetooth relay puck (relay `/relay/media` WS) |
 | **Settings** | Call screening rules + carrier forwarding toggle; SMS agent assignment; setup wizard; history; diagnostics |
 
+## Phone Permissions, Twilio verify & call-voice clones (Cindro-side)
+
+Three Cindro-side enhancements layer on top of the vendored server **without
+editing `phone/server`** — all business logic lives in `core/`/`daemon/` and the
+surfaces.
+
+### Phone Permissions — "what Cindro may do over the phone"
+
+`core/PhonePolicyStore` owns `~/.config/jarvis/phone_policy.json` (mirrors
+`TrustPolicyStore`): a fixed capability map, each capability set to a value from a
+closed choice list. Contract A **`phone.policy.list/set/reset/test`**
+(device-exposed, so it reaches the phone too). Surfaced as a **Phone → Permissions**
+tab on desktop/web/CLI and a Cindro-native screen on Android.
+
+| Capability | Choices | Enforcement |
+|---|---|---|
+| `answer_calls` | `screen_unknown` \| `allowed_only` | **config** — the daemon drives the phone server's screening on/off through `phone.mcp` (`screen_unknown`→screening ON so unknown callers are screened; `allowed_only`→screening OFF so unknown callers are rejected and only the allowlist connects) |
+| `send_sms`, `outbound_calls`, `spend_money`, `access_memory` | `allow` \| `ask` \| `deny` | **hard** — enforced at the daemon's `phone.mcp` choke point (deny → `blocked_by_phone_policy`, all surfaces + the brain's `tools_phone.py`) and, for the brain's interactive `ask`, at the computer-use policy gate (`policy.py`, the only layer with an ask-bus) |
+| `computer_use_on_call`, `access_files` | `allow` \| `ask` \| `deny` | **soft (guidance)** — the inbound ext-101 agent runs inside the vendored server with no daemon choke point, so these steer it via the seeded `/phone` skill (v3) preamble only |
+
+The UI badges each capability **Enforced** vs **Guidance** so the vendored-server
+boundary is honest. The tool→capability map is duplicated in
+`core/src/PhonePolicyStore.cpp` (`buildToolMap`) and
+`computer-use/computer_use_mcp/policy.py` (`_PHONE_TOOL_CAPS`) and **must stay in
+sync** (billed PSTN tools map to both their per-action capability and
+`spend_money`; `decisionForTool` takes the stricter). `deny` is enforced for every
+surface; `ask` on a direct human-driven UI action passes (the human is the
+approval) and is only interactive for the brain.
+
+### Twilio Verified Caller IDs (trial-account outbound gate)
+
+On a Twilio **trial** account, outbound calls/SMS only reach **verified** numbers.
+Contract A **`phone.twilio_verify_start` / `phone.twilio_verify_status` /
+`phone.twilio_caller_ids_list`** (in `daemon/src/ControlServer.cpp`) call the
+Twilio REST API (`POST/GET /2010-04-01/Accounts/<SID>/OutgoingCallerIds.json`)
+with the SID/auth-token from `phone.env`. `verify_start` returns the 6-digit
+`validation_code` (Twilio calls the number; the user reads it back) and **also adds
+the number to the app allowlist**. These are **control/loopback-channel ONLY**
+(like `phone.config`) — never exposed to the phone/device channel, since they touch
+the Twilio auth token; the token is never echoed in any result. Surfaced in
+**Phone → Settings** on desktop + web (not Android/CLI, which stay on the device
+channel).
+
+### Call-voice clones
+
+The per-agent voice picker (**Phone → Agents**) now merges the user's named cloned
+voices from `voice.list_voices` (`core/VoiceLibrary`, `clone:<slug>` / `jarvice`)
+in as a **"Your voices"** group, so an agent (e.g. ext 101) can speak on calls with
+a clone the user already made in **Settings → Voice** (no separate create flow in
+the Phone section). The phone server already resolves `clone:<slug>` to `ref_audio`
+(`voices/cloneVoices.ts`). Clones on Android already flow via `/api/voices`.
+
 ## Real-world verification
 Inbound PSTN calls reach Cindro and converse (verified). An **in-app VOIP call** to the
 user's device was placed (`call_user`) and **rang the app — the user answered** (the call

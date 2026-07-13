@@ -137,6 +137,19 @@ class JarvisRepository(
         client.request("policy.set_default", Params.of("action" to action)).orThrow()
     }
 
+    // --- Phone Permissions (phone.policy.*, device-exposed) -----------------
+    // "What Cindro may do over the phone." list/set/reset each return the
+    // enriched capability map {version, capabilities:[{id,label,value,choices,
+    // choiceLabels,enforcement,note}]} so the caller updates from the response.
+    suspend fun phonePolicyList(): JsonObject =
+        client.request("phone.policy.list").orThrow()
+
+    suspend fun phonePolicySet(id: String, value: String): JsonObject =
+        client.request("phone.policy.set", Params.of("id" to id, "value" to value)).orThrow()
+
+    suspend fun phonePolicyReset(): JsonObject =
+        client.request("phone.policy.reset").orThrow()
+
     // --- action tier -------------------------------------------------------
 
     suspend fun createSession(

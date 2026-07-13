@@ -63,6 +63,8 @@ import com.cindro.app.ui.memory.MemoryViewModel
 import com.cindro.app.ui.pairing.PairScreen
 import com.cindro.app.ui.pairing.PairingViewModel
 import com.cindro.app.ui.phone.PhoneLaunchScreen
+import com.cindro.app.ui.phone.PhonePermissionsScreen
+import com.cindro.app.ui.phone.PhonePermissionsViewModel
 import com.cindro.app.ui.plugins.PluginsScreen
 import com.cindro.app.ui.plugins.PluginsViewModel
 import com.cindro.app.ui.queue.QueueScreen
@@ -102,6 +104,7 @@ private object Routes {
     const val MEMORY = "memory"
     const val FILES = "files"
     const val PHONE = "phone"
+    const val PHONE_PERMISSIONS = "phone_permissions"
     const val CHAT = "chat/{sessionId}?wake={wake}"
     fun chat(id: String, wake: Boolean = false) = "chat/$id?wake=$wake"
     // 2FA + fingerprint cross-device unlock — the phone Approve leg.
@@ -426,6 +429,16 @@ fun AppNav(
                     // destination launches the real com.agentphone.MainActivity (see
                     // PhoneLaunchScreen).
                     PhoneLaunchScreen(onOpenDrawer = ::openDrawer)
+                }
+            }
+            composable(Routes.PHONE_PERMISSIONS) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    // Cindro-native "what Cindro may do over the phone" — the
+                    // vendored agent-phone app is a SEPARATE activity, so phone
+                    // permissions live here as their own drawer destination.
+                    val vm: PhonePermissionsViewModel =
+                        viewModel(factory = PhonePermissionsViewModel.factory(app))
+                    PhonePermissionsScreen(viewModel = vm, activity = activity, onOpenDrawer = ::openDrawer)
                 }
             }
             composable(Routes.SETTINGS) {

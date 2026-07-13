@@ -942,6 +942,61 @@ review, before this ever ran on a device:
   didn't before, so this (or any other) `session.create` failure surfaced as
   total silence on the phone.
 
+## New subsystems (2026-07-13) — phone permissions, Twilio verify, call-voice clones
+
+Three Cindro-side enhancements to the native Phone subsystem — **no edits to the
+vendored `phone/server`** (see docs/PHONE.md). Load-bearing truths:
+
+- **`PhonePolicyStore` (core) = "what Cindro may do over the phone."** A FIXED
+  capability map at `~/.config/jarvis/phone_policy.json` (not glob rules like
+  `TrustPolicyStore`). Contract A `phone.policy.list/set/reset/test` — **device-
+  exposed** (`isConfigMethod` + `dispatchConfigMethod`). Enforcement is layered
+  and the UI badges each capability honestly: **hard** deny at the daemon
+  `handlePhoneMcp` choke point (every surface AND the brain's `tools_phone.py`
+  funnel through it) + **hard** interactive `ask` at the computer-use `policy.py`
+  gate (the ONLY layer with an ask-bus); **config** for `answer_calls` (the daemon
+  flips the phone server's screening via `phone.mcp` — `screen_unknown`→enable,
+  `allowed_only`→disable, because screening-OFF rejects unknown callers per the
+  feature map); **soft/guidance** for `computer_use_on_call`/`access_files` (the
+  inbound ext-101 agent runs in the vendored server with no daemon choke point —
+  steered only via the seeded `/phone` skill v3 preamble).
+- **The tool→capability map is DUPLICATED and must stay in sync**:
+  `core/src/PhonePolicyStore.cpp` `buildToolMap()` (C++, daemon deny-gate) and
+  `computer-use/computer_use_mcp/policy.py` `_PHONE_TOOL_CAPS` + `_PHONE_CAP_DEFAULTS`
+  (Python, brain ask-gate). Billed PSTN tools map to BOTH their per-action cap and
+  `spend_money`; `decisionForTool` returns the STRICTER. Two argument-dependent
+  refinements mirror across both readers too: `call_user_and_wait` with
+  `escalate_to_twilio=true` folds in `spend_money` (its plain in-app path is free),
+  and `twilio_screening_enable/disable` are DENIED when they'd contradict the
+  current `answer_calls` (so the brain can't desync that policy by toggling
+  screening directly — the internal `applyAnswerCallsScreening` push always calls
+  the MATCHING tool, so it is never self-blocked). Same drift hazard as the
+  trust-policy engine — keep both readers aligned.
+- **`phone_policy.json` path must mirror `Config::configDir()`** (JARVIS_CONFIG_DIR-
+  aware, NOT XDG). `policy.py` uses `daemon_client.py`'s idiom
+  (`os.environ.get("JARVIS_CONFIG_DIR") or ~/.config/jarvis`); using XDG_CONFIG_HOME
+  there instead makes the engine read a different file than the daemon under a
+  profile and silently fails `ask` OPEN (deny is still caught daemon-side).
+- **Twilio Verified Caller ID RPCs are control/loopback-ONLY** (secret-touching,
+  like `phone.config`): `phone.twilio_verify_start/status` + `phone.twilio_caller_
+  ids_list` read the Twilio auth token from `phone.env` and hit the Twilio REST API
+  — deliberately absent from `isConfigMethod`, never on the device channel; the
+  token is never echoed. `verify_start` also adds the number to the app allowlist.
+- **Twilio form/query values must be percent-encoded** (`QUrl::toPercentEncoding` +
+  `QUrl::fromEncoded`), not `QUrlQuery::toString(FullyEncoded)` — the latter leaves
+  `+` literal, which a form/query decoder reads as a space, so an E.164 `+1…`
+  arrives as ` 1…` and Twilio rejects it.
+- **`handlePhoneMcp` takes a `timeoutMs` (default 300000 for `*_and_wait`)** — the
+  internal quick pushes (screening config, allowlist add) pass 20s so a half-open
+  phone server can't pin the daemon's single event loop for minutes. It returns
+  `ok=true` even on an MCP-LEVEL error (tucked in `result["error"]`), so internal
+  callers that care must check that key too, not just `.ok`.
+- **Mirroring rules honored**: `PhonePolicyStore.cpp` added to BOTH
+  `core/CMakeLists.txt` and `windows/CMakeLists.txt`; `PhonePermissionsTab.qml`
+  added to `desktop/CMakeLists.txt` QML_FILES (Windows globs `desktop/qml/*.qml`).
+  Android is a Cindro-native `ui/phone/PhonePermissions{Screen,ViewModel}.kt` (its
+  own drawer destination, `Gated()`), version bumped 0.15.0→0.16.0.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.
