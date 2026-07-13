@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -45,12 +45,11 @@ import com.cindro.app.ui.theme.JarvisPalette
  * Inbox / Agents / HUD / Settings + setup wizard + call screens) full-screen.
  *
  * It opens automatically the first time this screen is shown, and the button reopens
- * it after the user backs out; the back arrow returns to whichever chat this was
- * opened from.
+ * it after the user backs out; the hamburger opens the drawer to jump anywhere else.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun PhoneLaunchScreen(onBack: () -> Unit) {
+fun PhoneLaunchScreen(onOpenDrawer: () -> Unit) {
     val context = LocalContext.current
 
     fun openPhone() {
@@ -66,8 +65,8 @@ fun PhoneLaunchScreen(onBack: () -> Unit) {
             TopAppBar(
                 title = { Text("Phone") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open menu")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(

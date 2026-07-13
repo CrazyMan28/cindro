@@ -12,6 +12,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -46,7 +47,12 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AgentsScreen(viewModel: AgentsViewModel, activity: FragmentActivity, onOpenChat: (String) -> Unit) {
+fun AgentsScreen(
+    viewModel: AgentsViewModel,
+    activity: FragmentActivity,
+    onOpenChat: (String) -> Unit,
+    onOpenDrawer: () -> Unit,
+) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var showCreate by remember { mutableStateOf(false) }
@@ -65,6 +71,11 @@ fun AgentsScreen(viewModel: AgentsViewModel, activity: FragmentActivity, onOpenC
         topBar = {
             TopAppBar(
                 title = { Text("Agents") },
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open menu")
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = JarvisPalette.Background,
                     titleContentColor = JarvisPalette.TextPrimary,

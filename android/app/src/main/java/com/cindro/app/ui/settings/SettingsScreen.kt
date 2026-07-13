@@ -24,9 +24,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -75,7 +75,7 @@ fun SettingsScreen(
     viewModel: SettingsViewModel,
     activity: FragmentActivity,
     onUnpaired: () -> Unit,
-    onBack: () -> Unit,
+    onOpenDrawer: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val conn by viewModel.connection.collectAsStateWithLifecycle()
@@ -145,8 +145,8 @@ fun SettingsScreen(
             TopAppBar(
                 title = { Text("Settings") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open menu")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(

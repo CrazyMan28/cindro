@@ -16,6 +16,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -54,7 +55,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun McpScreen(viewModel: McpViewModel, activity: FragmentActivity) {
+fun McpScreen(viewModel: McpViewModel, activity: FragmentActivity, onOpenDrawer: () -> Unit) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var showAdd by remember { mutableStateOf(false) }
@@ -64,6 +65,11 @@ fun McpScreen(viewModel: McpViewModel, activity: FragmentActivity) {
         topBar = {
             TopAppBar(
                 title = { Text("MCP servers") },
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open menu")
+                    }
+                },
                 actions = {
                     IconButton(onClick = viewModel::refresh) {
                         Icon(Icons.Filled.Refresh, contentDescription = "Refresh")

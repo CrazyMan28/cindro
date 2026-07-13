@@ -38,6 +38,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.cindro.app.JarvisApp
 import com.cindro.app.fcm.PushRegistrar
@@ -81,10 +82,10 @@ import kotlinx.coroutines.launch
 /**
  * Flat, drawer-driven route table. The old two-tier nav (an outer graph plus an
  * inner bottom-tab "Shell") is gone — every promoted destination (formerly a
- * bottom tab OR a "More" hub row) is a plain sibling here, reached from the
- * sidebar drawer exactly like Claude/ChatGPT: tapping a drawer item pushes that
- * screen over chat, and back returns to chat. See docs/STATUS.md for the design
- * writeup.
+ * bottom tab OR a "More" hub row) is a plain sibling here, reached from ONE
+ * sidebar drawer that wraps the whole app (not just chat) exactly like Claude/
+ * ChatGPT: the hamburger is reachable from every page, tapping a drawer item
+ * replaces whatever screen is showing. See docs/STATUS.md for the design writeup.
  */
 private object Routes {
     const val PAIR = "pair"
@@ -177,22 +178,56 @@ fun AppNav(
         }
     }
 
-    // Shared across CHAT_HOME + every live chat: the sidebar's Recents/online data
-    // (HomeViewModel, unchanged — it already had exactly what the drawer needs) and
-    // the drawer's own open/close state. Hoisted once here (not per-nav-entry) so
-    // "New chat" / Recents behave identically no matter which chat you're viewing
-    // from, and the drawer doesn't reset when you switch chats.
+    // The sidebar's Recents/online data (HomeViewModel, unchanged) and the
+    // drawer's own open/close state — hoisted once so the drawer is identical
+    // and reachable no matter which screen is showing.
     val homeVm: HomeViewModel = viewModel(factory = HomeViewModel.factory(app))
+    val homeState by homeVm.uiState.collectAsStateWithLifecycle()
+    val conn by homeVm.connection.collectAsStateWithLifecycle()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
+    val currentBackStackEntry by nav.currentBackStackEntryAsState()
+    val currentRoute = currentBackStackEntry?.destination?.route
+    val currentSessionId = if (currentRoute == Routes.CHAT) {
+        currentBackStackEntry?.arguments?.getString("sessionId")
+    } else null
 
     fun openDrawer() {
         drawerScope.launch { drawerState.open() }
     }
 
-    fun closeDrawerThen(action: () -> Unit) {
+    /**
+     * Every drawer action replaces whatever's currently showing rather than
+     * stacking on top of it — the drawer is reachable from ANY screen now (not
+     * just chat), so without this, repeated hops (Settings -> Canvas -> Sessions
+     * -> …) would grow the back stack unboundedly. The one exception: CHAT_HOME
+     * (the app's true root) is never popped, so back always has somewhere to land
+     * instead of exiting the app.
+     */
+    fun navigateFromDrawer(route: String) {
         drawerScope.launch { drawerState.close() }
-        action()
+        val current = nav.currentBackStackEntry
+        val atRoot = current?.destination?.route == Routes.CHAT_HOME
+        nav.navigate(route) {
+            current?.let { popUpTo(it.destination.id) { inclusive = !atRoot } }
+            launchSingleTop = true
+        }
+    }
+
+    fun openSessionFromDrawer(id: String) {
+        if (currentRoute == Routes.CHAT && currentSessionId == id) {
+            drawerScope.launch { drawerState.close() }
+            return
+        }
+        navigateFromDrawer(Routes.chat(id))
+    }
+
+    fun newChatFromDrawer() {
+        drawerScope.launch { drawerState.close() }
+        nav.navigate(Routes.CHAT_HOME) {
+            popUpTo(Routes.CHAT_HOME) { inclusive = true }
+            launchSingleTop = true
+        }
     }
 
     // Soft, dismissible warning if a reconnect's daemon identity fingerprint doesn't
@@ -202,6 +237,24 @@ fun AppNav(
     // so it's visible no matter which drawer destination is open, not just former tabs.
     val identityWarning by app.repository.identityWarning.collectAsStateWithLifecycle()
 
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        // No edge-swipe on the pre-pairing/2FA screens — there's nothing useful
+        // in the drawer yet and neither screen has a hamburger to open it anyway.
+        gesturesEnabled = currentRoute != Routes.PAIR && currentRoute != Routes.APPROVE,
+        drawerContent = {
+            AppDrawerContent(
+                connection = conn,
+                recents = homeState.sessions,
+                isChatHome = currentRoute == Routes.CHAT_HOME,
+                activeSessionId = currentSessionId,
+                activeRoute = currentRoute,
+                onNewChat = ::newChatFromDrawer,
+                onOpenSession = ::openSessionFromDrawer,
+                onNavigate = ::navigateFromDrawer,
+            )
+        },
+    ) {
     Column(Modifier.fillMaxWidth()) {
         identityWarning?.let { msg ->
             Row(
@@ -237,234 +290,166 @@ fun AppNav(
             popEnterTransition = { fadeIn(tween(180)) },
             popExitTransition = { slideOutHorizontally(tween(200)) { it / 3 } + fadeOut(tween(180)) },
         ) {
-        composable(Routes.PAIR) {
-            val vm: PairingViewModel = viewModel(factory = PairingViewModel.factory(app))
-            PairScreen(
-                viewModel = vm,
-                onPaired = {
-                    nav.navigate(Routes.CHAT_HOME) {
-                        popUpTo(Routes.PAIR) { inclusive = true }
-                    }
-                },
-            )
-        }
-
-        composable(Routes.CHAT_HOME) { entry ->
-            if (!appUnlocked) {
-                GateScreen(activity = activity, onUnlocked = { appUnlocked = true })
-            } else {
-                val homeState by homeVm.uiState.collectAsStateWithLifecycle()
-                val conn by homeVm.connection.collectAsStateWithLifecycle()
-                ModalNavigationDrawer(
-                    drawerState = drawerState,
-                    drawerContent = {
-                        AppDrawerContent(
-                            connection = conn,
-                            recents = homeState.sessions,
-                            isChatHome = true,
-                            activeSessionId = null,
-                            onNewChat = { drawerScope.launch { drawerState.close() } },
-                            onOpenSession = { id -> closeDrawerThen { nav.navigate(Routes.chat(id)) } },
-                            onNavigate = { route ->
-                                // Drawer destinations always sit exactly one level above
-                                // whichever chat they were opened from — pop back to THIS
-                                // entry first so repeated drawer hops don't stack (the old
-                                // tab bar's switchTab() had the same "never grows" property
-                                // via popUpTo the start tab).
-                                closeDrawerThen {
-                                    nav.navigate(route) {
-                                        popUpTo(entry.destination.id) { inclusive = false }
-                                        launchSingleTop = true
-                                    }
-                                }
-                            },
-                        )
+            composable(Routes.PAIR) {
+                val vm: PairingViewModel = viewModel(factory = PairingViewModel.factory(app))
+                PairScreen(
+                    viewModel = vm,
+                    onPaired = {
+                        nav.navigate(Routes.CHAT_HOME) {
+                            popUpTo(Routes.PAIR) { inclusive = true }
+                        }
                     },
-                ) {
+                )
+            }
+
+            composable(Routes.CHAT_HOME) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
                     NewChatScreen(
                         viewModel = homeVm,
+                        state = homeState,
+                        conn = conn,
                         onOpenDrawer = ::openDrawer,
                         onSessionCreated = { id -> nav.navigate(Routes.chat(id)) },
                         onOpenVoiceSession = { id -> nav.navigate(Routes.chat(id, wake = true)) },
-                        onTakeOver = { nav.navigate(Routes.COMPUTER) { launchSingleTop = true } },
-                        onCanvas = { nav.navigate(Routes.CANVAS) { launchSingleTop = true } },
+                        onTakeOver = { navigateFromDrawer(Routes.COMPUTER) },
+                        onCanvas = { navigateFromDrawer(Routes.CANVAS) },
                     )
                 }
             }
-        }
 
-        composable(Routes.APPROVE) { entry ->
-            val cid = entry.arguments?.getString("challengeId").orEmpty()
-            ApproveScreen(
-                app = app,
-                activity = activity,
-                challengeId = cid,
-                // Flip the app-open gate open ONLY once ApproveScreen's own
-                // BiometricPrompt actually succeeds — never preemptively — so a
-                // failed/cancelled approval still re-gates the shell behind GateScreen.
-                onUnlocked = { appUnlocked = true },
-                onDone = {
-                    if (!nav.popBackStack()) {
-                        nav.navigate(Routes.CHAT_HOME) {
-                            popUpTo(Routes.APPROVE) { inclusive = true }
-                        }
-                    }
-                },
-            )
-        }
-
-        // Every destination below is gated behind the SAME app-open biometric check
-        // as CHAT_HOME/CHAT (`Gated`, defined below AppNav). Sessions/Canvas/Computer/
-        // Phone/Settings used to be safe INSIDE the old bottom-tab Shell (which was
-        // itself gated); promoting them to top-level routes silently dropped that
-        // check — restored here. Skills/Agents/Queue/MCP/Plugins/Memory/Files were
-        // ALREADY separate top-level routes with no gate even before this redesign;
-        // fixed here too rather than leaving a known gap in a file already being
-        // restructured.
-        composable(Routes.QUEUE) {
-            Gated(appUnlocked, activity, { appUnlocked = true }) {
-                val vm: QueueViewModel = viewModel(factory = QueueViewModel.factory(app))
-                QueueScreen(viewModel = vm)
-            }
-        }
-        composable(Routes.MCP) {
-            Gated(appUnlocked, activity, { appUnlocked = true }) {
-                val vm: McpViewModel = viewModel(factory = McpViewModel.factory(app))
-                McpScreen(viewModel = vm, activity = activity)
-            }
-        }
-        composable(Routes.PLUGINS) {
-            Gated(appUnlocked, activity, { appUnlocked = true }) {
-                val vm: PluginsViewModel = viewModel(factory = PluginsViewModel.factory(app))
-                PluginsScreen(viewModel = vm)
-            }
-        }
-        composable(Routes.MEMORY) {
-            Gated(appUnlocked, activity, { appUnlocked = true }) {
-                val vm: MemoryViewModel = viewModel(factory = MemoryViewModel.factory(app))
-                MemoryScreen(viewModel = vm)
-            }
-        }
-        composable(Routes.FILES) {
-            Gated(appUnlocked, activity, { appUnlocked = true }) {
-                FilesScreen(app = app)
-            }
-        }
-        composable(Routes.SKILLS) {
-            Gated(appUnlocked, activity, { appUnlocked = true }) {
-                val vm: SkillsViewModel = viewModel(factory = SkillsViewModel.factory(app))
-                SkillsScreen(viewModel = vm)
-            }
-        }
-        composable(Routes.AGENTS) {
-            Gated(appUnlocked, activity, { appUnlocked = true }) {
-                val vm: AgentsViewModel = viewModel(factory = AgentsViewModel.factory(app))
-                AgentsScreen(
-                    viewModel = vm,
+            composable(Routes.APPROVE) { entry ->
+                val cid = entry.arguments?.getString("challengeId").orEmpty()
+                ApproveScreen(
+                    app = app,
                     activity = activity,
-                    // Dispatching opens the spawned child session's chat.
-                    onOpenChat = { sid -> nav.navigate(Routes.chat(sid)) },
-                )
-            }
-        }
-
-        // Promoted from the old bottom-tab Shell — same screens/viewmodels as
-        // before, just reached from the drawer instead of a tab bar, each now
-        // wired with its own back arrow (they used to rely on being a tab, with
-        // no back concept) that pops back to whichever chat opened them.
-        composable(Routes.SESSIONS) {
-            Gated(appUnlocked, activity, { appUnlocked = true }) {
-                val vm: SessionsViewModel = viewModel(factory = SessionsViewModel.factory(app))
-                SessionsScreen(
-                    viewModel = vm,
-                    onOpenSession = { nav.navigate(Routes.chat(it)) },
-                    onBack = { nav.popBackStack() },
-                )
-            }
-        }
-        composable(Routes.CANVAS) {
-            Gated(appUnlocked, activity, { appUnlocked = true }) {
-                val vm: CanvasViewModel = viewModel(factory = CanvasViewModel.factory(app))
-                CanvasScreen(viewModel = vm, onBack = { nav.popBackStack() })
-            }
-        }
-        composable(Routes.COMPUTER) {
-            Gated(appUnlocked, activity, { appUnlocked = true }) {
-                val vm: ComputerViewModel = viewModel(factory = ComputerViewModel.factory(app))
-                ComputerScreen(viewModel = vm, activity = activity, onBack = { nav.popBackStack() })
-            }
-        }
-        composable(Routes.PHONE) {
-            Gated(appUnlocked, activity, { appUnlocked = true }) {
-                // The full Agent Phone app is vendored into this APK; the Phone
-                // destination launches the real com.agentphone.MainActivity (see
-                // PhoneLaunchScreen).
-                PhoneLaunchScreen(onBack = { nav.popBackStack() })
-            }
-        }
-        composable(Routes.SETTINGS) {
-            Gated(appUnlocked, activity, { appUnlocked = true }) {
-                val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(app))
-                SettingsScreen(
-                    viewModel = vm,
-                    activity = activity,
-                    onUnpaired = {
-                        nav.navigate(Routes.PAIR) {
-                            popUpTo(nav.graph.findStartDestination().id) { inclusive = true }
+                    challengeId = cid,
+                    // Flip the app-open gate open ONLY once ApproveScreen's own
+                    // BiometricPrompt actually succeeds — never preemptively — so a
+                    // failed/cancelled approval still re-gates the shell behind GateScreen.
+                    onUnlocked = { appUnlocked = true },
+                    onDone = {
+                        if (!nav.popBackStack()) {
+                            nav.navigate(Routes.CHAT_HOME) {
+                                popUpTo(Routes.APPROVE) { inclusive = true }
+                            }
                         }
                     },
-                    onBack = { nav.popBackStack() },
                 )
             }
-        }
 
-        composable(Routes.CHAT) { entry ->
-            // The app-open fingerprint gate must hold on EVERY path into chat —
-            // a notification tap / "Hey Cindro" wake deep-links straight here, so
-            // without this check anyone could read private chat history from the
-            // lock screen while CHAT_HOME was still gated underneath. Gate the
-            // chat route itself (same GateScreen as CHAT_HOME) so no entry bypasses it.
-            if (!appUnlocked) {
-                GateScreen(activity = activity, onUnlocked = { appUnlocked = true })
-            } else {
-                val sessionId = entry.arguments?.getString("sessionId").orEmpty()
-                val wake = entry.arguments?.getString("wake") == "true"
-                val vm: ChatViewModel = viewModel(
-                    key = "chat-$sessionId",
-                    factory = ChatViewModel.factory(app, sessionId),
-                )
-                val homeState by homeVm.uiState.collectAsStateWithLifecycle()
-                val conn by homeVm.connection.collectAsStateWithLifecycle()
-                ModalNavigationDrawer(
-                    drawerState = drawerState,
-                    drawerContent = {
-                        AppDrawerContent(
-                            connection = conn,
-                            recents = homeState.sessions,
-                            isChatHome = false,
-                            activeSessionId = sessionId,
-                            onNewChat = {
-                                closeDrawerThen {
-                                    nav.navigate(Routes.CHAT_HOME) {
-                                        popUpTo(Routes.CHAT_HOME) { inclusive = true }
-                                        launchSingleTop = true
-                                    }
-                                }
-                            },
-                            onOpenSession = { id ->
-                                closeDrawerThen { if (id != sessionId) nav.navigate(Routes.chat(id)) }
-                            },
-                            onNavigate = { route ->
-                                closeDrawerThen {
-                                    nav.navigate(route) {
-                                        popUpTo(entry.destination.id) { inclusive = false }
-                                        launchSingleTop = true
-                                    }
-                                }
-                            },
-                        )
-                    },
-                ) {
+            // Every destination below is gated behind the SAME app-open biometric
+            // check as CHAT_HOME/CHAT (`Gated`, defined below AppNav), and every one
+            // gets the SAME hamburger (`onOpenDrawer`) — reachable from anywhere,
+            // not just chat, so you can jump straight from e.g. Settings to Canvas
+            // without detouring back through chat first.
+            composable(Routes.QUEUE) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    val vm: QueueViewModel = viewModel(factory = QueueViewModel.factory(app))
+                    QueueScreen(viewModel = vm, onOpenDrawer = ::openDrawer)
+                }
+            }
+            composable(Routes.MCP) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    val vm: McpViewModel = viewModel(factory = McpViewModel.factory(app))
+                    McpScreen(viewModel = vm, activity = activity, onOpenDrawer = ::openDrawer)
+                }
+            }
+            composable(Routes.PLUGINS) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    val vm: PluginsViewModel = viewModel(factory = PluginsViewModel.factory(app))
+                    PluginsScreen(viewModel = vm, onOpenDrawer = ::openDrawer)
+                }
+            }
+            composable(Routes.MEMORY) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    val vm: MemoryViewModel = viewModel(factory = MemoryViewModel.factory(app))
+                    MemoryScreen(viewModel = vm, onOpenDrawer = ::openDrawer)
+                }
+            }
+            composable(Routes.FILES) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    FilesScreen(app = app, onOpenDrawer = ::openDrawer)
+                }
+            }
+            composable(Routes.SKILLS) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    val vm: SkillsViewModel = viewModel(factory = SkillsViewModel.factory(app))
+                    SkillsScreen(viewModel = vm, onOpenDrawer = ::openDrawer)
+                }
+            }
+            composable(Routes.AGENTS) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    val vm: AgentsViewModel = viewModel(factory = AgentsViewModel.factory(app))
+                    AgentsScreen(
+                        viewModel = vm,
+                        activity = activity,
+                        onOpenDrawer = ::openDrawer,
+                        // Dispatching opens the spawned child session's chat.
+                        onOpenChat = { sid -> nav.navigate(Routes.chat(sid)) },
+                    )
+                }
+            }
+
+            // Promoted from the old bottom-tab Shell — same screens/viewmodels as
+            // before, just reached from the drawer instead of a tab bar.
+            composable(Routes.SESSIONS) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    val vm: SessionsViewModel = viewModel(factory = SessionsViewModel.factory(app))
+                    SessionsScreen(
+                        viewModel = vm,
+                        onOpenSession = { nav.navigate(Routes.chat(it)) },
+                        onOpenDrawer = ::openDrawer,
+                    )
+                }
+            }
+            composable(Routes.CANVAS) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    val vm: CanvasViewModel = viewModel(factory = CanvasViewModel.factory(app))
+                    CanvasScreen(viewModel = vm, onOpenDrawer = ::openDrawer)
+                }
+            }
+            composable(Routes.COMPUTER) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    val vm: ComputerViewModel = viewModel(factory = ComputerViewModel.factory(app))
+                    ComputerScreen(viewModel = vm, activity = activity, onOpenDrawer = ::openDrawer)
+                }
+            }
+            composable(Routes.PHONE) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    // The full Agent Phone app is vendored into this APK; the Phone
+                    // destination launches the real com.agentphone.MainActivity (see
+                    // PhoneLaunchScreen).
+                    PhoneLaunchScreen(onOpenDrawer = ::openDrawer)
+                }
+            }
+            composable(Routes.SETTINGS) {
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    val vm: SettingsViewModel = viewModel(factory = SettingsViewModel.factory(app))
+                    SettingsScreen(
+                        viewModel = vm,
+                        activity = activity,
+                        onUnpaired = {
+                            nav.navigate(Routes.PAIR) {
+                                popUpTo(nav.graph.findStartDestination().id) { inclusive = true }
+                            }
+                        },
+                        onOpenDrawer = ::openDrawer,
+                    )
+                }
+            }
+
+            composable(Routes.CHAT) { entry ->
+                // The app-open fingerprint gate must hold on EVERY path into chat —
+                // a notification tap / "Hey Cindro" wake deep-links straight here, so
+                // without this check anyone could read private chat history from the
+                // lock screen while CHAT_HOME was still gated underneath.
+                Gated(appUnlocked, activity, { appUnlocked = true }) {
+                    val sessionId = entry.arguments?.getString("sessionId").orEmpty()
+                    val wake = entry.arguments?.getString("wake") == "true"
+                    val vm: ChatViewModel = viewModel(
+                        key = "chat-$sessionId",
+                        factory = ChatViewModel.factory(app, sessionId),
+                    )
                     ChatScreen(
                         viewModel = vm,
                         activity = activity,
@@ -474,14 +459,14 @@ fun AppNav(
                 }
             }
         }
-        }
+    }
     }
 }
 
 /**
  * The app-open biometric/2FA gate every non-pairing, non-approve destination must
  * pass through — same check CHAT_HOME/CHAT apply inline. `appUnlocked` is plain
- * `remember` state (not rememberSaveable), so it resets to locked on process
+ * `remember` state (not `rememberSaveable`), so it resets to locked on process
  * recreation; without this wrapper a saved-back-stack restore straight onto e.g.
  * Canvas after process death would render private content with no gate at all.
  */

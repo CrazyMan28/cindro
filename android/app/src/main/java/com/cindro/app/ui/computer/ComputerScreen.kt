@@ -16,7 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
@@ -56,7 +56,7 @@ import kotlinx.coroutines.launch
 fun ComputerScreen(
     viewModel: ComputerViewModel,
     activity: FragmentActivity,
-    onBack: () -> Unit,
+    onOpenDrawer: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val conn by viewModel.connection.collectAsStateWithLifecycle()
@@ -68,8 +68,8 @@ fun ComputerScreen(
             TopAppBar(
                 title = { Text("Computer") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open menu")
                     }
                 },
                 actions = {

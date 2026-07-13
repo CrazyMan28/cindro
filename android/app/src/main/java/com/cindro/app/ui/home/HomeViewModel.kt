@@ -64,7 +64,15 @@ class HomeViewModel(
     fun refresh() {
         viewModelScope.launch {
             runCatching { withContext(Dispatchers.IO) { repo.listSessions() } }
-                .onSuccess { list -> _uiState.update { it.copy(sessions = list) } }
+                .onSuccess { list ->
+                    // Subagent child sessions are not normal chats: they belong to
+                    // their parent chat and disappear when done — never top-level
+                    // rows, on any surface (jarvis#72; see SessionsViewModel for the
+                    // same filter). The drawer's Recents list reads this state, so
+                    // without it a running subagent would show up as an openable
+                    // top-level chat in the sidebar.
+                    _uiState.update { it.copy(sessions = list.filterNot(Session::isSubagent)) }
+                }
         }
     }
 

@@ -1,5 +1,6 @@
 package com.cindro.app.ui.drawer
 
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -41,8 +43,23 @@ import androidx.compose.ui.unit.dp
 import com.cindro.app.net.DeviceClient
 import com.cindro.app.protocol.Session
 import com.cindro.app.ui.ConnectionPill
+import com.cindro.app.ui.theme.Avatar
 import com.cindro.app.ui.theme.JarvisPalette
+import com.cindro.app.ui.theme.StatusDot
 import com.cindro.app.ui.util.JarvisOrb
+
+private fun brainColor(brain: String?): Color = when (brain?.lowercase()) {
+    "codex" -> JarvisPalette.Accent
+    "claude" -> JarvisPalette.Warning
+    "api" -> JarvisPalette.Violet
+    else -> JarvisPalette.TextSecondary
+}
+
+private fun stateColor(state: String?): Color = when (state?.lowercase()) {
+    "working", "running", "busy" -> JarvisPalette.Success
+    "paused" -> JarvisPalette.Warning
+    else -> JarvisPalette.TextSecondary
+}
 
 /**
  * One promoted drawer destination — the flat replacement for the old bottom-tab
@@ -79,6 +96,11 @@ fun AppDrawerContent(
     recents: List<Session>,
     isChatHome: Boolean,
     activeSessionId: String?,
+    /** The current back-stack route, so a destination row can highlight itself if
+     *  a screen ever renders this drawer while already sitting on that route —
+     *  today only CHAT_HOME/CHAT do, so this is always null there, but any future
+     *  screen that adds a drawer gets correct highlighting for free. */
+    activeRoute: String? = null,
     onNewChat: () -> Unit,
     onOpenSession: (String) -> Unit,
     onNavigate: (String) -> Unit,
@@ -119,8 +141,33 @@ fun AppDrawerContent(
                 )
             }
 
+            item {
+                HorizontalDivider(
+                    Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                    color = JarvisPalette.Outline,
+                )
+            }
+
+            // Nav destinations sit ABOVE Recents — matching both reference apps
+            // (Claude: Chats/Projects/Artifacts/Code/Dispatch above Recents;
+            // ChatGPT: Library/Projects/… above Pinned/Recents), not below.
+            items(AppDrawerDestinations, key = { it.route }) { dest ->
+                NavigationDrawerItem(
+                    label = { Text(dest.label) },
+                    icon = { Icon(dest.icon, contentDescription = null) },
+                    selected = dest.route == activeRoute,
+                    onClick = { onNavigate(dest.route) },
+                    colors = drawerItemColors(),
+                    modifier = Modifier.padding(horizontal = 12.dp),
+                )
+            }
+
             if (recents.isNotEmpty()) {
                 item {
+                    HorizontalDivider(
+                        Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                        color = JarvisPalette.Outline,
+                    )
                     Text(
                         "Recents",
                         style = MaterialTheme.typography.labelLarge,
@@ -129,35 +176,36 @@ fun AppDrawerContent(
                     )
                 }
                 items(recents.take(12), key = { it.id }) { session ->
+                    val meta = listOfNotNull(session.brain, session.profile)
+                        .joinToString(" · ") { it.replaceFirstChar(Char::uppercase) }
                     NavigationDrawerItem(
                         label = {
-                            Text(session.displayTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Column {
+                                Text(session.displayTitle, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                if (meta.isNotEmpty() || session.state != null) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        session.state?.let { StatusDot(it, stateColor(it)) }
+                                        if (meta.isNotEmpty()) {
+                                            if (session.state != null) Spacer(Modifier.width(6.dp))
+                                            Text(
+                                                meta,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = JarvisPalette.TextSecondary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         },
-                        icon = null,
+                        icon = { Avatar(session.brain?.take(1) ?: "J", brainColor(session.brain), size = 28) },
                         selected = session.id == activeSessionId,
                         onClick = { onOpenSession(session.id) },
                         colors = drawerItemColors(),
                         modifier = Modifier.padding(horizontal = 12.dp),
                     )
                 }
-            }
-
-            item {
-                HorizontalDivider(
-                    Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                    color = JarvisPalette.Outline,
-                )
-            }
-
-            items(AppDrawerDestinations, key = { it.route }) { dest ->
-                NavigationDrawerItem(
-                    label = { Text(dest.label) },
-                    icon = { Icon(dest.icon, contentDescription = null) },
-                    selected = false,
-                    onClick = { onNavigate(dest.route) },
-                    colors = drawerItemColors(),
-                    modifier = Modifier.padding(horizontal = 12.dp),
-                )
             }
         }
     }

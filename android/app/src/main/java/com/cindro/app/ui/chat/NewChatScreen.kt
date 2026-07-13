@@ -49,8 +49,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.cindro.app.net.DeviceClient
 import com.cindro.app.ui.canvas.CanvasItem
+import com.cindro.app.ui.home.HomeUiState
 import com.cindro.app.ui.home.HomeViewModel
 import com.cindro.app.ui.theme.GlowCard
 import com.cindro.app.ui.theme.JarvisPalette
@@ -76,14 +77,18 @@ import kotlinx.coroutines.withContext
 @Composable
 fun NewChatScreen(
     viewModel: HomeViewModel,
+    // Already collected once by the caller (shared with the drawer's own
+    // collection of the same HomeViewModel) — don't re-collect uiState/
+    // connection here too, that doubled the collector/recomposition work for
+    // no benefit.
+    state: HomeUiState,
+    conn: DeviceClient.State,
     onOpenDrawer: () -> Unit,
     onSessionCreated: (String) -> Unit,
     onOpenVoiceSession: (String) -> Unit,
     onTakeOver: () -> Unit,
     onCanvas: () -> Unit,
 ) {
-    val state by viewModel.uiState.collectAsStateWithLifecycle()
-    val conn by viewModel.connection.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var draft by remember { mutableStateOf("") }

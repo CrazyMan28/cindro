@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,7 +43,7 @@ import com.cindro.app.ui.theme.JarvisPalette
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MemoryScreen(viewModel: MemoryViewModel) {
+fun MemoryScreen(viewModel: MemoryViewModel, onOpenDrawer: () -> Unit) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     var showAdd by remember { mutableStateOf(false) }
 
@@ -51,6 +52,11 @@ fun MemoryScreen(viewModel: MemoryViewModel) {
         topBar = {
             TopAppBar(
                 title = { Text("Memory") },
+                navigationIcon = {
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open menu")
+                    }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = JarvisPalette.Background,
                     titleContentColor = JarvisPalette.TextPrimary,

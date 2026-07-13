@@ -7,7 +7,10 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -75,6 +78,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
@@ -90,6 +94,12 @@ import com.cindro.app.ui.util.JarvisOrb
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** Mirrors LazyColumn's own built-in `animateItem()` default placement spring —
+ *  used explicitly (not the parameterless default) so it can be swapped for
+ *  `null` per-item while a bubble is still streaming (see the message list). */
+private val DefaultBubblePlacementSpec: FiniteAnimationSpec<IntOffset> =
+    spring(stiffness = Spring.StiffnessMediumLow)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -136,11 +146,20 @@ fun ChatScreen(
 
     val requestMic = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { granted -> micGranted = granted }
+    ) { granted ->
+        micGranted = granted
+        // If this permission prompt was triggered by the auto-voice entry below
+        // (not the manual mic button), finish that flow once granted.
+        if (granted && autoStartVoice) viewModel.startRecording()
+    }
 
-    // "Hey Cindro" wake deep-link: start a push-to-talk capture on entry.
+    // "Hey Cindro" wake deep-link / the New Chat screen's Voice suggestion chip:
+    // start a push-to-talk capture on entry. Used to silently do nothing when mic
+    // permission had never been granted (a fresh install) — now requests it, same
+    // as the manual mic button already does, instead of looking like a dead button.
     LaunchedEffect(autoStartVoice) {
-        if (autoStartVoice && micGranted) viewModel.startRecording()
+        if (!autoStartVoice) return@LaunchedEffect
+        if (micGranted) viewModel.startRecording() else requestMic.launch(Manifest.permission.RECORD_AUDIO)
     }
 
     // Auto-scroll to the newest item; also follows streaming text growth while busy.
@@ -204,7 +223,17 @@ fun ChatScreen(
                 items(state.items, key = { it.id }) { item ->
                     // Each new bubble fades + slides in as it's added (and animates
                     // out of the way on delete) instead of just popping into place.
-                    Box(Modifier.animateItem()) {
+                    // A streaming assistant bubble's height keeps growing every
+                    // ~20ms via ChatBubble's own typewriter reveal — animating ITS
+                    // placement too would have the list-item spring fighting that
+                    // growth for the whole reveal, so placement animation is
+                    // skipped until the bubble finishes (fade in/out still apply).
+                    val streaming = item is ChatItem.Message && item.streaming
+                    Box(
+                        Modifier.animateItem(
+                            placementSpec = if (streaming) null else DefaultBubblePlacementSpec,
+                        ),
+                    ) {
                         ChatBubble(
                             item = item,
                             onApprove = { approval, decision ->

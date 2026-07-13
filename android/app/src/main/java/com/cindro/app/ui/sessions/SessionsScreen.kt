@@ -21,11 +21,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
@@ -68,7 +68,7 @@ import com.cindro.app.ui.theme.JarvisPalette
 fun SessionsScreen(
     viewModel: SessionsViewModel,
     onOpenSession: (String) -> Unit,
-    onBack: () -> Unit,
+    onOpenDrawer: () -> Unit,
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val conn by viewModel.connection.collectAsStateWithLifecycle()
@@ -116,8 +116,8 @@ fun SessionsScreen(
                             fontWeight = FontWeight.Bold)
                     },
                     navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        IconButton(onClick = onOpenDrawer) {
+                            Icon(Icons.Filled.Menu, contentDescription = "Open menu")
                         }
                     },
                     actions = {

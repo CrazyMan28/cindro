@@ -18,8 +18,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -51,7 +51,7 @@ import com.cindro.app.widget.WidgetPinHelper
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CanvasScreen(viewModel: CanvasViewModel, onBack: () -> Unit) {
+fun CanvasScreen(viewModel: CanvasViewModel, onOpenDrawer: () -> Unit) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
@@ -73,8 +73,8 @@ fun CanvasScreen(viewModel: CanvasViewModel, onBack: () -> Unit) {
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    IconButton(onClick = onOpenDrawer) {
+                        Icon(Icons.Filled.Menu, contentDescription = "Open menu")
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
