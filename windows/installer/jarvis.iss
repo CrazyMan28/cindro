@@ -60,6 +60,16 @@ Name: "autostart"; Description: "Start the Cindro daemon when I sign in"; GroupD
 ; The whole staged payload (binaries + Qt runtime + engine folder + node server).
 Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
+[InstallDelete]
+; [Files] only ADDS/overwrites — it never removes payload entries that vanished
+; between builds. So a reinstall/upgrade whose build DROPPED the web dashboard
+; (e.g. bun was unavailable that run) would otherwise leave the PREVIOUS install's
+; stale web\ + bun\ behind, and the "Cindro Web Dashboard" shortcut's guard would
+; still see them. Wipe both BEFORE copying the new payload (InstallDelete runs
+; before [Files]) so the shortcut and the on-disk dashboard reflect THIS build.
+Type: filesandordirs; Name: "{app}\web"
+Type: filesandordirs; Name: "{app}\bun"
+
 [Icons]
 ; The shortcut launches the WHOLE stack (engine + phone + daemon + UI) via the
 ; HIDDEN VBS launcher (wscript) — so jarvisd + the engine start with NO console
@@ -69,8 +79,10 @@ Name: "{group}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app
 ; created when the payload actually contains it (built on a bun-equipped runner).
 Name: "{group}\Cindro Terminal (TUI)"; Filename: "{app}\cindro-tui.exe"; IconFilename: "{app}\{#MyAppExeName}"; Check: FileExists(ExpandConstant('{app}\cindro-tui.exe'))
 ; Web dashboard (SolidJS, served by the bundled bun runtime on :8788 via
-; cindro-web.cmd). Only created when the payload actually contains the web app.
-Name: "{group}\Cindro Web Dashboard"; Filename: "{app}\cindro-web.cmd"; IconFilename: "{app}\{#MyAppExeName}"; Check: FileExists(ExpandConstant('{app}\web\server.ts'))
+; cindro-web.cmd). Guarded by WebDashboardStaged (server.ts AND bun.exe AND the
+; built dist) — the launcher needs all three, so the shortcut must too, not just
+; server.ts (a partially-staged payload would otherwise show a broken shortcut).
+Name: "{group}\Cindro Web Dashboard"; Filename: "{app}\cindro-web.cmd"; IconFilename: "{app}\{#MyAppExeName}"; Check: WebDashboardStaged
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{sys}\wscript.exe"; Parameters: """{app}\jarvis-launch.vbs"""; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
@@ -99,6 +111,56 @@ Type: filesandordirs; Name: "{app}\engine\__pycache__"
 // can't contain {app} (its `}` closes the comment early and breaks iscc).
 const
   EnvironmentKey = 'Environment';
+  AppRegKey = 'Software\Cindro';   // where we record that WE added {app} to PATH
+
+// True only when the web dashboard payload is FULLY present. cindro-web.cmd needs
+// all three (the launcher, the bun runtime, and the built SPA), so the Start-menu
+// shortcut guards on all three — not just server.ts.
+function WebDashboardStaged: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{app}\web\server.ts')) and
+            FileExists(ExpandConstant('{app}\bun\bun.exe')) and
+            FileExists(ExpandConstant('{app}\web\dist\index.html'));
+end;
+
+// True if Dir is already a PATH entry (semicolon-wrapped, case-insensitive).
+function PathHas(const Paths, Dir: string): Boolean;
+begin
+  Result := Pos(';' + Uppercase(Dir) + ';', ';' + Uppercase(Paths) + ';') > 0;
+end;
+
+// Rebuild a ';'-separated PATH, dropping empty tokens and (case-insensitively)
+// Dir. Split + rejoin with a single ';' — this sidesteps the index-math and
+// stray-';;' pitfalls of in-place deletion for a first / middle / last / only
+// entry (which is what the earlier Delete()-based version got wrong).
+function PathWithout(const Paths, Dir: string): string;
+var
+  Rest, Item, Acc: string;
+  SepPos: Integer;
+begin
+  Acc := '';
+  Rest := Paths;
+  while Rest <> '' do
+  begin
+    SepPos := Pos(';', Rest);
+    if SepPos = 0 then
+    begin
+      Item := Rest;
+      Rest := '';
+    end
+    else
+    begin
+      Item := Copy(Rest, 1, SepPos - 1);
+      Rest := Copy(Rest, SepPos + 1, Length(Rest));
+    end;
+    if (Item <> '') and (Uppercase(Item) <> Uppercase(Dir)) then
+    begin
+      if Acc <> '' then Acc := Acc + ';';
+      Acc := Acc + Item;
+    end;
+  end;
+  Result := Acc;
+end;
 
 procedure EnvAddPath(Path: string);
 var
@@ -106,14 +168,25 @@ var
 begin
   if not RegQueryStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
     Paths := '';
-  { Skip if this exact directory is already present (case-insensitive). }
-  if Pos(';' + Uppercase(Path) + ';', ';' + Uppercase(Paths) + ';') > 0 then exit;
+  // If {app} is ALREADY on PATH (a manual add, or an older build), we did NOT add
+  // it — leave it and DON'T record ownership, so uninstall won't strip a PATH
+  // entry the user had before Cindro.
+  if PathHas(Paths, Path) then exit;
   if Paths = '' then
     Paths := Path
+  else if Copy(Paths, Length(Paths), 1) = ';' then
+    Paths := Paths + Path              // existing trailing ';' — don't create ';;'
   else
     Paths := Paths + ';' + Path;
-  if RegWriteStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
-    Log(Format('Added [%s] to PATH', [Path]))
+  // Write back as REG_EXPAND_SZ — the user's Path is normally REG_EXPAND_SZ (it
+  // holds entries like %USERPROFILE%\AppData\Local\Microsoft\WindowsApps). A plain
+  // RegWriteStringValue would DOWNGRADE it to REG_SZ, after which those %VAR%
+  // entries stop expanding and app aliases already on PATH break.
+  if RegWriteExpandStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
+  begin
+    RegWriteDWordValue(HKEY_CURRENT_USER, AppRegKey, 'AddedToPath', 1);  // we own it
+    Log(Format('Added [%s] to PATH', [Path]));
+  end
   else
     Log(Format('Error adding [%s] to PATH', [Path]));
 end;
@@ -121,28 +194,21 @@ end;
 procedure EnvRemovePath(Path: string);
 var
   Paths: string;
-  P: Integer;
+  Owned: Cardinal;
 begin
-  if not RegQueryStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
-    exit;
-  // Wrap BOTH ends with ';' so a first / middle / last / only entry all match and
-  // delete uniformly. The classic `Delete(Paths, P - 1, ...)` form corrupts a
-  // FIRST or ONLY entry: when {app} is the first item P is 1, so it deletes from
-  // index 0 — undefined, and on a fresh box whose per-user Path was empty before
-  // install (so {app} is the only entry) it can wipe or mangle the whole value.
-  // (// line comments, not { }, since {app}'s brace would end a { } comment early.)
-  Paths := ';' + Paths + ';';
-  P := Pos(';' + Uppercase(Path) + ';', Uppercase(Paths));
-  if P = 0 then exit;
-  { Remove the entry plus ONE trailing separator, leaving the leading wrap ';'. }
-  Delete(Paths, P + 1, Length(Path) + 1);
-  { Strip the leading + trailing ';' we wrapped with (Copy handles the now-empty
-    ";" case: Count goes negative and Copy returns ''). }
-  Paths := Copy(Paths, 2, Length(Paths) - 2);
-  if RegWriteStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
-    Log(Format('Removed [%s] from PATH', [Path]))
-  else
-    Log(Format('Error removing [%s] from PATH', [Path]));
+  // Only remove {app} if THIS installer added it (ownership marker) — never a
+  // pre-existing user entry.
+  if not RegQueryDWordValue(HKEY_CURRENT_USER, AppRegKey, 'AddedToPath', Owned) then exit;
+  if Owned <> 1 then exit;
+  if RegQueryStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) and PathHas(Paths, Path) then
+  begin
+    // REG_EXPAND_SZ on the way out too (same reason as EnvAddPath).
+    if RegWriteExpandStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', PathWithout(Paths, Path)) then
+      Log(Format('Removed [%s] from PATH', [Path]))
+    else
+      Log(Format('Error removing [%s] from PATH', [Path]));
+  end;
+  RegDeleteValue(HKEY_CURRENT_USER, AppRegKey, 'AddedToPath');   // clear ownership
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

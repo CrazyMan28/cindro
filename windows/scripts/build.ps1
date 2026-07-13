@@ -164,8 +164,27 @@ function Resolve-BunExe($buildDir) {
     $bunRoot = "C:\bun-portable"
     $bunExe  = Join-Path $bunRoot "bun.exe"
     if (-not (Test-Path $bunExe)) {
-      $bunZip = Join-Path $buildDir "bun-windows-x64.zip"
-      Invoke-WebRequest "https://github.com/oven-sh/bun/releases/latest/download/bun-windows-x64.zip" -OutFile $bunZip
+      # Supply-chain integrity: resolve 'latest' to a concrete, LOGGED release tag
+      # (so the download is auditable, not a silently-moving target) and verify the
+      # zip against that release's published SHASUMS256.txt BEFORE trusting/running
+      # bun.exe. Any mismatch throws -> caught below -> bun is NOT used (fail-safe:
+      # the TUI/web are dropped rather than built with an unverified toolchain).
+      $bunZip  = Join-Path $buildDir "bun-windows-x64.zip"
+      $bunSums = Join-Path $buildDir "bun-SHASUMS256.txt"
+      $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/oven-sh/bun/releases/latest" `
+               -Headers @{ 'User-Agent' = 'cindro-build' }
+      $tag = $rel.tag_name
+      if (-not $tag) { throw "could not resolve the latest bun release tag" }
+      Write-Host "    bun release: $tag" -ForegroundColor Cyan
+      $dl = "https://github.com/oven-sh/bun/releases/download/$tag"
+      Invoke-WebRequest "$dl/bun-windows-x64.zip" -OutFile $bunZip
+      Invoke-WebRequest "$dl/SHASUMS256.txt"       -OutFile $bunSums
+      $line = Get-Content $bunSums | Where-Object { $_ -match 'bun-windows-x64\.zip\s*$' } | Select-Object -First 1
+      if (-not $line) { throw "bun-windows-x64.zip not listed in SHASUMS256.txt for $tag" }
+      $expected = (($line -split '\s+')[0]).ToLower()
+      $actual   = (Get-FileHash $bunZip -Algorithm SHA256).Hash.ToLower()
+      if ($expected -ne $actual) { throw "bun SHA256 mismatch for $tag (expected $expected, got $actual)" }
+      Write-Host "    bun-windows-x64.zip SHA256 verified" -ForegroundColor Green
       Expand-Archive -Force $bunZip (Join-Path $buildDir "bun-extract")
       $found = Get-ChildItem -Path (Join-Path $buildDir "bun-extract") -Recurse -Filter "bun.exe" | Select-Object -First 1
       if (-not $found) { throw "bun.exe not found inside bun-windows-x64.zip" }
@@ -205,6 +224,7 @@ if ($bunExe) {
     # for the Test-Path check below to stage (masking the failure).
     if (Test-Path $tuiExe) { Remove-Item -Force $tuiExe }
     & $bunExe run build win
+    if ($LASTEXITCODE -ne 0) { throw "bun run build win exited $LASTEXITCODE" }
     if (Test-Path $tuiExe) { Copy-Item $tuiExe $payload; Write-Host "  staged cindro-tui.exe" }
     else { Write-Warning "cindro-tui.exe not produced — TUI v2 will be absent from this installer" }
   } catch {
@@ -232,6 +252,7 @@ if ($bunExe) {
     # dashboard for the index.html check below to stage (masking the failure).
     if (Test-Path $webDist) { Remove-Item -Recurse -Force $webDist }
     & $bunExe run build
+    if ($LASTEXITCODE -ne 0) { throw "bun run build (web) exited $LASTEXITCODE" }
     if (Test-Path (Join-Path $webDist "index.html")) {
       $webDst = Join-Path $payload "web"
       New-Item -ItemType Directory -Force -Path $webDst | Out-Null

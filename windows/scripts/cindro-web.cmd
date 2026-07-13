@@ -36,10 +36,12 @@ if not exist "%~dp0web\server.ts" (
 
 echo Cindro web dashboard: http://127.0.0.1:%PORT%
 echo Close this window to stop the dashboard.
-rem Open the browser only once the server is actually accepting connections on
-rem the port (up to ~15s), rather than after a blind fixed delay — otherwise a
-rem slow/failed start or a busy port lands the user on "connection refused".
-rem Runs in the background (minimized) so the server itself owns this console.
-start "" /min powershell -NoProfile -Command "$u='http://127.0.0.1:%PORT%'; foreach($i in 1..60){ try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',%PORT%); $c.Close(); break }catch{ Start-Sleep -Milliseconds 250 } }; Start-Process $u"
+rem Open the browser only once the dashboard actually answers with HTTP 200 (up to
+rem ~15s), and ONLY then — never on a blind timer. Probing with a real HTTP GET (not
+rem a bare TCP connect) means a slow/failed `bun` start, or some unrelated process
+rem squatting the port, does NOT trigger the browser: no "connection refused" tab,
+rem and no opening onto whatever else happens to be listening. Runs in the
+rem background (minimized) so the server itself owns this console.
+start "" /min powershell -NoProfile -Command "$u='http://127.0.0.1:%PORT%/'; $ok=$false; for($i=0;$i -lt 60;$i++){ try{ if((Invoke-WebRequest -UseBasicParsing -Uri $u -TimeoutSec 2).StatusCode -eq 200){ $ok=$true; break } }catch{ Start-Sleep -Milliseconds 250 } }; if($ok){ Start-Process $u }"
 "%~dp0bun\bun.exe" "%~dp0web\server.ts" --port %PORT%
 endlocal
