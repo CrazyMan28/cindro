@@ -89,13 +89,14 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Type: filesandordirs; Name: "{app}\engine\__pycache__"
 
 [Code]
-{ Add {app} to the per-user PATH so the bundled terminal surfaces —
-  cindro-tui.exe (the TUI) and cindro-web.cmd (the web dashboard) — are callable
-  by name from any shell that inherits the Windows environment: cmd, PowerShell,
-  git-bash, and WSL. Per-user (HKCU\Environment) matches the per-user install and
-  needs no admin. ChangesEnvironment=yes makes Inno broadcast WM_SETTINGCHANGE so
-  newly-opened shells see it without a reboot. Removed again on uninstall.
-  This is the canonical Inno "modify PATH" recipe (idempotent add + clean remove). }
+// Add {app} to the per-user PATH so the bundled terminal surfaces —
+// cindro-tui.exe (the TUI) and cindro-web.cmd (the web dashboard) — are callable
+// by name from any shell that inherits the Windows environment: cmd, PowerShell,
+// git-bash, and WSL. Per-user (HKCU\Environment) matches the per-user install and
+// needs no admin. ChangesEnvironment=yes makes Inno broadcast WM_SETTINGCHANGE so
+// newly-opened shells see it without a reboot. Removed again on uninstall.
+// NOTE: these MUST be // line comments, not Pascal { } comments — a { } comment
+// can't contain {app} (its `}` closes the comment early and breaks iscc).
 const
   EnvironmentKey = 'Environment';
 
@@ -124,11 +125,12 @@ var
 begin
   if not RegQueryStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
     exit;
-  { Wrap BOTH ends with ';' so a first / middle / last / only entry all match and
-    delete uniformly. The classic `Delete(Paths, P - 1, ...)` form corrupts a
-    FIRST or ONLY entry: when {app} is the first item P is 1, so it deletes from
-    index 0 — undefined, and on a fresh box whose per-user Path was empty before
-    install (so {app} is the only entry) it can wipe or mangle the whole value. }
+  // Wrap BOTH ends with ';' so a first / middle / last / only entry all match and
+  // delete uniformly. The classic `Delete(Paths, P - 1, ...)` form corrupts a
+  // FIRST or ONLY entry: when {app} is the first item P is 1, so it deletes from
+  // index 0 — undefined, and on a fresh box whose per-user Path was empty before
+  // install (so {app} is the only entry) it can wipe or mangle the whole value.
+  // (// line comments, not { }, since {app}'s brace would end a { } comment early.)
   Paths := ';' + Paths + ';';
   P := Pos(';' + Uppercase(Path) + ';', Uppercase(Paths));
   if P = 0 then exit;
