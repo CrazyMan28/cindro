@@ -124,9 +124,19 @@ var
 begin
   if not RegQueryStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
     exit;
-  P := Pos(';' + Uppercase(Path) + ';', ';' + Uppercase(Paths) + ';');
+  { Wrap BOTH ends with ';' so a first / middle / last / only entry all match and
+    delete uniformly. The classic `Delete(Paths, P - 1, ...)` form corrupts a
+    FIRST or ONLY entry: when {app} is the first item P is 1, so it deletes from
+    index 0 — undefined, and on a fresh box whose per-user Path was empty before
+    install (so {app} is the only entry) it can wipe or mangle the whole value. }
+  Paths := ';' + Paths + ';';
+  P := Pos(';' + Uppercase(Path) + ';', Uppercase(Paths));
   if P = 0 then exit;
-  Delete(Paths, P - 1, Length(Path) + 1);
+  { Remove the entry plus ONE trailing separator, leaving the leading wrap ';'. }
+  Delete(Paths, P + 1, Length(Path) + 1);
+  { Strip the leading + trailing ';' we wrapped with (Copy handles the now-empty
+    ";" case: Count goes negative and Copy returns ''). }
+  Paths := Copy(Paths, 2, Length(Paths) - 2);
   if RegWriteStringValue(HKEY_CURRENT_USER, EnvironmentKey, 'Path', Paths) then
     Log(Format('Removed [%s] from PATH', [Path]))
   else
