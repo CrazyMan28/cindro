@@ -1160,6 +1160,31 @@ the **SolidJS web dashboard** (`web/`). Load-bearing details:
   step, which seeds `~/.local/bin` into `~/.bashrc`, `~/.zshrc`, and the pwsh
   profile (zsh/pwsh don't read `~/.profile`) — idempotent, guarded by a marker.
 
+## New subsystems (2026-07-14) — collapsible "thinking" indicator across all 6 chat surfaces
+
+Every surface already received real reasoning/thinking text via Contract B's `{"kind":"thinking",
+"text":...}` event (sourced from Claude's `thinking` blocks, Codex's `reasoning`/`agent_reasoning`
+items, and the API brain's `thinking_delta`/`reasoning_content` deltas), but only Android rendered
+it as more than a throwaway one-line status string — and even Android's version was always fully
+expanded and fragmented into a new bubble per chunk instead of one growing block. Desktop's live
+chat discarded the text entirely (only flipped a busy boolean for the whimsical-phrase footer).
+
+Now every surface — desktop QML, `cli/` (Textual), `tui/` (Bun/OpenTUI), the extension, Android,
+and the web dashboard (including both replay views) — renders one accumulating block per turn:
+collapsed by default, a live "Thinking… Ns" ticking while active, frozen to "Thought for Ns" once
+the turn's first non-thinking event arrives, expand on click/tap. No protocol/daemon/core changes
+were needed — elapsed time is computed client-side (timestamp on first `thinking` event of a turn,
+freeze on the first `message`/`tool_call`/`diff`/`approval`/`error`/`final`). The one exception is
+`cli/`'s `RichLog`-based transcript, which is append-only and can't host a live-updating clickable
+widget — it reuses the same "persistently-mounted widget outside RichLog" trick the typewriter
+reveal (`#typing-preview`) already established, via a `textual.widgets.Collapsible`.
+
+Two latent bugs got fixed as a side effect: the extension wasn't freezing its thinking timer on
+plain assistant replies (only on tool-call/error paths, since `message` never routed through
+`endLiveBubble()`) and leaked the ticker/DOM ref across session switches; and `web/replay.tsx` was
+discarding the daemon's real per-event `ts` timestamps before they reached the fold logic, so
+replay now shows actual recorded "Thought for Ns" durations instead of none.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

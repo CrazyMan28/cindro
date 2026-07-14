@@ -66,6 +66,14 @@ type ChatItem =
       output: string
       expanded: boolean
     }
+  | {
+      id: number
+      kind: "thinking"
+      text: string
+      startedAt: number
+      endedAt: number | null
+      expanded: boolean
+    }
   | { id: number; kind: "diff"; files: Array<{ path: string; patch: string }> }
   | {
       id: number
@@ -223,6 +231,7 @@ class ChatController {
 
   private pumpGen = 0
   private offWidget?: () => void
+  private currentThinkingId: number | null = null
 
   constructor(
     private client: ControlClient,
@@ -416,14 +425,31 @@ class ChatController {
     const kind = String(ev.kind ?? "")
     switch (kind) {
       case "thinking": {
-        const text = String(ev.text ?? "").trim()
-        if (text && !replay) {
-          const lastLine = text.split("\n").at(-1) ?? ""
-          this.setStatus(`· ${lastLine.slice(0, 120)}`)
+        const chunk = String(ev.text ?? "")
+        if (!chunk.trim()) return
+        if (this.currentThinkingId === null) {
+          const id = mkId()
+          this.currentThinkingId = id
+          this.push({
+            id,
+            kind: "thinking",
+            text: chunk,
+            startedAt: Date.now(),
+            endedAt: null,
+            expanded: false,
+          })
+        } else {
+          const thinkingId = this.currentThinkingId
+          this.setItems((items) => {
+            for (const item of items) {
+              if (item.kind === "thinking" && item.id === thinkingId) item.text += chunk
+            }
+          })
         }
         return
       }
       case "message": {
+        this.freezeThinking()
         const role = String(ev.role ?? "")
         const text = String(ev.text ?? "")
         if (role === "assistant") {
@@ -438,6 +464,7 @@ class ChatController {
         return
       }
       case "tool_call": {
+        this.freezeThinking()
         const rawArgs = ev.args
         const name = String(ev.name ?? "tool")
         const argsObj = parseArgs(rawArgs)
@@ -494,10 +521,12 @@ class ChatController {
         return
       }
       case "diff": {
+        this.freezeThinking()
         this.push({ id: mkId(), kind: "diff", files: extractDiffFiles(ev) })
         return
       }
       case "approval": {
+        this.freezeThinking()
         const approvalId = String(ev.approval_id ?? "")
         const summary = String(ev.summary ?? ev.tool ?? "an action")
         const risk = String(ev.risk ?? "medium")
@@ -507,6 +536,7 @@ class ChatController {
         return
       }
       case "error": {
+        this.freezeThinking()
         this.push({ id: mkId(), kind: "error", message: String(ev.message ?? "error") })
         if (!replay) {
           this.setBusy(false)
@@ -515,6 +545,7 @@ class ChatController {
         return
       }
       case "final": {
+        this.freezeThinking()
         this.push({ id: mkId(), kind: "divider" })
         if (!replay) {
           this.setBusy(false)
@@ -533,6 +564,29 @@ class ChatController {
         if (item.kind === "tool" && item.id === itemId) item.expanded = !item.expanded
       }
     })
+  }
+
+  toggleThinking(itemId: number): void {
+    this.setItems((items) => {
+      for (const item of items) {
+        if (item.kind === "thinking" && item.id === itemId) item.expanded = !item.expanded
+      }
+    })
+  }
+
+  /** Stamp an end time on the in-flight thinking block (if any) and clear the
+   * "currently growing" ref — called at the first non-thinking event of a
+   * turn so the next "thinking" chunk starts a fresh block instead of
+   * appending to a stale one. */
+  private freezeThinking(): void {
+    if (this.currentThinkingId === null) return
+    const thinkingId = this.currentThinkingId
+    this.setItems((items) => {
+      for (const item of items) {
+        if (item.kind === "thinking" && item.id === thinkingId) item.endedAt = Date.now()
+      }
+    })
+    this.currentThinkingId = null
   }
 
   private upsertTodo(
@@ -613,6 +667,38 @@ function ToolCard(props: { item: Extract<ChatItem, { kind: "tool" }>; onToggle: 
         <div class="chat-tool-preview">
           {props.item.output.slice(0, 200).replaceAll("\n", " ⏎ ")}
         </div>
+      </Show>
+    </div>
+  )
+}
+
+function ThinkingCard(props: { item: Extract<ChatItem, { kind: "thinking" }>; onToggle: () => void }) {
+  // Local per-second tick, LOCAL to this card — must not live in the shared
+  // store, or every store subscriber re-runs every second (rule: ticking
+  // stays inside the rendering component, not the shared controller state).
+  const [now, setNow] = createSignal(Date.now())
+
+  onMount(() => {
+    if (props.item.endedAt !== null) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  const elapsedSeconds = createMemo(() =>
+    Math.round(((props.item.endedAt ?? now()) - props.item.startedAt) / 1000),
+  )
+  const label = () =>
+    props.item.endedAt === null ? `Thinking… ${elapsedSeconds()}s` : `Thought for ${elapsedSeconds()}s`
+
+  return (
+    <div class="chat-thinking-card" onClick={props.onToggle}>
+      <div class="chat-thinking-header">
+        <span class={props.item.endedAt === null ? "chat-thinking-glyph active" : "chat-thinking-glyph"}>◇</span>
+        <span class="chat-thinking-label">{label()}</span>
+        <span class="chat-tool-fold">{props.item.expanded ? "▾" : "▸"}</span>
+      </div>
+      <Show when={props.item.expanded}>
+        <div class="chat-thinking-body">{props.item.text}</div>
       </Show>
     </div>
   )
@@ -856,6 +942,7 @@ function TranscriptItemView(props: {
   item: ChatItem
   sessionId: () => string
   onToggleTool: (id: number) => void
+  onToggleThinking: (id: number) => void
   onRespondApproval: (decision: "allow" | "always" | "deny") => void
   onWidgetAction: (a: WidgetAction) => void
   onOpenSubagent: (sid: string) => void
@@ -883,6 +970,12 @@ function TranscriptItemView(props: {
           <ToolCard
             item={props.item as Extract<ChatItem, { kind: "tool" }>}
             onToggle={() => props.onToggleTool(props.item.id)}
+          />
+        </Match>
+        <Match when={props.item.kind === "thinking"}>
+          <ThinkingCard
+            item={props.item as Extract<ChatItem, { kind: "thinking" }>}
+            onToggle={() => props.onToggleThinking(props.item.id)}
           />
         </Match>
         <Match when={props.item.kind === "diff"}>
@@ -1159,6 +1252,7 @@ function SubagentModal(props: { sessionId: string; onClose: () => void }) {
                 item={item}
                 sessionId={controller.sessionId}
                 onToggleTool={(id) => controller.toggleTool(id)}
+                onToggleThinking={(id) => controller.toggleThinking(id)}
                 onRespondApproval={() => {}}
                 onWidgetAction={() => {}}
                 onOpenSubagent={() => {}}
@@ -1433,6 +1527,7 @@ function ChatPage() {
                 item={item}
                 sessionId={controller.sessionId}
                 onToggleTool={(id) => controller.toggleTool(id)}
+                onToggleThinking={(id) => controller.toggleThinking(id)}
                 onRespondApproval={(d) => void controller.respondApproval(d)}
                 onWidgetAction={(a) => void onWidgetAction(a)}
                 onOpenSubagent={(sid) => setSubagentId(sid)}
@@ -1673,6 +1768,40 @@ const CHAT_CSS = `
 }
 .chat-tool-output.failed { color: var(--danger); }
 .chat-tool-preview { font-size: 11px; color: var(--text-faint); font-family: var(--font-mono); margin-top: 2px; }
+
+/* Thinking card — collapsed-by-default reasoning trace, same HUD module
+   idiom as chat-tool-card but violet-accented (matches the TUI/replay
+   convention that thinking is its own color, distinct from tool cyan). */
+.chat-thinking-card {
+  position: relative;
+  cursor: pointer;
+  background: var(--surface-deep);
+  border: 1px solid var(--violet);
+  border-radius: var(--radius-xs);
+  padding: 8px 12px 8px 16px;
+  max-width: 90%;
+  opacity: 0.85;
+  transition: border-color var(--dur-fast) ease, opacity var(--dur-fast) ease;
+}
+.chat-thinking-card:hover { opacity: 1; border-color: var(--violet); }
+.chat-thinking-header { display: flex; align-items: center; gap: 9px; font-size: 12px; }
+.chat-thinking-glyph { font-family: var(--font-mono); color: var(--text-faint); }
+.chat-thinking-glyph.active { color: var(--violet); animation: stat-pulse 900ms ease-in-out infinite; }
+.chat-thinking-label { color: var(--violet); font-style: italic; flex: 1; }
+.chat-thinking-body {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: var(--radius-xs);
+  background: rgba(0, 0, 0, 0.18);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow-y: auto;
+}
 
 .chat-diff-card { display: flex; flex-direction: column; gap: 8px; max-width: 760px; }
 .chat-diff-file {

@@ -27,6 +27,7 @@ type Ev = Record<string, unknown>
 
 type Item =
   | { kind: "message"; role: string; text: string }
+  | { kind: "thinking"; text: string; startedAt: number | null; endedAt: number | null }
   | {
       kind: "tool"
       callId: string
@@ -72,14 +73,40 @@ function prettyArgs(args: unknown): string {
 function foldEvents(events: Ev[], n: number): Item[] {
   const items: Item[] = []
   const toolIndexByCallId = new Map<string, number>()
+  // Index of the in-progress "thinking" item in `items`, or -1 when no
+  // thinking block is currently accumulating — mirrors toolIndexByCallId's
+  // role of tracking "which item do the next matching events merge into",
+  // but keyed by position instead of call_id since consecutive thinking
+  // events aren't correlated by an id on the wire. Reset (frozen) the moment
+  // any other event kind is folded, same fold point as chat.tsx's
+  // freezeThinking() — see that file's applyEvent for the canonical rule.
+  let thinkingIdx = -1
   for (let i = 0; i < n; i++) {
     const ev = events[i]
     if (!ev) continue
     const kind = str(ev.kind)
+    if (kind !== "thinking") thinkingIdx = -1
     switch (kind) {
       case "thinking": {
-        const text = str(ev.text).trim() || "(thinking…)"
-        items.push({ kind: "message", role: "thinking", text })
+        const chunk = str(ev.text)
+        if (!chunk.trim()) break // empty chunk: no-op, matches chat.tsx's applyEvent
+        // Real recorded ms-since-epoch timestamps ARE available here — the
+        // daemon's session.history wraps every event as {seq, ts, ev} (see
+        // ControlServer::handleSessionHistory), and load() above folds that
+        // outer ts back onto the unwrapped event under the same key. When
+        // absent (e.g. malformed/older data), fall back to no timing rather
+        // than fabricating a fake duration.
+        const ts = num(ev.ts, 0) || null
+        if (thinkingIdx === -1) {
+          thinkingIdx = items.length
+          items.push({ kind: "thinking", text: chunk, startedAt: ts, endedAt: ts })
+        } else {
+          const existing = items[thinkingIdx]
+          if (existing && existing.kind === "thinking") {
+            existing.text += chunk
+            if (ts !== null) existing.endedAt = ts
+          }
+        }
         break
       }
       case "message": {
@@ -221,7 +248,15 @@ function ReplayPage() {
     setPickerOpen(false)
     try {
       const res = await app.client.call("session.history", { session_id: sid }, 20000)
-      const evs = ((res.events ?? []) as Ev[]).map((e) => (e.ev ?? e) as Ev)
+      // session.history wraps each event as {seq, ts, ev}; unwrap to the bare
+      // event but fold the outer ts back in under the same key (no NormalizedBrainEvent
+      // kind uses "ts" in its own fields — see core/include/jarvis/Protocol.h — so this
+      // can't collide) so foldEvents can stamp real thinking-block start/end times.
+      const evs = ((res.events ?? []) as Ev[]).map((e) => {
+        const inner = { ...((e.ev ?? e) as Ev) }
+        if (e.ts !== undefined) inner.ts = e.ts
+        return inner
+      })
       const meta = (res.session ?? {}) as Ev
       setSessionId(sid)
       setSessionTitle(title || str(meta.title) || sid)
@@ -427,6 +462,32 @@ function ReplayItem(props: {
       </div>
     )
   }
+  if (item.kind === "thinking") {
+    // Synthetic key extends the tool cards' expandedTools Set to also cover
+    // thinking blocks (per-position, since a thinking item has no call_id).
+    const key = `thinking-${props.index}`
+    const isOpen = () => props.expanded.has(key)
+    // Duration only renders when real recorded timestamps were available on
+    // both ends (see foldEvents) — replay is a static scrub through history,
+    // not a live stream, so there's no "now" to tick against like the live
+    // chat view's ThinkingCard; we either know the real duration or we don't.
+    const seconds = () =>
+      item.startedAt !== null && item.endedAt !== null && item.endedAt > item.startedAt
+        ? Math.max(1, Math.round((item.endedAt - item.startedAt) / 1000))
+        : null
+    return (
+      <div class="rep-msg rep-msg-thinking">
+        <button type="button" class="rep-msg-thinking-head" onClick={() => props.onToggle(key)}>
+          <span class="rep-msg-role hud-label">thinking</span>
+          <span class="rep-msg-thinking-dur">{seconds() !== null ? `Thought for ${seconds()}s` : ""}</span>
+          <span class="rep-tool-toggle">{isOpen() ? "▾" : "▸"}</span>
+        </button>
+        <Show when={isOpen()}>
+          <div class="rep-msg-text">{item.text || "(thinking…)"}</div>
+        </Show>
+      </div>
+    )
+  }
   if (item.kind === "tool") {
     const key = item.callId || `#${props.index}`
     // NOTE: read props.expanded reactively via a function called from inside
@@ -492,11 +553,14 @@ const replayCss = `
 .rep-msg { display:flex; flex-direction:column; gap:3px; padding:10px 12px; border-radius:var(--radius-sm); background:var(--surface); border:1px solid var(--hairline-faint); max-width:88%; }
 .rep-msg-user { align-self:flex-end; border-color:var(--accent-dim); background:var(--accent-faint); }
 .rep-msg-assistant { align-self:flex-start; }
-.rep-msg-thinking { align-self:flex-start; opacity:0.75; font-style:italic; border-style:dashed; }
+.rep-msg-thinking { align-self:flex-start; opacity:0.75; font-style:italic; border-style:dashed; padding:0; overflow:hidden; }
 .rep-msg-role { font-size:9px; color:var(--text-faint); text-transform:uppercase; }
 .rep-msg-thinking .rep-msg-role { color:var(--violet); }
 .rep-msg-user .rep-msg-role { color:var(--accent); }
 .rep-msg-text { color:var(--text); font-size:13px; white-space:pre-wrap; word-break:break-word; }
+.rep-msg-thinking-head { all:unset; box-sizing:border-box; width:100%; display:flex; align-items:center; gap:8px; padding:10px 12px; cursor:pointer; }
+.rep-msg-thinking-dur { flex:1; color:var(--text-faint); font-size:11px; font-style:normal; }
+.rep-msg-thinking .rep-msg-text { padding:0 12px 10px; }
 
 .rep-tool { border-radius:var(--radius-sm); border:1px solid var(--hairline-soft); background:var(--surface); overflow:hidden; }
 .rep-tool.failed { border-color:rgba(255,107,107,0.45); }

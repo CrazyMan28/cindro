@@ -218,6 +218,11 @@
       font-size: 12px; line-height: 1.4; padding: 2px 4px;
       white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere;
     }
+    .thinking-head { display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+    .thinking-toggle { transition: transform 160ms; }
+    .thinking.collapsed .thinking-toggle { transform: rotate(-90deg); }
+    .thinking-body { display: block; margin-top: 3px; }
+    .thinking.collapsed .thinking-body { display: none; }
     .tool {
       max-width: 92%; font-family: var(--mono); font-size: 11.5px; font-weight: 600;
       color: var(--accent-bright); padding: 4px 10px;

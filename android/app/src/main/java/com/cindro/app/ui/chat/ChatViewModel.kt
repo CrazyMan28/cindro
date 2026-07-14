@@ -74,6 +74,13 @@ class ChatViewModel(
     /** Buffers the latest assistant message of the in-flight turn for spoken read-back. */
     private var lastAssistantText: String? = null
 
+    /** id of the ChatItem.Thinking currently accumulating this turn's reasoning
+     *  chunks, or null when no thinking block is open. Set on the first "thinking"
+     *  event of a turn; cleared (via freezeThinking) on the first non-thinking
+     *  event, so later "thinking" chunks append to the SAME item instead of each
+     *  starting a new bubble. */
+    private var currentThinkingId: String? = null
+
     /** Read-back only applies to live events, never to the history replay on open. */
     @Volatile private var historyReplayed = false
 
@@ -340,9 +347,16 @@ class ChatViewModel(
 
     private fun fold(ev: BrainEvent) {
         when (ev.kind) {
-            "turn_started" -> _uiState.update { it.copy(busy = true) }
-            "thinking" -> ev.text?.let { appendItem(ChatItem.Thinking(nextId(), it)) }
+            "turn_started" -> {
+                // A new turn shouldn't carry over a stale accumulation ref — but if
+                // one is somehow still open, leave that item's endedAtMs untouched
+                // (don't fabricate a freeze time for it here).
+                currentThinkingId = null
+                _uiState.update { it.copy(busy = true) }
+            }
+            "thinking" -> ev.text?.let { chunk -> appendOrAppendThinking(chunk) }
             "message" -> {
+                freezeThinking()
                 val role = ev.role ?: "assistant"
                 if (role != "user") lastAssistantText = ev.text
                 // Live assistant replies stream in with a typewriter reveal; the
@@ -357,32 +371,43 @@ class ChatViewModel(
                     ),
                 )
             }
-            "tool_call" -> appendItem(
-                ChatItem.ToolCall(
-                    id = ev.callId ?: nextId(),
-                    name = ev.name ?: "tool",
-                    argsJson = ev.argsJson,
-                    server = ev.server,
-                ),
-            )
+            "tool_call" -> {
+                freezeThinking()
+                appendItem(
+                    ChatItem.ToolCall(
+                        id = ev.callId ?: nextId(),
+                        name = ev.name ?: "tool",
+                        argsJson = ev.argsJson,
+                        server = ev.server,
+                    ),
+                )
+            }
             "tool_result" -> mergeToolResult(ev)
-            "diff" -> appendItem(
-                ChatItem.Diff(nextId(), path = ev.path ?: "(file)", patch = ev.patch.orEmpty()),
-            )
-            "approval" -> appendItem(
-                ChatItem.Approval(
-                    id = nextId(),
-                    approvalId = ev.approvalId ?: nextId(),
-                    summary = ev.summary ?: "Cindro needs approval",
-                    risk = ev.risk ?: "medium",
-                ),
-            )
+            "diff" -> {
+                freezeThinking()
+                appendItem(
+                    ChatItem.Diff(nextId(), path = ev.path ?: "(file)", patch = ev.patch.orEmpty()),
+                )
+            }
+            "approval" -> {
+                freezeThinking()
+                appendItem(
+                    ChatItem.Approval(
+                        id = nextId(),
+                        approvalId = ev.approvalId ?: nextId(),
+                        summary = ev.summary ?: "Cindro needs approval",
+                        risk = ev.risk ?: "medium",
+                    ),
+                )
+            }
             "error" -> {
+                freezeThinking()
                 appendItem(ChatItem.Error(nextId(), ev.message ?: "error"))
                 finishStreaming(hapticComplete = false)
                 _uiState.update { it.copy(busy = false) }
             }
             "final" -> {
+                freezeThinking()
                 finishStreaming(hapticComplete = historyReplayed)
                 _uiState.update { it.copy(busy = false) }
                 // Speak the turn's final assistant message if read-back is on.
@@ -393,6 +418,39 @@ class ChatViewModel(
                 }
             }
             // thread_started / usage / unknown: nothing to render directly.
+        }
+    }
+
+    /** Append a "thinking" chunk: if a thinking item is already accumulating this
+     *  turn, append the chunk to its existing text in place; otherwise start a new
+     *  one and remember its id so subsequent chunks fold into it too. */
+    private fun appendOrAppendThinking(chunk: String) {
+        val id = currentThinkingId
+        if (id != null) {
+            _uiState.update { st ->
+                st.copy(items = st.items.map {
+                    if (it is ChatItem.Thinking && it.id == id) it.copy(text = it.text + chunk) else it
+                })
+            }
+        } else {
+            val newId = nextId()
+            currentThinkingId = newId
+            appendItem(ChatItem.Thinking(newId, chunk, startedAtMs = System.currentTimeMillis()))
+        }
+    }
+
+    /** Stamp endedAtMs on the currently-accumulating thinking item (if any) and
+     *  clear the ref, so the NEXT "thinking" event (if any) starts a fresh block
+     *  instead of appending to this now-closed one. Called at the top of every
+     *  non-thinking branch, before that branch's own logic runs. */
+    private fun freezeThinking() {
+        val id = currentThinkingId ?: return
+        currentThinkingId = null
+        val now = System.currentTimeMillis()
+        _uiState.update { st ->
+            st.copy(items = st.items.map {
+                if (it is ChatItem.Thinking && it.id == id) it.copy(endedAtMs = now) else it
+            })
         }
     }
 
