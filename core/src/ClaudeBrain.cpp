@@ -106,6 +106,13 @@ QStringList ClaudeBrain::buildArgs(const QString &prompt, const QStringList &ima
          << QStringLiteral("--verbose");
     if (!m_opts.model.isEmpty())
         args << QStringLiteral("--model") << m_opts.model;
+    // Always request the deepest reasoning effort the CLI offers. Note this does
+    // NOT guarantee visible thinking text for every model (Sonnet has been observed
+    // returning a thinking block with empty text regardless of --effort — that
+    // appears to be a Claude Code default for that model, not something this flag
+    // controls), but it's still the correct default: it raises actual reasoning
+    // depth/tool-use rigor for every model that does respect it.
+    args << QStringLiteral("--effort") << QStringLiteral("xhigh");
     // NOTE: `--add-dir` is VARIADIC in the claude CLI (it accepts one or more
     // directories), so the separate-token form `--add-dir <dir> "<prompt>"`
     // greedily swallows the trailing positional prompt as a second "directory"

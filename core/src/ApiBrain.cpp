@@ -589,7 +589,26 @@ void ApiBrain::startAnthropic(const QString &text)
 
     QJsonObject body;
     body.insert(QStringLiteral("model"), m_opts.model);
-    body.insert(QStringLiteral("max_tokens"), m_opts.maxTokens);
+    // Give the model headroom for thinking + the actual answer inside one
+    // max_tokens ceiling (not mutating m_opts.maxTokens itself — other code,
+    // e.g. context-budget estimation, reads that field for a different purpose).
+    static const int kThinkingHeadroomTokens = 32000;
+    const int effectiveMaxTokens = qMax(m_opts.maxTokens, kThinkingHeadroomTokens);
+    body.insert(QStringLiteral("max_tokens"), effectiveMaxTokens);
+    // Extended thinking, adaptive mode. The modern request surface (Fable 5,
+    // Opus 4.6-4.8, Sonnet 5, Sonnet 4.6) accepts ONLY {type:"adaptive"} —
+    // the older {type:"enabled", budget_tokens:N} shape is REJECTED WITH A 400
+    // on Sonnet 5 / Opus 4.7 / Opus 4.8 / Fable 5. These same models also
+    // default thinking.display to "omitted" (the thinking block streams with
+    // empty text) unless display:"summarized" is requested explicitly.
+    // Skipped for Haiku: adaptive-thinking support isn't documented there and
+    // a sibling parameter (effort) is documented to error on Haiku 4.5.
+    if (!m_opts.model.contains(QStringLiteral("haiku"), Qt::CaseInsensitive)) {
+        QJsonObject thinking;
+        thinking.insert(QStringLiteral("type"), QStringLiteral("adaptive"));
+        thinking.insert(QStringLiteral("display"), QStringLiteral("summarized"));
+        body.insert(QStringLiteral("thinking"), thinking);
+    }
     body.insert(QStringLiteral("messages"), messages);
     body.insert(QStringLiteral("stream"), true);
     if (!m_opts.systemPrompt.isEmpty())
