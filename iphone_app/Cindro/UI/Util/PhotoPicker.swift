@@ -27,9 +27,11 @@ struct PhotoPicker: UIViewControllerRepresentable {
             parent.dismiss()
             guard let provider = results.first?.itemProvider,
                   provider.canLoadObject(ofClass: UIImage.self) else { return }
-            provider.loadObject(ofClass: UIImage.self) { [weak parent] object, _ in
+            // `parent` is a struct (value type) — capture the callback itself, not `[weak parent]`.
+            let onPick = parent.onPick
+            provider.loadObject(ofClass: UIImage.self) { object, _ in
                 guard let image = object as? UIImage else { return }
-                DispatchQueue.main.async { parent?.onPick(image) }
+                DispatchQueue.main.async { onPick(image) }
             }
         }
     }
