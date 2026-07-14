@@ -37,9 +37,7 @@ struct NewChatView: View {
         }
         .navigationTitle("Cindro")
         .navigationBarTitleDisplayMode(.inline)
-        .alert("Couldn't start chat", isPresented: .constant(vm.errorText != nil)) {
-            Button("OK") { vm.errorText = nil }
-        } message: { Text(vm.errorText ?? "") }
+        .errorAlert($vm.errorText, title: "Couldn't start chat")
     }
 
     private var suggestionRow: some View {

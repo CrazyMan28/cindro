@@ -25,9 +25,9 @@ struct ChatView: View {
                     }
                     .padding()
                 }
-                .onChange(of: vm.items.count) { _ in
-                    withAnimation { proxy.scrollTo(vm.items.last?.id ?? "__busy__", anchor: .bottom) }
-                }
+                .onChange(of: vm.items.count) { _ in scrollToEnd(proxy) }
+                .onChange(of: vm.busy) { _ in scrollToEnd(proxy) }
+                .onChange(of: vm.items) { _ in scrollToEnd(proxy) }   // in-place updates (tool result, streamed text)
             }
             Divider()
             Composer(draft: $vm.draft, pendingImages: $vm.pendingImages, busy: vm.busy) {
@@ -36,9 +36,12 @@ struct ChatView: View {
         }
         .navigationTitle("Chat")
         .navigationBarTitleDisplayMode(.inline)
-        .alert("Something went wrong", isPresented: .constant(vm.errorText != nil)) {
-            Button("OK") { vm.errorText = nil }
-        } message: { Text(vm.errorText ?? "") }
+        .errorAlert($vm.errorText)
+    }
+
+    private func scrollToEnd(_ proxy: ScrollViewProxy) {
+        let target = vm.busy ? "__busy__" : (vm.items.last?.id ?? "__busy__")
+        withAnimation { proxy.scrollTo(target, anchor: .bottom) }
     }
 
     private func approve(_ approvalId: String, decision: String) {

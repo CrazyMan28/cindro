@@ -62,7 +62,10 @@ final class JarvisRepository: ObservableObject {
         }
     }
 
-    func createSession(profile: String? = nil, brain: String? = nil, model: String? = nil) async throws -> String {
+    /// Defaults mirror Android's `createSession` (profile="coworker", brain="codex"), which
+    /// always transmits both — so a new chat behaves identically to the Android app rather
+    /// than falling back to whatever brain the daemon happens to default to.
+    func createSession(profile: String = "coworker", brain: String = "codex", model: String? = nil) async throws -> String {
         let r = try await result("session.create", Params.of([
             "profile": profile, "brain": brain, "model": model,
         ]))
@@ -152,13 +155,10 @@ final class JarvisRepository: ObservableObject {
     func mcpSetEnabled(_ name: String, _ enabled: Bool) async throws { try await result("mcp.set_enabled", ["name": name, "enabled": enabled]) }
     func mcpTest(_ name: String) async throws -> String { (try await result("mcp.test", ["name": name])).str("status") ?? "unknown" }
     func mcpCliList() async throws -> [CliMcp] {
+        // Daemon returns {servers:[{brain,name,transport,enabled},…]}, each element carrying
+        // its own brain — same shape Android reads. (Do NOT iterate the top-level dict.)
         let r = try await result("mcp.cli_list")
-        var out: [CliMcp] = []
-        for (brain, v) in r {
-            guard let arr = v as? [JSONObject] else { continue }
-            out += arr.compactMap { CliMcp.from(brain, $0) }
-        }
-        return out
+        return (r.objArr("servers") ?? []).compactMap { CliMcp.from($0.str("brain") ?? "", $0) }
     }
     func mcpCliSetEnabled(brain: String, name: String, enabled: Bool) async throws {
         try await result("mcp.cli_set_enabled", ["brain": brain, "name": name, "enabled": enabled])

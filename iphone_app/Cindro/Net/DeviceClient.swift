@@ -83,15 +83,23 @@ final class DeviceClient: NSObject, ObservableObject {
 
     // MARK: Public API
 
-    /// Start (or retarget) the connection. Safe to call repeatedly.
+    /// Start (or retarget) the connection. Safe to call repeatedly. If a socket is already
+    /// open to a DIFFERENT url, it is torn down so the reconnect picks up the new target.
     func connect(url: String, name: String) {
         lock.lock()
+        let retargeted = wsUrl != nil && wsUrl != url && task != nil
         wsUrl = url
         deviceName = name
         shouldRun = true
+        let existing = task
         let noSocket = task == nil
         lock.unlock()
-        if noSocket { openSocket() }
+        if noSocket {
+            openSocket()
+        } else if retargeted {
+            // onDown(retry:) will reopen against the new wsUrl.
+            existing?.cancel(with: .normalClosure, reason: nil)
+        }
     }
 
     /// Permanently stop reconnecting and close the socket.
@@ -104,6 +112,7 @@ final class DeviceClient: NSObject, ObservableObject {
         lock.unlock()
         t?.cancel(with: .normalClosure, reason: nil)
         failAllPending(reason: "client shutdown")
+        resumeWaiters(success: false)   // fail-fast any request() parked in awaitAuth
         setState(.disconnected)
     }
 
