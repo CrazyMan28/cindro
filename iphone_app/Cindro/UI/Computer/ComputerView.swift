@@ -45,9 +45,7 @@ struct ComputerView: View {
         .padding()
         .navigationTitle("Computer")
         .task { vm.configure(app.repository); await vm.loadSessions() }
-        .alert("Mirror error", isPresented: .constant(vm.errorText != nil)) {
-            Button("OK") { vm.errorText = nil }
-        } message: { Text(vm.errorText ?? "") }
+        .errorAlert($vm.errorText, title: "Mirror error")
     }
 }
 

@@ -5,15 +5,27 @@ public typealias JSONObject = [String: Any]
 
 extension Dictionary where Key == String, Value == Any {
     func str(_ k: String) -> String? { self[k] as? String }
+    // JSONSerialization boxes BOTH JSON numbers and JSON bools as NSNumber, so a naive
+    // `as? Int` / `as? Bool` silently cross-coerces (a bool reads as 0/1, an int 0/1 reads
+    // as a bool). Distinguish them via CFBooleanGetTypeID so parsing matches Gson: numeric
+    // accessors reject bools, and bool() rejects numbers.
+    private func number(_ k: String, wantBool: Bool) -> NSNumber? {
+        guard let n = self[k] as? NSNumber else { return nil }
+        let isBool = CFGetTypeID(n) == CFBooleanGetTypeID()
+        return isBool == wantBool ? n : nil
+    }
     func int(_ k: String) -> Int? {
         if let n = self[k] as? Int { return n }
-        return (self[k] as? NSNumber)?.intValue
+        return number(k, wantBool: false)?.intValue
     }
     func dbl(_ k: String) -> Double? {
         if let d = self[k] as? Double { return d }
-        return (self[k] as? NSNumber)?.doubleValue
+        return number(k, wantBool: false)?.doubleValue
     }
-    func bool(_ k: String) -> Bool? { self[k] as? Bool }
+    func bool(_ k: String) -> Bool? {
+        if let b = number(k, wantBool: true)?.boolValue { return b }
+        return self[k] as? Bool
+    }
     func obj(_ k: String) -> JSONObject? { self[k] as? JSONObject }
     func arr(_ k: String) -> [Any]? { self[k] as? [Any] }
     func objArr(_ k: String) -> [JSONObject]? { self[k] as? [JSONObject] }

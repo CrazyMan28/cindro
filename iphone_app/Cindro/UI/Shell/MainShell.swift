@@ -88,7 +88,7 @@ struct MainShell: View {
         switch route {
         case .chatHome:        NewChatView(repo: repo, onOpenSession: openSession)
         case .sessions:        SessionsView(repo: repo, onOpenSession: openSession)
-        case .canvas:          CanvasView()
+        case .canvas:          CanvasView(store: app.widgetStore)
         case .computer:        ComputerView()
         case .phonePermissions: PhonePermissionsView(repo: repo)
         case .skills:          SkillsView(repo: repo)

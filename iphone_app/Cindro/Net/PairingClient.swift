@@ -113,6 +113,9 @@ final class PairingClient: NSObject {
         lock.unlock()
 
         task?.cancel(with: .normalClosure, reason: nil)
+        // URLSession strongly retains its delegate (self) until invalidated. Without this
+        // every pairing attempt — each mistyped code — would leak the client + its socket.
+        session.invalidateAndCancel()
         cont?.resume(returning: result)
     }
 }

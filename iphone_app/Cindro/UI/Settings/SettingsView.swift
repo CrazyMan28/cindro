@@ -55,9 +55,7 @@ struct SettingsView: View {
             Button("Unpair", role: .destructive) { app.unpair() }
             Button("Cancel", role: .cancel) {}
         }
-        .alert("Couldn't update setting", isPresented: .constant(vm.errorText != nil)) {
-            Button("OK") { vm.errorText = nil }
-        } message: { Text(vm.errorText ?? "") }
+        .errorAlert($vm.errorText, title: "Couldn't update setting")
     }
 }
 

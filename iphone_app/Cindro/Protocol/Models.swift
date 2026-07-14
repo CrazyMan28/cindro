@@ -46,7 +46,7 @@ struct TrustRule: Identifiable {
     static func from(_ o: JSONObject) -> TrustRule? {
         guard let id = o.str("id") else { return nil }
         return TrustRule(id: id, tool: o.str("tool") ?? "*", app: o.str("app") ?? "*",
-                         action: o.str("action") ?? "ask", note: o.str("note"))
+                         action: o.str("action") ?? "allow", note: o.str("note"))
     }
 }
 
@@ -55,7 +55,7 @@ struct TrustPolicies {
     let rules: [TrustRule]
 
     static func from(_ o: JSONObject) -> TrustPolicies {
-        TrustPolicies(defaultAction: o.str("default") ?? "ask",
+        TrustPolicies(defaultAction: o.str("default") ?? "allow",
                       rules: (o.objArr("rules") ?? []).compactMap(TrustRule.from))
     }
 }
@@ -114,7 +114,7 @@ struct McpServer: Identifiable {
     static func from(_ o: JSONObject) -> McpServer? {
         guard let name = o.str("name") else { return nil }
         return McpServer(name: name, url: o.str("url") ?? o.str("endpoint"),
-                         command: o.str("command"), enabled: o.bool("enabled") ?? false,
+                         command: o.str("command"), enabled: o.bool("enabled") ?? true,
                          status: o.str("status"))
     }
 }

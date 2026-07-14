@@ -17,6 +17,7 @@ final class AppState: ObservableObject {
     let identity: DeviceIdentity
     let repository: JarvisRepository
     let fileReceiver: FileReceiver
+    let widgetStore: WidgetStore
 
     /// Whether the phone is paired to a daemon (start destination = pairing when false).
     @Published var isPaired: Bool
@@ -38,6 +39,7 @@ final class AppState: ObservableObject {
         identity = DeviceIdentity.loadOrCreate(keychain)
         repository = JarvisRepository(identity: identity, pairingStore: pairingStore)
         fileReceiver = FileReceiver(offers: repository.client.fileOffers)
+        widgetStore = WidgetStore(events: repository.client.widgetEvents)
         isPaired = pairingStore.isPaired
         gateEnabled = UserDefaults.standard.object(forKey: "fingerprint_gate") as? Bool ?? true
 

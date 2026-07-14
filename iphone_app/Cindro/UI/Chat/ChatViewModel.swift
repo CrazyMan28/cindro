@@ -18,6 +18,13 @@ final class ChatViewModel: ObservableObject {
     private var cancellable: AnyCancellable?
     private var itemIndex: [String: Int] = [:]
     private var seq = 0
+    private var loaded = false
+    /// The current assistant bubble being revealed this turn (streamed message events
+    /// update it in place); reset at every turn boundary. Mirrors Android's live-reveal fold.
+    private var currentAssistantId: String?
+    /// The optimistic user echo, so the daemon re-emitting the same user turn doesn't
+    /// render a second identical bubble.
+    private var optimisticEchoText: String?
 
     init(sessionId: String, repo: JarvisRepository) {
         self.sessionId = sessionId
@@ -33,10 +40,20 @@ final class ChatViewModel: ObservableObject {
     }
 
     func load() async {
+        guard !loaded else { return }
         do {
             let history = try await repo.history(sessionId)
-            items.removeAll(); itemIndex.removeAll()
+            // Preserve any live events that arrived during the await (subscribe() is already
+            // active) — folding history must not wipe them.
+            let liveSoFar = items
+            items.removeAll(); itemIndex.removeAll(); currentAssistantId = nil
             for ev in history { fold(ev, live: false) }
+            currentAssistantId = nil     // history's last turn is closed; live starts fresh
+            for item in liveSoFar where itemIndex[item.id] == nil {
+                itemIndex[item.id] = items.count
+                items.append(item)
+            }
+            loaded = true
             // Consume a stashed first message (blank-composer handoff).
             if let pending = PendingFirstMessage.consume(sessionId) {
                 draft = pending.text
@@ -57,7 +74,8 @@ final class ChatViewModel: ObservableObject {
 
         if text.hasPrefix("/"), await handleSlash(text) { return }
 
-        // Optimistic local echo.
+        // Optimistic local echo (deduped against the daemon's own echo of this turn).
+        optimisticEchoText = text
         appendOrUpdate(id: "local-\(nextSeq())", .message(role: "user", text: text, streaming: false))
         draft = ""; pendingImages = []
         busy = true
@@ -99,12 +117,13 @@ final class ChatViewModel: ObservableObject {
         switch ev.kind {
         case "turn_started":
             busy = true
+            currentAssistantId = nil
         case "thinking":
             appendOrUpdate(id: ev.callId ?? "think-\(nextSeq())", .thinking(text: ev.text ?? ""))
         case "message":
-            let role = ev.role ?? "assistant"
-            appendOrUpdate(id: "msg-\(nextSeq())", .message(role: role, text: ev.text ?? "", streaming: false))
+            foldMessage(ev)
         case "tool_call":
+            currentAssistantId = nil          // a tool interrupts the assistant bubble stream
             let id = ev.callId ?? "tool-\(nextSeq())"
             appendOrUpdate(id: id, .toolCall(name: ev.name ?? "tool", argsJson: jsonString(ev.obj("args")),
                                              output: nil, ok: nil, images: [], server: ev.server))
@@ -128,9 +147,28 @@ final class ChatViewModel: ObservableObject {
             appendOrUpdate(id: "err-\(nextSeq())", .error(message: ev.message ?? ev.text ?? "error"))
         case "final":
             busy = false
+            currentAssistantId = nil
         default:
             break
         }
+    }
+
+    /// Fold a `message` event: dedup the user's own echoed turn, and reveal a streamed
+    /// assistant reply in a single bubble (successive events update it in place).
+    private func foldMessage(_ ev: BrainEvent) {
+        let role = ev.role ?? "assistant"
+        let text = ev.text ?? ""
+        if role == "user" {
+            if let echo = optimisticEchoText, echo == text {
+                optimisticEchoText = nil     // already shown by the optimistic local echo
+                return
+            }
+            appendOrUpdate(id: "umsg-\(nextSeq())", .message(role: "user", text: text, streaming: false))
+            return
+        }
+        let id = currentAssistantId ?? "amsg-\(nextSeq())"
+        currentAssistantId = id
+        appendOrUpdate(id: id, .message(role: role, text: text, streaming: busy))
     }
 
     /// Base64 images attached to a tool result (`images:[...]` or a single `image`/`screenshot`).
