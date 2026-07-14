@@ -419,18 +419,80 @@ fun TypingIndicator(modifier: Modifier = Modifier) {
 
 @Composable
 private fun ThinkingBubble(item: ChatItem.Thinking) {
-    // Same unbounded-layout guard as MessageBubble: a huge "thinking" block would
-    // otherwise blow up main-thread text layout on load. Full text stays selectable.
-    val display = if (item.text.length > MAX_MESSAGE_RENDER_CHARS)
-        item.text.take(MAX_MESSAGE_RENDER_CHARS) +
-            "\n… (${item.text.length} chars — truncated for display)"
-    else item.text
-    Text(
-        text = display,
-        color = JarvisPalette.TextSecondary,
-        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
-    )
+    // Collapsed by default, mirroring ToolCallBubble: a compact header row (a small
+    // spinner while the turn is still reasoning, else a check; a ticking/frozen
+    // elapsed-seconds label; a chevron) that expands to reveal the accumulated
+    // reasoning text. The per-second tick lives HERE (LaunchedEffect), never in the
+    // ViewModel — only startedAtMs/endedAtMs are shared state.
+    var expanded by remember { mutableStateOf(false) }
+    val running = item.endedAtMs == null
+
+    var elapsedSec by remember(item.id) { mutableIntStateOf(thinkingElapsedSeconds(item)) }
+    LaunchedEffect(item.id, item.endedAtMs) {
+        if (item.endedAtMs == null) {
+            while (true) {
+                elapsedSec = thinkingElapsedSeconds(item)
+                delay(1000)
+            }
+        } else {
+            elapsedSec = thinkingElapsedSeconds(item)
+        }
+    }
+
+    GlowCard(modifier = Modifier.fillMaxWidth()) {
+        Column {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded },
+            ) {
+                if (running) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = JarvisPalette.Accent,
+                    )
+                } else {
+                    Icon(
+                        Icons.Filled.CheckCircle, contentDescription = null,
+                        tint = JarvisPalette.Success, modifier = Modifier.size(18.dp),
+                    )
+                }
+                Text(
+                    text = "  " + if (running) "Thinking… ${elapsedSec}s" else "Thought for ${elapsedSec}s",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = JarvisPalette.TextPrimary,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    Icons.Filled.KeyboardArrowDown,
+                    contentDescription = if (expanded) "collapse" else "expand",
+                    tint = JarvisPalette.TextSecondary,
+                    modifier = Modifier.size(20.dp).rotate(if (expanded) 180f else 0f),
+                )
+            }
+            AnimatedVisibility(visible = expanded) {
+                Column {
+                    Spacer(Modifier.height(8.dp))
+                    // Same unbounded-layout guard as MessageBubble: a huge "thinking"
+                    // block would otherwise blow up main-thread text layout on load.
+                    // Full text stays selectable (long-press to copy).
+                    val display = if (item.text.length > MAX_MESSAGE_RENDER_CHARS)
+                        item.text.take(MAX_MESSAGE_RENDER_CHARS) +
+                            "\n… (${item.text.length} chars — truncated for display)"
+                    else item.text
+                    MonoBlock(display)
+                }
+            }
+        }
+    }
+}
+
+/** Elapsed whole seconds since [item] started thinking — from now if still running
+ *  (endedAtMs == null), else frozen at the stamped endedAtMs. */
+private fun thinkingElapsedSeconds(item: ChatItem.Thinking): Int {
+    val end = item.endedAtMs ?: System.currentTimeMillis()
+    return ((end - item.startedAtMs) / 1000).toInt().coerceAtLeast(0)
 }
 
 @Composable

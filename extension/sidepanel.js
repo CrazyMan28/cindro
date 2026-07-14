@@ -59,6 +59,19 @@ let lastTabCtx = { active: null, tabs: [] };
 let liveBubble = null;
 let liveText = "";
 
+// Collapsible "thinking" block for the current turn: ALL `thinking` event
+// chunks accumulate into ONE growing DOM block (not a new element per chunk).
+// thinkingEl is the outer <div class="thinking">; thinkingHeadEl/thinkingBodyEl
+// are its header (click-to-collapse) and body; thinkingText is the accumulated
+// raw text; thinkingStartTs/thinkingTicker drive the "Thinking… Ns" live clock,
+// frozen to "Thought for Ns" once the turn's first non-thinking content lands.
+let thinkingEl = null;
+let thinkingBodyEl = null;
+let thinkingHeadEl = null;
+let thinkingText = "";
+let thinkingStartTs = 0;
+let thinkingTicker = null;
+
 // Active client-side typewriter reveals. Each assistant `message` event gets its
 // OWN bubble + its OWN reveal timer + full text, so a fast follow-up message never
 // clobbers an in-progress reveal. Cleared (and snapped to full) on turn end.
@@ -362,14 +375,17 @@ function handleEv(ev) {
     case "turn_started":
       // New turn: stop any prior live bubble accumulation + drop stale tool ref.
       endLiveBubble();
+      freezeThinking();
       lastToolEl = null;
       break;
 
     case "thinking":
-      // Close any open assistant bubble first so the dim italic thinking line
+      // Close any open assistant bubble first so the collapsible thinking block
       // renders on its OWN row in normal flow — never on top of / overwriting
       // the assistant's spoken text. Following message text starts a fresh bubble.
-      if (ev.text) { endLiveBubble(); addThinking(ev.text); }
+      // NOTE: does NOT freeze the thinking block — this is the site where its
+      // chunks accumulate; freezing happens once non-thinking content lands.
+      if (ev.text) { endLiveBubble(); appendThinking(ev.text); }
       break;
 
     case "message": {
@@ -381,13 +397,14 @@ function handleEv(ev) {
       const role = ev.role || "assistant";
       const text = ev.text || "";
       if (role === "user") break; // we already echoed the user's own message
-      if (text.trim()) addAssistantMessage(text);
+      if (text.trim()) { freezeThinking(); addAssistantMessage(text); }
       break;
     }
 
     case "tool_call":
       // Show the user EXACTLY what Jarvis does: "▸ <name> <short args/target>".
       endLiveBubble();
+      freezeThinking();
       addToolCall(ev);
       break;
 
@@ -401,6 +418,7 @@ function handleEv(ev) {
       // primitive tool_call/tool_result use, so edits are visible in-chat
       // instead of silently vanishing (parity with desktop/phone diff cards).
       endLiveBubble();
+      freezeThinking();
       const stat = diffStat(ev.patch);
       addTool(`✎ ${ev.path || "diff"}  +${stat.add}/-${stat.del}`);
       break;
@@ -413,17 +431,20 @@ function handleEv(ev) {
       // forever; Stop already calls session.cancel (see doStop) which
       // releases the daemon's server-side injection hold.
       endLiveBubble();
+      freezeThinking();
       addApprovalCard(ev);
       break;
 
     case "error":
       endLiveBubble();
+      freezeThinking();
       addError(ev.message || "error");
       endTurn();
       break;
 
     case "final":
       endLiveBubble();
+      freezeThinking();
       endTurn();
       break;
 
@@ -565,12 +586,59 @@ function flushReveals() {
   reveals.clear();
   scrollDown();
 }
-function addThinking(text) {
-  const el = document.createElement("div");
-  el.className = "thinking";
-  el.textContent = text;
-  els.transcript.appendChild(el);
+// Accumulate ALL `thinking` chunks for the current turn into ONE growing
+// collapsible block (collapsed by default; click the header to expand). The
+// first chunk builds the DOM + starts the "Thinking… Ns" ticker; every chunk
+// (including the first) appends to thinkingText and re-renders the body.
+function appendThinking(chunk) {
+  if (!thinkingEl) {
+    thinkingEl = document.createElement("div");
+    thinkingEl.className = "thinking collapsed";
+
+    thinkingHeadEl = document.createElement("div");
+    thinkingHeadEl.className = "thinking-head";
+    const toggle = document.createElement("span");
+    toggle.className = "thinking-toggle";
+    toggle.textContent = "▾";
+    const label = document.createElement("span");
+    label.className = "thinking-label";
+    label.textContent = "Thinking… 0s";
+    thinkingHeadEl.appendChild(toggle);
+    thinkingHeadEl.appendChild(label);
+    thinkingHeadEl.addEventListener("click", () => thinkingEl.classList.toggle("collapsed"));
+
+    thinkingBodyEl = document.createElement("div");
+    thinkingBodyEl.className = "thinking-body";
+
+    thinkingEl.appendChild(thinkingHeadEl);
+    thinkingEl.appendChild(thinkingBodyEl);
+    els.transcript.appendChild(thinkingEl);
+
+    thinkingStartTs = Date.now();
+    thinkingTicker = setInterval(() => {
+      label.textContent = `Thinking… ${Math.floor((Date.now() - thinkingStartTs) / 1000)}s`;
+    }, 1000);
+  }
+  thinkingText += chunk;
+  thinkingBodyEl.textContent = thinkingText;
   scrollDown();
+}
+
+// Stop the live ticker and freeze the label to "Thought for Ns" — called at
+// every point a new turn segment starts (i.e. the same sites that call
+// endLiveBubble(), plus the "message" case, which owns its own bubble and
+// never calls endLiveBubble()). The finished block is left in the transcript,
+// collapsed, as the visual record — never removed.
+function freezeThinking() {
+  if (!thinkingEl) return;
+  if (thinkingTicker) { clearInterval(thinkingTicker); thinkingTicker = null; }
+  const secs = Math.round((Date.now() - thinkingStartTs) / 1000);
+  const label = thinkingHeadEl && thinkingHeadEl.querySelector(".thinking-label");
+  if (label) label.textContent = `Thought for ${secs}s`;
+  thinkingEl = null;
+  thinkingBodyEl = null;
+  thinkingHeadEl = null;
+  thinkingText = "";
 }
 function addTool(text) {
   const el = document.createElement("div");
@@ -1256,6 +1324,7 @@ async function replayHistory(id) {
   } finally {
     replaying = false;
     endLiveBubble();
+    freezeThinking();
     lastToolEl = null;
   }
   scrollDown(true);
@@ -1264,6 +1333,7 @@ async function replayHistory(id) {
 function clearTranscript() {
   flushReveals();
   endLiveBubble();
+  freezeThinking();
   lastToolEl = null;
   els.transcript.innerHTML = "";
   dismissPlan();   // the plan is per-session — never carry it into another chat
@@ -1462,6 +1532,7 @@ async function doStop() {
   if (!sessionId) { endTurn(); return; }
   try { await rpc("session.cancel", { session_id: sessionId }); } catch (e) { /* ignore */ }
   endLiveBubble();
+  freezeThinking();
   endTurn();
   addSys("stopped");
 }
@@ -1472,6 +1543,7 @@ async function doStop() {
 async function onBrainChange() {
   sessionId = null;
   endLiveBubble();
+  freezeThinking();
   endTurn();
   syncSessionSubscription();
   loadModels(els.brain.value);  // repopulate models for the new brain

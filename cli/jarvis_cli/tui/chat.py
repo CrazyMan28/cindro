@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import time
 from typing import Optional
 
 from rich.markdown import Markdown
@@ -33,7 +34,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.message import Message
-from textual.widgets import Input, ListItem, ListView, RichLog, Static
+from textual.widgets import Collapsible, Input, ListItem, ListView, RichLog, Static
 
 from jarvis_cli.control import ControlError
 from jarvis_cli.tui.activity_pane import ActivityPane
@@ -167,6 +168,13 @@ class ChatPane(Vertical):
         # leaving a half-typed line stranded in #typing-preview.
         self._typewriter_task: Optional[asyncio.Task] = None
         self._typewriter_text: str = ""
+        # the turn's accumulated "thinking" text and when its first chunk
+        # arrived (time.monotonic(), for the local per-second elapsed tick —
+        # see _tick_thinking/_freeze_thinking) — same shape as
+        # _typewriter_task/_typewriter_text above, just driving #thinking-block
+        # instead of #typing-preview.
+        self._thinking_text: str = ""
+        self._thinking_started: float | None = None
 
     # -- layout ----------------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -178,6 +186,14 @@ class ChatPane(Vertical):
         # where the in-progress typewriter reveal lives (see _start_typewriter);
         # empty/hidden until a live assistant reply starts revealing.
         yield Static("", id="typing-preview")
+        # the turn's accumulated reasoning ("thinking") text — like
+        # #typing-preview above, this is a single widget mounted OUTSIDE the
+        # RichLog and updated in place, because RichLog is append-only
+        # scrollback and can't host a live-updating, clickable widget.
+        # Collapsed by default; hidden entirely until a turn's first
+        # "thinking" chunk arrives (see on_mount and _accumulate_thinking).
+        yield Collapsible(Static("", id="thinking-content"), title="",
+                          collapsed=True, id="thinking-block")
         yield Horizontal(
             ArcReactorWidget(size=5, spinning=True, thinking=False,
                              id="status-reactor"),
@@ -195,6 +211,16 @@ class ChatPane(Vertical):
         status_reactor = self.query_one("#status-reactor", ArcReactorWidget)
         status_reactor.display = False
         status_reactor.pause()
+        # #thinking-block starts hidden (nothing has been thought yet) — same
+        # empty-until-live-data idea as #typing-preview, but Collapsible always
+        # renders a title/border row even when empty, so it needs an explicit
+        # display toggle rather than just relying on empty content.
+        self.query_one("#thinking-block", Collapsible).display = False
+        # Registered ONCE, not per-turn: _tick_thinking no-ops whenever no
+        # thinking is in flight, so there's nothing to cancel/restart between
+        # turns — same always-running-timer idiom as ArcReactorWidget's own
+        # tick (see arc_reactor.py on_mount).
+        self.set_interval(1.0, self._tick_thinking)
         self._update_landing_reactor()
 
     # -- helpers ---------------------------------------------------------------
@@ -235,6 +261,81 @@ class ChatPane(Vertical):
             reactor.resume()
         else:
             reactor.pause()
+
+    # -- thinking (reasoning) block ----------------------------------------------
+    def _accumulate_thinking(self, chunk: str) -> None:
+        """Append one "thinking" event's text chunk onto the turn's single
+        reasoning block instead of writing a line per chunk — mirrors
+        Android's ChatViewModel.appendOrAppendThinking. Starts the local
+        elapsed-time clock on the first chunk of a turn (_tick_thinking then
+        ticks it live); _freeze_thinking/_reset_thinking are what close a
+        turn's accumulation back out."""
+        if not chunk:
+            return
+        try:
+            block = self.query_one("#thinking-block", Collapsible)
+            content = block.query_one("#thinking-content", Static)
+        except Exception:
+            return
+        if self._thinking_started is None:
+            self._thinking_started = time.monotonic()
+            block.display = True
+        self._thinking_text += chunk
+        content.update(self._thinking_text)
+        block.title = f"Thinking… {int(time.monotonic() - self._thinking_started)}s"
+
+    def _tick_thinking(self) -> None:
+        """Per-second title refresh for the active thinking block. A no-op
+        whenever no turn is currently accumulating thinking, rather than
+        being cancelled/restarted each turn — see the set_interval call in
+        on_mount for why it's registered just once."""
+        if self._thinking_started is None:
+            return
+        elapsed = int(time.monotonic() - self._thinking_started)
+        try:
+            self.query_one("#thinking-block", Collapsible).title = f"Thinking… {elapsed}s"
+        except Exception:
+            pass
+
+    def _freeze_thinking(self) -> None:
+        """Stop the live "Thinking… Ns" tick for the turn that just ended
+        (first non-thinking content, error, final, /stop, or a failed send)
+        and lock the collapsible's title to "Thought for Ns" — call this
+        alongside every _set_thinking(False). The block stays mounted,
+        visible, and collapsed (its accumulated text is still there to
+        expand) so the NEXT turn's first "thinking" chunk starts a fresh
+        accumulation instead of appending onto this now-closed one."""
+        if self._thinking_started is None:
+            return
+        elapsed = int(round(time.monotonic() - self._thinking_started))
+        try:
+            self.query_one("#thinking-block", Collapsible).title = f"Thought for {elapsed}s"
+        except Exception:
+            pass
+        self._thinking_text = ""
+        self._thinking_started = None
+
+    def _reset_thinking(self) -> None:
+        """Full reset for a session switch (open_session) or a fresh
+        conversation (new_session) — unlike _freeze_thinking, this also
+        hides the block and blanks its title/text. Both call sites already
+        clear the RichLog transcript; since #thinking-block lives OUTSIDE
+        the RichLog (see compose()), a frozen "Thought for Ns" left over
+        from the previous session would otherwise leak into the fresh
+        view even though everything else got wiped."""
+        self._thinking_text = ""
+        self._thinking_started = None
+        try:
+            block = self.query_one("#thinking-block", Collapsible)
+        except Exception:
+            return
+        block.title = ""
+        block.collapsed = True
+        block.display = False
+        try:
+            block.query_one("#thinking-content", Static).update("")
+        except Exception:
+            pass
 
     # -- typewriter reveal -------------------------------------------------------
     def _start_typewriter(self, text: str) -> None:
@@ -294,6 +395,7 @@ class ChatPane(Vertical):
         self.session_id = session_id
         self.pending_approval = ""
         self._set_thinking(False)
+        self._reset_thinking()
         self._update_landing_reactor()
         log = self.query_one("#transcript", RichLog)
         log.clear()
@@ -509,6 +611,7 @@ class ChatPane(Vertical):
         self.session_id = ""
         self.pending_approval = ""
         self._set_thinking(False)
+        self._reset_thinking()
         log = self.query_one("#transcript", RichLog)
         log.clear()
         log.write(Text("— new conversation —", style="bold cyan"))
@@ -528,6 +631,7 @@ class ChatPane(Vertical):
             self._log(Text(f"send failed: {exc}", style="red"))
             self._status("")
             self._set_thinking(False)
+            self._freeze_thinking()
 
     async def _stop_turn(self) -> None:
         if not self.session_id:
@@ -536,6 +640,7 @@ class ChatPane(Vertical):
             await self.client.call("session.cancel", {"session_id": self.session_id})
             self._cancel_typewriter()
             self._set_thinking(False)
+            self._freeze_thinking()
             self._status("turn cancelled", "yellow")
         except (ControlError, ConnectionError, TimeoutError) as exc:
             self._log(Text(f"cancel failed: {exc}", style="red"))
@@ -686,6 +791,7 @@ class ChatPane(Vertical):
             txt = (ev.get("text") or "").strip()
             if txt and not replay:
                 self._status("· " + txt.splitlines()[-1][:120], "bright_black")
+                self._accumulate_thinking(ev.get("text") or "")
         elif kind == "message":
             role = ev.get("role", "")
             text = ev.get("text", "")
@@ -695,6 +801,7 @@ class ChatPane(Vertical):
                 else:
                     self._start_typewriter(text)
                     self._set_thinking(False)
+                    self._freeze_thinking()
                     self._status("")
             elif role == "user":
                 self._log(Text(f"❯ {text}", style="bold white"))
@@ -724,8 +831,10 @@ class ChatPane(Vertical):
             if not replay:
                 self._status("")
                 self._set_thinking(False)
+                self._freeze_thinking()
         elif kind == "final":
             self._log(Text("─" * 40, style="bright_black"))
             if not replay:
                 self._status("")
                 self._set_thinking(False)
+                self._freeze_thinking()

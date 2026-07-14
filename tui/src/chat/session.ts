@@ -50,6 +50,14 @@ export type ChatItem =
   | { id: number; kind: "widget"; title: string; spec: Record<string, unknown> }
   | {
       id: number
+      kind: "thinking"
+      text: string
+      startedAt: number
+      endedAt: number | null
+      expanded: boolean
+    }
+  | {
+      id: number
       kind: "todo"
       items: Array<{ text: string; status: "pending" | "in_progress" | "completed" }>
     }
@@ -101,6 +109,7 @@ export class SessionController {
   private offWidget?: () => void
   private questionWatcher?: FSWatcher
   private answeredQuestions = new Set<string>()
+  private currentThinkingId: number | null = null
 
   constructor(private client: ControlClient) {
     const [items, setItems] = createStore<ChatItem[]>([])
@@ -361,14 +370,31 @@ export class SessionController {
     const kind = String(ev.kind ?? "")
     switch (kind) {
       case "thinking": {
-        const text = String(ev.text ?? "").trim()
-        if (text && !replay) {
-          const lastLine = text.split("\n").at(-1) ?? ""
-          this.setStatus(`· ${lastLine.slice(0, 120)}`)
+        const chunk = String(ev.text ?? "")
+        if (!chunk.trim()) return
+        if (this.currentThinkingId === null) {
+          const id = mkId()
+          this.currentThinkingId = id
+          this.push({
+            id,
+            kind: "thinking",
+            text: chunk,
+            startedAt: Date.now(),
+            endedAt: null,
+            expanded: false,
+          })
+        } else {
+          const thinkingId = this.currentThinkingId
+          this.setItems((items) => {
+            for (const item of items) {
+              if (item.kind === "thinking" && item.id === thinkingId) item.text += chunk
+            }
+          })
         }
         return
       }
       case "message": {
+        this.freezeThinking()
         const role = String(ev.role ?? "")
         const text = String(ev.text ?? "")
         if (role === "assistant") {
@@ -383,6 +409,7 @@ export class SessionController {
         return
       }
       case "tool_call": {
+        this.freezeThinking()
         const rawArgs = ev.args
         const name = String(ev.name ?? "tool")
         const argsObj = parseArgs(rawArgs)
@@ -443,10 +470,12 @@ export class SessionController {
         return
       }
       case "diff": {
+        this.freezeThinking()
         this.push({ id: mkId(), kind: "diff", files: extractDiffFiles(ev) })
         return
       }
       case "approval": {
+        this.freezeThinking()
         const approvalId = String(ev.approval_id ?? "")
         const summary = String(ev.summary ?? ev.tool ?? "an action")
         const risk = String(ev.risk ?? "medium")
@@ -456,6 +485,7 @@ export class SessionController {
         return
       }
       case "error": {
+        this.freezeThinking()
         this.push({ id: mkId(), kind: "error", message: String(ev.message ?? "error") })
         if (!replay) {
           this.setBusy(false)
@@ -464,6 +494,7 @@ export class SessionController {
         return
       }
       case "final": {
+        this.freezeThinking()
         this.push({ id: mkId(), kind: "divider" })
         if (!replay) {
           this.setBusy(false)
@@ -482,6 +513,29 @@ export class SessionController {
         if (item.kind === "tool" && item.id === itemId) item.expanded = !item.expanded
       }
     })
+  }
+
+  toggleThinking(itemId: number): void {
+    this.setItems((items) => {
+      for (const item of items) {
+        if (item.kind === "thinking" && item.id === itemId) item.expanded = !item.expanded
+      }
+    })
+  }
+
+  /** Stamp an end time on the in-flight thinking block (if any) and clear the
+   * "currently growing" ref — called at the first non-thinking event of a
+   * turn so the next "thinking" chunk starts a fresh block instead of
+   * appending to a stale one. */
+  private freezeThinking(): void {
+    if (this.currentThinkingId === null) return
+    const thinkingId = this.currentThinkingId
+    this.setItems((items) => {
+      for (const item of items) {
+        if (item.kind === "thinking" && item.id === thinkingId) item.endedAt = Date.now()
+      }
+    })
+    this.currentThinkingId = null
   }
 
   /** Update the single live todo card in place (Claude Code re-renders one
