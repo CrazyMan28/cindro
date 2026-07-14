@@ -1,0 +1,68 @@
+# XcodeGen spec for the Cindro iOS app.
+#
+# This repo is authored on non-macOS boxes (the Android/desktop devs work on Linux/
+# Windows), so the .xcodeproj is NOT committed — it is GENERATED from this declarative
+# spec. On a Mac:
+#
+#     brew install xcodegen        # once
+#     cd iphone_app && xcodegen generate
+#     open Cindro.xcodeproj
+#
+# CI (.github/workflows/ios-build.yml) runs exactly that before xcodebuild, so the
+# project file can never drift from the source tree the way a hand-edited pbxproj does.
+name: Cindro
+options:
+  bundleIdPrefix: com.cindro
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    MARKETING_VERSION: "0.16.2"       # keep in lock-step with android/app/build.gradle.kts versionName
+    CURRENT_PROJECT_VERSION: "52"     # ... and versionCode
+    SWIFT_VERSION: "5.9"
+    CODE_SIGN_STYLE: Automatic
+    # Signing is left unset so CI can build unsigned (`CODE_SIGNING_ALLOWED=NO`); a real
+    # signed .ipa needs DEVELOPMENT_TEAM + a provisioning profile supplied at build time.
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  Cindro:
+    type: application
+    platform: iOS
+    sources:
+      - path: Cindro
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cindro.app
+        INFOPLIST_FILE: Cindro/Resources/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_PREVIEWS: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1,2"   # iPhone + iPad
+
+  CindroTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: CindroTests
+    dependencies:
+      - target: Cindro
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cindro.app.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+schemes:
+  Cindro:
+    build:
+      targets:
+        Cindro: all
+        CindroTests: [test]
+    test:
+      targets:
+        - CindroTests
+      gatherCoverageData: true

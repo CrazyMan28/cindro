@@ -20,6 +20,7 @@ extension, terminal client, and web dashboard, all driven by one daemon:
 | `daemon/` | C++/Qt6 | `jarvisd`: `ControlServer` (:8795 loopback, desktop) + `DeviceServer` (:8796 tailnet, phone). Both speak Contract A. |
 | `desktop/` | C++/QML | `cindro-sidebar` — the desktop app. `Bridge` is the QML↔daemon client. |
 | `android/` | Kotlin/Compose | MVVM, Gradle build. |
+| `iphone_app/` | Swift/SwiftUI | The iOS app — a 1:1 port of `android/` over the same Contract C device WebSocket. XcodeGen (`project.yml`), no committed `.xcodeproj`. See `iphone_app/README.md`. |
 | `extension/` | JS (MV3) | Chrome extension: `sw.js` (engine bridge), `content.js`, `sidepanel.*`. |
 | `computer-use/` | Python (uv) | The FastMCP engine that actually drives the screen/browser — `computer_use_mcp/` package, tools registered in `server.py`. |
 | `cli/` | Python (uv) | `cindro` terminal client — a Textual TUI (`jarvis_cli/tui/`) plus `doctor`/`status`/`service` commands, over the daemon's Contract A control WebSocket. |

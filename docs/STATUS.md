@@ -4,7 +4,52 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-07-13._
+_Last updated: 2026-07-14._
+
+---
+
+## 🆕 iOS app (`iphone_app/`): native SwiftUI port of the Android client — foundation landed (2026-07-14)
+
+Cindro now has a fifth surface: a native **SwiftUI iPhone app** under `iphone_app/`, a
+structural 1:1 port of the Android app (`android/`, package `com.cindro.app`) speaking the
+**same** Contract C device WebSocket (`ws://<host>:8796/device/ws`), Ed25519 device pairing,
+and Contract A envelope. No daemon changes — a thin client exactly like desktop / extension /
+Android / web.
+
+- **Networking spine ported faithfully.** `DeviceClient` (`URLSessionWebSocketTask`) does the
+  hello → challenge → sign → authed handshake with id-correlated request/response + reconnect
+  backoff; `PairingClient` the one-shot `pair_code` handshake; `JarvisRepository` the whole
+  Contract A method catalog; `AppState` is the `JarvisApp`-equivalent process-wide singleton
+  set. Ed25519 is CryptoKit `Curve25519.Signing` (bare 32-byte pubkey / 64-byte detached sig,
+  matching the daemon's libsodium verify); the seed lives in the iOS Keychain.
+- **Screens.** Pairing (QR scan via AVFoundation + manual), biometric app-open gate
+  (LocalAuthentication, fail-open like Android), chat (history + live `BrainEvent` fold +
+  optimistic send + slash commands + photo attach), the Claude/ChatGPT-style drawer with all
+  13 destinations, Sessions/Memory/Skills/Agents/Queue/MCP/Plugins/Phone-permissions/Files,
+  cross-device 2FA `ApproveView`, and basic Canvas + Computer (live mirror + tap-to-click).
+- **CI / release.** `.github/workflows/ios-build.yml` — `xcodegen generate` + `xcodebuild test`
+  on every PR into `main`; on a `v*` tag (from `auto-release.yml`, unchanged) it archives an
+  **unsigned** device build and attaches `Cindro-<ver>.ipa` to the Release, the same
+  merge-is-the-release flow as the `.exe` / `.apk` / AppImage. Runs on GitHub-hosted
+  `macos-latest` — the one sanctioned exception to the self-hosted-only CI rule (iOS needs a
+  Mac; owner-authorized), noted in `AGENTS.md`.
+- **Caught in code review before this entry** (high-effort pass, 3 finder angles ×
+  verification, 13 findings fixed): `mcp.cli_list` was parsed at the wrong nesting level so
+  every CLI-MCP toggle 404'd; `createSession` dropped the `brain` default so iPhone chats could
+  run a different brain than Android; `McpServer.enabled` / trust-policy defaults were the
+  opposite of Android's, flipping toggle/guardrail state for the same payload; the chat fold
+  double-rendered the user's echoed turn and split streamed replies into many bubbles; live
+  events during the initial history fetch were wiped; `PairingClient` leaked its `URLSession`
+  every attempt; `shutdown()` stalled a parked request 15 s instead of failing fast; and Canvas
+  lost already-rendered widgets on navigation (moved to an app-lifetime `WidgetStore`).
+- **NOT yet verified end-to-end.** Authored on a non-macOS box with no Xcode, so it has **not
+  been compiled or run** — the first CI `xcodebuild` is the first real compile, and a device
+  smoke test against a live `jarvisd` is still outstanding before this is "done." The XCTest
+  suite (`ProtocolTests`, `CryptoTests`) pins the wire format + Ed25519 shape. Deliberate
+  follow-ups (not regressions): the full `render_widget` DSL renderer, the voice/TTS UI, real
+  push notifications (needs APNs — iOS has no persistent-background-socket equivalent to
+  Android's foreground service), the "Hey Cindro" wake word, and WidgetKit home-screen widgets.
+  See `iphone_app/README.md` for the full parity table + platform-gap detail.
 
 ---
 
