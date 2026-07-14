@@ -4,7 +4,91 @@ Single source of truth for **where this project actually is**. Honest about done
 partial vs. not-started. Pair with [`../README.md`](../README.md) (overview + architecture)
 and [`../AGENTS.md`](../AGENTS.md) (how to work on it + gotchas).
 
-_Last updated: 2026-07-12._
+_Last updated: 2026-07-13._
+
+---
+
+## 🆕 Windows Sandbox agent-desktop tier (v2): validated end-to-end on real hardware for the first time (2026-07-13)
+
+Issue #104 tracked the one thing this repo could never actually test: the Windows Sandbox
+isolation tier (`windows.isolation.mode=sandbox`, see `windows/isolation/DESIGN.md`) only ever
+*compiled* — the CI runner can't boot nested Hyper-V, so `AgentDesktop::ensure()`'s sandbox path
+had never once executed for real. Tonight it did, on a real Windows 11 Pro box, and a
+`session.create` with a `coworker` profile now genuinely returns `agent_desktop.up: true` —
+confirmed independently three times, with the in-sandbox engine's own `/ready` probe corroborating
+a real screen capture (`{"ready":true,"kind":"agent","bytes":8320}`).
+
+Four real bugs surfaced and fixed, each invisible to CI because none of them can manifest without
+an actual booting Windows Sandbox VM:
+
+1. **`bootstrap.ps1`'s `Write-Host` deadlocked the entire script.** Windows Sandbox's
+   `LogonCommand` runs non-interactively with no attached console to drain output — the very
+   first `Write-Host` call blocks forever, so nothing after it (including the file-based logging
+   meant to diagnose exactly this) ever ran. Logger is `Add-Content`-only now.
+2. **`jarvisd.exe` crashed (access violation, reproducible at an identical `Qt6Core.dll` fault
+   offset going back to 2026-07-11) inside the health-check polling loop.** The loop recreated a
+   `QNetworkAccessManager`/`QNetworkReply`/`QEventLoop`/`QTimer` set on every one of ~150
+   iterations over the cold-boot budget — a known-fragile Qt pattern under sustained real use.
+   Replaced with a raw `QTcpSocket`-based HTTP check.
+3. **The rendered `.wsb` had an XML prolog + a multi-line doc comment before `<Configuration>`.**
+   Windows Sandbox's config reader silently treats that as unparseable and falls back to a bare
+   default sandbox with no `LogonCommand` at all — the VM boots and stays alive, but nothing ever
+   runs, with no error surfaced anywhere (`jarvisd` runs headless/Session 0, so even a GUI
+   parse-error dialog, if one exists, is never seen). This was *the* root cause of the "why does
+   even a trivial one-line command never fire" mystery — proven via an isolated A/B test bypassing
+   `jarvisd` entirely (no-prolog file: marker written in ~10s; original structure: nothing after
+   135s). Fixed by emitting the file from a dedicated docs-end sentinel (not a fragile literal
+   `"<Configuration"` search, which a future doc-prose edit could accidentally match) and
+   XML-escaping every substituted token.
+4. **The fix for bug 2 introduced a new deadlock.** `QThread::msleep()`-based polling blocks the
+   whole Qt thread without pumping its event loop — but the in-process reverse tunnel
+   (`windows/isolation/relay/ReverseTunnel.cpp`) needs that same thread's event loop running to
+   accept the sandbox's incoming rendezvous connection. The kernel-level TCP connect was
+   succeeding the entire time; pairing simply never got a chance to dispatch. Rewritten to be
+   `QEventLoop`/`QTimer`-driven so the thread keeps pumping, while still avoiding the original
+   crash-causing `QNetworkAccessManager` pattern.
+
+A high-effort code review of the resulting diff (8 finder angles + verification) surfaced two
+further real bugs, fixed before merge: `closeSandboxHostProcesses()` (added for the fix above)
+had no ownership check before taskkilling sandbox processes by image name, and — worse — a race
+where a second concurrent `ensure()` call could slip past the single-instance guard while the
+first was still mid-boot (`m_desks` isn't populated until both HTTP waiters succeed), so one
+session's failure-path cleanup could kill another session's genuinely live, healthy sandbox.
+Closed with an in-process `ProvisioningLock` that claims the slot immediately after the guard
+passes, not after boot completes. Also removed a diagnostic TCP probe in `bootstrap.ps1` that
+could itself steal `ReverseTunnel`'s pairing slot from a real health-check client (the review's
+own explanation for why the fix for bug 3, above, sometimes still needed a retry).
+
+**Update, same day:** the `JARVIS_ENABLE_V2=1` opt-in gate has been lifted for the `sandbox`
+tier — `resolveMode()` in `windows/shell/AgentDesktop.cpp` now activates it automatically
+whenever `detect.ps1` recommends it (Pro/Ent/Edu + virtualization + the feature), with
+`JARVIS_ENABLE_V2=0`/`false`/`no`/`off` kept as an explicit opt-*out* for anyone who wants v1-only
+take-over back without recompiling. This means every future installer download from GitHub
+Releases gets the isolated agent desktop by default, with no manual configuration — the point of
+the whole feature. `detect.ps1` also gained a best-effort, marker-gated, one-time-ever elevated
+`dism.exe /Enable-Feature` attempt (a single UAC prompt) for a Pro/Ent/Edu + virtualization box
+that has the `Containers-DisposableClientVM` feature present but disabled (the common case — it
+ships off by default), so a capable box that would otherwise sit on `takeover` forever can
+self-upgrade to `sandbox` after one prompt + reboot.
+
+Re-verifying this default end-to-end (not just with `JARVIS_ENABLE_V2=1` hand-set, which bypasses
+the real launch path entirely) surfaced a fifth real bug, invisible until the zero-config default
+actually mattered: `detect.ps1`'s `Test-OptionalFeature` called `Get-WindowsOptionalFeature -Online
+-ErrorAction SilentlyContinue`, but that cmdlet's underlying DISM COM interop throws a raw
+`COMException` ("The requested operation requires elevation") that `-ErrorAction` does **not**
+suppress. At `detect.ps1`'s own top level this is harmless — PowerShell prints it and continues —
+but `jarvis-start.cmd`/`jarvis-launch.vbs` invoke the *whole script* via `& 'detect.ps1'` from
+*inside their own* `try` block, and there the same exception escapes `detect.ps1` entirely,
+aborting it before its final `ConvertTo-Json` ever runs — silently losing `recommendedMode` on
+every non-elevated launch (i.e. every real user, since the installer is deliberately
+non-admin/per-user). Fixed by wrapping the `Get-WindowsOptionalFeature` call in its own
+`try`/`catch` so the exception is always contained inside `detect.ps1`, regardless of how a caller
+invokes it. Re-verified end-to-end afterward with the exact real launcher flow (`jarvis-start.cmd`'s
+`for /f` one-liner, zero manually-set env vars) on the same real Windows 11 Pro box:
+`agent_desktop.up: true`.
+
+`childsession`/`hyperv` (Phases 2/3) remain unbuilt; `ensure()` still returns `up=false` with a
+typed reason for them regardless of this gate.
 
 ---
 

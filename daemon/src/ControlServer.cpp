@@ -3099,7 +3099,20 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
             // gate, EVERY phone-initiated session (the app's default profile is
             // "coworker" with no target override) hard-fails server-side on
             // stock Windows while working fine on Linux (jarvis#107).
-            if (explicitAgent && AgentDesktop::nestedDesktopSupported()) {
+            //
+            // Codex review follow-up (jarvis#104, sandbox now default-on):
+            // nestedDesktopSupported() is now true on any sandbox-capable box,
+            // so this gate alone no longer distinguishes "this platform can
+            // isolate" from "isolation is available RIGHT NOW." AgentDesktop's
+            // single-instance guard returns a typed "sandbox_busy:" reason
+            // (windows/shell/AgentDesktop.cpp) for the completely normal case of
+            // an existing sandbox still being up/released — that's transient,
+            // not a provisioning failure, and must degrade the same as the
+            // "never available" case above, or every coworker session (Android/
+            // phone/new-chat all omit target, landing here) hard-fails the
+            // moment a second one is requested while the first is still busy.
+            const bool transientBusy = deskErr.startsWith(QStringLiteral("sandbox_busy:"));
+            if (explicitAgent && AgentDesktop::nestedDesktopSupported() && !transientBusy) {
                 m_store.updateState(row.id, QStringLiteral("error"));
                 if (err)
                     *err = QStringLiteral("agent desktop failed: ") + deskErr;

@@ -17,8 +17,8 @@ platform guards; it never changes how Linux/Android build or run.
 |---|---|---|---|
 | Chat, streaming, sessions, history, brain/model picker | ✅ | ✅ | Same daemon + QML. Mistral is the default brain on a CLI-less box. |
 | **Computer use** (screenshot, mouse, keyboard, scroll, windows, apps, clipboard) | ✅ | ✅ | Win32 `SendInput` + `mss` capture (see below). **Real screen.** |
-| Nested "beside-you" agent desktop | ✅ headless Sway | ❌ → v2 | Windows can't nest an isolated GPU desktop in-process. Planned v2 via a child RDP session / Windows Sandbox / VM. |
-| Multi-seat isolated agent cursor | ✅ forked KWin | ❌ | No compositor to fork; agent shares your input queue (gated by the take-over banner + consent). |
+| Nested "beside-you" agent desktop | ✅ headless Sway | ⚠ v2, opt-in | Windows Sandbox tier — validated end-to-end on real hardware 2026-07-13, but still gated behind `JARVIS_ENABLE_V2=1` pending wider-machine validation before it's the default. See `windows/isolation/DESIGN.md`. |
+| Multi-seat isolated agent cursor | ✅ forked KWin | ❌ | No compositor to fork; the v2 Sandbox tier isolates via an OS-level VM boundary instead (see above), not a second cursor on your live desktop. Without v2 opted in, the agent shares your input queue (gated by the take-over banner + consent). |
 | Real-screen take-over (glow cursor + banner + consent + Esc) | ✅ | ✅ | Transparent click-through overlay (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST`). |
 | Voice (Voxtral STT/TTS, voice library, voice mode) | ✅ | ✅ | Voxtral is HTTP. Mic capture via Qt Multimedia (WASAPI) wherever `pw-record` doesn't exist — chat dictation, hands-free voice mode, and the clip recorder all fall back to it. |
 | Video understanding (YouTube URL / local file → frames + whisper transcript) | ✅ | ✅ needs ffmpeg | Pipeline is pure Python (`computer_use_mcp/video`): yt-dlp + faster-whisper freeze into `jarvis-engine.exe`; only **ffmpeg** stays external — `winget install Gyan.FFmpeg`, then restart Cindro so the updated PATH is seen. Whisper models auto-download from Hugging Face on first use. |
@@ -33,9 +33,12 @@ platform guards; it never changes how Linux/Android build or run.
 | **Terminal UI** (`cindro-tui.exe`) — the full-screen terminal agent | ✅ | ✅ | The TS/OpenTUI TUI v2, cross-compiled to `cindro-tui.exe` and shipped inside the **same** installer. Start-menu **"Cindro Terminal (TUI)"**, or run `cindro-tui` from any terminal (it's on PATH). |
 | **Web dashboard** — every GUI page in the browser | ✅ | ✅ | The SolidJS console (`web/`) built to static files and served by a **bundled portable `bun` runtime** on `http://127.0.0.1:8788`. Start-menu **"Cindro Web Dashboard"**, or run `cindro-web` (on PATH). Talks straight to the loopback control WS — nothing to install. |
 
-**Honest limits (no Win32 equivalent):** the nested headless-compositor "agent desktop",
-the KWin multi-seat cursor, and the Wayland layer-shell dock. These are Linux-only; on
-Windows the agent drives your **real screen** with a visible glowing cursor + banner +
+**Honest limits (no Win32 equivalent):** the KWin multi-seat cursor and the Wayland
+layer-shell dock are Linux-only outright. The nested agent desktop now *does* have a
+Windows equivalent — the Windows Sandbox v2 tier (`windows/isolation/DESIGN.md`), opt-in
+via `JARVIS_ENABLE_V2=1` — but it's not yet the default while it accumulates validation
+across more real machines. Without opting in, or on a Home/no-virtualization box where v2
+can't run, the agent drives your **real screen** with a visible glowing cursor + banner +
 consent, mirroring the Linux *take-over* UX.
 
 ## Computer use on Windows — how it's built

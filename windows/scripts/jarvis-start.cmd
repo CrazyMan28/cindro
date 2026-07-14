@@ -32,9 +32,11 @@ if exist "%~dp0isolation\detect.ps1" (
 )
 
 rem 1. computer-use engine (real-screen Win32 backend; serves ALL MCP tools).
-rem    PyInstaller one-dir nests it: engine\jarvis-engine\jarvis-engine.exe
-if exist "engine\jarvis-engine\jarvis-engine.exe" (
-  start "jarvis-engine" /b "engine\jarvis-engine\jarvis-engine.exe"
+rem    build.ps1 flattens PyInstaller's one-dir nesting up one level, so this is
+rem    engine\jarvis-engine.exe (NOT engine\jarvis-engine\jarvis-engine.exe --
+rem    see build.ps1's "flattened PyInstaller output" step).
+if exist "engine\jarvis-engine.exe" (
+  start "jarvis-engine" /b "engine\jarvis-engine.exe"
 )
 
 rem 1b. outpost-mcp (pair/exec/screenshot remote machines) -> 127.0.0.1:8798.

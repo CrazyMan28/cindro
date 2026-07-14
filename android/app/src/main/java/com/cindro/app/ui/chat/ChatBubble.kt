@@ -256,8 +256,14 @@ private fun MessageBubble(
         // (~300+ chars/sec). The bubble GROWS as `revealed` climbs and the list
         // auto-scrolls to follow (ChatScreen keys its scroll off the live text),
         // so the reply flows DOWN like real typing.
-        while (revealed < item.text.length) {
-            val step = (item.text.length - revealed).coerceAtMost(REVEAL_BATCH)
+        // Only animate up to what we actually DISPLAY. Past the cap the bubble shows a
+        // truncation notice, so revealing further — and calling wordCount() over an
+        // ever-growing prefix every frame — would just burn the main thread and could
+        // ANR on a very long live reply even though only 12k chars render (Cursor +
+        // Codex review). Bound the reveal target (and thus the word-count prefix) to it.
+        val revealCap = item.text.length.coerceAtMost(MAX_MESSAGE_RENDER_CHARS)
+        while (revealed < revealCap) {
+            val step = (revealCap - revealed).coerceAtMost(REVEAL_BATCH)
             revealed += step
             // Fire a per-WORD haptic tick: when this step crossed one or more word
             // boundaries, tick once (the Haptics layer self-throttles bursts).
@@ -268,8 +274,22 @@ private fun MessageBubble(
             }
             delay(REVEAL_FRAME_MS)
         }
+        // Longer than the display cap → mark fully revealed so `shown` is the full text
+        // (which `display` truncates) and the streaming state clears instead of hanging.
+        if (revealed < item.text.length) revealed = item.text.length
     }
     val shown = if (revealed >= item.text.length) item.text else item.text.take(revealed)
+    // Guard the string handed to Compose's text layout. A single very long message (a
+    // pasted file, a huge code/base64 dump) otherwise measures + wraps in FULL on the
+    // main thread the instant the chat opens — the layout allocation OOMs / ANRs the
+    // app, which is why a large session crashes while small ones are fine. Every other
+    // renderer (tool output .take(2000), diff .take(400)) is capped for exactly this
+    // reason; message + thinking text were the two that weren't. The full text stays
+    // in item.text, so long-press → select → copy still yields the whole thing.
+    val display = if (shown.length > MAX_MESSAGE_RENDER_CHARS)
+        shown.take(MAX_MESSAGE_RENDER_CHARS) +
+            "\n\n… (${item.text.length} chars — long message truncated for display; long-press to copy the full text)"
+    else shown
 
     val shape = RoundedCornerShape(
         topStart = 18.dp, topEnd = 18.dp,
@@ -292,7 +312,7 @@ private fun MessageBubble(
         ) {
             val streamingNow = item.streaming && revealed < item.text.length
             Text(
-                text = shown,
+                text = display,
                 color = if (isUser) JarvisPalette.OnAccent else JarvisPalette.TextPrimary,
                 modifier = Modifier
                     .padding(horizontal = 15.dp, vertical = 11.dp)
@@ -399,8 +419,14 @@ fun TypingIndicator(modifier: Modifier = Modifier) {
 
 @Composable
 private fun ThinkingBubble(item: ChatItem.Thinking) {
+    // Same unbounded-layout guard as MessageBubble: a huge "thinking" block would
+    // otherwise blow up main-thread text layout on load. Full text stays selectable.
+    val display = if (item.text.length > MAX_MESSAGE_RENDER_CHARS)
+        item.text.take(MAX_MESSAGE_RENDER_CHARS) +
+            "\n… (${item.text.length} chars — truncated for display)"
+    else item.text
     Text(
-        text = item.text,
+        text = display,
         color = JarvisPalette.TextSecondary,
         style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
@@ -647,6 +673,13 @@ private fun DiffBlock(patch: String) {
 // i.e. ~ (REVEAL_BATCH * 1000 / REVEAL_FRAME_MS) chars/sec (≈ 350/sec by default).
 private const val REVEAL_BATCH = 7
 private const val REVEAL_FRAME_MS = 20L
+
+// Max characters actually handed to a message/thinking Text layout. Compose measures
+// and wraps the WHOLE string on the main thread, so an unbounded very-long message
+// OOMs/ANRs the app when a large session is opened (small ones are fine). ~12k chars
+// (~1,800 words) comfortably shows even long replies; anything past it is truncated
+// for DISPLAY only — the full text is retained in the model and stays copyable.
+private const val MAX_MESSAGE_RENDER_CHARS = 12_000
 
 /** Number of whitespace-delimited words in [s] (used for per-word streaming
  *  haptics). Cheap; called only on the revealed prefix while streaming. */

@@ -37,9 +37,10 @@ If fso.FileExists(detectPs1) Then
     On Error GoTo 0
 End If
 
-' 1. computer-use engine (hidden). PyInstaller one-dir nests it:
-'    engine\jarvis-engine\jarvis-engine.exe (with _internal\ beside it).
-p = dir & "\engine\jarvis-engine\jarvis-engine.exe"
+' 1. computer-use engine (hidden). build.ps1 flattens PyInstaller's one-dir
+'    nesting up one level, so this is engine\jarvis-engine.exe (with
+'    _internal\ beside it) -- NOT engine\jarvis-engine\jarvis-engine.exe.
+p = dir & "\engine\jarvis-engine.exe"
 If fso.FileExists(p) Then sh.Run """" & p & """", 0, False
 
 ' 1b. outpost-mcp (hidden) - pair/exec/screenshot remote machines, :8798.

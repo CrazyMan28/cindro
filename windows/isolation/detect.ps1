@@ -71,11 +71,71 @@ function Get-Virtualization {
 }
 
 function Test-OptionalFeature([string]$name) {
-    # Returns "Enabled" / "Disabled" / "Absent" / "Unknown" without throwing
-    # (Get-WindowsOptionalFeature needs an elevated token on some SKUs).
-    $f = Get-WindowsOptionalFeature -Online -FeatureName $name -ErrorAction SilentlyContinue
-    if ($f -and $f.State) { return [string]$f.State }
+    # Returns "Enabled" / "Disabled" / "Absent" / "Unknown" without throwing.
+    # Get-WindowsOptionalFeature needs an elevated token on some SKUs, and its
+    # underlying DISM COM interop raises a raw COMException ("The requested
+    # operation requires elevation") that -ErrorAction SilentlyContinue does
+    # NOT suppress. Uncaught, that exception is harmless at this script's own
+    # top level (PowerShell prints it and continues) but is FATAL when a
+    # caller invokes this whole script via `& detect.ps1` from inside its own
+    # try block (e.g. the launcher's one-liner) -- the exception escapes this
+    # script entirely and aborts it before the final ConvertTo-Json ever runs,
+    # silently losing recommendedMode on every non-elevated launch. A local
+    # try/catch is the only thing that reliably contains it.
+    try {
+        $f = Get-WindowsOptionalFeature -Online -FeatureName $name -ErrorAction SilentlyContinue
+        if ($f -and $f.State) { return [string]$f.State }
+    } catch {
+        # elevation required / DISM unavailable -- fall through to Unknown
+    }
     return "Unknown"
+}
+
+# ONE-TIME auto-enable attempt for the Windows Sandbox feature (jarvis#104
+# auto-setup): a Pro/Ent/Edu + virtualization-capable box that just has the
+# Containers-DisposableClientVM feature turned off (the common case -- it ships
+# off by default) would otherwise sit on takeover forever with no way to
+# self-upgrade to sandbox mode short of a user manually running an elevated DISM
+# command. Enabling it needs elevation and a reboot to take effect either way, so
+# "seamless" isn't achievable -- this gets as close as Windows allows: exactly ONE
+# UAC prompt, ever, tracked by a marker so a declined/failed/cancelled attempt
+# never repeats. Best-effort and silent on any failure.
+#
+# MUST NOT BLOCK (jarvis#104 Codex review follow-up): both jarvis-launch.vbs and
+# jarvis-start.cmd run detect.ps1 SYNCHRONOUSLY and wait for it to finish before
+# starting jarvisd/the UI. An earlier version of this function used
+# `Start-Process -Verb RunAs -Wait`, which waits for both the UAC prompt AND
+# dism.exe's multi-second run to complete -- if the UAC prompt just sits there
+# un-clicked (the user stepped away, missed it, whatever), the ENTIRE APP LAUNCH
+# hangs indefinitely, silently, with no indication why. Fixed by dropping -Wait:
+# the marker is written BEFORE launching (this is a one-time-ever attempt
+# regardless of outcome, not one gated on confirming success), and dism.exe is
+# fired off detached -- the UAC prompt, if it appears, shows up alongside the app
+# starting rather than blocking it. If the enable succeeds, the NEXT detect.ps1
+# run sees currentState=Enabled and skips this function entirely (see the guard
+# above); this run's own re-read of $sandboxFeat below only catches an enable
+# that happens to finish (rare) before this same run's second Test-OptionalFeature
+# call -- it never depends on waiting for dism.exe here.
+function Try-AutoEnableSandboxFeature([bool]$proEntEdu, [bool]$virtEnabled, [string]$currentState) {
+    if (-not $proEntEdu -or -not $virtEnabled) { return }
+    if ($currentState -ne "Disabled") { return }
+    $markerDir = Join-Path $env:LOCALAPPDATA "Jarvis"
+    $marker = Join-Path $markerDir "v2-sandbox-feature-autoenable.marker"
+    if (Test-Path $marker) { return }
+    New-Item -ItemType Directory -Force -Path $markerDir | Out-Null
+    try {
+        Set-Content -Path $marker -Value ("attempted {0}" -f (Get-Date -Format "s")) -Encoding ascii
+    } catch {
+        return
+    }
+    try {
+        Start-Process -FilePath "dism.exe" -ArgumentList `
+            "/Online","/Enable-Feature","/FeatureName:Containers-DisposableClientVM","/All","/NoRestart" `
+            -Verb RunAs -WindowStyle Hidden -ErrorAction Stop | Out-Null
+    } catch {
+        # UAC declined, or dism.exe itself failed to launch -- already marked
+        # above, so this never retries regardless.
+    }
 }
 
 $editionId   = Get-EditionId
@@ -84,6 +144,11 @@ $virt        = Get-Virtualization
 $sandboxFeat = Test-OptionalFeature "Containers-DisposableClientVM"
 $hyperVFeat  = Test-OptionalFeature "Microsoft-Hyper-V"
 $sandboxExe  = Test-Path (Join-Path $env:SystemRoot "System32\WindowsSandbox.exe")
+
+Try-AutoEnableSandboxFeature -proEntEdu $proEntEdu -virtEnabled $virt.Enabled -currentState $sandboxFeat
+# Re-read in case the enable above finished fast enough to matter this run (rare;
+# it normally needs the pending reboot before Get-WindowsOptionalFeature reports it).
+$sandboxFeat = Test-OptionalFeature "Containers-DisposableClientVM"
 
 # A box is "sandbox-ready" when it is Pro/Ent/Edu, has virtualization, and either
 # the DisposableClientVM feature is enabled or WindowsSandbox.exe is present.

@@ -69,7 +69,9 @@ createSession(target="agent") → AgentDesktop::ensure(sid)  [windows/shell/Agen
   `windows/isolation/detect.ps1` (edition/VT-x/DisposableClientVM/Hyper-V → mode); the
   `AgentDesktop.cpp` orchestrator + `windows/isolation/relay/` (pure Qt+QProcess+QTcp; compiles in
   the windows CMake target, can't *run* on Linux); CMake wiring.
-- **Phase 1 (Sandbox, the default) — DONE host-side, validate on Win Pro:**
+- **Phase 1 (Sandbox, the default) — DONE, validated end-to-end on real Windows 11 Pro
+  hardware (2026-07-13, first time ever — CI can't boot nested Hyper-V so this path only
+  ever compiled before):**
   `windows/isolation/sandbox/jarvis-agent.wsb.in` (MappedFolder engine read-only,
   LogonCommand→bootstrap.ps1, tokens @PORT@/@BEARER@/@RENDEZVOUS@/@HOSTIP@/@SESSION@) +
   `bootstrap.ps1` (set env incl. `JARVIS_AGENT_INSANDBOX=1` + a truthy `JARVIS_AGENT_WAYLAND_DISPLAY`
@@ -82,8 +84,26 @@ createSession(target="agent") → AgentDesktop::ensure(sid)  [windows/shell/Agen
   **mode-specific cold-boot budget** (~120s, `JARVIS_SANDBOX_STARTUP_MS`) for the health/ready
   waiters; and **launch-time `detect.ps1` wiring** (`jarvis-start.cmd` / `jarvis-launch.vbs` export
   `JARVIS_WINDOWS_ISOLATION_MODE`) so a Home/no-virt box auto-selects `takeover`.
-  NB: `WindowsSandbox.exe` is a long-lived host-window process (closing it destroys the disposable
-  box), so `d.sway` tracks the boundary lifetime — the one mirror assumption to confirm on real HW.
+  Real-hardware validation surfaced and fixed four bugs the CI-only path could never catch: (1)
+  `bootstrap.ps1`'s logger called `Write-Host`, which deadlocks forever under Sandbox's
+  non-interactive `LogonCommand` (no attached console to drain it) — logger is file-only
+  (`Add-Content`) now. (2) The **`d.sway` liveness-tracking assumption above was WRONG**:
+  `WindowsSandbox.exe` is actually a thin launcher that exits within ~1s of a successful launch,
+  handing the live box off to service-hosted `WindowsSandboxRemoteSession`/`WindowsSandboxServer`/
+  `vmmemWindowsSandbox` processes — treating its exit as "the box died" made every real launch fail
+  on the very first poll. The health/ready waiters now rely purely on the HTTP poll + timeout
+  budget, and `closeSandboxHostProcesses()` (by image name) replaced `killProc(d.sway)` for
+  teardown. (3) The rendered `.wsb` carried an XML prolog + a multi-line doc comment ahead of
+  `<Configuration>`; Windows Sandbox's config reader silently treats that as unparseable and falls
+  back to a bare default sandbox with **no** `LogonCommand` at all — the VM boots and stays alive,
+  but nothing the config asked for ever runs, with zero surfaced error. Fixed by emitting the file
+  starting directly at `<Configuration>` (docs live only in `.wsb.in`) and XML-escaping every
+  substituted token. (4) The first HTTP-polling rewrite (fixing bug 2's crash) blocked the whole
+  Qt thread via `QThread::msleep()` — but that same thread's event loop is what the in-process
+  `ReverseTunnel` needs running to accept the sandbox's incoming rendezvous connection, so the
+  fix for one bug silently reintroduced a different deadlock (kernel-level TCP connect succeeded;
+  pairing never dispatched). Rewritten to be `QEventLoop`/`QTimer`-driven so the thread keeps
+  pumping, while still avoiding the original `QNetworkAccessManager`/`QNetworkReply` pattern.
 - **Phase 2 (RDP child session):** `WTSEnableChildSessions(TRUE)` + RDP-ActiveX
   `ConnectToChildSession` + a Session-0 broker (`WTSQueryUserToken`→`CreateProcessAsUser`) to
   launch the engine in the child; `engineBase()` reaches it directly. Keep-alive: a virtual
@@ -94,5 +114,10 @@ createSession(target="agent") → AgentDesktop::ensure(sid)  [windows/shell/Agen
 non-nested VM) → `ensure()` returns `up=false` (typed reason) → v1 real-screen take-over
 (`which="active"`, consent + "Jarvis is driving" banner). No new code.
 
-> Honest constraint: this compiles via the Windows CI, but actually spinning a Sandbox/child
-> session can only be validated on a real **Windows Pro/Ent** box with virtualization on.
+> Status: the **sandbox** tier is validated end-to-end on real Windows 11 Pro hardware
+> (2026-07-13) — `session.create` with a coworker profile genuinely returns
+> `agent_desktop.up: true`, confirmed twice independently. Still gated behind
+> `JARVIS_ENABLE_V2=1` (see `resolveMode()` in `windows/shell/AgentDesktop.cpp`) pending
+> validation across a wider range of real machines before it becomes the default; `takeover`
+> remains the safe out-of-the-box behavior until then. **childsession**/**hyperv** (Phases 2/3)
+> are still unimplemented stubs — only *sandbox* has been built and proven.

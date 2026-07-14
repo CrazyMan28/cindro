@@ -56,6 +56,13 @@ static int runDial(const QCommandLineParser &p, QCoreApplication &app)
     }
 
     auto *dialer = new TunnelDialer(&app);
+    // AUTH HANDSHAKE (jarvis#104 Codex review follow-up): without --bearer, the
+    // host's ReverseTunnel admits any rendezvous connection unconditionally --
+    // see ReverseTunnel::setExpectedHandshake()'s header for why that matters
+    // now that the rendezvous port is reachable from the whole LAN, not just the
+    // sandbox. bootstrap.ps1 always passes this in production.
+    if (p.isSet("bearer"))
+        dialer->setHandshakeToken(p.value("bearer"));
     dialer->start(host, rport, engineHost, eport, pool);
     err << "jarvis-relay dial: " << host.toString() << ':' << rport
         << " -> engine " << engineHost.toString() << ':' << eport
@@ -75,6 +82,8 @@ static int runHost(const QCommandLineParser &p, QCoreApplication &app)
         return 2;
     }
     auto *tunnel = new ReverseTunnel(&app);
+    if (p.isSet("bearer"))
+        tunnel->setExpectedHandshake(p.value("bearer"));
     if (!tunnel->start(pub, rport)) {
         err << "host: failed to bind public 127.0.0.1:" << pub
             << " / rendezvous 0.0.0.0:" << rport << '\n';
@@ -102,6 +111,8 @@ int main(int argc, char **argv)
         {"engine-port", "Local engine port inside the box (dial mode).", "port"},
         {"rendezvous", "Rendezvous port (both modes).", "port"},
         {"public", "Host loopback port to re-expose the engine on (host mode).", "port"},
+        {"bearer", "Session bearer token; rendezvous connections must present it "
+                   "before pairing (both modes, optional).", "token"},
         {"pool", "Idle outbound connections to keep ready (dial mode, default 4).", "n"},
     });
     parser.process(app);
