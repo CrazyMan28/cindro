@@ -40,6 +40,11 @@ Design pillars:
 - **`android/`**: MVVM + Compose. `JarvisRepository`/`DeviceClient` own the WS; `JarvisApp` holds
   process-wide singletons; `JarvisConnectionService` is the foreground service that keeps the socket
   alive for notifications without FCM.
+- **`iphone_app/`**: SwiftUI + Combine, a 1:1 port of `android/`'s `com.cindro.app` over the SAME
+  Contract C device WebSocket + Ed25519 pairing. Same layering: `DeviceClient`/`PairingClient`/
+  `JarvisRepository` (networking), `AppState` (the `JarvisApp`-equivalent singletons), `UI/*`
+  (SwiftUI screens with `ObservableObject` view models). No daemon changes — a thin client like the
+  others. The `.xcodeproj` is generated from `project.yml` (XcodeGen), never committed.
 - **`extension/`**: `sw.js` (engine bridge + CDP), `content.js` (in-page glow cursor + actions),
   `sidepanel.*` (the daemon chat panel — unified with desktop/phone sessions).
 
@@ -549,6 +554,41 @@ Design pillars:
   `outpost.install_workload` runs it itself, detached, via `outpost.exec`;
   the manual venv-python invocation is now only a fallback for when the
   automatic seed doesn't stick (see the 2026-07-10 gotchas below).
+
+## New subsystems (2026-07-14) — iOS app (`iphone_app/`) gotchas
+
+The iOS app is a **structural port of `android/`** — when you change the phone protocol or a
+device-facing daemon method, update BOTH `android/` and `iphone_app/` (they're peers, not one
+derived from the other). Load-bearing truths:
+
+- **The wire contract is identical to Android and must stay byte-compatible.** The daemon can't
+  tell the two clients apart beyond the `name` in the `hello` frame. Ed25519 is CryptoKit
+  `Curve25519.Signing` (bare 32-byte pubkey, 64-byte detached sig — same shape libsodium
+  `crypto_sign_verify_detached` wants, the reason Android uses Tink's raw primitive); device id =
+  `sha256(pubkey)` first-16-hex. If you change the handshake or an envelope field, change it in
+  `android/`, `iphone_app/`, AND the daemon together.
+- **Parsing DEFAULTS must match Android exactly** — they're not cosmetic. `McpServer.enabled`
+  defaults **true**, `TrustRule.action`/`TrustPolicies.default` default **"allow"**,
+  `createSession` sends `profile="coworker"` + `brain="codex"`. A mismatch makes the same daemon
+  payload render opposite toggle/guardrail state on iPhone vs Android (a real bug caught in the
+  first code review). The `JSONObject` helpers deliberately use `CFBooleanGetTypeID` so a JSON bool
+  never reads as an int and vice-versa (JSONSerialization boxes both as `NSNumber`).
+- **The `.xcodeproj` is GENERATED, never committed** (`project.yml` → `xcodegen generate`), the same
+  discipline as the Android app being pure-Gradle: a hand-edited pbxproj drifts. CI runs
+  `xcodegen generate` before every `xcodebuild`.
+- **`ios-build.yml` runs on GitHub-hosted `macos-latest`** — the ONE sanctioned exception to the
+  "100% self-hosted / zero GitHub-hosted minutes" rule below, because iOS needs Xcode on macOS and
+  the Proxmox fleet is Windows + Linux only. The owner opted into the Actions minutes. It rides the
+  SAME `v*` tag `auto-release.yml` already creates, so merge-to-main attaches an **unsigned** `.ipa`
+  next to the `.exe`/`.apk`/AppImage with no tagger change. Signed TestFlight/App Store builds need
+  Apple signing secrets (not wired yet).
+- **iOS platform gaps that are NOT parity bugs** (documented in `iphone_app/README.md`): no
+  persistent background socket (Android's `dataSync` foreground service has no iOS equivalent — real
+  push needs APNs, which the daemon's build-gated-off `push.register` path would drive); no
+  always-listening "Hey Cindro" wake word; the `render_widget` DSL renderer and full voice UI are
+  tracked follow-ups (the repository methods for them are already wired).
+- **Authored without a Mac** — the first `xcodebuild` in CI is the first real compile. Don't assume a
+  green local state; treat CI (and a device smoke test) as the source of truth until it's built once.
 
 ## Branches & flow
 
