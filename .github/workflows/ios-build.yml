@@ -1,0 +1,133 @@
+# Builds the iOS app (iphone_app/): xcodegen generate + xcodebuild test on every PR into
+# main, and attaches an UNSIGNED .ipa to the GitHub Release on a version tag — the exact
+# same shape as android-build.yml (PR validation + tag release-attach in one workflow).
+#
+# RUNS ON GITHUB-HOSTED macOS (macos-latest). This is the ONE deliberate exception to the
+# repo's "100% self-hosted / zero GitHub-hosted minutes" rule (see AGENTS.md): iOS builds
+# require Xcode on real macOS, and the Proxmox self-hosted fleet is Windows + Linux only.
+# The repo owner explicitly opted into spending Actions minutes for the iOS jobs. If a
+# self-hosted Mac runner is ever provisioned, switch `runs-on` to it and drop this note.
+#
+# NOTE: no Apple signing identity / provisioning profile is wired up yet, so the attached
+# .ipa is UNSIGNED — installable by re-signing sideload tools (AltStore / Sideloadly /
+# a dev cert), NOT App Store / TestFlight. This mirrors android-build.yml shipping a
+# debug-signed APK. To ship a signed build: add APPLE_CERT_P12 / PROVISIONING_PROFILE /
+# keychain secrets and an ExportOptions.plist, then switch the archive step to a signed
+# export (`xcodebuild -exportArchive`).
+#
+# The .xcodeproj is NOT committed (see iphone_app/project.yml) — CI generates it with
+# XcodeGen so the project file can never drift from the source tree.
+name: ios-build
+
+on:
+  # Same two triggers as android-build.yml: a PR into main validates the change before
+  # merge; a v* tag (created by auto-release.yml on merge to main) builds + attaches the
+  # release artifact. Day-to-day pushes to dev/qa/main trigger nothing.
+  pull_request:
+    branches: [main]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Needed so the tag build can attach the .ipa to the Release.
+permissions:
+  contents: write
+
+# A v* tag build (release) is never auto-cancelled. PR re-pushes dedup.
+concurrency:
+  group: ios-build-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    timeout-minutes: 40
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: iphone_app
+        run: xcodegen generate
+
+      - name: Derive version
+        id: ver
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.1.0-${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pick an available simulator
+        id: sim
+        run: |
+          NAME=$(xcrun simctl list devices available | grep -oE 'iPhone [0-9]+( Pro)?' | head -1)
+          [ -z "$NAME" ] && NAME="iPhone 15"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "Using simulator: $NAME"
+
+      - name: Build + test (iOS Simulator, unsigned)
+        working-directory: iphone_app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Cindro.xcodeproj \
+            -scheme Cindro \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            clean test | xcpretty || xcodebuild \
+            -project Cindro.xcodeproj \
+            -scheme Cindro \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+
+      # On a version tag: archive an unsigned device build and hand-package a .ipa
+      # (Payload/Cindro.app), then attach it to the Release — same pattern as
+      # android-build.yml's APK rename + attach.
+      - name: Archive (device, unsigned)
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: iphone_app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Cindro.xcodeproj \
+            -scheme Cindro \
+            -configuration Release \
+            -sdk iphoneos \
+            -archivePath build/Cindro.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            archive
+
+      - name: Package unsigned .ipa
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: iphone_app
+        run: |
+          APP="build/Cindro.xcarchive/Products/Applications/Cindro.app"
+          if [ ! -d "$APP" ]; then echo "::error::archive produced no .app at $APP"; exit 1; fi
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          mkdir -p release-out
+          (cd . && zip -qry "release-out/Cindro-${{ steps.ver.outputs.version }}.ipa" Payload)
+
+      - name: Upload .ipa artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cindro-${{ steps.ver.outputs.version }}-unsigned.ipa
+          path: iphone_app/release-out/*.ipa
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: iphone_app/release-out/*.ipa

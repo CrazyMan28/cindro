@@ -1,0 +1,16 @@
+# Generated Xcode project (regenerate with `xcodegen generate` — see project.yml).
+Cindro.xcodeproj/
+Cindro.xcworkspace/
+
+# Xcode / build artifacts
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.xcarchive
+*.xcuserstate
+xcuserdata/
+.swiftpm/
+
+# macOS
+.DS_Store
