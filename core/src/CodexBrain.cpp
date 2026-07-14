@@ -179,6 +179,10 @@ QStringList CodexBrain::buildArgs(const QString &prompt, const QStringList &imag
     }
     if (!m_opts.model.isEmpty())
         args << QStringLiteral("-m") << m_opts.model;
+    // Default to the deepest reasoning effort Codex's config schema supports.
+    // Placed BEFORE m_opts.configOverrides so an explicit user override of the
+    // same key (unlikely, but possible via Settings) still wins.
+    args << QStringLiteral("-c") << QStringLiteral("model_reasoning_effort=\"high\"");
     for (const QString &override : m_opts.configOverrides)
         args << QStringLiteral("-c") << override;
     // Multimodal: attach each image file so the vision model SEES it. `codex exec`
