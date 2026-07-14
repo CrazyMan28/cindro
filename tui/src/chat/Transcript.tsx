@@ -182,6 +182,56 @@ function ToolCard(props: { item: Extract<ChatItem, { kind: "tool" }>; onToggle: 
   )
 }
 
+function ThinkingCard(props: {
+  item: Extract<ChatItem, { kind: "thinking" }>
+  onToggle: () => void
+}) {
+  // Local per-second tick, LOCAL to this card — must not live in the shared
+  // store, or every store subscriber re-runs every second.
+  const [now, setNow] = createSignal(Date.now())
+
+  onMount(() => {
+    if (props.item.endedAt !== null) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  const elapsedSeconds = createMemo(() =>
+    Math.round(((props.item.endedAt ?? now()) - props.item.startedAt) / 1000),
+  )
+  const label = () =>
+    props.item.endedAt === null
+      ? `Thinking… ${elapsedSeconds()}s`
+      : `Thought for ${elapsedSeconds()}s`
+
+  return (
+    <box flexDirection="column" paddingBottom={1} onMouseDown={props.onToggle}>
+      <box flexDirection="row" gap={1} alignItems="center">
+        <Show
+          when={props.item.endedAt === null}
+          fallback={
+            <text fg={theme.textFaint} selectable={false}>
+              ◇
+            </text>
+          }
+        >
+          <ArcReactor size={3} thinking={true} />
+        </Show>
+        <text fg={theme.textMuted} attributes={TextAttributes.BOLD} selectable={false}>
+          {label()}
+        </text>
+      </box>
+      <Show when={props.item.expanded}>
+        <box paddingLeft={2} border={["left"]} borderColor={theme.hairlineSoft}>
+          <text fg={theme.textFaint} wrapMode="word">
+            {props.item.text}
+          </text>
+        </box>
+      </Show>
+    </box>
+  )
+}
+
 function DiffCard(props: { item: Extract<ChatItem, { kind: "diff" }> }) {
   const stats = (patch: string) => {
     let add = 0
@@ -270,6 +320,12 @@ export function Transcript(props: {
               <ToolCard
                 item={item as Extract<ChatItem, { kind: "tool" }>}
                 onToggle={() => props.session.toggleTool(item.id)}
+              />
+            </Match>
+            <Match when={item.kind === "thinking"}>
+              <ThinkingCard
+                item={item as Extract<ChatItem, { kind: "thinking" }>}
+                onToggle={() => props.session.toggleThinking(item.id)}
               />
             </Match>
             <Match when={item.kind === "diff"}>

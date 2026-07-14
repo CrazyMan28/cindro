@@ -18,6 +18,11 @@ Item {
     ListModel { id: sessionModel }
 
     property bool thinking: false
+    // Set to a generated id while a "thinking" (reasoning) block is actively
+    // accumulating chunks for the CURRENT turn segment; "" when none is active.
+    // Mirrors the tool-call merge idiom below: the row it points at lives in
+    // chatModel (kind "thinking") with a JSON-envelope `text` role {t,s,e}.
+    property string thinkingRowId: ""
     // True while the model's turn is in flight (between a sent message / first live
     // event and the turn's "final"/"error"). Drives the composer's Stop button.
     property bool busy: false
@@ -238,6 +243,26 @@ Item {
         chatModel.append({ "kind":"approval","role":"system","text":"Run the test suite with network access enabled?","callId":"","toolName":"","approvalId":"a1","risk":"medium","ok":true,"streaming":false })
     }
 
+    // Freeze the in-flight "thinking" row (if any) at a turn-segment boundary:
+    // stamp its end timestamp (the ChatDelegate ticking label reads a falsy `e`
+    // as still-active) and clear the ref so the next thinking chunk starts a
+    // fresh row rather than appending to this now-closed one.
+    function freezeThinkingRow() {
+        if (panel.thinkingRowId === "")
+            return
+        for (var fi = chatModel.count - 1; fi >= 0; fi--) {
+            var frow = chatModel.get(fi)
+            if (frow.kind === "thinking" && frow.callId === panel.thinkingRowId) {
+                var fd = { t: "", s: 0, e: 0 }
+                try { fd = JSON.parse(frow.text) } catch (e) {}
+                fd.e = Date.now()
+                chatModel.setProperty(fi, "text", JSON.stringify(fd))
+                break
+            }
+        }
+        panel.thinkingRowId = ""
+    }
+
     // Append a normalized brain event (Contract B) to the transcript. Shared by
     // live session events and replayed history. `live` distinguishes the two: live
     // assistant messages stream in character-by-character (typewriter), while history
@@ -249,10 +274,38 @@ Item {
         if (live && kind !== "final" && kind !== "error")
             panel.busy = true
         switch (kind) {
-        case "thinking":
+        case "thinking": {
             panel.thinking = true
+            var thinkChunk = ev.text !== undefined ? ("" + ev.text) : ""
+            if (panel.thinkingRowId === "") {
+                // First chunk of a fresh reasoning stretch: start a new row (same
+                // JSON-envelope-in-text idiom as the tool-call merge below, keyed
+                // by a generated callId so later chunks can find + extend it).
+                var tid = "think-" + Date.now() + "-" + Math.floor(Math.random() * 100000)
+                panel.thinkingRowId = tid
+                chatModel.append({
+                    "kind": "thinking", "role": "tool",
+                    "text": JSON.stringify({ t: thinkChunk, s: Date.now(), e: 0 }),
+                    "callId": tid, "toolName": "", "approvalId": "", "risk": "", "ok": true,
+                    "streaming": false
+                })
+            } else {
+                // Same turn's reasoning continues: append to the existing row.
+                for (var thi = chatModel.count - 1; thi >= 0; thi--) {
+                    var thRow = chatModel.get(thi)
+                    if (thRow.kind === "thinking" && thRow.callId === panel.thinkingRowId) {
+                        var thd = { t: "", s: Date.now(), e: 0 }
+                        try { thd = JSON.parse(thRow.text) } catch (e) {}
+                        thd.t = ("" + thd.t) + thinkChunk
+                        chatModel.setProperty(thi, "text", JSON.stringify(thd))
+                        break
+                    }
+                }
+            }
             break
+        }
         case "message":
+            panel.freezeThinkingRow()
             panel.thinking = false
             var msgRole = ev.role !== undefined ? ev.role : "assistant"
             chatModel.append({
@@ -266,6 +319,7 @@ Item {
             })
             break
         case "tool_call":
+            panel.freezeThinkingRow()
             panel.thinking = false
             // ONE unified "tool" row per call. `text` carries a JSON envelope
             // {i:input, o:output, d:done, s:server} so the delegate can show a
@@ -321,6 +375,7 @@ Item {
             break
         }
         case "approval":
+            panel.freezeThinkingRow()
             panel.thinking = false
             chatModel.append({
                 "kind": "approval", "role": "system",
@@ -332,6 +387,7 @@ Item {
             })
             break
         case "diff":
+            panel.freezeThinkingRow()
             chatModel.append({
                 "kind": "diff", "role": "tool",
                 "text": ev.patch !== undefined ? ev.patch : "",
@@ -340,6 +396,7 @@ Item {
             })
             break
         case "error":
+            panel.freezeThinkingRow()
             panel.thinking = false
             panel.busy = false
             chatModel.append({
@@ -350,6 +407,7 @@ Item {
             })
             break
         case "final":
+            panel.freezeThinkingRow()
             panel.thinking = false
             panel.busy = false
             break
@@ -467,6 +525,7 @@ Item {
             chatModel.clear()
             panel.todoSpec = ""
             panel.thinking = false
+            panel.thinkingRowId = ""
             panel.busy = false
             panel.pendingNewSession = false
             panel.chatSessionId = bridge.sessionId
@@ -476,6 +535,7 @@ Item {
         function onSessionOpened(sessionId) {
             chatModel.clear()
             panel.thinking = false
+            panel.thinkingRowId = ""
             panel.busy = false
         }
         function onSessionHistory(sessionId, events) {
@@ -487,6 +547,7 @@ Item {
                 return
             chatModel.clear()
             panel.busy = false
+            panel.thinkingRowId = ""
             panel.chatSessionId = sessionId   // the transcript now represents this session
             // History replay: full text immediately (live=false => no typewriter).
             for (var i = 0; i < events.length; i++)
@@ -511,6 +572,7 @@ Item {
         }
 
         function onErrorOccurred(message) {
+            panel.freezeThinkingRow()
             panel.busy = false
             chatModel.append({
                 "kind": "error", "role": "system", "text": message,
@@ -1899,6 +1961,7 @@ Item {
             "streaming": false
         })
         panel.busy = true
+        panel.thinkingRowId = ""   // starting a fresh turn: any prior ref is stale
         bridge.sendMessage(t)
         chatView.positionViewAtEnd()
     }
@@ -1937,6 +2000,7 @@ Item {
             "streaming": false
         })
         panel.busy = true
+        panel.thinkingRowId = ""   // starting a fresh turn: any prior ref is stale
         bridge.sendMessage(cmd)
         chatView.positionViewAtEnd()
     }
@@ -2097,6 +2161,7 @@ Item {
         // Mark the turn in flight so the composer shows Stop until the model's
         // "final"/"error" event clears it.
         panel.busy = true
+        panel.thinkingRowId = ""   // starting a fresh turn: any prior ref is stale
         if (panel.pendingImages.length > 0) {
             bridge.sendMessageWithImages(t, panel.pendingImages)
             panel.pendingImages = []
@@ -2111,6 +2176,7 @@ Item {
     // in-flight state locally so the composer flips back to the send arrow at once.
     function stopTurn() {
         bridge.cancelSession()
+        panel.freezeThinkingRow()
         panel.busy = false
         panel.thinking = false
     }
@@ -2140,6 +2206,7 @@ Item {
         panel.peekOpen = false
         panel.busy = false
         panel.thinking = false
+        panel.thinkingRowId = ""
         inputArea.text = ""
         inputArea.forceActiveFocus()
     }

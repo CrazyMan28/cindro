@@ -24,6 +24,12 @@ Item {
     property bool playing: false
     property real speed: 1.0
     readonly property int total: events.length
+    // Mirrors JarvisPanel.thinkingRowId: the callId (generated here, since raw
+    // "thinking" events carry no call_id of their own) of the reasoning row
+    // currently accumulating chunks for the turn segment being rendered up to
+    // page.cursor. Reset at the top of every renderTo() since it rebuilds from
+    // scratch each time.
+    property string thinkingRowId: ""
 
     function load(sid) {
         page.replaySessionId = sid
@@ -42,6 +48,7 @@ Item {
         n = Math.max(0, Math.min(n, page.total))
         page.cursor = n
         txModel.clear()
+        page.thinkingRowId = ""   // full rebuild -> any prior ref is stale
         for (var i = 0; i < n; i++)
             appendEvent(page.events[i])
         txView.positionViewAtEnd()
@@ -49,23 +56,71 @@ Item {
 
     function stepBy(d) { page.playing = false; renderTo(page.cursor + d) }
 
+    // Freeze the in-flight "thinking" row (if any): stamp its end timestamp and
+    // clear the ref, mirroring JarvisPanel.freezeThinkingRow(). `endTs` is the
+    // REAL recorded ts of the terminating event (this is a recording, not a live
+    // stream, so we always have one — no Date.now() fallback needed here).
+    function freezeThinkingRow(endTs) {
+        if (page.thinkingRowId === "")
+            return
+        for (var fi = txModel.count - 1; fi >= 0; fi--) {
+            var frow = txModel.get(fi)
+            if (frow.kind === "thinking" && frow.callId === page.thinkingRowId) {
+                var fd = { t: "", s: 0, e: 0 }
+                try { fd = JSON.parse(frow.text) } catch (e) {}
+                fd.e = endTs
+                txModel.setProperty(fi, "text", JSON.stringify(fd))
+                break
+            }
+        }
+        page.thinkingRowId = ""
+    }
+
     // A compact mirror of JarvisPanel.appendEvent (history/non-live variant):
     // folds tool_call+tool_result into one card, renders message/thinking/diff/
     // approval/error. No busy/streaming state — this is a recording.
     function appendEvent(ev) {
         var kind = ev.kind !== undefined ? ev.kind : ""
+        // Real per-event ts (unix ms) recorded by the daemon — loadReplay/
+        // session.history keeps it (unlike the gated live path), so the
+        // thinking row's {s,e} envelope can use the ACTUAL recorded times
+        // instead of Date.now() (which would be "whenever this scrub ran").
+        var evTs = ev.ts !== undefined ? ev.ts : 0
         switch (kind) {
-        case "thinking":
-            txModel.append({ "kind":"message", "role":"thinking",
-                "text": ev.text !== undefined ? ev.text : "(thinking…)",
-                "callId":"", "toolName":"", "approvalId":"", "risk":"", "ok":true, "streaming":false })
+        case "thinking": {
+            var thinkChunk = ev.text !== undefined ? ("" + ev.text) : ""
+            if (page.thinkingRowId === "") {
+                // Generated id (raw thinking events carry no call_id) — same
+                // JSON-envelope-in-text + merge-by-callId idiom as tool_call/
+                // tool_result below, keyed by the event's own seq for a stable,
+                // collision-free id.
+                var tid = "think-" + (ev.seq !== undefined ? ev.seq : txModel.count)
+                page.thinkingRowId = tid
+                txModel.append({ "kind":"thinking", "role":"tool",
+                    "text": JSON.stringify({ t: thinkChunk, s: evTs, e: 0 }),
+                    "callId": tid, "toolName":"", "approvalId":"", "risk":"", "ok":true, "streaming":false })
+            } else {
+                for (var thi = txModel.count - 1; thi >= 0; thi--) {
+                    var thRow = txModel.get(thi)
+                    if (thRow.kind === "thinking" && thRow.callId === page.thinkingRowId) {
+                        var thd = { t: "", s: evTs, e: 0 }
+                        try { thd = JSON.parse(thRow.text) } catch (e) {}
+                        thd.t = ("" + thd.t) + thinkChunk
+                        txModel.setProperty(thi, "text", JSON.stringify(thd))
+                        break
+                    }
+                }
+            }
             break
+        }
         case "message":
+            page.freezeThinkingRow(evTs)
             txModel.append({ "kind":"message", "role": ev.role !== undefined ? ev.role : "assistant",
                 "text": ev.text !== undefined ? ev.text : "",
                 "callId":"", "toolName":"", "approvalId":"", "risk":"", "ok":true, "streaming":false })
             break
         case "tool_call":
+            page.freezeThinkingRow(evTs)
             txModel.append({ "kind":"tool", "role":"tool",
                 "text": JSON.stringify({ i: ev.args !== undefined ? JSON.stringify(ev.args, null, 2) : "",
                                          o: "", d: false, s: ev.server !== undefined ? ("" + ev.server) : "" }),
@@ -105,6 +160,7 @@ Item {
             break
         }
         case "approval":
+            page.freezeThinkingRow(evTs)
             txModel.append({ "kind":"approval", "role":"system",
                 "text": ev.summary !== undefined ? ev.summary : "Approval requested",
                 "callId":"", "toolName":"",
@@ -112,15 +168,23 @@ Item {
                 "risk": ev.risk !== undefined ? ("" + ev.risk) : "", "ok":true, "streaming":false })
             break
         case "diff":
+            page.freezeThinkingRow(evTs)
             txModel.append({ "kind":"diff", "role":"tool",
                 "text": ev.patch !== undefined ? ev.patch : "",
                 "callId":"", "toolName": ev.path !== undefined ? ev.path : "diff",
                 "approvalId":"", "risk":"", "ok":true, "streaming":false })
             break
         case "error":
+            page.freezeThinkingRow(evTs)
             txModel.append({ "kind":"error", "role":"system",
                 "text": ev.message !== undefined ? ev.message : "error",
                 "callId":"", "toolName":"", "approvalId":"", "risk":"", "ok":true, "streaming":false })
+            break
+        case "final":
+            // No visible row (matches the prior behavior — final carries no
+            // renderable content), but it DOES end a turn segment: freeze any
+            // still-open reasoning block so it doesn't read as active forever.
+            page.freezeThinkingRow(evTs)
             break
         default: break
         }

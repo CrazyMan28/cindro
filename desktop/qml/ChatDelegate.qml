@@ -114,6 +114,7 @@ Item {
             switch (del.kind) {
             case "message":      return messageComp
             case "widget":       return widgetComp
+            case "thinking":     return thinkingComp
             case "tool":         return unifiedToolComp
             case "tool_call":    return toolCallComp
             case "tool_result":  return toolResultComp
@@ -414,6 +415,119 @@ Item {
                         lineHeight: 1.35
                         textFormat: Text.PlainText
                     }
+                }
+            }
+        }
+    }
+
+    // ===== Thinking (reasoning) block — collapsible, ticking elapsed timer ====
+    // A close structural copy of the unified tool card above. del.text is a JSON
+    // envelope {t:accumulated reasoning text, s:start ms, e:end ms (0/falsy while
+    // still active)} — JarvisPanel/ReplayPage append+merge chunks into ONE such
+    // row per turn segment (by callId) before this ever renders; this component
+    // only displays the current snapshot. Collapsed by default; click to expand.
+    Component {
+        id: thinkingComp
+        Rectangle {
+            id: thinkCard
+            anchors.left: parent.left
+            anchors.right: parent.right
+            radius: Theme.radiusXs
+            property var td: {
+                try { return JSON.parse(del.text) }
+                catch (e) { return { t: del.text, s: 0, e: 0 } }
+            }
+            // Falsy (0) `e` means the row is still accumulating live chunks.
+            readonly property bool active: !td.e
+            readonly property string bodyText: td.t || ""
+            // Same clamp idiom as the unified tool card's outputClamped: Text
+            // measures the WHOLE string for layout even when maximumLineCount
+            // elides it, so a very long reasoning trace can't stall the chat.
+            readonly property string bodyClamped: bodyText.length > 4000
+                ? bodyText.substring(0, 4000) + "\n… (" + bodyText.length + " chars, truncated)"
+                : bodyText
+            property bool expanded: false
+            implicitHeight: thinkCol.implicitHeight + 16
+            color: Theme.surfaceDeep
+            border.width: 1
+            border.color: thinkCard.active ? Theme.accentDim : Theme.hairlineSoft
+            clip: true
+
+            // Local per-second tick for the "Ns" label — kept OUT of the shared
+            // model/ListModel (only start/end timestamps live there); only ticks
+            // while the row is still active, per the freeze rule.
+            property real nowMs: Date.now()
+            Timer {
+                interval: 1000
+                repeat: true
+                running: thinkCard.active
+                onTriggered: thinkCard.nowMs = Date.now()
+            }
+            readonly property int elapsedSecs: Math.max(0, Math.round(
+                ((thinkCard.active ? thinkCard.nowMs : td.e) - (td.s || 0)) / 1000))
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: thinkCard.expanded = !thinkCard.expanded
+            }
+
+            ColumnLayout {
+                id: thinkCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                anchors.topMargin: 8
+                spacing: 6
+
+                // ---- header: spinner/glyph + ticking label + chevron ----
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 9
+                    ArcReactor {
+                        visible: thinkCard.active
+                        Layout.preferredWidth: 16; Layout.preferredHeight: 16
+                        size: 16; spinning: true; thinking: true; tint: Theme.accent
+                    }
+                    Text {
+                        visible: !thinkCard.active
+                        text: "◆"
+                        color: Theme.textFaint
+                        font.pixelSize: 12
+                    }
+                    Text {
+                        text: thinkCard.active
+                              ? ("Thinking… " + thinkCard.elapsedSecs + "s")
+                              : ("Thought for " + thinkCard.elapsedSecs + "s")
+                        color: thinkCard.active ? Theme.accent : Theme.textFaint
+                        font.family: Theme.fontDisplay
+                        font.pixelSize: 11
+                        font.letterSpacing: Theme.trackTight
+                    }
+                    Item { Layout.fillWidth: true }
+                    Text {
+                        visible: thinkCard.bodyText.length > 0
+                        text: thinkCard.expanded ? "▴" : "▾"
+                        color: Theme.textFaint
+                        font.pixelSize: 11
+                    }
+                }
+
+                // ---- expanded: the accumulated reasoning text ----
+                Text {
+                    visible: thinkCard.expanded && thinkCard.bodyText.length > 0
+                    Layout.fillWidth: true
+                    text: thinkCard.bodyClamped
+                    color: Theme.textMuted
+                    wrapMode: Text.Wrap
+                    maximumLineCount: 40
+                    elide: Text.ElideRight
+                    font.family: Theme.fontMono
+                    font.pixelSize: 11
+                    lineHeight: 1.35
+                    textFormat: Text.PlainText
                 }
             }
         }

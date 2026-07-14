@@ -22,9 +22,16 @@ sealed interface ChatItem {
         val streaming: Boolean = false,
     ) : ChatItem
 
-    /** Streaming reasoning ("thinking") — shown dimmed, collapsible. */
+    /** Streaming reasoning ("thinking") — shown dimmed, collapsible. [endedAtMs]
+     *  is null while still accumulating for the current turn; stamped once the
+     *  turn moves past thinking (see ChatViewModel.freezeThinking). */
     @Immutable
-    data class Thinking(override val id: String, val text: String) : ChatItem
+    data class Thinking(
+        override val id: String,
+        val text: String,
+        val startedAtMs: Long,
+        val endedAtMs: Long? = null,
+    ) : ChatItem
 
     /** A tool invocation; [output] / [ok] fill in when the matching tool_result arrives.
      *  [images] holds any base64 image blobs found in the result (e.g. a screenshot
