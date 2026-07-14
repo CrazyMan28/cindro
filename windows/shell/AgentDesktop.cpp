@@ -339,6 +339,50 @@ int sweepOrphanFirewallRules()
     return reaped;
 }
 
+// --- event-loop-pumping process capture -------------------------------------
+// Run `program args` to completion and return its stdout, PUMPING this thread's
+// event loop while it runs instead of blocking on QProcess::waitForStarted/
+// waitForFinished. Same hazard httpGetOk()'s header documents at length: ensure()
+// runs on jarvisd's single Qt thread, which also owns the in-process ReverseTunnel
+// this whole flow is waiting to pair; a blocking waitFor*() starves that event loop
+// for its full timeout, so a slow `tasklist` here can stall (or, at the health->
+// ready hinge, self-deadlock) the very pairing we're waiting on. Driving a
+// QEventLoop keeps ReverseTunnel's socket signals dispatching throughout. Returns
+// an empty QByteArray on spawn failure or timeout (callers treat empty as
+// "unknown," never as a definitive answer). Bounded so it can never block a session
+// longer than timeoutMs; a timed-out child is reaped so it can't linger.
+QByteArray captureProcessOutputPumping(const QString &program,
+                                       const QStringList &args, int timeoutMs)
+{
+    QProcess proc;
+    proc.setProcessChannelMode(QProcess::SeparateChannels);
+    QEventLoop loop;
+    QTimer timer;
+    timer.setSingleShot(true);
+    bool exited = false;
+    QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    QObject::connect(&proc, &QProcess::finished, &loop,
+                     [&](int, QProcess::ExitStatus) { exited = true; loop.quit(); });
+    QObject::connect(&proc, &QProcess::errorOccurred, &loop, &QEventLoop::quit);
+    proc.start(program, args);
+    timer.start(qMax(1, timeoutMs));
+    // start() is async: on success the process is Starting/Running and finished/
+    // errorOccurred arrive via the loop below; on an immediate spawn failure it's
+    // already NotRunning (errorOccurred queued), so skip exec() to avoid hanging
+    // until the timer on a signal that already fired.
+    if (proc.state() != QProcess::NotRunning)
+        loop.exec();
+    if (!exited) {
+        // Spawn failure or timeout -- reap any survivor and report "unknown".
+        if (proc.state() != QProcess::NotRunning) {
+            proc.kill();
+            proc.waitForFinished(1000);
+        }
+        return {};
+    }
+    return proc.readAllStandardOutput();
+}
+
 // --- single-instance guard --------------------------------------------------
 // Windows Sandbox allows only ONE running instance per host. Detect an existing
 // one (ours-after-a-crash or the USER's own) so ensure() can refuse a 2nd launch
@@ -355,21 +399,20 @@ int sweepOrphanFirewallRules()
 // during testing -- a launch immediately following a clean teardown was
 // refused as sandbox_busy solely because vmmemWindowsSandbox hadn't released
 // yet, with WindowsSandboxClient/Server/RemoteSession already gone.
+//
+// The tasklist probe is event-loop-pumping (captureProcessOutputPumping), not a
+// blocking waitFor*(): this runs on every ensure() and must not starve the
+// ReverseTunnel's event loop -- see that helper's header.
 bool sandboxAlreadyRunning()
 {
     if (qEnvironmentVariableIsSet("JARVIS_SANDBOX_SKIP_RUNNING_CHECK"))
         return false;
-    QProcess ps;
-    ps.start(QStringLiteral("tasklist"),
-             {QStringLiteral("/nh"), QStringLiteral("/fo"), QStringLiteral("csv")});
-    if (!ps.waitForStarted(3000))
-        return false;
-    if (!ps.waitForFinished(5000)) {
-        ps.kill();
-        ps.waitForFinished(1000);
-        return false;
-    }
-    const QString out = QString::fromLocal8Bit(ps.readAllStandardOutput());
+    const QByteArray outBytes = captureProcessOutputPumping(
+        QStringLiteral("tasklist"),
+        {QStringLiteral("/nh"), QStringLiteral("/fo"), QStringLiteral("csv")}, 8000);
+    if (outBytes.isEmpty())
+        return false; // probe failed/timed out -> "unknown"; fall through to launch
+    const QString out = QString::fromLocal8Bit(outBytes);
     for (const QString &line : out.split(QStringLiteral("\r\n"), Qt::SkipEmptyParts)) {
         const QString name =
             line.section(QLatin1Char(','), 0, 0).remove(QLatin1Char('"')).trimmed();
@@ -399,12 +442,58 @@ bool sandboxAlreadyRunning()
 // kill the first session's genuinely live, healthy sandbox. RAII'd via
 // ProvisioningLock so every ensure() return path (there are several) releases
 // it automatically.
-bool g_sandboxProvisioning = false;
+//
+// TWO nested scopes, because there are two distinct races:
+//   * g_provisioningSessions (ProvisioningLock, whole ensure()) blocks a SECOND
+//     ensure() from launching while the first is mid-boot -- the concurrency gap
+//     described above.
+//   * g_provisioningWaitSessions (ProvisioningWaitScope, tight wrap around each
+//     event-loop-PUMPING step) marks the ONLY windows in which another queued RPC
+//     can be dispatched re-entrantly on this thread -- the health/ready waiters and
+//     the pumping tasklist probes. A session.cancel/session.delete for the SAME id
+//     dispatched there would otherwise stop the ReverseTunnel + drop the firewall
+//     rule + kill the sandbox host processes out from under the still-polling
+//     waiter: the box stays healthy but becomes UNREACHABLE, so /health|/ready spin
+//     their whole budget with no way to win (jarvis#113). teardown()/releaseSession()
+//     therefore DEFER when this set contains the id (recording the request in
+//     g_deferredTeardowns / g_deferredReleases), and ensure() honors the deferred
+//     request the instant it finishes provisioning. ensure()'s OWN straight-line
+//     failure-path cleanup always runs OUTSIDE any wait scope, so it is never
+//     deferred -- only genuinely re-entrant calls are.
+QSet<QString> g_provisioningSessions;     // an ensure() is in flight for these ids
+QSet<QString> g_provisioningWaitSessions; // ...and is parked in a pumping step now
+QSet<QString> g_deferredTeardowns;        // teardown deferred until ensure() ends
+QSet<QString> g_deferredReleases;         // deferred teardowns that also free the reservation
 
 struct ProvisioningLock
 {
-    ProvisioningLock() { g_sandboxProvisioning = true; }
-    ~ProvisioningLock() { g_sandboxProvisioning = false; }
+    QString sid;
+    explicit ProvisioningLock(QString s) : sid(std::move(s))
+    {
+        g_provisioningSessions.insert(sid);
+    }
+    ~ProvisioningLock()
+    {
+        g_provisioningSessions.remove(sid);
+        g_provisioningWaitSessions.remove(sid);
+        g_deferredTeardowns.remove(sid);
+        g_deferredReleases.remove(sid);
+    }
+};
+
+// Tight RAII marker around a single event-loop-pumping step of ensure() (a health/
+// ready waiter, or a pumping tasklist probe). Present ONLY while that step is on the
+// stack, so a re-entrant teardown() dispatched during the pump is deferred, while
+// ensure()'s subsequent straight-line handling (which runs after the scope closes)
+// is not.
+struct ProvisioningWaitScope
+{
+    QString sid;
+    explicit ProvisioningWaitScope(QString s) : sid(std::move(s))
+    {
+        g_provisioningWaitSessions.insert(sid);
+    }
+    ~ProvisioningWaitScope() { g_provisioningWaitSessions.remove(sid); }
 };
 
 // sessionId -> the REAL session-host PIDs captured right after THIS session's
@@ -424,17 +513,16 @@ QHash<QString, QList<qint64>> g_sandboxHostPids;
 QList<qint64> captureSandboxHostPids()
 {
     QList<qint64> pids;
-    QProcess ps;
-    ps.start(QStringLiteral("tasklist"),
-             {QStringLiteral("/nh"), QStringLiteral("/fo"), QStringLiteral("csv")});
-    if (!ps.waitForStarted(3000))
+    // Event-loop-pumping tasklist (NOT a blocking waitFor*): this runs right at the
+    // health->ready hinge, while the ReverseTunnel is actively serving on this same
+    // thread -- a blocking probe here would starve exactly that. See
+    // captureProcessOutputPumping()'s header.
+    const QByteArray outBytes = captureProcessOutputPumping(
+        QStringLiteral("tasklist"),
+        {QStringLiteral("/nh"), QStringLiteral("/fo"), QStringLiteral("csv")}, 8000);
+    if (outBytes.isEmpty())
         return pids;
-    if (!ps.waitForFinished(5000)) {
-        ps.kill();
-        ps.waitForFinished(1000);
-        return pids;
-    }
-    const QString out = QString::fromLocal8Bit(ps.readAllStandardOutput());
+    const QString out = QString::fromLocal8Bit(outBytes);
     for (const QString &line : out.split(QStringLiteral("\r\n"), Qt::SkipEmptyParts)) {
         const QStringList fields = line.split(QLatin1Char(','));
         if (fields.size() < 2)
@@ -893,15 +981,12 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
 
     // --- single-instance guard (Windows Sandbox is one-per-host) ----------
     // This session's own up desk already early-returned above, so a non-empty
-    // m_desks here is ALWAYS a DIFFERENT session's live sandbox. g_sandboxProvisioning
-    // catches a second call that's still mid-boot (m_desks not populated yet -- see
-    // ProvisioningLock above). Also refuse if a WindowsSandbox.exe is already running
-    // out-of-band (the user's own, or ours orphaned by a daemon crash -- we can't
-    // safely taskkill it). A typed 'sandbox_busy' reason tells ControlServer to
-    // degrade to v1 take-over rather than launch a doomed 2nd WindowsSandbox.exe.
-    // sweepOrphans() only tidies our on-disk artifacts, never a running sandbox, so
-    // this guard is the enforcement.
-    if (!m_desks.empty() || g_sandboxProvisioning || sandboxAlreadyRunning()) {
+    // m_desks here is ALWAYS a DIFFERENT session's live sandbox. A non-empty
+    // g_provisioningSessions catches a second call that's still mid-boot (m_desks not
+    // populated yet -- see ProvisioningLock above). A typed 'sandbox_busy' reason
+    // tells ControlServer to degrade to v1 take-over rather than launch a doomed 2nd
+    // WindowsSandbox.exe.
+    if (!m_desks.empty() || !g_provisioningSessions.isEmpty()) {
         m_lastError = QStringLiteral(
             "sandbox_busy: a Windows Sandbox agent desktop is already running "
             "(Windows Sandbox allows only one instance per host); using v1 "
@@ -910,7 +995,42 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
             *err = m_lastError;
         return {};
     }
-    ProvisioningLock provisioningLock;
+    // Claim the provisioning slot BEFORE the out-of-band check below: that check is
+    // now event-loop-pumping (sandboxAlreadyRunning -> captureProcessOutputPumping),
+    // so holding the lock first stops a second ensure() dispatched DURING the pump
+    // from slipping past the guard above.
+    ProvisioningLock provisioningLock(sessionId);
+
+    // Also refuse if a Windows Sandbox is already running out-of-band (the user's
+    // own, or ours orphaned by a daemon crash -- we can't safely taskkill it).
+    // sweepOrphans() only tidies our on-disk artifacts, never a running sandbox, so
+    // this guard is the enforcement. Wrapped in a wait scope since the probe pumps.
+    bool alreadyRunning;
+    {
+        ProvisioningWaitScope waitScope(sessionId);
+        alreadyRunning = sandboxAlreadyRunning();
+    }
+    if (alreadyRunning) {
+        // Honor a cancel/delete deferred during the (pumping) probe above before we
+        // bail. Nothing was provisioned this call, but a PRIOR reservation for this
+        // id may still need dropping; we're outside the wait scope now, so this runs
+        // for real. (teardown() here is a near no-op -- no tunnel/box exists yet.)
+        if (g_deferredTeardowns.contains(sessionId)) {
+            const bool alsoRelease = g_deferredReleases.contains(sessionId);
+            g_deferredTeardowns.remove(sessionId);
+            g_deferredReleases.remove(sessionId);
+            teardown(sessionId);
+            if (alsoRelease)
+                m_reserved.erase(sessionId);
+        }
+        m_lastError = QStringLiteral(
+            "sandbox_busy: a Windows Sandbox agent desktop is already running "
+            "(Windows Sandbox allows only one instance per host); using v1 "
+            "real-screen take-over");
+        if (err)
+            *err = m_lastError;
+        return {};
+    }
 
     // --- reservation (VERBATIM from the Linux twin) -----------------------
     auto desk = std::make_unique<Desk>();
@@ -1167,7 +1287,19 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
     hideSandboxWindowSoon(d.sway, startupMs);
 
     // --- wait for the in-box engine via the relay --------------------------
-    if (!waitForEngineHealth(d, startupMs)) {
+    // Each waiter/capture below PUMPS this thread's event loop (so ReverseTunnel can
+    // pair). That's exactly when a concurrent session.cancel/delete for THIS id can
+    // be dispatched re-entrantly -- so each pumping step is wrapped in a
+    // ProvisioningWaitScope, under which teardown()/releaseSession() DEFER rather
+    // than yank the tunnel/firewall/box out from under us (jarvis#113). The scope is
+    // released the instant the step returns, so the failure handling that follows
+    // (its own teardown()) runs for real, never deferred.
+    bool healthOk;
+    {
+        ProvisioningWaitScope waitScope(sessionId);
+        healthOk = waitForEngineHealth(d, startupMs);
+    }
+    if (!healthOk) {
         m_lastError = QStringLiteral(
                           "agent sandbox engine /health never became ready on "
                           "127.0.0.1:%1 (sandbox boot or relay failure)")
@@ -1188,8 +1320,16 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
     // path, or teardown() much further down the line) can be scoped to exactly
     // these processes instead of a blind by-name kill (see
     // closeSandboxHostProcesses()'s header for why that matters).
-    g_sandboxHostPids[sessionId] = captureSandboxHostPids();
-    if (!waitForEngineReady(d, startupMs)) {
+    {
+        ProvisioningWaitScope waitScope(sessionId);
+        g_sandboxHostPids[sessionId] = captureSandboxHostPids();
+    }
+    bool readyOk;
+    {
+        ProvisioningWaitScope waitScope(sessionId);
+        readyOk = waitForEngineReady(d, startupMs);
+    }
+    if (!readyOk) {
         m_lastError = QStringLiteral(
                           "agent sandbox engine /ready (capture not serviceable) "
                           "never succeeded on 127.0.0.1:%1")
@@ -1198,6 +1338,29 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
         d.sway = nullptr;
         closeSandboxHostProcesses(g_sandboxHostPids.take(sessionId)); // close the real box (untracked desk; see above)
         teardown(sessionId);
+        if (err)
+            *err = m_lastError;
+        return {};
+    }
+
+    // Honor a cancel/delete that arrived (and was deferred) while we were parked in
+    // the waiters above: we now hold a fully-provisioned, healthy box, but the caller
+    // has since asked to tear this session down -- so do it instead of publishing it
+    // as up. Publish into m_desks FIRST so teardown() takes its tracked-desk branch
+    // (closing the real box via the captured host PIDs); an untracked teardown would
+    // skip that and orphan the running sandbox. We're outside every ProvisioningWait
+    // scope here, so this teardown() runs for real rather than deferring again.
+    if (g_deferredTeardowns.contains(sessionId)) {
+        const bool alsoRelease = g_deferredReleases.contains(sessionId);
+        g_deferredTeardowns.remove(sessionId);
+        g_deferredReleases.remove(sessionId);
+        m_desks.emplace(sessionId, std::move(desk));
+        teardown(sessionId);
+        if (alsoRelease)
+            m_reserved.erase(sessionId);
+        m_lastError =
+            QStringLiteral("session %1 was cancelled during sandbox provisioning")
+                .arg(sessionId);
         if (err)
             *err = m_lastError;
         return {};
@@ -1232,6 +1395,18 @@ QString AgentDesktop::bearer(const QString &sessionId) const
 
 void AgentDesktop::teardown(const QString &sessionId)
 {
+    // DEFER if ensure() is mid-flight for this same session, parked in a pumping
+    // waiter (which is how this very call got dispatched re-entrantly): stopping the
+    // ReverseTunnel / dropping the firewall rule / killing the sandbox host
+    // processes now would leave the box healthy but UNREACHABLE, so the waiter spins
+    // its whole budget then fails (jarvis#113). Record the request; ensure() honors
+    // it the instant it finishes provisioning. Only genuinely re-entrant calls hit
+    // this -- ensure()'s own straight-line failure cleanup runs outside any wait
+    // scope, and any normal (post-provisioning) teardown finds the set empty.
+    if (g_provisioningWaitSessions.contains(sessionId)) {
+        g_deferredTeardowns.insert(sessionId);
+        return;
+    }
     // Stop the per-session reverse tunnel (parented to `this`, named per session).
     const QString relayName = QStringLiteral("jarvis-relay-") + sessionId;
     if (auto *tunnel = findChild<ReverseTunnel *>(relayName)) {
@@ -1291,6 +1466,15 @@ void AgentDesktop::teardown(const QString &sessionId)
 
 void AgentDesktop::releaseSession(const QString &sessionId)
 {
+    // Same mid-flight deferral as teardown() (see its header): if ensure() is parked
+    // in a pumping waiter for this id, defer BOTH the teardown and the reservation
+    // erase. erasing m_reserved out from under the in-flight ensure() would drop the
+    // (port,bearer) it is provisioning against; ensure() replays both once it's done.
+    if (g_provisioningWaitSessions.contains(sessionId)) {
+        g_deferredTeardowns.insert(sessionId);
+        g_deferredReleases.insert(sessionId);
+        return;
+    }
     teardown(sessionId);
     m_reserved.erase(sessionId);
 }

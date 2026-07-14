@@ -90,6 +90,22 @@ invokes it. Re-verified end-to-end afterward with the exact real launcher flow (
 `childsession`/`hyperv` (Phases 2/3) remain unbuilt; `ensure()` still returns `up=false` with a
 typed reason for them regardless of this gate.
 
+**Follow-up (jarvis#113):** a second adversarial review of the same diff flagged two more *latent*
+races — neither the cause of any observed failure, but both fixed before they could bite under real
+load. (1) The health/ready waiters pump the event loop for up to ~2 min (so `ReverseTunnel` can
+pair), which means a `session.cancel`/`session.delete` for the *same* id could be dispatched
+re-entrantly and run `teardown()` — stopping the tunnel + dropping the firewall rule out from under
+the still-polling `ensure()`, leaving the box healthy but unreachable until the whole budget times
+out. Fixed with a per-session provisioning-wait guard: `teardown()`/`releaseSession()` *defer* while
+`ensure()` is parked in a pumping step, and `ensure()` honors the deferred request the instant it
+finishes. (2) `sandboxAlreadyRunning()` and `captureSandboxHostPids()` still used blocking
+`QProcess::waitForStarted`/`waitForFinished` for their `tasklist` shell-outs — the exact event-loop
+starvation this file's `httpGetOk()` header documents as having self-deadlocked the tunnel once
+before. Both now use the same `QEventLoop`/`QTimer`-pumping process runner. (A third review finding —
+a claimed double-`closeSandboxHostProcesses()` — was refuted against the actual code: `m_desks`
+isn't populated until full success, so the untracked-desk teardown branch returns early and never
+reaches a second close.)
+
 ---
 
 ## 🆕 Android: Claude/ChatGPT-style redesign — drawer nav + chat-first launch (2026-07-12)
