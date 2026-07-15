@@ -1,6 +1,7 @@
 #include "jarvis/SettingsStore.h"
 
 #include "jarvis/Config.h"
+#include "jarvis/SecretCipher.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -526,15 +527,41 @@ void SettingsStore::load()
         }
     }
 
-    // secrets.json: { provider: value, ... }  (flat; matches ControlServer's writer).
+    // secrets.json: either the legacy flat { provider: value, ... } shape, or
+    // an OS-protected envelope { _cindro_secret_v1: true, backend, data }
+    // (see SecretCipher.h). Either is transparently accepted; saveSecrets()
+    // always upgrades to the envelope when a backend is available, so an old
+    // plaintext file self-migrates on next save.
     m_apiKeys = QJsonObject();
     {
         QFile f(secretsFilePath());
         if (f.exists() && f.open(QIODevice::ReadOnly)) {
-            const QJsonDocument d = QJsonDocument::fromJson(f.readAll());
+            const QByteArray raw = f.readAll();
             f.close();
-            if (d.isObject())
-                m_apiKeys = d.object();
+            const QJsonDocument d = QJsonDocument::fromJson(raw);
+            if (d.isObject()) {
+                const QJsonObject obj = d.object();
+                if (obj.value(QStringLiteral("_cindro_secret_v1")).toBool()) {
+                    const QByteArray stored =
+                        QByteArray::fromBase64(obj.value(QStringLiteral("data")).toString().toLatin1());
+                    bool ok = false;
+                    const QByteArray plaintext = SecretCipher::unprotect(stored, &ok);
+                    if (ok) {
+                        const QJsonDocument pd = QJsonDocument::fromJson(plaintext);
+                        if (pd.isObject())
+                            m_apiKeys = pd.object();
+                    } else {
+                        // Undecryptable (different user/machine, keyring locked/
+                        // missing item, corrupted blob, ...). Leave m_apiKeys
+                        // empty rather than guess — hasApiKey()/apiKey() degrade
+                        // to "no key set" instead of silently using stale data.
+                        m_lastError = QStringLiteral("secrets.json: could not unprotect (backend: ")
+                                    + obj.value(QStringLiteral("backend")).toString() + QStringLiteral(")");
+                    }
+                } else {
+                    m_apiKeys = obj; // legacy plaintext format
+                }
+            }
         }
     }
 }
@@ -715,13 +742,32 @@ bool SettingsStore::saveSecrets()
         return false;
     }
 
-    const QByteArray json = QJsonDocument(m_apiKeys).toJson(QJsonDocument::Indented);
+    // Prefer an OS-protected envelope over the flat plaintext shape; fall back
+    // to plaintext (today's behavior) when no backend is available so a save
+    // is never blocked or lossy just because e.g. no keyring daemon is running.
+    QByteArray out;
+    if (SecretCipher::available()) {
+        const QByteArray plaintext = QJsonDocument(m_apiKeys).toJson(QJsonDocument::Compact);
+        const QByteArray stored = SecretCipher::protect(plaintext);
+        if (!stored.isEmpty()) {
+            QJsonObject envelope;
+            envelope.insert(QStringLiteral("_cindro_secret_v1"), true);
+            envelope.insert(QStringLiteral("backend"), SecretCipher::backendName());
+            envelope.insert(QStringLiteral("data"), QString::fromLatin1(stored.toBase64()));
+            out = QJsonDocument(envelope).toJson(QJsonDocument::Indented);
+        } else {
+            qWarning() << "SettingsStore: SecretCipher::protect failed, writing secrets.json in plaintext";
+        }
+    }
+    if (out.isEmpty())
+        out = QJsonDocument(m_apiKeys).toJson(QJsonDocument::Indented);
+
     QSaveFile sf(path);
     if (!sf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         m_lastError = QStringLiteral("cannot write secrets.json: ") + sf.errorString();
         return false;
     }
-    sf.write(json);
+    sf.write(out);
     if (!sf.commit()) {
         m_lastError = QStringLiteral("cannot commit secrets.json: ") + sf.errorString();
         return false;

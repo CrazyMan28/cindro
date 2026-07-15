@@ -9,7 +9,7 @@ RUN dnf -y install \
       qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtquickcontrols2-devel \
       qt6-qtwebsockets-devel qt6-qtmultimedia-devel qt6-qtsvg-devel \
       qt6-qtwayland qt6-qtwayland-devel layer-shell-qt-devel \
-      extra-cmake-modules libsodium-devel qrencode-devel \
+      extra-cmake-modules libsodium-devel qrencode-devel libsecret-devel \
       python3 python3-pip python3-devel python3-pytest \
       desktop-file-utils fuse fuse-libs xcb-util-cursor \
       mesa-libGL-devel mesa-libEGL-devel \

@@ -8,6 +8,13 @@
 //   - API key VALUES and per-MCP bearer tokens persist to
 //     ~/.config/jarvis/secrets.json (mode 0600). Values are WRITE-ONLY: callers
 //     of settings.get only ever see has-key booleans (apiKeysSet()).
+//   - secrets.json is OS-protected via SecretCipher when available (Windows
+//     DPAPI always; Linux Secret Service when a keyring daemon is reachable):
+//     saveSecrets() writes a `{"_cindro_secret_v1":true,"backend":...,"data":...}`
+//     envelope instead of the flat provider->value JSON, and load() transparently
+//     decodes either shape. Falls back to today's plaintext when no OS backend
+//     is available (e.g. a headless box with no keyring session) so secrets are
+//     never lost or blocked — see SecretCipher.h.
 //
 // This is the canonical home for settings.get / settings.set state; it sits on
 // top of Config (load) and a tiny secrets.json reader/writer.

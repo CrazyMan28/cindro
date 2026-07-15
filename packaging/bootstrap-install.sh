@@ -27,29 +27,35 @@ SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
 
 # --- per-distro dependency sets ----------------------------------------------
 # Groups: C++ build, Qt6 (Core/Gui/Quick/QuickControls2/WebSockets/Network/Multimedia/Sql),
-# LayerShellQt, libsodium, libqrencode, python venv, node+npm, and computer-use
-# runtime tools (grim, spectacle, ydotool, wl-clipboard, pipewire utils).
+# LayerShellQt, libsodium, libqrencode, libsecret (SecretCipher's OS-backed
+# encryption of secrets.json via the Secret Service — optional at CMake
+# configure time, but installed here so every fresh box gets it), python venv,
+# node+npm, and computer-use runtime tools (grim, spectacle, ydotool,
+# wl-clipboard, pipewire utils).
 case "$PM" in
   dnf)
     PKGS=(gcc-c++ cmake ninja-build pkgconf-pkg-config
           qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtquickcontrols2-devel
           qt6-qtwebsockets-devel qt6-qtmultimedia-devel layer-shell-qt-devel
-          libsodium-devel qrencode-devel python3 python3-pip nodejs npm
+          libsodium-devel qrencode-devel libsecret-devel
+          python3 python3-pip nodejs npm
           grim ydotool wl-clipboard pipewire-utils) ;;
   apt-get)
     PKGS=(build-essential cmake ninja-build pkg-config
           qt6-base-dev qt6-declarative-dev qt6-quickcontrols2-dev
           qt6-websockets-dev qt6-multimedia-dev liblayershellqtinterface-dev
-          libsodium-dev libqrencode-dev python3 python3-venv python3-pip nodejs npm
+          libsodium-dev libqrencode-dev libsecret-1-dev
+          python3 python3-venv python3-pip nodejs npm
           grim ydotool wl-clipboard pipewire-bin) ;;
   pacman)
     PKGS=(base-devel cmake ninja qt6-base qt6-declarative qt6-quickcontrols2
-          qt6-websockets qt6-multimedia layer-shell-qt libsodium qrencode
+          qt6-websockets qt6-multimedia layer-shell-qt libsodium qrencode libsecret
           python python-pip nodejs npm grim ydotool wl-clipboard pipewire) ;;
   zypper)
     PKGS=(gcc-c++ cmake ninja pkgconf qt6-base-devel qt6-declarative-devel
           qt6-quickcontrols2-devel qt6-websockets-devel qt6-multimedia-devel
-          layer-shell-qt-devel libsodium-devel qrencode-devel python3 python3-pip
+          layer-shell-qt-devel libsodium-devel qrencode-devel libsecret-devel
+          python3 python3-pip
           nodejs npm grim ydotool wl-clipboard pipewire) ;;
 esac
 

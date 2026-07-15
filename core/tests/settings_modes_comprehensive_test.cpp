@@ -12,6 +12,7 @@
 
 #include "jarvis/Config.h"
 #include "jarvis/DataPaths.h"
+#include "jarvis/SecretCipher.h"
 #include "jarvis/SessionStore.h"
 #include "jarvis/SettingsStore.h"
 
@@ -448,6 +449,25 @@ int main()
         const bool noGroupRead  = !(perms & QFileDevice::ReadGroup);
         const bool noOtherRead  = !(perms & QFileDevice::ReadOther);
         check(noGroupRead && noOtherRead, "secrets.json has 0600 permissions");
+
+        // OS-backed protection (jarvis SecretCipher): when a backend is
+        // available on this machine, the raw file must NOT contain the key
+        // value in the clear, and must carry the envelope marker. When no
+        // backend is available, it stays the legacy plaintext shape (never
+        // lost/blocked for want of a keyring) and the value IS in the clear.
+        QFile raw(jarvis::SettingsStore::secretsFilePath());
+        check(raw.open(QIODevice::ReadOnly), "secrets.json readable for content check");
+        const QByteArray content = raw.readAll();
+        raw.close();
+        if (jarvis::SecretCipher::available()) {
+            check(!content.contains("sk-codex-test"),
+                  "secrets.json: API key value not stored in the clear (OS-protected)");
+            check(content.contains("_cindro_secret_v1"),
+                  "secrets.json: OS-protected envelope marker present");
+        } else {
+            check(content.contains("sk-codex-test"),
+                  "secrets.json: plaintext fallback still readable (no OS backend on this box)");
+        }
     }
 
     // =========================================================================
