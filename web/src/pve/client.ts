@@ -14,6 +14,7 @@ export class Client {
   private pending = new Map<number, Pending>()
   private listeners: Listener[] = []
   private subs = new Set<string>()
+  private outbox: string[] = [] // frames queued while the socket isn't OPEN yet
   connected = false
   onStatus: ((c: boolean) => void) | null = null
 
@@ -30,6 +31,17 @@ export class Client {
       this.connected = true
       this.onStatus?.(true)
       if (this.subs.size) this.sendSub()
+      // Flush anything enqueued while CONNECTING (the normal login/load path:
+      // App.boot() connects and pages onMount(refresh) immediately).
+      const queued = this.outbox
+      this.outbox = []
+      for (const f of queued) {
+        try {
+          ws.send(f)
+        } catch {
+          /* dropped; its call() will time out */
+        }
+      }
     }
     ws.onclose = () => {
       this.connected = false
@@ -81,12 +93,19 @@ export class Client {
         if (this.pending.delete(id)) reject(new Error(`${method} timed out`))
       }, timeoutMs)
       this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer })
-      try {
-        this.ws?.send(JSON.stringify({ v: 1, id, method, params }))
-      } catch (e) {
-        clearTimeout(timer)
-        this.pending.delete(id)
-        reject(e)
+      const frame = JSON.stringify({ v: 1, id, method, params })
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        try {
+          this.ws.send(frame)
+        } catch (e) {
+          clearTimeout(timer)
+          this.pending.delete(id)
+          reject(e)
+        }
+      } else {
+        // Socket still CONNECTING (or reconnecting) — queue and flush on open,
+        // instead of throwing/no-op'ing and leaving the RPC to time out.
+        this.outbox.push(frame)
       }
     })
   }

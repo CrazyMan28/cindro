@@ -9149,6 +9149,29 @@ Response ControlServer::handleOutpostInstallDashboard(const Request &req)
             "  /opt/jarvis-proxmox-agent/src/proxmox-mcp"), 180.0))
         return *fail;
 
+    // 1b. Refresh the co-located jarvisd AppImage to the latest release. The
+    //     dashboard depends on this daemon for proxmoxop.*, target_ref routing
+    //     and the operator gate — on a host whose workload manager predates this
+    //     release, the extracted jarvisd would 'unknown_method' every operator
+    //     call until refreshed. Same fetch/extract as the workload installer;
+    //     jarvisd-proxmox-agent is restarted in the enable step below.
+    if (auto fail = runStep(QStringLiteral("refresh jarvisd runtime"), QStringLiteral(
+            "set -e; install -d -m755 /opt/jarvis-proxmox-agent/appimage; "
+            "cd /opt/jarvis-proxmox-agent/appimage; AUTH=; "
+            "if [ -s /etc/jarvis-proxmox-agent/github_token ]; then "
+            "  AUTH=\"Authorization: Bearer $(cat /etc/jarvis-proxmox-agent/github_token)\"; fi; "
+            "curl -fsSL ${AUTH:+-H \"$AUTH\"} -o release.json "
+            "  https://api.github.com/repos/CrazyMan28/jarvis/releases/latest; "
+            "URL=$(python3 -c 'import json; "
+            "a=[x for x in json.load(open(\"release.json\")).get(\"assets\", []) "
+            "if x.get(\"name\", \"\").endswith(\".AppImage\")]; "
+            "print(a[0].get(\"url\", \"\") if a else \"\")'); "
+            "[ -n \"$URL\" ]; "
+            "curl -fsSL ${AUTH:+-H \"$AUTH\"} -H 'Accept: application/octet-stream' -L "
+            "  \"$URL\" -o Jarvis.AppImage; chmod +x Jarvis.AppImage; "
+            "rm -rf squashfs-root; ./Jarvis.AppImage --appimage-extract >/dev/null"), 300.0))
+        return *fail;
+
     // 2. Generate the operator + dashboard tokens and seed the policy/layout/
     //    tasks files — all guarded so a re-install NEVER clobbers a token or a
     //    policy the user has since edited.
@@ -9263,10 +9286,12 @@ Response ControlServer::handleOutpostInstallDashboard(const Request &req)
                                  QStringLiteral("failed writing dashboard systemd units to %1")
                                      .arg(machine));
 
-    // 6. Enable + start both.
+    // 6. Enable + start both, and RESTART jarvisd-proxmox-agent so it picks up
+    //    the refreshed AppImage (the new proxmoxop.* verbs + operator routing).
     if (auto fail = runStep(QStringLiteral("enable+start dashboard services"), QStringLiteral(
             "systemctl daemon-reload && systemctl enable --now "
-            "proxmox-operator-mcp.service proxmox-dashboard.service"), 30.0))
+            "proxmox-operator-mcp.service proxmox-dashboard.service && "
+            "systemctl restart jarvisd-proxmox-agent.service"), 30.0))
         return *fail;
 
     // Read back the dashboard token so the caller can surface it.

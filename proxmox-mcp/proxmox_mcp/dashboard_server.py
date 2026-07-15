@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import os
 from pathlib import Path
 
@@ -43,6 +44,22 @@ PVE_SSL_CERT = os.environ.get("PVE_SSL_CERT", "/etc/pve/local/pve-ssl.pem")
 PVE_SSL_KEY = os.environ.get("PVE_SSL_KEY", "/etc/pve/local/pve-ssl.key")
 
 app = FastAPI(title="Cindro Proxmox Dashboard", version=__version__)
+
+# The proxy forwards to the loopback daemon WITH its control token, so it must
+# only relay the methods this Proxmox-only SPA actually needs — never the full
+# Contract A surface (outpost.exec / mcp.add / hooks.* / settings writes / …).
+# A compromised/XSS'd bundle on this LAN-facing origin can't escalate past these.
+_ALLOWED_METHODS = frozenset({
+    "ping", "status.get", "model.list",
+    "session.create", "session.send", "session.subscribe", "session.history",
+    "session.list", "session.cancel", "session.set_goals", "session.wake",
+    "approval.respond",
+})
+_ALLOWED_PREFIXES = ("proxmoxop.",)
+
+
+def _method_allowed(method: str) -> bool:
+    return method in _ALLOWED_METHODS or any(method.startswith(p) for p in _ALLOWED_PREFIXES)
 
 
 def dashboard_token() -> str:
@@ -134,7 +151,24 @@ async def control_ws(ws: WebSocket):
             async def browser_to_backend():
                 try:
                     while True:
-                        await backend.send(await ws.receive_text())
+                        raw = await ws.receive_text()
+                        method = ""
+                        frame_id = None
+                        try:
+                            frame = json.loads(raw)
+                            method = str(frame.get("method", ""))
+                            frame_id = frame.get("id")
+                        except (ValueError, AttributeError):
+                            continue  # drop malformed frames, never forward
+                        if not _method_allowed(method):
+                            # Refuse (don't forward to the daemon) and tell the tab.
+                            await ws.send_text(json.dumps({
+                                "id": frame_id, "ok": False,
+                                "error": {"code": "method_not_allowed",
+                                          "message": f"{method} is not permitted from the dashboard"},
+                            }))
+                            continue
+                        await backend.send(raw)
                 except (WebSocketDisconnect, RuntimeError):
                     pass
 
