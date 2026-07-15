@@ -49,6 +49,26 @@ def test_empty_match_is_catch_all():
     assert store.resolve_effect("anything", {"vmid": 1}, policy=policy) == "deny"
 
 
+def test_always_rule_is_scoped_to_one_vmid():
+    # An "always allow stop VM 106" rule must NOT allow stop on other VMs.
+    policy = {"default_risky": "ask",
+              "rules": [{"id": "r", "match": {"tool": "proxmox_vm_power", "verb": "stop", "vmid": 106},
+                         "effect": "allow"}]}
+    assert store.resolve_effect("proxmox_vm_power", {"verb": "stop", "vmid": 106}, policy=policy) == "allow"
+    assert store.resolve_effect("proxmox_vm_power", {"verb": "stop", "vmid": 107}, policy=policy) == "ask"
+
+
+def test_always_rule_is_scoped_to_one_api_path():
+    # An "always" on one proxmox_api POST must NOT allow every POST.
+    policy = {"default_risky": "ask",
+              "rules": [{"id": "r", "match": {"method": "POST", "path": "/nodes/pve/qemu/100/status/stop"},
+                         "effect": "allow"}]}
+    ok = store.resolve_effect("proxmox_api", {"method": "POST", "path": "/nodes/pve/qemu/100/status/stop"}, policy=policy)
+    other = store.resolve_effect("proxmox_api", {"method": "POST", "path": "/nodes/pve/qemu/999/config"}, policy=policy)
+    assert ok == "allow"
+    assert other == "ask"
+
+
 def test_is_mutating_method():
     assert store.is_mutating_method("GET") is False
     assert store.is_mutating_method("get") is False

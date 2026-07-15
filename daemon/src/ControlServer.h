@@ -608,6 +608,11 @@ private:
     // updates live (the chat/side-rail already render the Contract B approval).
     void broadcastProxmoxOpApproval(const QString &sessionId, const QString &approvalId,
                                     const QString &summary, const QString &risk);
+    // Deny + unblock any operator-approval gate this session is parked in. Called
+    // from cancelSession/deleteSession: ApiBrain::cancel() only aborts network/MCP
+    // waits, not our nested approval loop, so without this a cancelled session's
+    // gate lingers until the 10-min TTL (and a follow-up prompt could resume it).
+    void abortOperatorApprovals(const QString &sessionId);
     // Best-effort inbox pings for new agent questions / fired pinged events:
     // a 5-min poll over the machines in <data>/proxmox_machines.json (written
     // by install_workload, self-healed by proxmox.status ONLY — the one RPC
