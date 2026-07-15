@@ -22,6 +22,15 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(SODIUM REQUIRED IMPORTED_TARGET libsodium)
 pkg_check_modules(QRENCODE REQUIRED IMPORTED_TARGET libqrencode)
 
+# libsecret (freedesktop Secret Service client) — OPTIONAL: SecretCipher uses it
+# to OS-protect secrets.json (see core/include/jarvis/SecretCipher.h), but a
+# missing package must never hard-fail the configure step (older dev boxes /
+# CI images that predate this feature). When absent, SecretCipher compiles a
+# stub (available() == false) and SettingsStore falls back to today's
+# plaintext+chmod-0600 secrets.json. bootstrap-install.sh and the CI image
+# install libsecret-1-dev/libsecret-devel going forward.
+pkg_check_modules(LIBSECRET QUIET IMPORTED_TARGET libsecret-1)
+
 add_library(jarvis-core STATIC
     src/Protocol.cpp
     src/Config.cpp
@@ -40,6 +49,9 @@ add_library(jarvis-core STATIC
     src/MemoryStore.cpp
     src/SkillStore.cpp
     src/HookStore.cpp
+    # OS-backed at-rest protection for secrets.json (DPAPI on Windows, Secret
+    # Service on Linux when available; see include/jarvis/SecretCipher.h).
+    src/SecretCipher.cpp
     src/TrustPolicyStore.cpp
     # Phone-scoped capability policy ("what Cindro may do over the phone") —
     # ~/.config/jarvis/phone_policy.json, consulted by the daemon phone.mcp choke
@@ -107,6 +119,7 @@ add_library(jarvis-core STATIC
     include/jarvis/MemoryStore.h
     include/jarvis/SkillStore.h
     include/jarvis/HookStore.h
+    include/jarvis/SecretCipher.h
     include/jarvis/AgentStore.h
     include/jarvis/DeviceRegistry.h
     include/jarvis/PairingManager.h
@@ -141,6 +154,15 @@ target_link_libraries(jarvis-core
         PkgConfig::SODIUM
         PkgConfig::QRENCODE
 )
+
+if(LIBSECRET_FOUND)
+    target_link_libraries(jarvis-core PRIVATE PkgConfig::LIBSECRET)
+    target_compile_definitions(jarvis-core PRIVATE JARVIS_HAVE_LIBSECRET)
+else()
+    message(WARNING "libsecret-1 not found — secrets.json will stay plaintext+chmod-0600 "
+                     "on this build (install libsecret-1-dev/libsecret-devel to enable "
+                     "OS-backed encryption via the Secret Service).")
+endif()
 
 target_compile_features(jarvis-core PUBLIC cxx_std_20)
 
@@ -332,6 +354,13 @@ add_test(NAME phone_policy_test COMMAND phone_policy_test)
 add_executable(settings_store_test tests/settings_store_test.cpp)
 target_link_libraries(settings_store_test PRIVATE jarvis-core Qt6::Core)
 add_test(NAME settings_store_test COMMAND settings_store_test)
+
+# SecretCipher: protect/unprotect round-trip (when an OS backend is available
+# on the test box), corrupt/empty-input handling, backendName() sanity.
+# Environment-tolerant — passes with no keyring daemon too (see the test file).
+add_executable(secret_cipher_test tests/secret_cipher_test.cpp)
+target_link_libraries(secret_cipher_test PRIVATE jarvis-core Qt6::Core)
+add_test(NAME secret_cipher_test COMMAND secret_cipher_test)
 
 # HookStore: Claude-Code-style lifecycle hooks — matcher routing, the
 # exit-code/stdout block+inject protocol, and CRUD round-trip through

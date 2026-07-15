@@ -105,6 +105,10 @@ add_library(jarvis-core STATIC
     ${CORE_DIR}/src/MemoryStore.cpp
     ${CORE_DIR}/src/SkillStore.cpp
     ${CORE_DIR}/src/HookStore.cpp
+    # OS-backed at-rest protection for secrets.json — DPAPI on Windows (must
+    # match core/CMakeLists.txt; JARVIS_HAVE_LIBSECRET is never defined here,
+    # so this compiles the DPAPI branch, never the Linux one).
+    ${CORE_DIR}/src/SecretCipher.cpp
     ${CORE_DIR}/src/TrustPolicyStore.cpp    # jarvis#71 trust policies (must match core/CMakeLists.txt)
     ${CORE_DIR}/src/PhonePolicyStore.cpp    # phone-scoped capability policy (must match core/CMakeLists.txt)
     ${CORE_DIR}/src/AgentStore.cpp
@@ -160,6 +164,7 @@ add_library(jarvis-core STATIC
     ${CORE_DIR}/include/jarvis/MemoryStore.h
     ${CORE_DIR}/include/jarvis/SkillStore.h
     ${CORE_DIR}/include/jarvis/HookStore.h
+    ${CORE_DIR}/include/jarvis/SecretCipher.h
     ${CORE_DIR}/include/jarvis/TrustPolicyStore.h
     ${CORE_DIR}/include/jarvis/AgentStore.h
     ${CORE_DIR}/include/jarvis/DeviceRegistry.h
@@ -183,7 +188,9 @@ target_include_directories(jarvis-core
     PRIVATE ${RELAY_DIR})            # windows/shell/AgentDesktop.cpp -> ReverseTunnel.h
 target_link_libraries(jarvis-core
     PUBLIC  Qt6::Core Qt6::Sql Qt6::WebSockets Qt6::Network
-    PRIVATE ${SODIUM_TARGET} jarvis_qrencode)
+    # Crypt32: DPAPI (CryptProtectData/CryptUnprotectData) for SecretCipher —
+    # ships with every Windows SDK install, no vcpkg package needed.
+    PRIVATE ${SODIUM_TARGET} jarvis_qrencode Crypt32)
 target_compile_features(jarvis-core PUBLIC cxx_std_20)
 target_compile_options(jarvis-core PRIVATE ${FORCE_INCLUDE_FLAGS})
 

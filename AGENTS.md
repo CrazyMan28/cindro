@@ -68,6 +68,8 @@ Design pillars:
   PID or systemd unit only.
 - Secrets live in `~/.config/jarvis/` (0600) — `control_token`, `mistral_api_key`, `secrets.json`,
   device keys — **never** in git. OAuth/refresh tokens for connectors go in `secrets.json`.
+  `secrets.json` is additionally OS-protected at rest via `SecretCipher` (Windows DPAPI always;
+  Linux Secret Service when a keyring daemon is reachable) — see the 2026-07-15 entry below.
 - **MCP isolation is intentional:** codex runs `--ignore-user-config` with an isolated `CODEX_HOME`;
   claude runs `--strict-mcp-config --mcp-config`. The brain only sees Cindro's built-in computer-use
   plus servers the user explicitly re-enables (CLI MCP toggles). Don't "helpfully" re-add user MCPs.
@@ -1184,6 +1186,38 @@ plain assistant replies (only on tool-call/error paths, since `message` never ro
 `endLiveBubble()`) and leaked the ticker/DOM ref across session switches; and `web/replay.tsx` was
 discarding the daemon's real per-event `ts` timestamps before they reached the fold logic, so
 replay now shows actual recorded "Thought for Ns" durations instead of none.
+
+## New subsystems (2026-07-15) — secrets.json OS-backed encryption
+
+`secrets.json` (API key values, per-MCP bearer tokens) was flat plaintext JSON, protected only by
+chmod 0600 — fine against other users on the box, but readable by anything that can read files as
+*you* (a naive backup tool, an accidental `git add`, a blind `*.json`/`*.env` grab). `jarvisd` starts
+unattended (systemd `--user`, no login prompt), so a user-entered master password was off the table —
+whatever protects the file must unlock with zero password. `core/SecretCipher`
+(`core/include/jarvis/SecretCipher.h` + `core/src/SecretCipher.cpp`) instead leans on what the OS
+already ties to the logged-in user: **Windows** DPAPI (`CryptProtectData`/`CryptUnprotectData`,
+`CRYPTPROTECT_UI_FORBIDDEN` so it never blocks on a prompt — ships with every Windows install, no
+extra dependency) and **Linux** the freedesktop Secret Service via `libsecret`
+(gnome-keyring/kwalletd) when a keyring daemon answers on the session/system bus.
+
+`SettingsStore::saveSecrets()` now writes `{"_cindro_secret_v1":true,"backend":"dpapi"|
+"secretservice","data":"<base64>"}` instead of the flat `{provider:value}` shape; `load()` accepts
+either transparently, so an old plaintext file self-migrates to the envelope on its next save — no
+explicit migration step, no format-version flag day. On Linux the envelope's `data` is just a marker
+("secretservice") — the real bytes live in one fixed Secret Service item
+(schema `org.cindro.jarvis.secrets`, attribute `purpose=secrets_json`), not on disk at all.
+
+**Never-block guarantee:** `SecretCipher::available()` gates every write; when it's false (headless
+Linux box with no keyring session, or libsecret wasn't present at build time) `saveSecrets()` falls
+straight back to today's plaintext+chmod-0600 shape — a save is never lost or blocked for want of a
+keyring. `pkg_check_modules(LIBSECRET QUIET ...)` in `core/CMakeLists.txt` is deliberately **not**
+`REQUIRED`: a missing `libsecret-1-dev` compiles a stub (`available()` hard-`false`) instead of
+failing the configure step, so older dev boxes / CI images that predate this feature keep building.
+`bootstrap-install.sh` and `infra/ci-image/Dockerfile` now install `libsecret-1-dev`/`libsecret-devel`
+going forward — **the self-hosted Linux CI image still needs a manual rebuild+push**
+(`infra/ci-image/build.sh`) to actually pick it up; until then `linux-ci` keeps building fine, it
+just exercises the plaintext-fallback path, not the real Secret Service one. `windows/CMakeLists.txt`
+links `Crypt32` unconditionally (always present, no vcpkg package needed).
 
 ## Conventions
 
