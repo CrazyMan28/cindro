@@ -70,6 +70,17 @@ public:
     // best-effort, empty if absent).
     static QString proxmoxAgentBearer();
 
+    // Proxmox OPERATOR: the full-power tool server (proxmox-operator-mcp, :8800)
+    // the INTERACTIVE Cindro dashboard session drives — a jarvisd whose schedule
+    // targetRef starts with "proxmox-op-". Distinct endpoint + bearer from the
+    // restricted tuning catalog above (:8799), so the autonomous tick can never
+    // reach the power/create/delete tools. Co-located with jarvisd on the host,
+    // hence a fixed localhost port like the others.
+    static QString proxmoxOperatorEndpoint() { return QStringLiteral("http://127.0.0.1:8800/mcp"); }
+    // /etc/jarvis-proxmox-agent/operator_mcp_token -> bearer (installer-written;
+    // best-effort, empty if absent).
+    static QString proxmoxOperatorBearer();
+
     // --- CRUD (delegates to SessionStore) ---------------------------------
     QVector<McpServerRow> list() { return m_store.listMcpServers(); }
     std::optional<McpServerRow> get(const QString &id) { return m_store.getMcpServer(id); }

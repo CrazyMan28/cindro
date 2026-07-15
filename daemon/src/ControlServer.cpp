@@ -2415,7 +2415,8 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
             // computer-use engine.
             opts.configOverrides = agentMcpOverrides.args;
             opts.extraEnv = agentMcpOverrides.env;
-        } else if ((row.profile == QStringLiteral("coworker") || v1TakeoverFallback) &&
+        } else if ((row.profile == QStringLiteral("coworker") || v1TakeoverFallback ||
+                    m_autoGlobalEngineSessions.contains(row.id)) &&
                    m_mcp) {
             const CodexMcpOverrides cu = m_mcp->codexOverrides(
                 [this](const QString &ref) { return resolveConnectorEnv(ref); });
@@ -2476,7 +2477,7 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
             opts.permissionMode = QStringLiteral("bypassPermissions");
         } else if (row.profile == QStringLiteral("coworker")) {
             mcpJson = claudeMcpConfigFromRegistry();
-        } else if (v1TakeoverFallback) {
+        } else if (v1TakeoverFallback || m_autoGlobalEngineSessions.contains(row.id)) {
             mcpJson = claudeMcpConfigFromRegistry();
             // Same rationale as the nested-agent path above: headless `claude -p`
             // stalls on MCP permission prompts, so the injected computer-use
@@ -2520,7 +2521,22 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         // engine at all — it drives the co-located proxmox-mcp tool server
         // instead, and gets a generous 429 backoff since it's an unattended
         // agent that must not just die on a transient Mistral rate limit.
-        if (row.targetRef.startsWith(QStringLiteral("proxmox-")) &&
+        if (row.targetRef.startsWith(QStringLiteral("proxmox-op-")) &&
+            provider != QStringLiteral("anthropic")) {
+            // Cindro dashboard's INTERACTIVE operator: the FULL-power catalog
+            // (:8800), with every mutating tool gated by the user's permission
+            // policy. Checked BEFORE the generic "proxmox-" branch since
+            // "proxmox-op-" also starts with "proxmox-".
+            opts.mcpEndpoint = McpRegistry::proxmoxOperatorEndpoint();
+            opts.mcpBearer = McpRegistry::proxmoxOperatorBearer();
+            const QString sid = row.id;
+            opts.approveTool = [this, sid](const QString &name, const QJsonObject &args) {
+                return operatorGate(sid, name, args);
+            };
+            opts.maxBackoffRetries = 6;
+            opts.backoffBaseMs = 3000;
+            opts.backoffMaxMs = 120000;
+        } else if (row.targetRef.startsWith(QStringLiteral("proxmox-")) &&
             provider != QStringLiteral("anthropic")) {
             opts.mcpEndpoint = McpRegistry::proxmoxAgentEndpoint();
             opts.mcpBearer = McpRegistry::proxmoxAgentBearer();
@@ -2533,7 +2549,8 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
                 opts.mcpEndpoint = desk.mcpUrl;
                 opts.mcpBearer = desk.bearer;
             } else if (row.profile == QStringLiteral("coworker") ||
-                       v1TakeoverFallback) {
+                       v1TakeoverFallback ||
+                       m_autoGlobalEngineSessions.contains(row.id)) {
                 opts.mcpEndpoint = McpRegistry::builtinEndpoint();
                 opts.mcpBearer = McpRegistry::computerUseBearer();
             }
@@ -3070,12 +3087,10 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
                               scheduleTargetRef.isEmpty();
 
     CodexMcpOverrides agentOverrides;
-    if (explicitAgent || autoComputer) {
-        // For an EXPLICIT coworker+agent session a brain that can't drive is a
-        // hard error (the user asked for a co-work). For the AUTO path it isn't —
-        // we already gated on brainCanDrive above, so this only fires for the
-        // explicit case with the api brain + no key.
-        if (explicitAgent && row.brain == QStringLiteral("api") && !apiCanDrive) {
+    if (explicitAgent) {
+        // An EXPLICIT coworker+agent session (the user asked for a co-work) with
+        // a brain that can't drive is a hard error.
+        if (row.brain == QStringLiteral("api") && !apiCanDrive) {
             m_store.updateState(row.id, QStringLiteral("error"));
             if (err)
                 *err = QStringLiteral(
@@ -3093,12 +3108,12 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
             // failure (crashed process, port conflict, ...). When isolation was
             // never available in the first place (stock Windows without the v2
             // sandbox opt-in — the shipped default), that's not a failure, it's
-            // the documented v1 take-over contract: degrade like the AUTO path
-            // below so makeBrain()'s existing `row.profile == "coworker"`
-            // fallback can inject the GLOBAL :8794 engine instead. Without this
-            // gate, EVERY phone-initiated session (the app's default profile is
-            // "coworker" with no target override) hard-fails server-side on
-            // stock Windows while working fine on Linux (jarvis#107).
+            // the documented v1 take-over contract: degrade so makeBrain()'s
+            // `v1TakeoverFallback` can inject the GLOBAL :8794 engine instead.
+            // Without this gate, EVERY phone-initiated session (the app's
+            // default profile is "coworker" with no target override) hard-fails
+            // server-side on stock Windows while working fine on Linux
+            // (jarvis#107).
             //
             // Codex review follow-up (jarvis#104, sandbox now default-on):
             // nestedDesktopSupported() is now true on any sandbox-capable box,
@@ -3112,30 +3127,38 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
             // phone/new-chat all omit target, landing here) hard-fails the
             // moment a second one is requested while the first is still busy.
             const bool transientBusy = deskErr.startsWith(QStringLiteral("sandbox_busy:"));
-            if (explicitAgent && AgentDesktop::nestedDesktopSupported() && !transientBusy) {
+            if (AgentDesktop::nestedDesktopSupported() && !transientBusy) {
                 m_store.updateState(row.id, QStringLiteral("error"));
                 if (err)
                     *err = QStringLiteral("agent desktop failed: ") + deskErr;
                 return QString();
             }
-            // AUTO path, or an explicit co-work request on a platform that
-            // can't isolate at all: degrade gracefully — the chat session still
-            // runs (via the global-engine fallback) rather than failing outright.
+            // An explicit co-work request on a platform that can't isolate at
+            // all (or is transiently busy): degrade gracefully — the chat
+            // session still runs (via the global-engine fallback) rather than
+            // failing outright.
             qWarning("jarvisd: agent desktop unavailable for %s (%s); session "
                      "continues without an isolated desktop",
                      qPrintable(row.id), qPrintable(deskErr));
         } else {
             agentOverrides = agentMcpOverridesFor(desk);
-            // Track AUTO-spawned desktops (for diagnostics / future idle policy).
-            // They live for the session's lifetime — like an explicit co-work
-            // desktop — so a multi-turn chat keeps the SAME engine/port/bearer
-            // baked into the brain and can use the computer again next turn. Both
-            // AUTO and explicit desktops are torn down on session cancel/delete
-            // (the session's release signal) and any crash leftovers are reaped
-            // by sweepOrphans() at daemon start.
-            if (!explicitAgent)
-                m_autoComputerSessions.insert(row.id);
+            // explicitAgent sessions are never inserted into
+            // m_autoComputerSessions — that set is for AUTO-spawned desktops
+            // only (see the autoComputer branch below), which idle-teardown on
+            // battery grounds; an explicit co-work desktop stays up for
+            // live-view/take-over instead.
         }
+    } else if (autoComputer) {
+        // Auto-spawned chat ("let Cindro use a computer" on, no explicit
+        // co-work request): never pay AgentDesktop::ensure()'s up-to-45s
+        // synchronous provisioning cost just to answer a chat message — that
+        // used to block the daemon's single Qt main thread for every plain
+        // chat's first turn, and hangs even longer when the isolated desktop
+        // (Windows Sandbox) fails to boot at all. Skip the isolated nested
+        // desktop entirely for this path; makeBrain() falls back to the
+        // always-on global :8794 engine for any session id in
+        // m_autoGlobalEngineSessions, with zero added latency.
+        m_autoGlobalEngineSessions.insert(row.id);
     }
 
     // Remember the RESOLVED workdir for this session (diff.* runs git here).
@@ -3882,6 +3905,7 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     // desktop is spun up if the session is recreated.
     m_agentDesktops.releaseSession(sessionId);   // drop the desktop + its reservation
     m_autoComputerSessions.remove(sessionId);
+    m_autoGlobalEngineSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
@@ -3913,6 +3937,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     //    drop its port/bearer reservation — the session is gone for good.
     m_agentDesktops.releaseSession(sessionId);
     m_autoComputerSessions.remove(sessionId);
+    m_autoGlobalEngineSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_coworkGuided.remove(sessionId);
     m_policyGuided.remove(sessionId);
@@ -3954,7 +3979,8 @@ bool ControlServer::respondApprovalFor(const QString &sessionId, const QString &
     // "takeover-<sid>"/"inject-<sid>"). Brain-issued tool approvals use ids that
     // are never in the registry, so they fall through to the brain below.
     const bool daemonKind = approvalId.startsWith(QStringLiteral("takeover-")) ||
-                            approvalId.startsWith(QStringLiteral("inject-"));
+                            approvalId.startsWith(QStringLiteral("inject-")) ||
+                            approvalId.startsWith(QStringLiteral("proxmox-op-"));
     if (daemonKind) {
         auto it = m_pendingApprovals.find(approvalId);
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
@@ -3971,6 +3997,27 @@ bool ControlServer::respondApprovalFor(const QString &sessionId, const QString &
         m_pendingApprovals.erase(it); // single-use
         const bool allow = (decision == QStringLiteral("allow") ||
                             decision == QStringLiteral("always"));
+
+        // A Proxmox-operator tool gate: unblock the operator ApiBrain waiting in
+        // operatorGate's nested loop. "always" also persists a standing allow
+        // rule so the same action isn't asked again. Daemon-side; no brain call
+        // beyond quitting the loop the brain is parked in.
+        if (pa.kind == QStringLiteral("proxmox-op")) {
+            if (auto oit = m_operatorApprovals.find(approvalId);
+                oit != m_operatorApprovals.end()) {
+                oit->decision = allow ? 0 : 1;
+                if (allow && decision == QStringLiteral("always"))
+                    operatorAppendAllowRule(oit->match);
+                if (oit->loop)
+                    oit->loop->quit();
+            }
+            m_audit.record(QStringLiteral("proxmoxop.approval"), allow,
+                           allow ? QStringLiteral("high") : QStringLiteral("low"),
+                           allow ? QStringLiteral("operator tool approved")
+                                 : QStringLiteral("operator tool denied"),
+                           sessionId);
+            return true;
+        }
 
         // A take-over approval is daemon-side (no brain involvement): allow/always
         // flips the real-session take-over ON (overlay shown), deny clears it.
@@ -4028,7 +4075,12 @@ Response ControlServer::handleSessionCreate(const Request &req)
         &err,
         p.value(QStringLiteral("target")).toString(),
         p.value(QStringLiteral("parent_session_id")).toString(),
-        p.value(QStringLiteral("agent")).toString());
+        p.value(QStringLiteral("agent")).toString(),
+        // agentPromptOverride stays default; target_ref lets a UI open a session
+        // bound to a routed MCP endpoint (e.g. the Cindro dashboard opens its
+        // operator with target_ref="proxmox-op-<host>" → makeBrain routes :8800).
+        /*agentPromptOverride=*/QString(),
+        /*scheduleTargetRef=*/p.value(QStringLiteral("target_ref")).toString());
     if (sessionId.isEmpty())
         return Response::failure(req.id, QStringLiteral("session_create_failed"), err);
 
@@ -7202,6 +7254,7 @@ bool ControlServer::isOpsMethod(const QString &method)
            method.startsWith(QStringLiteral("command.")) ||
            method.startsWith(QStringLiteral("outpost.")) ||
            method.startsWith(QStringLiteral("proxmox.")) ||
+           method.startsWith(QStringLiteral("proxmoxop.")) ||
            method.startsWith(QStringLiteral("diff.")) ||
            method == QStringLiteral("audit.list");
 }
@@ -7396,6 +7449,16 @@ Response ControlServer::dispatchOpsMethod(const Request &req, bool remote)
     if (m == QStringLiteral("outpost.screenshot"))   return handleOutpostScreenshot(req);
     if (m == QStringLiteral("outpost.revoke"))       return handleOutpostRevoke(req);
     if (m == QStringLiteral("outpost.install_workload")) return handleOutpostInstallWorkload(req);
+    if (m == QStringLiteral("outpost.install_dashboard")) return handleOutpostInstallDashboard(req);
+    if (m == QStringLiteral("proxmoxop.policy_get"))  return handleProxmoxOpPolicyGet(req);
+    if (m == QStringLiteral("proxmoxop.policy_set"))  return handleProxmoxOpPolicySet(req);
+    if (m == QStringLiteral("proxmoxop.pending_list")) return handleProxmoxOpPendingList(req);
+    if (m == QStringLiteral("proxmoxop.layout_get"))  return handleProxmoxOpLayoutGet(req);
+    if (m == QStringLiteral("proxmoxop.layout_set"))  return handleProxmoxOpLayoutSet(req);
+    if (m == QStringLiteral("proxmoxop.tasks_list"))  return handleProxmoxOpTasksList(req);
+    if (m == QStringLiteral("proxmoxop.tasks_create")) return handleProxmoxOpTaskCreate(req);
+    if (m == QStringLiteral("proxmoxop.tasks_update")) return handleProxmoxOpTaskUpdate(req);
+    if (m == QStringLiteral("proxmoxop.tool"))        return handleProxmoxOpTool(req);
     if (m == QStringLiteral("proxmox.status"))       return handleProxmoxStatus(req);
     if (m == QStringLiteral("proxmox.report"))       return handleProxmoxReport(req);
     if (m == QStringLiteral("proxmox.restart_vm"))   return handleProxmoxRestartVm(req);
@@ -8579,6 +8642,628 @@ Response ControlServer::handleOutpostInstallWorkload(const Request &req)
         result.insert(QStringLiteral("session_id"), sessionId);
         result.insert(QStringLiteral("session_title"), sessionTitle);
     }
+    return Response::success(req.id, result);
+}
+
+// ===========================================================================
+// Cindro Proxmox Dashboard — full-power operator, permission gate, board stores
+// ===========================================================================
+// The operator's policy/layout/tasks files live on the Proxmox HOST (the same
+// files proxmox_mcp/operator_store.py reads). Every proxmoxop.* verb below runs
+// IN the co-located host jarvisd and does direct local file I/O — the browser
+// reaches these through the dashboard server's WS-proxy, and Jarvis reaches the
+// same files through the operator MCP tools. One source of truth, two editors.
+
+static QString kOpPolicyPath() { return QStringLiteral("/etc/jarvis-proxmox-agent/operator_policy.json"); }
+static QString kOpLayoutPath() { return QStringLiteral("/var/lib/jarvis-proxmox-agent/operator_layout.json"); }
+static QString kOpTasksPath()  { return QStringLiteral("/var/lib/jarvis-proxmox-agent/operator_tasks.json"); }
+
+static QJsonObject opReadJsonObj(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    return QJsonDocument::fromJson(f.readAll()).object();
+}
+
+static bool opWriteJson(const QString &path, const QJsonObject &obj)
+{
+    QDir().mkpath(QFileInfo(path).path());
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    f.write(QJsonDocument(obj).toJson(QJsonDocument::Indented));
+    return true;
+}
+
+static QString opGenId(const QString &prefix)
+{
+    QByteArray b(6, Qt::Uninitialized);
+    for (char &c : b)
+        c = char(QRandomGenerator::system()->bounded(256));
+    return prefix + QString::fromLatin1(b.toHex());
+}
+
+// Mirror of operator_store.FREE_TOOLS (reads + local board writes). Keep in
+// lock-step with proxmox-mcp/proxmox_mcp/operator_store.py.
+static bool opFreeToolName(const QString &t)
+{
+    static const QStringList kFree = {
+        QStringLiteral("proxmox_vm_list"), QStringLiteral("proxmox_vm_status"),
+        QStringLiteral("proxmox_vm_config_get"), QStringLiteral("proxmox_snapshot_list"),
+        QStringLiteral("proxmox_backup_list"), QStringLiteral("proxmox_storage_list"),
+        QStringLiteral("proxmox_storage_content"), QStringLiteral("proxmox_iso_list"),
+        QStringLiteral("proxmox_network_list"), QStringLiteral("proxmox_firewall_get"),
+        QStringLiteral("proxmox_node_list"), QStringLiteral("proxmox_node_status"),
+        QStringLiteral("proxmox_cluster_status"), QStringLiteral("proxmox_ct_list"),
+        QStringLiteral("proxmox_ct_config_get"), QStringLiteral("proxmox_task_status"),
+        QStringLiteral("proxmox_task_log"), QStringLiteral("proxmox_tasks_recent"),
+        QStringLiteral("proxmox_dashboard_layout_get"), QStringLiteral("proxmox_tasks_list"),
+        QStringLiteral("proxmox_dashboard_layout_set"), QStringLiteral("proxmox_task_create"),
+        QStringLiteral("proxmox_task_update"),
+    };
+    return kFree.contains(t);
+}
+
+static QString opApprovalSummary(const QString &tool, const QJsonObject &args)
+{
+    if (tool == QStringLiteral("proxmox_api"))
+        return QStringLiteral("Allow Jarvis to call the Proxmox API: %1 %2 ?")
+            .arg(args.value(QStringLiteral("method")).toString().toUpper(),
+                 args.value(QStringLiteral("path")).toString());
+    QString what = tool;
+    if (args.contains(QStringLiteral("action")))
+        what = QStringLiteral("%1").arg(args.value(QStringLiteral("action")).toString());
+    QString target;
+    if (args.contains(QStringLiteral("vmid")))
+        target = QStringLiteral(" on VM %1").arg(args.value(QStringLiteral("vmid")).toInt());
+    return QStringLiteral("Allow Jarvis to: %1 (%2)%3 ?").arg(what, tool, target);
+}
+
+static QString opRisk(const QString &tool, const QJsonObject &args)
+{
+    static const QStringList kHigh = {
+        QStringLiteral("proxmox_vm_delete"), QStringLiteral("proxmox_ct_delete"),
+        QStringLiteral("proxmox_snapshot_rollback"), QStringLiteral("proxmox_snapshot_delete"),
+        QStringLiteral("proxmox_vm_migrate"), QStringLiteral("proxmox_restore"),
+        QStringLiteral("proxmox_api"),
+    };
+    if (kHigh.contains(tool))
+        return QStringLiteral("high");
+    const QString action = args.value(QStringLiteral("action")).toString();
+    if (action == QStringLiteral("stop") || action == QStringLiteral("reset"))
+        return QStringLiteral("high");
+    return QStringLiteral("medium");
+}
+
+bool ControlServer::operatorToolIsFree(const QString &tool, const QJsonObject &args)
+{
+    if (tool == QStringLiteral("proxmox_api")) {
+        const QString m = args.value(QStringLiteral("method")).toString().toUpper();
+        return m == QStringLiteral("GET") || m == QStringLiteral("HEAD") ||
+               m == QStringLiteral("OPTIONS");
+    }
+    return opFreeToolName(tool);
+}
+
+QString ControlServer::operatorResolveEffect(const QString &tool, const QJsonObject &args,
+                                             QJsonObject *matchOut)
+{
+    const QJsonObject policy = opReadJsonObj(kOpPolicyPath());
+    const QString verb = args.value(QStringLiteral("action")).toString();
+    const QString method = args.value(QStringLiteral("method")).toString().toUpper();
+    const bool hasVmid = args.contains(QStringLiteral("vmid"));
+    const int vmid = args.value(QStringLiteral("vmid")).toInt();
+
+    if (matchOut) {
+        QJsonObject mm;
+        if (tool == QStringLiteral("proxmox_api")) {
+            mm.insert(QStringLiteral("method"), method);
+        } else {
+            mm.insert(QStringLiteral("tool"), tool);
+            if (!verb.isEmpty())
+                mm.insert(QStringLiteral("verb"), verb);
+        }
+        *matchOut = mm;
+    }
+
+    const QJsonArray rules = policy.value(QStringLiteral("rules")).toArray();
+    for (const QJsonValue &rv : rules) {
+        const QJsonObject rule = rv.toObject();
+        const QString effect = rule.value(QStringLiteral("effect")).toString();
+        if (effect != QStringLiteral("allow") && effect != QStringLiteral("ask") &&
+            effect != QStringLiteral("deny"))
+            continue;
+        const QJsonObject match = rule.value(QStringLiteral("match")).toObject();
+        bool ok = true;
+        for (auto k = match.begin(); k != match.end(); ++k) {
+            const QString key = k.key();
+            if (key == QStringLiteral("tool")) {
+                if (k.value().toString() != tool) { ok = false; break; }
+            } else if (key == QStringLiteral("verb")) {
+                if (k.value().toString() != verb) { ok = false; break; }
+            } else if (key == QStringLiteral("method")) {
+                if (k.value().toString().toUpper() != method) { ok = false; break; }
+            } else if (key == QStringLiteral("vmid")) {
+                if (!hasVmid || k.value().toInt() != vmid) { ok = false; break; }
+            } else {
+                ok = false; break; // unknown match key never matches
+            }
+        }
+        if (ok)
+            return effect;
+    }
+    const QString def = policy.value(QStringLiteral("default_risky")).toString();
+    if (def == QStringLiteral("allow") || def == QStringLiteral("ask") ||
+        def == QStringLiteral("deny"))
+        return def;
+    return QStringLiteral("ask"); // safe default (missing/blank policy)
+}
+
+void ControlServer::operatorAppendAllowRule(const QJsonObject &match)
+{
+    QJsonObject policy = opReadJsonObj(kOpPolicyPath());
+    if (!policy.contains(QStringLiteral("default_risky")))
+        policy.insert(QStringLiteral("default_risky"), QStringLiteral("ask"));
+    QJsonArray rules = policy.value(QStringLiteral("rules")).toArray();
+    QJsonObject rule;
+    rule.insert(QStringLiteral("id"), opGenId(QStringLiteral("rule")));
+    rule.insert(QStringLiteral("match"), match);
+    rule.insert(QStringLiteral("effect"), QStringLiteral("allow"));
+    rules.append(rule);
+    policy.insert(QStringLiteral("rules"), rules);
+    policy.insert(QStringLiteral("updated"), QDateTime::currentSecsSinceEpoch());
+    opWriteJson(kOpPolicyPath(), policy);
+}
+
+int ControlServer::operatorGate(const QString &sessionId, const QString &tool,
+                                const QJsonObject &args)
+{
+    // 1) Reads + local board writes never gate.
+    if (operatorToolIsFree(tool, args))
+        return 0;
+    // 2) Standing policy: allow / deny resolve without asking.
+    QJsonObject match;
+    const QString effect = operatorResolveEffect(tool, args, &match);
+    if (effect == QStringLiteral("allow"))
+        return 0;
+    if (effect == QStringLiteral("deny")) {
+        m_audit.record(QStringLiteral("proxmoxop.gate"), false, QStringLiteral("high"),
+                       QStringLiteral("policy denied operator tool %1").arg(tool), sessionId);
+        return 1;
+    }
+    // 3) "ask": surface an approval card and BLOCK the operator brain in a
+    // nested event loop until the user answers (or the TTL lapses -> deny).
+    reapPendingApprovals(sessionId, QStringLiteral("proxmox-op"));
+    const QString approvalId = genApprovalId(QStringLiteral("proxmox-op"));
+    m_pendingApprovals.insert(
+        approvalId, PendingApproval{sessionId, QStringLiteral("proxmox-op"),
+                                    QDateTime::currentMSecsSinceEpoch() + kApprovalTtlMs});
+    const QString summary = opApprovalSummary(tool, args);
+    const QString risk = opRisk(tool, args);
+    QEventLoop loop;
+    OperatorApproval oa;
+    oa.loop = &loop;
+    oa.decision = 1; // default deny (TTL / cancel)
+    oa.sessionId = sessionId;
+    oa.summary = summary;
+    oa.risk = risk;
+    oa.match = match;
+    m_operatorApprovals.insert(approvalId, oa);
+    onBrainEvent(sessionId, NormalizedBrainEvent::approval(approvalId, summary, risk));
+    broadcastProxmoxOpApproval(sessionId, approvalId, summary, risk);
+    QTimer ttl;
+    ttl.setSingleShot(true);
+    QObject::connect(&ttl, &QTimer::timeout, &loop, &QEventLoop::quit);
+    ttl.start(int(kApprovalTtlMs));
+    loop.exec();
+    int decision = 1;
+    if (auto it = m_operatorApprovals.find(approvalId); it != m_operatorApprovals.end()) {
+        decision = it->decision;
+        m_operatorApprovals.erase(it);
+    }
+    m_pendingApprovals.remove(approvalId);
+    return decision;
+}
+
+void ControlServer::broadcastProxmoxOpApproval(const QString &sessionId,
+                                               const QString &approvalId,
+                                               const QString &summary, const QString &risk)
+{
+    QJsonObject data;
+    data.insert(QStringLiteral("session_id"), sessionId);
+    data.insert(QStringLiteral("approval_id"), approvalId);
+    data.insert(QStringLiteral("summary"), summary);
+    data.insert(QStringLiteral("risk"), risk);
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), 1);
+    frame.insert(QStringLiteral("event"), QStringLiteral("proxmoxop.approval"));
+    frame.insert(QStringLiteral("data"), data);
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+    for (QWebSocket *client : std::as_const(m_clients))
+        client->sendTextMessage(payload);
+}
+
+Response ControlServer::handleProxmoxOpPolicyGet(const Request &req)
+{
+    QJsonObject policy = opReadJsonObj(kOpPolicyPath());
+    if (!policy.contains(QStringLiteral("default_risky")))
+        policy.insert(QStringLiteral("default_risky"), QStringLiteral("ask"));
+    if (!policy.contains(QStringLiteral("rules")))
+        policy.insert(QStringLiteral("rules"), QJsonArray{});
+    return Response::success(req.id, policy);
+}
+
+Response ControlServer::handleProxmoxOpPolicySet(const Request &req)
+{
+    const QString def = req.params.value(QStringLiteral("default_risky"))
+                            .toString(QStringLiteral("ask"));
+    QJsonObject out;
+    out.insert(QStringLiteral("default_risky"),
+               (def == QStringLiteral("allow") || def == QStringLiteral("ask") ||
+                def == QStringLiteral("deny")) ? def : QStringLiteral("ask"));
+    out.insert(QStringLiteral("rules"), req.params.value(QStringLiteral("rules")).toArray());
+    out.insert(QStringLiteral("updated"), QDateTime::currentSecsSinceEpoch());
+    if (!opWriteJson(kOpPolicyPath(), out))
+        return Response::failure(req.id, QStringLiteral("write_failed"),
+                                 QStringLiteral("could not write operator_policy.json"));
+    m_audit.record(QStringLiteral("proxmoxop.policy_set"), true, QStringLiteral("medium"),
+                   QStringLiteral("updated operator permission policy"));
+    return Response::success(req.id, out);
+}
+
+Response ControlServer::handleProxmoxOpPendingList(const Request &req)
+{
+    QJsonArray arr;
+    for (auto it = m_operatorApprovals.begin(); it != m_operatorApprovals.end(); ++it) {
+        QJsonObject o;
+        o.insert(QStringLiteral("approval_id"), it.key());
+        o.insert(QStringLiteral("session_id"), it->sessionId);
+        o.insert(QStringLiteral("summary"), it->summary);
+        o.insert(QStringLiteral("risk"), it->risk);
+        arr.append(o);
+    }
+    QJsonObject r;
+    r.insert(QStringLiteral("pending"), arr);
+    return Response::success(req.id, r);
+}
+
+Response ControlServer::handleProxmoxOpLayoutGet(const Request &req)
+{
+    QJsonObject layout = opReadJsonObj(kOpLayoutPath());
+    if (!layout.contains(QStringLiteral("tiles")))
+        layout.insert(QStringLiteral("tiles"), QJsonArray{});
+    return Response::success(req.id, layout);
+}
+
+Response ControlServer::handleProxmoxOpLayoutSet(const Request &req)
+{
+    QJsonObject out;
+    out.insert(QStringLiteral("tiles"), req.params.value(QStringLiteral("tiles")).toArray());
+    out.insert(QStringLiteral("updated"), QDateTime::currentSecsSinceEpoch());
+    if (!opWriteJson(kOpLayoutPath(), out))
+        return Response::failure(req.id, QStringLiteral("write_failed"),
+                                 QStringLiteral("could not write operator_layout.json"));
+    // Nudge open Home boards to refetch.
+    QJsonObject frame;
+    frame.insert(QStringLiteral("v"), 1);
+    frame.insert(QStringLiteral("event"), QStringLiteral("proxmoxop.layout"));
+    frame.insert(QStringLiteral("data"), QJsonObject{});
+    const QString payload =
+        QString::fromUtf8(QJsonDocument(frame).toJson(QJsonDocument::Compact));
+    for (QWebSocket *client : std::as_const(m_clients))
+        client->sendTextMessage(payload);
+    return Response::success(req.id, out);
+}
+
+Response ControlServer::handleProxmoxOpTasksList(const Request &req)
+{
+    QJsonObject data = opReadJsonObj(kOpTasksPath());
+    if (!data.contains(QStringLiteral("tasks")))
+        data.insert(QStringLiteral("tasks"), QJsonArray{});
+    return Response::success(req.id, data);
+}
+
+Response ControlServer::handleProxmoxOpTaskCreate(const Request &req)
+{
+    QJsonObject data = opReadJsonObj(kOpTasksPath());
+    QJsonArray tasks = data.value(QStringLiteral("tasks")).toArray();
+    const QString st = req.params.value(QStringLiteral("status")).toString(QStringLiteral("todo"));
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    QJsonObject t;
+    t.insert(QStringLiteral("id"), opGenId(QStringLiteral("t")));
+    t.insert(QStringLiteral("title"), req.params.value(QStringLiteral("title")).toString());
+    t.insert(QStringLiteral("detail"), req.params.value(QStringLiteral("detail")).toString());
+    t.insert(QStringLiteral("status"),
+             (st == QStringLiteral("todo") || st == QStringLiteral("doing") ||
+              st == QStringLiteral("done")) ? st : QStringLiteral("todo"));
+    t.insert(QStringLiteral("created"), now);
+    t.insert(QStringLiteral("updated"), now);
+    tasks.append(t);
+    QJsonObject out;
+    out.insert(QStringLiteral("tasks"), tasks);
+    if (!opWriteJson(kOpTasksPath(), out))
+        return Response::failure(req.id, QStringLiteral("write_failed"),
+                                 QStringLiteral("could not write operator_tasks.json"));
+    return Response::success(req.id, t);
+}
+
+Response ControlServer::handleProxmoxOpTaskUpdate(const Request &req)
+{
+    const QString id = req.params.value(QStringLiteral("id")).toString();
+    QJsonObject data = opReadJsonObj(kOpTasksPath());
+    QJsonArray tasks = data.value(QStringLiteral("tasks")).toArray();
+    bool found = false;
+    QJsonObject updated;
+    for (int i = 0; i < tasks.size(); ++i) {
+        QJsonObject t = tasks[i].toObject();
+        if (t.value(QStringLiteral("id")).toString() != id)
+            continue;
+        found = true;
+        if (req.params.contains(QStringLiteral("title")))
+            t.insert(QStringLiteral("title"), req.params.value(QStringLiteral("title")).toString());
+        if (req.params.contains(QStringLiteral("detail")))
+            t.insert(QStringLiteral("detail"), req.params.value(QStringLiteral("detail")).toString());
+        if (req.params.contains(QStringLiteral("status"))) {
+            const QString st = req.params.value(QStringLiteral("status")).toString();
+            if (st == QStringLiteral("todo") || st == QStringLiteral("doing") ||
+                st == QStringLiteral("done"))
+                t.insert(QStringLiteral("status"), st);
+        }
+        t.insert(QStringLiteral("updated"), QDateTime::currentSecsSinceEpoch());
+        tasks[i] = t;
+        updated = t;
+        break;
+    }
+    if (!found)
+        return Response::failure(req.id, QStringLiteral("not_found"),
+                                 QStringLiteral("no task with id %1").arg(id));
+    QJsonObject out;
+    out.insert(QStringLiteral("tasks"), tasks);
+    if (!opWriteJson(kOpTasksPath(), out))
+        return Response::failure(req.id, QStringLiteral("write_failed"),
+                                 QStringLiteral("could not write operator_tasks.json"));
+    return Response::success(req.id, updated);
+}
+
+Response ControlServer::handleProxmoxOpTool(const Request &req)
+{
+    const QString tool = req.params.value(QStringLiteral("tool")).toString();
+    const QJsonObject args = req.params.value(QStringLiteral("args")).toObject();
+    static const QStringList kBoardWrites = {
+        QStringLiteral("proxmox_dashboard_layout_set"),
+        QStringLiteral("proxmox_task_create"), QStringLiteral("proxmox_task_update")};
+    if (!operatorToolIsFree(tool, args) || kBoardWrites.contains(tool))
+        return Response::failure(req.id, QStringLiteral("not_allowed"),
+            QStringLiteral("'%1' is not a read tool — ask the operator in chat so the "
+                           "permission gate applies").arg(tool));
+    McpServerRow row;
+    row.transport = QStringLiteral("http");
+    row.endpoint = McpRegistry::proxmoxOperatorEndpoint();
+    row.token = McpRegistry::proxmoxOperatorBearer();
+    const McpCallResult res = McpRegistry::callTool(row, tool, args, 30000);
+    if (!res.ok)
+        return Response::failure(req.id, QStringLiteral("tool_failed"),
+            res.error.isEmpty() ? QStringLiteral("operator tool call failed") : res.error);
+    const QJsonDocument doc = QJsonDocument::fromJson(res.content.toUtf8());
+    if (doc.isObject())
+        return Response::success(req.id, doc.object());
+    QJsonObject out;
+    out.insert(QStringLiteral("result"), res.content);
+    return Response::success(req.id, out);
+}
+
+Response ControlServer::handleOutpostInstallDashboard(const Request &req)
+{
+    const QString machine = req.params.value(QStringLiteral("machine")).toString();
+    if (machine.trimmed().isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("machine is required"));
+
+    auto runStep = [&](const QString &label, const QString &cmd,
+                       double timeoutSec) -> std::optional<Response> {
+        bool sok = false;
+        const QJsonObject sr = execOnMachine(machine, cmd, timeoutSec, &sok);
+        const bool ssuccess = sok && sr.value(QStringLiteral("ok")).toBool();
+        m_audit.record(QStringLiteral("outpost.install_dashboard"), ssuccess,
+                       QStringLiteral("high"),
+                       QStringLiteral("installing Cindro dashboard onto %1: %2")
+                           .arg(machine, label));
+        if (!sok)
+            return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                     QStringLiteral("outpost-mcp (:%1) unreachable")
+                                         .arg(outpostPort()));
+        if (!ssuccess) {
+            QString why = sr.value(QStringLiteral("error")).toString();
+            const QString tail =
+                sr.value(QStringLiteral("output")).toString().right(400).trimmed();
+            if (!tail.isEmpty())
+                why = why.isEmpty() ? tail : why + QStringLiteral(" — ") + tail;
+            return Response::failure(req.id, QStringLiteral("install_failed"),
+                                     QStringLiteral("%1 failed on %2: %3")
+                                         .arg(label, machine, why));
+        }
+        return std::nullopt;
+    };
+
+    // Preflight: must be a Proxmox host AND already have the workload-manager
+    // base (venv + extracted jarvisd AppImage). The dashboard install DEPENDS
+    // ON, never replaces, the workload manager — so run that first.
+    bool ok = false;
+    execOnMachine(machine, QStringLiteral("command -v qm && command -v pvesh"), 15.0, &ok);
+    if (!ok)
+        return Response::failure(req.id, QStringLiteral("outpost_unreachable"),
+                                 QStringLiteral("outpost-mcp (:%1) unreachable").arg(outpostPort()));
+    {
+        bool bok = false;
+        const QJsonObject br = execOnMachine(machine, QStringLiteral(
+            "test -d /opt/jarvis-proxmox-agent/proxmox-mcp/.venv && "
+            "test -x /opt/jarvis-proxmox-agent/appimage/squashfs-root/usr/bin/jarvisd"),
+            15.0, &bok);
+        if (!(bok && br.value(QStringLiteral("ok")).toBool()))
+            return Response::failure(req.id, QStringLiteral("needs_workload_manager"),
+                                     QStringLiteral("install the Proxmox Workload Manager on "
+                                                    "'%1' first — the dashboard reuses its "
+                                                    "code checkout, venv, and jarvisd runtime")
+                                         .arg(machine));
+    }
+
+    // 1. Re-sync the sparse checkout + pip install so the new operator/dashboard
+    //    modules are present (idempotent — this is also the upgrade path).
+    if (auto fail = runStep(QStringLiteral("sync proxmox-mcp code"), QStringLiteral(
+            "set -e; cd /opt/jarvis-proxmox-agent; export GIT_TERMINAL_PROMPT=0; "
+            "REPO_URL=https://github.com/CrazyMan28/jarvis.git; "
+            "if [ -s /etc/jarvis-proxmox-agent/github_token ]; then "
+            "  export GIT_ASKPASS=/etc/jarvis-proxmox-agent/git-askpass.sh; "
+            "  REPO_URL=https://x-access-token@github.com/CrazyMan28/jarvis.git; fi; "
+            "git -C src remote set-url origin \"$REPO_URL\"; "
+            "git -C src fetch --depth 1 origin main && git -C src reset --hard origin/main; "
+            "/opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/pip install -q "
+            "  /opt/jarvis-proxmox-agent/src/proxmox-mcp"), 180.0))
+        return *fail;
+
+    // 2. Generate the operator + dashboard tokens and seed the policy/layout/
+    //    tasks files — all guarded so a re-install NEVER clobbers a token or a
+    //    policy the user has since edited.
+    if (auto fail = runStep(QStringLiteral("seed tokens + policy"), QStringLiteral(
+            "set -e; d=/etc/jarvis-proxmox-agent; install -d -m700 \"$d\"; "
+            "gen() { head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n'; }; "
+            "test -s \"$d/operator_mcp_token\" || { gen > \"$d/operator_mcp_token\"; chmod 600 \"$d/operator_mcp_token\"; }; "
+            "test -s \"$d/dashboard_token\"   || { gen > \"$d/dashboard_token\";   chmod 600 \"$d/dashboard_token\"; }; "
+            "test -s \"$d/operator_policy.json\" || printf '%s' '{\"default_risky\":\"ask\",\"rules\":[]}' > \"$d/operator_policy.json\"; "
+            "v=/var/lib/jarvis-proxmox-agent; install -d -m755 \"$v\"; "
+            "test -s \"$v/operator_layout.json\" || printf '%s' '{\"tiles\":[]}' > \"$v/operator_layout.json\"; "
+            "test -s \"$v/operator_tasks.json\"  || printf '%s' '{\"tasks\":[]}' > \"$v/operator_tasks.json\""),
+            20.0))
+        return *fail;
+
+    // 3. Seed the operator persona (AGENT.md) into the host jarvisd's AgentStore.
+    const QByteArray agentMd = QByteArrayLiteral(
+        "---\n"
+        "name: proxmox-operator\n"
+        "description: Full-power Proxmox operator for the Cindro dashboard\n"
+        "when_to_use: Managing this Proxmox host from the dashboard chat\n"
+        "brain: api\n"
+        "model: mistral-large-latest\n"
+        "profile: coder\n"
+        "---\n"
+        "You are the Proxmox operator for this host, driving the Cindro dashboard.\n"
+        "You can do everything the Proxmox GUI can via your tools, including a\n"
+        "generic proxmox_api passthrough for anything without a dedicated tool.\n\n"
+        "Read/inspect freely. EVERY create/delete/power/snapshot/backup/migrate or\n"
+        "other state-changing action is permission-gated: expect an approval prompt\n"
+        "and NEVER assume an action succeeded until you see its tool result. If a\n"
+        "call is denied, explain what you wanted to do and stop — do not retry in a\n"
+        "loop. For long-running operations, poll proxmox_task_status with the UPID.\n"
+        "You also curate the Home widget board (proxmox_dashboard_layout_*) and the\n"
+        "Tasks board (proxmox_task_*) when the user asks.\n");
+    bool amok = false;
+    const QJsonObject amr = writeRemoteFile(machine, QStringLiteral(
+        "/var/lib/jarvis-proxmox-agent/jarvisd/agents/proxmox-operator/AGENT.md"),
+        agentMd, QStringLiteral("644"), &amok);
+    if (!(amok && amr.value(QStringLiteral("ok")).toBool()))
+        return Response::failure(req.id, QStringLiteral("install_failed"),
+                                 QStringLiteral("failed writing operator AGENT.md to %1").arg(machine));
+
+    // 4. Fetch the prebuilt dashboard SPA bundle from the latest GitHub release
+    //    (asset cindro-proxmox-dashboard.tgz) — best-effort: absent asset just
+    //    leaves the built-in placeholder page, not a failed install.
+    QString spaNote;
+    {
+        bool dok = false;
+        const QJsonObject dr = execOnMachine(machine, QStringLiteral(
+            "set -e; install -d -m755 /opt/jarvis-proxmox-agent/dashboard; "
+            "cd /opt/jarvis-proxmox-agent/dashboard; AUTH=; "
+            "if [ -s /etc/jarvis-proxmox-agent/github_token ]; then "
+            "  AUTH=\"Authorization: Bearer $(cat /etc/jarvis-proxmox-agent/github_token)\"; fi; "
+            "curl -fsSL ${AUTH:+-H \"$AUTH\"} -o release.json "
+            "  https://api.github.com/repos/CrazyMan28/jarvis/releases/latest || exit 0; "
+            "URL=$(python3 -c 'import json;"
+            "a=[x for x in json.load(open(\"release.json\")).get(\"assets\",[]) "
+            "if x.get(\"name\",\"\")==\"cindro-proxmox-dashboard.tgz\"];"
+            "print(a[0].get(\"url\",\"\") if a else \"\")'); "
+            "[ -n \"$URL\" ] || { echo NO_DASHBOARD_ASSET; exit 0; }; "
+            "curl -fsSL ${AUTH:+-H \"$AUTH\"} -H 'Accept: application/octet-stream' -L "
+            "  \"$URL\" -o dist.tgz; rm -rf dist && mkdir dist && tar xzf dist.tgz -C dist; "
+            "echo DASHBOARD_ASSET_OK"), 120.0, &dok);
+        const QString out = dr.value(QStringLiteral("output")).toString();
+        if (dok && out.contains(QStringLiteral("NO_DASHBOARD_ASSET")))
+            spaNote = QStringLiteral("No prebuilt dashboard bundle in the latest release yet — "
+                                     "the server will show its placeholder until one is published "
+                                     "(or push a dist/ manually). ");
+    }
+
+    // 5. systemd units (also committed under proxmox-mcp/packaging/*.service —
+    //    keep in sync if you edit either).
+    const QByteArray operatorUnit = QByteArrayLiteral(
+        "[Unit]\n"
+        "Description=Cindro Proxmox operator MCP (full-power tool server, :8800 loopback)\n"
+        "After=network.target\n\n"
+        "[Service]\n"
+        "User=root\n"
+        "WorkingDirectory=/opt/jarvis-proxmox-agent/proxmox-mcp\n"
+        "Environment=PYTHONPATH=\n"
+        "ExecStart=/usr/bin/env -u PYTHONPATH /opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/proxmox-operator-mcp\n"
+        "Restart=on-failure\n"
+        "RestartSec=2\n\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n");
+    const QByteArray dashboardUnit = QByteArrayLiteral(
+        "[Unit]\n"
+        "Description=Cindro Proxmox dashboard (host-served SPA + control WS-proxy, :8443 TLS)\n"
+        "After=network.target proxmox-operator-mcp.service jarvisd-proxmox-agent.service\n"
+        "Requires=proxmox-operator-mcp.service jarvisd-proxmox-agent.service\n\n"
+        "[Service]\n"
+        "User=root\n"
+        "Environment=PYTHONPATH=\n"
+        "Environment=PROXMOX_DASHBOARD_DIST=/opt/jarvis-proxmox-agent/dashboard/dist\n"
+        "Environment=JARVISD_CONTROL_TOKEN_FILE=/etc/jarvis-proxmox-agent/jarvisd/control_token\n"
+        "ExecStart=/usr/bin/env -u PYTHONPATH /opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/proxmox-dashboard\n"
+        "Restart=on-failure\n"
+        "RestartSec=2\n\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n");
+    bool u1ok = false, u2ok = false;
+    const QJsonObject u1 = writeRemoteFile(machine,
+        QStringLiteral("/etc/systemd/system/proxmox-operator-mcp.service"), operatorUnit,
+        QStringLiteral("644"), &u1ok);
+    const QJsonObject u2 = writeRemoteFile(machine,
+        QStringLiteral("/etc/systemd/system/proxmox-dashboard.service"), dashboardUnit,
+        QStringLiteral("644"), &u2ok);
+    if (!(u1ok && u1.value(QStringLiteral("ok")).toBool() &&
+          u2ok && u2.value(QStringLiteral("ok")).toBool()))
+        return Response::failure(req.id, QStringLiteral("install_failed"),
+                                 QStringLiteral("failed writing dashboard systemd units to %1")
+                                     .arg(machine));
+
+    // 6. Enable + start both.
+    if (auto fail = runStep(QStringLiteral("enable+start dashboard services"), QStringLiteral(
+            "systemctl daemon-reload && systemctl enable --now "
+            "proxmox-operator-mcp.service proxmox-dashboard.service"), 30.0))
+        return *fail;
+
+    // Read back the dashboard token so the caller can surface it.
+    QString dashToken;
+    {
+        bool tok = false;
+        const QJsonObject tr = execOnMachine(machine,
+            QStringLiteral("cat /etc/jarvis-proxmox-agent/dashboard_token"), 10.0, &tok);
+        if (tok && tr.value(QStringLiteral("ok")).toBool())
+            dashToken = tr.value(QStringLiteral("output")).toString().trimmed();
+    }
+
+    m_audit.record(QStringLiteral("outpost.install_dashboard"), true, QStringLiteral("high"),
+                   QStringLiteral("installed Cindro Proxmox dashboard onto %1").arg(machine));
+    QJsonObject result;
+    result.insert(QStringLiteral("ok"), true);
+    result.insert(QStringLiteral("machine"), machine);
+    result.insert(QStringLiteral("url"), QStringLiteral("https://%1:8443/").arg(machine));
+    result.insert(QStringLiteral("dashboard_token"), dashToken);
+    result.insert(QStringLiteral("note"),
+                 QStringLiteral("Cindro Proxmox dashboard installed and running on "
+                               "https://%1:8443/ (operator MCP :8800, dashboard :8443). %2"
+                               "Sign in with the dashboard token above.").arg(machine, spaNote));
     return Response::success(req.id, result);
 }
 

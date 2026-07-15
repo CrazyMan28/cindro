@@ -168,6 +168,7 @@ function Outpost() {
   const [installing, setInstalling] = createSignal(false)
   const [installOk, setInstallOk] = createSignal(false)
   const [installMsg, setInstallMsg] = createSignal("")
+  const [installingDash, setInstallingDash] = createSignal(false)
   const [restartingVmid, setRestartingVmid] = createSignal<number | null>(null)
   const [blocklistBusyVmid, setBlocklistBusyVmid] = createSignal<number | null>(null)
   const [report, setReport] = createSignal<ProxmoxMemory[]>([])
@@ -538,6 +539,28 @@ function Outpost() {
     }
   }
 
+  // Deploy the full AI-powered Cindro dashboard onto this host (requires the
+  // workload manager above). See docs/PROXMOX_DASHBOARD.md.
+  const installDashboard = async () => {
+    const machine = selected()
+    if (!machine || installingDash()) return
+    setInstallingDash(true)
+    setInstallMsg("")
+    try {
+      const res = await app.client.call("outpost.install_dashboard", { machine }, 60000)
+      if (!alive) return
+      setInstallOk(true)
+      setInstallMsg(String(res.note ?? "Dashboard installed.") +
+        (res.url ? ` → ${String(res.url)}` : ""))
+    } catch (e) {
+      if (!alive) return
+      setInstallOk(false)
+      setInstallMsg(e instanceof ControlError ? `${e.code}: ${e.message}` : String(e))
+    } finally {
+      if (alive) setInstallingDash(false)
+    }
+  }
+
   const restartVm = async (vm: ProxmoxVm) => {
     const machine = selected()
     if (!machine || restartingVmid() !== null) return
@@ -861,6 +884,22 @@ function Outpost() {
               onClick={() => void installWorkload()}
             >
               {installing() ? "Installing…" : "Install"}
+            </button>
+          </div>
+
+          <div class="op-install-row">
+            <div class="op-pair-text">
+              <div class="op-pair-label">Install the Cindro dashboard</div>
+              <div class="op-pair-sub">AI-powered Proxmox dashboard served on the host (needs the
+                workload manager first). Opens at https://&lt;host&gt;:8443/.</div>
+            </div>
+            <button
+              type="button"
+              class="op-btn"
+              disabled={installingDash() || !connected()}
+              onClick={() => void installDashboard()}
+            >
+              {installingDash() ? "Installing…" : "Install Dashboard"}
             </button>
           </div>
           <Show when={installMsg()}>

@@ -30,6 +30,7 @@
 #include <QJsonObject>
 #include <QMap>
 #include <QString>
+#include <functional>
 #include <optional>
 
 QT_BEGIN_NAMESPACE
@@ -75,6 +76,15 @@ public:
         // loop. Empty => pure chat (today's behavior).
         QString mcpEndpoint; // e.g. http://127.0.0.1:8794/mcp (or a nested engine)
         QString mcpBearer;   // Bearer for the MCP endpoint (may be empty)
+        // Optional per-tool permission gate (daemon-owned). Consulted
+        // SYNCHRONOUSLY before each tool is executed: return 0 to allow,
+        // non-zero to deny. A deny short-circuits the call — the model gets a
+        // {"status":"denied"} tool result and continues without the tool ever
+        // running. The daemon supplies this for the permission-gated Proxmox
+        // operator session and MAY BLOCK in a nested event loop while asking
+        // the user (same pattern as the synchronous MCP client below). Null
+        // (default) = no gating, today's behavior.
+        std::function<int(const QString &name, const QJsonObject &args)> approveTool;
         // Context compression (jarvis#76 item 6): when > 0 and the estimated
         // prompt exceeds this many tokens, older history is collapsed into a
         // digest before the request (the PreCompact hook fires first and may
