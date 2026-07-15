@@ -904,6 +904,25 @@ void ApiBrain::runToolCallsAndContinue()
         emitEvent(NormalizedBrainEvent::toolCall(id, name, args,
                                                  QStringLiteral("computer-use")));
         QString output;
+        // Permission gate (daemon-owned, e.g. the Proxmox operator): consulted
+        // synchronously before the tool runs and MAY BLOCK asking the user.
+        // Non-zero == deny -> the model gets a denial result and moves on; the
+        // tool is never executed. Null gate = ungated (today's behavior).
+        if (m_opts.approveTool && m_opts.approveTool(name, args) != 0) {
+            if (m_cancelled)
+                return; // cancel() raced in while the gate was blocking
+            output = QStringLiteral(
+                "{\"status\":\"denied\",\"reason\":\"blocked by the permission "
+                "policy or denied by the user\"}");
+            emitEvent(NormalizedBrainEvent::toolResult(id, false, output, name, args,
+                                                       QStringLiteral("computer-use")));
+            QJsonObject deniedMsg;
+            deniedMsg.insert(QStringLiteral("role"), QStringLiteral("tool"));
+            deniedMsg.insert(QStringLiteral("tool_call_id"), id);
+            deniedMsg.insert(QStringLiteral("content"), output);
+            m_history.append(deniedMsg);
+            continue;
+        }
         const bool ok = callMcpTool(name, args, &output);
         if (m_cancelled)
             return; // cancel() raced in during the (blocking) MCP call

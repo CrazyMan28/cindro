@@ -29,15 +29,29 @@ MCP_TOKEN_FILE = CONFIG_DIR / "mcp_token"
 # see SettingsStore::apiKey(). proxmox-mcp itself never talks to Mistral.
 TRACKER_TOKEN_FILE = CONFIG_DIR / "project_tracker_token"
 
+# --- Full-power operator ("Cindro Proxmox Dashboard") ------------------------
+# The interactive dashboard's Jarvis drives a SECOND, separate MCP catalog
+# (proxmox-operator-mcp, :8800) that can do everything the Proxmox GUI can —
+# unlike the restricted tuning catalog above, which never gets power/create
+# tools. Its own bearer, its own token file. The user-editable permission
+# policy that gates every mutating operator tool lives in CONFIG_DIR; the
+# Jarvis-and-user-editable Home layout + Tasks board live in STATE_DIR.
+OPERATOR_MCP_TOKEN_FILE = CONFIG_DIR / "operator_mcp_token"
+DASHBOARD_TOKEN_FILE = CONFIG_DIR / "dashboard_token"
+OPERATOR_POLICY_FILE = CONFIG_DIR / "operator_policy.json"
+
 STATE_FILE = STATE_DIR / "state.json"
 MEMORY_DB = STATE_DIR / "memory.db"
 PROFILES_DIR = STATE_DIR / "vms"                       # JARVIS.md per VM/CT
 SCOUT_STATUS_FILE = STATE_DIR / "scout_status.json"    # live fleet-scan progress
 PINGED_FILE = STATE_DIR / "pinged.json"                # watch rules
 PINGED_EVENTS_FILE = STATE_DIR / "pinged_events.jsonl" # fired-rule history
+OPERATOR_LAYOUT_FILE = STATE_DIR / "operator_layout.json"  # Home widget grid
+OPERATOR_TASKS_FILE = STATE_DIR / "operator_tasks.json"    # Tasks Kanban board
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8799
+DEFAULT_OPERATOR_PORT = 8800
 
 # Defaults used when config.toml is absent/partial — conservative (small bump
 # steps, generous cooldown) since this runs unattended against a host the
@@ -109,3 +123,32 @@ def port() -> int:
         return int(os.environ.get("PROXMOX_MCP_PORT", str(DEFAULT_PORT)))
     except ValueError:
         return DEFAULT_PORT
+
+
+def operator_get_bearer_token() -> str:
+    """The full-power operator server's inbound bearer (the co-located jarvisd
+    running the interactive dashboard session authenticates with it). Env
+    override wins (tests); else the installer-written file; else generate +
+    persist one on first run. Deliberately DISTINCT from the tuning catalog's
+    mcp_token so the two endpoints can never be confused for one another."""
+    env = os.environ.get("OPERATOR_MCP_TOKEN")
+    if env:
+        return env.strip()
+    try:
+        existing = OPERATOR_MCP_TOKEN_FILE.read_text().strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(32)
+    OPERATOR_MCP_TOKEN_FILE.write_text(token)
+    os.chmod(OPERATOR_MCP_TOKEN_FILE, 0o600)
+    return token
+
+
+def operator_port() -> int:
+    try:
+        return int(os.environ.get("OPERATOR_MCP_PORT", str(DEFAULT_OPERATOR_PORT)))
+    except ValueError:
+        return DEFAULT_OPERATOR_PORT

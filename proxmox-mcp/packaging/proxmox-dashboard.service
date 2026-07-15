@@ -1,0 +1,16 @@
+[Unit]
+Description=Cindro Proxmox dashboard (host-served SPA + control WS-proxy, :8443 TLS)
+After=network.target proxmox-operator-mcp.service jarvisd-proxmox-agent.service
+Requires=proxmox-operator-mcp.service jarvisd-proxmox-agent.service
+
+[Service]
+User=root
+Environment=PYTHONPATH=
+Environment=PROXMOX_DASHBOARD_DIST=/opt/jarvis-proxmox-agent/dashboard/dist
+Environment=JARVISD_CONTROL_TOKEN_FILE=/etc/jarvis-proxmox-agent/jarvisd/control_token
+ExecStart=/usr/bin/env -u PYTHONPATH /opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/proxmox-dashboard
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
