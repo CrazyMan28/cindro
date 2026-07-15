@@ -14,7 +14,7 @@ export class Client {
   private pending = new Map<number, Pending>()
   private listeners: Listener[] = []
   private subs = new Set<string>()
-  private outbox: string[] = [] // frames queued while the socket isn't OPEN yet
+  private outbox: Array<{ id: number; frame: string }> = [] // queued while not OPEN
   connected = false
   onStatus: ((c: boolean) => void) | null = null
 
@@ -32,12 +32,15 @@ export class Client {
       this.onStatus?.(true)
       if (this.subs.size) this.sendSub()
       // Flush anything enqueued while CONNECTING (the normal login/load path:
-      // App.boot() connects and pages onMount(refresh) immediately).
+      // App.boot() connects and pages onMount(refresh) immediately). Skip frames
+      // whose call already timed out/resolved (pending entry gone) so a stale
+      // mutating request isn't replayed after the UI reported failure.
       const queued = this.outbox
       this.outbox = []
-      for (const f of queued) {
+      for (const q of queued) {
+        if (!this.pending.has(q.id)) continue
         try {
-          ws.send(f)
+          ws.send(q.frame)
         } catch {
           /* dropped; its call() will time out */
         }
@@ -105,7 +108,7 @@ export class Client {
       } else {
         // Socket still CONNECTING (or reconnecting) — queue and flush on open,
         // instead of throwing/no-op'ing and leaving the RPC to time out.
-        this.outbox.push(frame)
+        this.outbox.push({ id, frame })
       }
     })
   }

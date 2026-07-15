@@ -12,6 +12,7 @@ and would normally never call a tool the policy denies.
 from __future__ import annotations
 
 import json
+import re
 
 from proxmox_mcp import config, operator_store, proxmox_ops
 
@@ -75,6 +76,12 @@ def guarded_write(tool: str, ctx: dict, verb: str, path: str,
     # the same way — keeping the backstop in lock-step with the daemon gate.
     full_ctx = dict(ctx)
     full_ctx.setdefault("path", path)
+    # Derive the target VM/CT id from the path (proxmox_api has no vmid arg) so
+    # VM-scoped rules apply to the generic passthrough here too.
+    if "vmid" not in full_ctx:
+        m = re.search(r"/(?:qemu|lxc)/(\d+)", path)
+        if m:
+            full_ctx["vmid"] = int(m.group(1))
     if operator_store.resolve_effect(tool, full_ctx) == "deny":
         return {"status": "denied",
                 "reason": "blocked by a permission-policy deny rule",

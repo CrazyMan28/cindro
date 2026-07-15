@@ -6,7 +6,7 @@ import { For, Show, createSignal, onMount, type Component } from "solid-js"
 import { Client } from "./client"
 import { ChatController, ChatPanel } from "./chat"
 import { HomePage, PermissionsPage, TasksPage, VmsPage } from "./pages"
-import { checkAuth, login } from "./env"
+import { checkAuth, getRealms, login, type Realm } from "./env"
 
 const client = new Client()
 const controller = new ChatController(client)
@@ -20,32 +20,93 @@ const NAV = [
 ]
 
 const Login: Component<{ onOk: () => void }> = (props) => {
-  const [token, setToken] = createSignal("")
+  const [username, setUsername] = createSignal("root")
+  const [password, setPassword] = createSignal("")
+  const [realm, setRealm] = createSignal("pam")
+  const [realms, setRealms] = createSignal<Realm[]>([
+    { realm: "pam", comment: "Linux PAM standard authentication" },
+    { realm: "pve", comment: "Proxmox VE authentication server" },
+  ])
+  const [otp, setOtp] = createSignal("")
+  const [challenge, setChallenge] = createSignal("")
+  const [needTfa, setNeedTfa] = createSignal(false)
   const [err, setErr] = createSignal("")
   const [busy, setBusy] = createSignal(false)
+
+  onMount(async () => {
+    const rs = await getRealms()
+    if (rs.length) {
+      setRealms(rs)
+      if (!rs.some((r) => r.realm === "pam")) setRealm(rs[0].realm)
+    }
+  })
+
   const submit = async () => {
     setBusy(true)
     setErr("")
-    const ok = await login(token().trim())
+    const res = await login({
+      username: username().trim(),
+      password: password(),
+      realm: realm(),
+      otp: needTfa() ? otp().trim() : undefined,
+      tfa_challenge: needTfa() ? challenge() : undefined,
+    })
     setBusy(false)
-    if (ok) props.onOk()
-    else setErr("Invalid dashboard token.")
+    if (res.ok) {
+      props.onOk()
+      return
+    }
+    if (res.tfa) {
+      setNeedTfa(true)
+      setChallenge(res.tfa_challenge || "")
+      return
+    }
+    setErr(res.error || "Login failed")
   }
+
   return (
     <div class="px-login">
       <div class="px-login-card px-fade">
         <div class="px-brand">CINDRO<span class="px-brand-dim"> · PROXMOX</span></div>
-        <div class="px-login-sub">Sign in with your dashboard token</div>
-        <input
-          class="px-input"
-          type="password"
-          placeholder="dashboard token"
-          value={token()}
-          onInput={(e) => setToken(e.currentTarget.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") void submit() }}
-        />
+        <div class="px-login-sub">
+          {needTfa() ? "Two-factor authentication" : "Sign in with your Proxmox account"}
+        </div>
+        <Show
+          when={!needTfa()}
+          fallback={
+            <input
+              class="px-input"
+              placeholder="6-digit code"
+              inputmode="numeric"
+              value={otp()}
+              onInput={(e) => setOtp(e.currentTarget.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") void submit() }}
+            />
+          }
+        >
+          <input
+            class="px-input"
+            placeholder="Username"
+            value={username()}
+            onInput={(e) => setUsername(e.currentTarget.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void submit() }}
+          />
+          <input
+            class="px-input"
+            type="password"
+            placeholder="Password"
+            value={password()}
+            onInput={(e) => setPassword(e.currentTarget.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") void submit() }}
+          />
+          <select class="px-input px-select" value={realm()} onChange={(e) => setRealm(e.currentTarget.value)}>
+            <For each={realms()}>
+              {(r) => <option value={r.realm}>{r.comment}</option>}
+            </For>
+          </select>
+        </Show>
         <button class="px-btn px-btn-ok px-btn-wide" disabled={busy()} onClick={submit}>
-          {busy() ? "…" : "Enter"}
+          {busy() ? "…" : needTfa() ? "Verify" : "Sign in"}
         </button>
         <Show when={err()}><div class="px-msg px-msg-error">{err()}</div></Show>
       </div>

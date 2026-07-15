@@ -91,6 +91,9 @@ body {
 }
 .px-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
 .px-input-1 { width: auto; flex: 1; }
+.px-select { appearance: none; cursor: pointer; margin-top: 10px; }
+.px-login-card .px-input { margin-top: 10px; }
+.px-select option { background: var(--surface-strong); color: var(--text); }
 .px-inline { display: flex; gap: 8px; align-items: center; }
 
 .px-pill { padding: 2px 8px; border-radius: 999px; font-size: 11px; background: var(--surface-strong);

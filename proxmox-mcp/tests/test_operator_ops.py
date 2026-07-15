@@ -79,6 +79,22 @@ def test_guarded_write_deny_does_not_shell_out(captured, monkeypatch):
     assert captured == []  # backstop refused BEFORE any pvesh call
 
 
+def test_guarded_write_vm_deny_rule_applies_to_proxmox_api_path(captured, monkeypatch):
+    # A VM-scoped deny {vmid:106} must block proxmox_api DELETE /nodes/x/qemu/106
+    # even though proxmox_api carries no vmid arg (it's parsed from the path).
+    monkeypatch.setattr(operator_store, "load_policy",
+                        lambda path=None: {"default_risky": "allow",
+                                           "rules": [{"match": {"vmid": 106}, "effect": "deny"}]})
+    denied = ops.guarded_write("proxmox_api", {"method": "DELETE"}, "delete",
+                               "/nodes/pve/qemu/106")
+    assert denied["status"] == "denied"
+    assert captured == []  # never shelled out
+    # a different vmid in the path is unaffected (default allow -> runs)
+    ok = ops.guarded_write("proxmox_api", {"method": "DELETE"}, "delete",
+                           "/nodes/pve/qemu/107")
+    assert ok["ok"] is True
+
+
 def test_guarded_write_surfaces_command_error(monkeypatch):
     monkeypatch.setattr(operator_store, "load_policy",
                         lambda path=None: {"default_risky": "allow", "rules": []})
