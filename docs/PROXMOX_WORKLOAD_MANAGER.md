@@ -12,6 +12,12 @@ It is deployed and managed as a first-class Outpost feature — installed onto
 a paired machine with one action, surfaced in the desktop GUI, the (Python)
 TUI, and the web dashboard, all inside the existing Outpost page.
 
+> **Related:** the [Cindro Proxmox Dashboard](PROXMOX_DASHBOARD.md) is a separate,
+> full-power, permission-gated AI dashboard served ON the host (a replacement for
+> the Proxmox web UI). It DEPENDS ON this workload manager but is isolated from it:
+> a distinct MCP catalog (`:8800` vs this one's `:8799`) so this agent's restricted,
+> no-power-tools invariant below is never weakened.
+
 ## Non-negotiable safety invariant
 
 **Autonomous CPU/RAM tuning is fine; autonomous restarts are not.** This is

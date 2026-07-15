@@ -52,6 +52,7 @@ class QWebSocketServer;
 class QWebSocket;
 class QNetworkAccessManager;
 class QTcpServer;
+class QEventLoop;
 QT_END_NAMESPACE
 
 namespace jarvis {
@@ -563,6 +564,50 @@ private:
     Response handleProxmoxPingedList(const Request &req);
     Response handleProxmoxPingedAdd(const Request &req);
     Response handleProxmoxPingedRemove(const Request &req);
+
+    // --- Cindro Proxmox Dashboard: full-power operator + permission system ---
+    // Installs the operator MCP (:8800) + the host-served dashboard (:8443) onto
+    // a paired Proxmox host (depends on, never replaces, the workload manager).
+    Response handleOutpostInstallDashboard(const Request &req);
+    // proxmoxop.* verbs served BY the co-located host jarvisd (reachable from the
+    // browser through the dashboard server's WS-proxy). Direct local file I/O on
+    // the host's operator_policy/layout/tasks files — the SAME files the operator
+    // MCP tools read/write, so the user (here) and Jarvis (via MCP) share one
+    // source of truth. These are NOT outpost.exec proxies (the operator only ever
+    // runs on the host).
+    Response handleProxmoxOpPolicyGet(const Request &req);
+    Response handleProxmoxOpPolicySet(const Request &req);
+    Response handleProxmoxOpPendingList(const Request &req);
+    Response handleProxmoxOpLayoutGet(const Request &req);
+    Response handleProxmoxOpLayoutSet(const Request &req);
+    Response handleProxmoxOpTasksList(const Request &req);
+    Response handleProxmoxOpTaskCreate(const Request &req);
+    Response handleProxmoxOpTaskUpdate(const Request &req);
+    // Read-only proxy: call a FREE operator MCP tool (vm_list/status/node_status
+    // /cluster_status/storage_list/...) directly for the dashboard's live tables,
+    // WITHOUT the LLM. Mutating tools are refused here — those must go through the
+    // operator chat so the permission gate applies.
+    Response handleProxmoxOpTool(const Request &req);
+    // The interactive permission gate the operator ApiBrain consults before each
+    // tool (wired in makeBrain via ApiBrain::Options::approveTool). Returns 0 to
+    // allow, 1 to deny. Free tools return immediately; "ask" blocks in a nested
+    // event loop until approval.respond resolves it (mirrors the synchronous MCP
+    // client). Mirrors proxmox_mcp/operator_store.py's resolver — keep in sync.
+    int operatorGate(const QString &sessionId, const QString &tool,
+                     const QJsonObject &args);
+    // Resolve a mutating tool's effect ("allow"|"ask"|"deny") from the policy
+    // file; *matchOut (when non-null) gets the rule-match a subsequent "always"
+    // should persist. Free tools should be filtered by operatorToolIsFree first.
+    QString operatorResolveEffect(const QString &tool, const QJsonObject &args,
+                                  QJsonObject *matchOut);
+    // Append a standing {match, effect:"allow"} rule (from an "always" answer).
+    void operatorAppendAllowRule(const QJsonObject &match);
+    // Reads/writes freely: reads + local board writes (mirrors FREE_TOOLS).
+    static bool operatorToolIsFree(const QString &tool, const QJsonObject &args);
+    // Broadcast a lightweight proxmoxop.approval frame so the Permissions page
+    // updates live (the chat/side-rail already render the Contract B approval).
+    void broadcastProxmoxOpApproval(const QString &sessionId, const QString &approvalId,
+                                    const QString &summary, const QString &risk);
     // Best-effort inbox pings for new agent questions / fired pinged events:
     // a 5-min poll over the machines in <data>/proxmox_machines.json (written
     // by install_workload, self-healed by proxmox.status ONLY — the one RPC
@@ -876,10 +921,23 @@ private:
     static constexpr qint64 kApprovalTtlMs = 10 * 60 * 1000; // 10 min
     struct PendingApproval {
         QString sessionId;
-        QString kind;         // "takeover" | "inject"
+        QString kind;         // "takeover" | "inject" | "proxmox-op"
         qint64 expiresAt = 0; // epoch ms
     };
     QHash<QString, PendingApproval> m_pendingApprovals;
+    // Interactive Proxmox-operator tool-approval gates ("ask" effect): the
+    // operator ApiBrain blocks in a nested event loop per approval id until the
+    // user answers via approval.respond. Keyed by the same random approval id
+    // that's registered in m_pendingApprovals (kind "proxmox-op").
+    struct OperatorApproval {
+        QEventLoop *loop = nullptr; // quit on resolve; owned by operatorGate's frame
+        int decision = 1;           // 0 allow, 1 deny (default deny on TTL/cancel)
+        QString sessionId;
+        QString summary;
+        QString risk;
+        QJsonObject match;          // {tool,verb?,method?} to persist on "always"
+    };
+    QHash<QString, OperatorApproval> m_operatorApprovals;
     // Drop TTL-expired pending approvals AND any prior pending approval for this
     // (sessionId, kind) before registering a new one, so a session that re-gates
     // repeatedly (or a device that requests take-over then never answers) can't

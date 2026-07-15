@@ -478,6 +478,16 @@ QString McpRegistry::proxmoxAgentBearer()
     return QString::fromUtf8(f.readAll()).trimmed();
 }
 
+QString McpRegistry::proxmoxOperatorBearer()
+{
+    // Distinct token file from the tuning catalog's mcp_token — same plain
+    // single-line format, written by outpost.install_dashboard.
+    QFile f(QStringLiteral("/etc/jarvis-proxmox-agent/operator_mcp_token"));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString();
+    return QString::fromUtf8(f.readAll()).trimmed();
+}
+
 QString McpRegistry::add(const QString &name, const QString &transport,
                          const QString &endpoint, const QString &token, bool enabled,
                          const QString &risk, const QJsonObject &env, bool builtin,

@@ -1,0 +1,7 @@
+import { render } from "solid-js/web"
+import "../core/theme.css" // the shared Cindro (Iron-Man × cyberpunk) token set
+import "./styles.css"
+import { App } from "./App"
+
+const root = document.getElementById("root")
+if (root) render(() => <App />, root)

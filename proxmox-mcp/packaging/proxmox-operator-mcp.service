@@ -1,0 +1,14 @@
+[Unit]
+Description=Cindro Proxmox operator MCP (full-power tool server, :8800 loopback)
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=/opt/jarvis-proxmox-agent/proxmox-mcp
+Environment=PYTHONPATH=
+ExecStart=/usr/bin/env -u PYTHONPATH /opt/jarvis-proxmox-agent/proxmox-mcp/.venv/bin/proxmox-operator-mcp
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
