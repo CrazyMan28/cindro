@@ -65,6 +65,22 @@ async def test_vm_create_passes_fields_and_extra(mcp_and_calls):
     assert "-net0" in argv and "virtio,bridge=vmbr0" in argv
 
 
+async def test_vm_create_extra_cannot_override_approved_vmid(mcp_and_calls):
+    # extra:{vmid:999} must NOT replace the approved vmid=120 (the approval card
+    # + policy matched 120; pvesh must receive 120).
+    m, calls = mcp_and_calls
+    await m.call_tool("proxmox_vm_create",
+                      {"vmid": 120, "name": "web",
+                       "extra": {"vmid": 999, "net0": "virtio,bridge=vmbr0"}})
+    argv = calls[0]
+    # -vmid appears exactly once, with 120
+    assert argv.count("-vmid") == 1
+    i = argv.index("-vmid")
+    assert argv[i + 1] == "120"
+    assert "999" not in argv
+    assert "-net0" in argv  # non-reserved extra fields still pass through
+
+
 async def test_vm_delete_is_delete_verb(mcp_and_calls):
     m, calls = mcp_and_calls
     await m.call_tool("proxmox_vm_delete", {"vmid": 106})

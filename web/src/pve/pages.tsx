@@ -88,7 +88,10 @@ export const VmsPage: Component<PageProps> = (props) => {
   })
   const act = (vm: any, action: string) => {
     const kind = vm.type === "lxc" ? "container" : "VM"
-    void props.controller.send(`${action} ${kind} ${vm.vmid} (${vm.name ?? ""})`)
+    // Include the node so the operator targets the right host on a multi-node
+    // cluster (the power tools otherwise default to the configured node).
+    const on = vm.node ? ` on node ${vm.node}` : ""
+    void props.controller.send(`${action} ${kind} ${vm.vmid} (${vm.name ?? ""})${on}`)
     props.goChat()
   }
   return (

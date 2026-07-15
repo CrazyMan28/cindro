@@ -52,7 +52,12 @@ def register(mcp: FastMCP) -> list[str]:
         """Create a new QEMU VM (risk: medium). `extra` passes any additional
         Proxmox `qm create` API fields (e.g. {"net0":"virtio,bridge=vmbr0",
         "scsi0":"local-lvm:32","ide2":"local:iso/x.iso,media=cdrom"})."""
-        params: dict[str, Any] = {"vmid": vmid}
+        # `extra` is model-controlled, so merge it FIRST and let the explicit,
+        # approved fields win — otherwise extra:{"vmid":999} would override the
+        # vmid the approval card + policy backstop matched (pvesh would create a
+        # different VM than the one the user authorized).
+        params: dict[str, Any] = dict(extra or {})
+        params["vmid"] = vmid
         if name:
             params["name"] = name
         if cores:
@@ -61,7 +66,6 @@ def register(mcp: FastMCP) -> list[str]:
             params["memory"] = memory_mb
         if ostype:
             params["ostype"] = ostype
-        params.update(extra or {})
         return ops.guarded_write("proxmox_vm_create", {"vmid": vmid}, "create",
                                  f"/nodes/{_node(node)}/qemu", params)
 
