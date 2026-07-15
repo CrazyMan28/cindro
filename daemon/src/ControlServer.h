@@ -890,6 +890,11 @@ private:
     // plain chat doesn't leak a compositor per turn; an EXPLICIT coworker+agent
     // desktop is NOT in this set and stays up for live-view/take-over.
     QSet<QString> m_autoComputerSessions;
+    // sessionIds marked at createSession() time for the auto-computer-use
+    // global-engine fallback (see createSession()'s autoComputer branch) —
+    // skipped the isolated nested desktop entirely, so makeBrain() must inject
+    // the global :8794 engine instead of leaving computer-use tools empty.
+    QSet<QString> m_autoGlobalEngineSessions;
     // sessionId -> last turn time (ms). Drives the idle-teardown sweep below.
     QHash<QString, qint64> m_deskLastActive;
     // Idle-teardown sweep: tears an AUTO desktop down when its session hasn't been

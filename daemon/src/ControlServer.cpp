@@ -2415,7 +2415,8 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
             // computer-use engine.
             opts.configOverrides = agentMcpOverrides.args;
             opts.extraEnv = agentMcpOverrides.env;
-        } else if ((row.profile == QStringLiteral("coworker") || v1TakeoverFallback) &&
+        } else if ((row.profile == QStringLiteral("coworker") || v1TakeoverFallback ||
+                    m_autoGlobalEngineSessions.contains(row.id)) &&
                    m_mcp) {
             const CodexMcpOverrides cu = m_mcp->codexOverrides(
                 [this](const QString &ref) { return resolveConnectorEnv(ref); });
@@ -2476,7 +2477,7 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
             opts.permissionMode = QStringLiteral("bypassPermissions");
         } else if (row.profile == QStringLiteral("coworker")) {
             mcpJson = claudeMcpConfigFromRegistry();
-        } else if (v1TakeoverFallback) {
+        } else if (v1TakeoverFallback || m_autoGlobalEngineSessions.contains(row.id)) {
             mcpJson = claudeMcpConfigFromRegistry();
             // Same rationale as the nested-agent path above: headless `claude -p`
             // stalls on MCP permission prompts, so the injected computer-use
@@ -2533,7 +2534,8 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
                 opts.mcpEndpoint = desk.mcpUrl;
                 opts.mcpBearer = desk.bearer;
             } else if (row.profile == QStringLiteral("coworker") ||
-                       v1TakeoverFallback) {
+                       v1TakeoverFallback ||
+                       m_autoGlobalEngineSessions.contains(row.id)) {
                 opts.mcpEndpoint = McpRegistry::builtinEndpoint();
                 opts.mcpBearer = McpRegistry::computerUseBearer();
             }
@@ -3070,12 +3072,10 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
                               scheduleTargetRef.isEmpty();
 
     CodexMcpOverrides agentOverrides;
-    if (explicitAgent || autoComputer) {
-        // For an EXPLICIT coworker+agent session a brain that can't drive is a
-        // hard error (the user asked for a co-work). For the AUTO path it isn't —
-        // we already gated on brainCanDrive above, so this only fires for the
-        // explicit case with the api brain + no key.
-        if (explicitAgent && row.brain == QStringLiteral("api") && !apiCanDrive) {
+    if (explicitAgent) {
+        // An EXPLICIT coworker+agent session (the user asked for a co-work) with
+        // a brain that can't drive is a hard error.
+        if (row.brain == QStringLiteral("api") && !apiCanDrive) {
             m_store.updateState(row.id, QStringLiteral("error"));
             if (err)
                 *err = QStringLiteral(
@@ -3093,12 +3093,12 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
             // failure (crashed process, port conflict, ...). When isolation was
             // never available in the first place (stock Windows without the v2
             // sandbox opt-in — the shipped default), that's not a failure, it's
-            // the documented v1 take-over contract: degrade like the AUTO path
-            // below so makeBrain()'s existing `row.profile == "coworker"`
-            // fallback can inject the GLOBAL :8794 engine instead. Without this
-            // gate, EVERY phone-initiated session (the app's default profile is
-            // "coworker" with no target override) hard-fails server-side on
-            // stock Windows while working fine on Linux (jarvis#107).
+            // the documented v1 take-over contract: degrade so makeBrain()'s
+            // `v1TakeoverFallback` can inject the GLOBAL :8794 engine instead.
+            // Without this gate, EVERY phone-initiated session (the app's
+            // default profile is "coworker" with no target override) hard-fails
+            // server-side on stock Windows while working fine on Linux
+            // (jarvis#107).
             //
             // Codex review follow-up (jarvis#104, sandbox now default-on):
             // nestedDesktopSupported() is now true on any sandbox-capable box,
@@ -3112,30 +3112,38 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
             // phone/new-chat all omit target, landing here) hard-fails the
             // moment a second one is requested while the first is still busy.
             const bool transientBusy = deskErr.startsWith(QStringLiteral("sandbox_busy:"));
-            if (explicitAgent && AgentDesktop::nestedDesktopSupported() && !transientBusy) {
+            if (AgentDesktop::nestedDesktopSupported() && !transientBusy) {
                 m_store.updateState(row.id, QStringLiteral("error"));
                 if (err)
                     *err = QStringLiteral("agent desktop failed: ") + deskErr;
                 return QString();
             }
-            // AUTO path, or an explicit co-work request on a platform that
-            // can't isolate at all: degrade gracefully — the chat session still
-            // runs (via the global-engine fallback) rather than failing outright.
+            // An explicit co-work request on a platform that can't isolate at
+            // all (or is transiently busy): degrade gracefully — the chat
+            // session still runs (via the global-engine fallback) rather than
+            // failing outright.
             qWarning("jarvisd: agent desktop unavailable for %s (%s); session "
                      "continues without an isolated desktop",
                      qPrintable(row.id), qPrintable(deskErr));
         } else {
             agentOverrides = agentMcpOverridesFor(desk);
-            // Track AUTO-spawned desktops (for diagnostics / future idle policy).
-            // They live for the session's lifetime — like an explicit co-work
-            // desktop — so a multi-turn chat keeps the SAME engine/port/bearer
-            // baked into the brain and can use the computer again next turn. Both
-            // AUTO and explicit desktops are torn down on session cancel/delete
-            // (the session's release signal) and any crash leftovers are reaped
-            // by sweepOrphans() at daemon start.
-            if (!explicitAgent)
-                m_autoComputerSessions.insert(row.id);
+            // explicitAgent sessions are never inserted into
+            // m_autoComputerSessions — that set is for AUTO-spawned desktops
+            // only (see the autoComputer branch below), which idle-teardown on
+            // battery grounds; an explicit co-work desktop stays up for
+            // live-view/take-over instead.
         }
+    } else if (autoComputer) {
+        // Auto-spawned chat ("let Cindro use a computer" on, no explicit
+        // co-work request): never pay AgentDesktop::ensure()'s up-to-45s
+        // synchronous provisioning cost just to answer a chat message — that
+        // used to block the daemon's single Qt main thread for every plain
+        // chat's first turn, and hangs even longer when the isolated desktop
+        // (Windows Sandbox) fails to boot at all. Skip the isolated nested
+        // desktop entirely for this path; makeBrain() falls back to the
+        // always-on global :8794 engine for any session id in
+        // m_autoGlobalEngineSessions, with zero added latency.
+        m_autoGlobalEngineSessions.insert(row.id);
     }
 
     // Remember the RESOLVED workdir for this session (diff.* runs git here).
@@ -3882,6 +3890,7 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     // desktop is spun up if the session is recreated.
     m_agentDesktops.releaseSession(sessionId);   // drop the desktop + its reservation
     m_autoComputerSessions.remove(sessionId);
+    m_autoGlobalEngineSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
@@ -3913,6 +3922,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     //    drop its port/bearer reservation — the session is gone for good.
     m_agentDesktops.releaseSession(sessionId);
     m_autoComputerSessions.remove(sessionId);
+    m_autoGlobalEngineSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_coworkGuided.remove(sessionId);
     m_policyGuided.remove(sessionId);
