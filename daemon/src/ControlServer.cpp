@@ -35,6 +35,7 @@
 #include <QNetworkRequest>
 #include <QProcess>
 #include <QRandomGenerator>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSharedPointer>
 #include <QSet>
@@ -8755,8 +8756,19 @@ QString ControlServer::operatorResolveEffect(const QString &tool, const QJsonObj
     const QString verb = args.value(QStringLiteral("action")).toString();
     const QString method = args.value(QStringLiteral("method")).toString().toUpper();
     const QString path = args.value(QStringLiteral("path")).toString();
-    const bool hasVmid = args.contains(QStringLiteral("vmid"));
-    const int vmid = args.value(QStringLiteral("vmid")).toInt();
+    bool hasVmid = args.contains(QStringLiteral("vmid"));
+    int vmid = args.value(QStringLiteral("vmid")).toInt();
+    // For the generic passthrough there's no vmid arg, but a VM-scoped rule
+    // ({"vmid":106}) must still block e.g. proxmox_api DELETE /nodes/x/qemu/106.
+    // Derive the target id from the API path so those rules apply here too.
+    if (!hasVmid && tool == QStringLiteral("proxmox_api") && !path.isEmpty()) {
+        static const QRegularExpression kVmidInPath(QStringLiteral("/(?:qemu|lxc)/(\\d+)"));
+        const QRegularExpressionMatch mo = kVmidInPath.match(path);
+        if (mo.hasMatch()) {
+            hasVmid = true;
+            vmid = mo.captured(1).toInt();
+        }
+    }
 
     if (matchOut) {
         // The match an "always" answer persists — deliberately SCOPED so approving

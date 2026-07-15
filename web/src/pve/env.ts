@@ -15,6 +15,15 @@ export function operatorTargetRef(): string {
   return "proxmox-op-" + (location.hostname || "host")
 }
 
+export type Realm = { realm: string; comment: string }
+export type LoginResult = {
+  ok: boolean
+  error?: string
+  tfa?: boolean
+  tfa_challenge?: string
+  user?: string
+}
+
 export async function checkAuth(): Promise<boolean> {
   try {
     const r = await fetch("/auth", { credentials: "include" })
@@ -25,17 +34,36 @@ export async function checkAuth(): Promise<boolean> {
   }
 }
 
-export async function login(token: string): Promise<boolean> {
+// Proxmox auth realms (Linux PAM / Proxmox VE / any configured) for the dropdown.
+export async function getRealms(): Promise<Realm[]> {
+  try {
+    const r = await fetch("/realms", { credentials: "include" })
+    const j = await r.json()
+    return Array.isArray(j.realms) ? j.realms : []
+  } catch {
+    return []
+  }
+}
+
+// Authenticate against Proxmox (/access/ticket) — the same credentials as the
+// Proxmox UI (e.g. root@pam). Returns tfa:true when a second-factor code is needed.
+export async function login(body: {
+  username: string
+  password?: string
+  realm: string
+  otp?: string
+  tfa_challenge?: string
+}): Promise<LoginResult> {
   try {
     const r = await fetch("/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ token }),
+      body: JSON.stringify(body),
     })
-    return r.ok
+    return (await r.json()) as LoginResult
   } catch {
-    return false
+    return { ok: false, error: "network error" }
   }
 }
 
