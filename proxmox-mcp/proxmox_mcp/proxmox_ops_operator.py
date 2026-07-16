@@ -82,6 +82,17 @@ def guarded_write(tool: str, ctx: dict, verb: str, path: str,
         m = re.search(r"/(?:qemu|lxc)/(\d+)", path)
         if m:
             full_ctx["vmid"] = int(m.group(1))
+        else:
+            # Many mutating calls carry the target in the BODY, not the path
+            # (create {vmid}, vzdump {vmid}, clone {newid}) — include it so a
+            # VM-scoped deny rule can't be bypassed through the passthrough.
+            for k in ("vmid", "newid"):
+                if isinstance(params, dict) and params.get(k) is not None:
+                    try:
+                        full_ctx["vmid"] = int(params[k])
+                    except (TypeError, ValueError):
+                        pass
+                    break
     if operator_store.resolve_effect(tool, full_ctx) == "deny":
         return {"status": "denied",
                 "reason": "blocked by a permission-policy deny rule",

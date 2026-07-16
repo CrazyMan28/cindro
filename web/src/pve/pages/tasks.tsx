@@ -203,7 +203,14 @@ const TasksPage: Component = () => {
   onMount(() => {
     void loadBoard()
     const off = client.on("proxmoxop.", () => void loadBoard())
-    onCleanup(off)
+    // Cindro edits the board via the operator MCP tools (proxmox_task_*), which
+    // write operator_tasks.json directly without a proxmoxop.* broadcast — poll
+    // so its (and another tab's) changes show up on an open board.
+    const poll = setInterval(() => void loadBoard(), 5000)
+    onCleanup(() => {
+      off()
+      clearInterval(poll)
+    })
   })
 
   const addTask = async () => {

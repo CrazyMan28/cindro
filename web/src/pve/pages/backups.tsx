@@ -25,6 +25,7 @@ import {
   onCleanup,
   onMount,
   Show,
+  untrack,
   type Component,
 } from "solid-js"
 
@@ -260,7 +261,10 @@ const BackupsPage: Component = () => {
     bkNode()
     bkStorageSel()
     backupStorages()
-    void loadBackups(bkRows().length === 0)
+    // untrack the bkRows() read: loadBackups() writes bkRows, so tracking it here
+    // would make this effect re-fire on its own result and hammer the storage
+    // API in a loop. Only the node/storage selection should retrigger a load.
+    void loadBackups(untrack(() => bkRows().length === 0))
   })
 
   const bkTotalSize = createMemo(() => bkRows().reduce((s, r) => s + (r.size ?? 0), 0))

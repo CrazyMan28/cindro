@@ -415,10 +415,13 @@ async def jarvis_settings_get(request: Request):
     if not await _pve_admin(request.cookies.get(PVE_AUTH_COOKIE, "")):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:
-        # force=true so the live provider catalog (Anthropic /v1/models, Ollama
-        # tags, ...) is refreshed for the dropdown rather than served from a
-        # possibly-cold cache.
-        frames = await _jarvisd_call([("settings.get", {}), ("model.list", {"force": True})])
+        # Always ask for the API brain's catalog (the SPA maps these into the
+        # Cloud/Ollama pickers as models_by_brain.api) — a bare model.list would
+        # default to m_config.defaultBrain and, on a codex/claude host, return
+        # CLI models the settings page would mis-file as API models. force=true
+        # refreshes the live provider catalog (Anthropic /v1/models, Ollama tags).
+        frames = await _jarvisd_call([("settings.get", {}),
+                                      ("model.list", {"brain": "api", "force": True})])
     except Exception:
         return JSONResponse({"error": "jarvisd_unreachable"}, status_code=502)
     settings_frame, models_frame = frames

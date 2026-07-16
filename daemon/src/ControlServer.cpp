@@ -8751,12 +8751,28 @@ QString ControlServer::operatorResolveEffect(const QString &tool, const QJsonObj
     // For the generic passthrough there's no vmid arg, but a VM-scoped rule
     // ({"vmid":106}) must still block e.g. proxmox_api DELETE /nodes/x/qemu/106.
     // Derive the target id from the API path so those rules apply here too.
-    if (!hasVmid && tool == QStringLiteral("proxmox_api") && !path.isEmpty()) {
-        static const QRegularExpression kVmidInPath(QStringLiteral("/(?:qemu|lxc)/(\\d+)"));
-        const QRegularExpressionMatch mo = kVmidInPath.match(path);
-        if (mo.hasMatch()) {
-            hasVmid = true;
-            vmid = mo.captured(1).toInt();
+    if (!hasVmid && tool == QStringLiteral("proxmox_api")) {
+        if (!path.isEmpty()) {
+            static const QRegularExpression kVmidInPath(QStringLiteral("/(?:qemu|lxc)/(\\d+)"));
+            const QRegularExpressionMatch mo = kVmidInPath.match(path);
+            if (mo.hasMatch()) {
+                hasVmid = true;
+                vmid = mo.captured(1).toInt();
+            }
+        }
+        // Many mutating calls carry the target in the BODY, not the path —
+        // POST /nodes/<n>/qemu {vmid}, POST /nodes/<n>/vzdump {vmid}, clone
+        // {newid} — so a VM-scoped deny ({"vmid":106}) would be bypassed via the
+        // generic escape hatch unless we also look at params.
+        if (!hasVmid) {
+            const QJsonObject p = args.value(QStringLiteral("params")).toObject();
+            for (const QString &k : {QStringLiteral("vmid"), QStringLiteral("newid")}) {
+                if (p.contains(k)) {
+                    hasVmid = true;
+                    vmid = p.value(k).toInt();
+                    break;
+                }
+            }
         }
     }
 
