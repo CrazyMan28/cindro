@@ -287,6 +287,15 @@ const BackupsPage: Component = () => {
   )
   const snapGuest = createMemo(() => guests().find((g) => g.key === snapGuestKey()))
 
+  // When the VM/CT filter changes, the selected guest can fall out of the
+  // visible list — reselect the first still-visible guest so the timeline and
+  // Roll back / Delete buttons never keep targeting a now-hidden guest.
+  createEffect(() => {
+    const fg = filteredGuests()
+    const cur = snapGuestKey()
+    if (cur && !fg.some((g) => g.key === cur)) setSnapGuestKey(fg[0]?.key ?? "")
+  })
+
   async function loadSnapshots(showSkeleton: boolean) {
     const g = snapGuest()
     if (!g) {

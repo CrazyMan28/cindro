@@ -1065,6 +1065,7 @@ body {
 .cx-pill-ok { color: var(--success); border-color: rgba(57, 230, 160, 0.35); background: rgba(57, 230, 160, 0.08); }
 .cx-pill-error { color: var(--danger); border-color: rgba(255, 107, 107, 0.35); background: var(--danger-dim); }
 .cx-pill-running { color: var(--amber); border-color: rgba(255, 180, 84, 0.4); background: var(--amber-dim); }
+.cx-pill-warning { color: var(--amber); border-color: rgba(255, 180, 84, 0.4); background: var(--amber-dim); }
 .cx-pill-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: cx-link-pulse 1100ms ease-in-out infinite; }
 
 .cx-skel-row td { padding: 11px 12px; }
