@@ -182,13 +182,6 @@ async def _pve_authed(cookie_value: str) -> bool:
         return False
 
 
-# The privileges a user must ALL hold on "/" to command the root-power operator
-# (create/delete/power guests, manage storage, configure the node). A single
-# delegated privilege (e.g. a network admin's Sys.Modify) is deliberately NOT
-# enough — the operator can do far more than that user's own Proxmox account.
-_OPERATOR_PRIVS = ("VM.Allocate", "VM.PowerMgmt", "Datastore.Allocate", "Sys.Modify")
-
-
 def _cookie_userid(cookie_value: str) -> str:
     """The userid embedded in a PVEAuthCookie ("PVE:<userid>:<ts>::<sig>").
     Only trusted AFTER the ticket is verified against pveproxy — a forged cookie
@@ -200,10 +193,17 @@ def _cookie_userid(cookie_value: str) -> str:
 
 async def _pve_admin(cookie_value: str) -> bool:
     """True iff the ticket belongs to a FULL Proxmox admin — root@pam, or a user
-    holding the complete operator privilege set on '/'. A merely-valid ticket, or
-    a single delegated privilege, is NOT enough: the Cindro operator can do
-    anything a root shell can via its full-power MCP, and the AI provider keys are
-    host-wide secrets, so only a genuine admin may command it or configure it."""
+    holding EVERY privilege Proxmox's own built-in `Administrator` role grants,
+    on '/'. A merely-valid ticket, or a hand-picked privilege subset, is NOT
+    enough: the Cindro operator can do anything a root shell can via its
+    full-power MCP, and the AI provider keys are host-wide secrets, so only a
+    genuine admin may command it or configure it. Deliberately queries
+    `access/roles/Administrator` instead of hardcoding a privilege list — a
+    custom role can be built from an arbitrary subset of privileges (e.g. just
+    VM.Allocate/VM.PowerMgmt/Datastore.Allocate/Sys.Modify for a "power user"
+    who is NOT an admin), so any fixed subset is satisfiable by a non-admin
+    role; only requiring the role's CURRENT, COMPLETE privilege set is
+    authoritative."""
     if not cookie_value:
         return False
     # root@pam is the built-in superuser — allow it, but only once pveproxy has
@@ -212,13 +212,22 @@ async def _pve_admin(cookie_value: str) -> bool:
         return await _pve_authed(cookie_value)
     try:
         async with httpx.AsyncClient(verify=False, timeout=8) as client:
+            role_r = await client.get(
+                f"{PVE_HTTP_BASE}/api2/json/access/roles/Administrator",
+                cookies={PVE_AUTH_COOKIE: cookie_value})
+            if role_r.status_code != 200:
+                return False
+            admin_privs = (role_r.json() or {}).get("data") or {}
+            required = [p for p, v in admin_privs.items() if v] if isinstance(admin_privs, dict) else []
+            if not required:
+                return False
             r = await client.get(f"{PVE_HTTP_BASE}/api2/json/access/permissions",
                                  cookies={PVE_AUTH_COOKIE: cookie_value})
         if r.status_code != 200:
             return False
         perms = (r.json() or {}).get("data") or {}
         root = perms.get("/", {}) if isinstance(perms, dict) else {}
-        return all(root.get(p) for p in _OPERATOR_PRIVS)
+        return all(root.get(p) for p in required)
     except (httpx.HTTPError, ValueError):
         return False
 
@@ -374,6 +383,17 @@ async def jarvis_ws(ws: WebSocket):
         return
     await ws.accept()
     backend_url = f"{CONTROL_WS}?token={control_token()}"
+    # session.create/send/subscribe are in _ALLOWED_METHODS, but the method name
+    # alone doesn't bind them to the operator: a compromised same-origin bundle
+    # (the threat model above) could call session.create with NO agent/target_ref
+    # to spin up a plain coder/coworker session, then session.send/subscribe it —
+    # riding this socket's privileged daemon token while bypassing the operator
+    # policy gate entirely. Restrict session.create's params to the operator
+    # agent/target, and only allow send/subscribe against session ids this
+    # connection itself legitimately created that way (tracked below from the
+    # backend's own session.create replies, never trusted from the browser).
+    allowed_sessions: set[str] = set()
+    pending_operator_creates: set = set()
     try:
         async with websockets.connect(backend_url, max_size=None, ping_interval=None) as backend:
 
@@ -383,10 +403,14 @@ async def jarvis_ws(ws: WebSocket):
                         raw = await ws.receive_text()
                         method = ""
                         frame_id = None
+                        params: dict = {}
                         try:
                             frame = json.loads(raw)
                             method = str(frame.get("method", ""))
                             frame_id = frame.get("id")
+                            params = frame.get("params") or {}
+                            if not isinstance(params, dict):
+                                params = {}
                         except (ValueError, AttributeError):
                             continue  # drop malformed frames, never forward
                         if not _method_allowed(method):
@@ -397,6 +421,31 @@ async def jarvis_ws(ws: WebSocket):
                                           "message": f"{method} is not permitted from the dashboard"},
                             }))
                             continue
+                        if method == "session.create":
+                            agent = params.get("agent")
+                            target_ref = params.get("target_ref") or params.get("target") or ""
+                            is_operator = agent == "proxmox-operator" or (
+                                isinstance(target_ref, str) and target_ref.startswith("proxmox-op-"))
+                            if not is_operator:
+                                await ws.send_text(json.dumps({
+                                    "id": frame_id, "ok": False,
+                                    "error": {"code": "method_not_allowed",
+                                              "message": "session.create from the dashboard is "
+                                                         "restricted to the proxmox-operator agent"},
+                                }))
+                                continue
+                            if frame_id is not None:
+                                pending_operator_creates.add(frame_id)
+                        elif method in ("session.send", "session.subscribe"):
+                            sid = params.get("session_id")
+                            if not isinstance(sid, str) or sid not in allowed_sessions:
+                                await ws.send_text(json.dumps({
+                                    "id": frame_id, "ok": False,
+                                    "error": {"code": "method_not_allowed",
+                                              "message": f"{method} is not permitted for this "
+                                                         "session from the dashboard"},
+                                }))
+                                continue
                         await backend.send(raw)
                 except (WebSocketDisconnect, RuntimeError):
                     pass
@@ -406,15 +455,41 @@ async def jarvis_ws(ws: WebSocket):
                     async for msg in backend:
                         if isinstance(msg, bytes):
                             await ws.send_bytes(msg)
-                        else:
-                            await ws.send_text(msg)
+                            continue
+                        try:
+                            frame = json.loads(msg)
+                        except ValueError:
+                            frame = None
+                        if isinstance(frame, dict) and frame.get("id") in pending_operator_creates:
+                            pending_operator_creates.discard(frame.get("id"))
+                            if frame.get("ok"):
+                                sid = (frame.get("result") or {}).get("session_id")
+                                if isinstance(sid, str) and sid:
+                                    allowed_sessions.add(sid)
+                        await ws.send_text(msg)
                 except Exception:
                     pass
 
+            async def revalidate_periodically():
+                # _pve_admin above only gates the HANDSHAKE — this socket then stays
+                # privileged indefinitely regardless of what happens to the Proxmox
+                # ticket afterward (expiry, account disable, revoked privileges). Close
+                # it once the ticket that opened it stops being a genuine admin ticket.
+                cookie_value = ws.cookies.get(PVE_AUTH_COOKIE, "")
+                try:
+                    while True:
+                        await asyncio.sleep(30)
+                        if not await _pve_admin(cookie_value):
+                            await ws.close(code=1008)
+                            return
+                except Exception:
+                    return
+
             b2 = asyncio.create_task(browser_to_backend())
             f2 = asyncio.create_task(backend_to_browser())
+            r2 = asyncio.create_task(revalidate_periodically())
             done, pending = await asyncio.wait(
-                {b2, f2}, return_when=asyncio.FIRST_COMPLETED)
+                {b2, f2, r2}, return_when=asyncio.FIRST_COMPLETED)
             for t in pending:
                 t.cancel()
     except Exception:
