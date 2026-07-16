@@ -263,6 +263,14 @@ export const WidgetGrid: Component<{ client: CindroClient }> = (props) => {
     const offLayout = props.client.on("proxmoxop.layout", () => {
       if (!interacting) void load()
     })
+    // Cindro edits the board through the operator MCP tool
+    // (proxmox_dashboard_layout_set), which writes operator_layout.json directly
+    // and does NOT emit the proxmoxop.layout broadcast — so poll for its changes
+    // (paused while the user is dragging/resizing to avoid clobbering).
+    const poll = setInterval(() => {
+      if (!interacting) void load()
+    }, 4000)
+    onCleanup(() => clearInterval(poll))
     const onDocPointer = (e: PointerEvent) => {
       if (!menuOpen()) return
       const t = e.target as Node

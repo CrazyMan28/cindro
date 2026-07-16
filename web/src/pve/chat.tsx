@@ -107,7 +107,13 @@ async function operatorBrainModel(): Promise<{ brain: string; model: string }> {
     if (r.ok) {
       const s = ((await r.json())?.settings ?? {}) as Record<string, unknown>
       if (s.default_brain === "api" && typeof s.default_model === "string" && s.default_model) {
-        return { brain: "api", model: s.default_model }
+        // The operator needs an OpenAI-COMPATIBLE api brain: makeBrain's
+        // "proxmox-op-" branch attaches the operator MCP + gate only for
+        // non-Anthropic providers, so a Claude/anthropic model would start a
+        // chat with NO Proxmox tools. Skip those and fall back to Mistral.
+        if (!/^(claude|anthropic)/i.test(s.default_model)) {
+          return { brain: "api", model: s.default_model }
+        }
       }
     }
   } catch {
