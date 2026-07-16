@@ -90,6 +90,27 @@ function normalizeRisk(v: unknown): "low" | "medium" | "high" {
   return s === "high" || s === "low" ? s : "medium"
 }
 
+// The operator session's brain/model come from the admin's AI Settings
+// (settings.get default_brain / default_model), so a host configured for
+// OpenAI / Ollama / etc. isn't forced onto Mistral. Falls back to the api brain
+// + mistral-large-latest (the operator's MCP routing needs an OpenAI-compatible
+// api brain, not a CLI/Anthropic one).
+async function operatorBrainModel(): Promise<{ brain: string; model: string }> {
+  try {
+    const r = await fetch("/_jarvis/settings", { credentials: "include" })
+    if (r.ok) {
+      const s = ((await r.json())?.settings ?? {}) as Record<string, unknown>
+      const brain = typeof s.default_brain === "string" && s.default_brain ? s.default_brain : "api"
+      const model =
+        typeof s.default_model === "string" && s.default_model ? s.default_model : "mistral-large-latest"
+      return { brain, model }
+    }
+  } catch {
+    /* fall through to defaults */
+  }
+  return { brain: "api", model: "mistral-large-latest" }
+}
+
 // ---------------------------------------------------------------------------
 // ChatController — one session, the Contract B event pump, and reactive state
 // ---------------------------------------------------------------------------
@@ -162,12 +183,16 @@ export class ChatController {
     if (existing) return existing
     if (this.creating) return this.creating
     this.creating = (async () => {
+      // Honor the operator model/brain the admin picked on the AI Settings page
+      // instead of hard-coding Mistral — on a host with only an OpenAI key or a
+      // local Ollama model, a hard-coded mistral-large-latest would just fail.
+      const { brain, model } = await operatorBrainModel()
       const res = await this.client.call(
         "session.create",
         {
           agent: "proxmox-operator",
-          brain: "api",
-          model: "mistral-large-latest",
+          brain,
+          model,
           target_ref: operatorTargetRef(),
           title: "Cindro operator",
         },
