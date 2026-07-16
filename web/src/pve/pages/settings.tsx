@@ -57,7 +57,7 @@ function friendlyError(e: string): string {
 }
 
 async function fetchJarvisSettings(): Promise<
-  { ok: true; settings: JarvisSettingsBlob } | { ok: false; error: string }
+  { ok: true; settings: JarvisSettingsBlob; models: string[] } | { ok: false; error: string }
 > {
   try {
     const res = await fetch(SETTINGS_URL, { credentials: "include" })
@@ -69,7 +69,11 @@ async function fetchJarvisSettings(): Promise<
     }
     if (!res.ok) return { ok: false, error: friendlyError(json?.error ?? `load failed (${res.status})`) }
     const settings = json && typeof json.settings === "object" && json.settings ? json.settings : {}
-    return { ok: true, settings }
+    // The model catalog is returned SEPARATELY as model.list -> { brain, models:[...] };
+    // the settings blob itself has no model list. Surface the flat id list so the
+    // Default-model dropdown actually has options (was empty -> "no Mistral model").
+    const models = Array.isArray(json?.models?.models) ? (json.models.models as string[]) : []
+    return { ok: true, settings, models }
   } catch (e: any) {
     return { ok: false, error: e?.message ? `network error: ${e.message}` : "network error" }
   }
@@ -321,7 +325,12 @@ const SettingsPage: Component = () => {
       return
     }
     const s = r.settings
-    setModelsByBrain(s.models_by_brain ?? {})
+    // Feed the model.list catalog into the api brain's option list (the flat ids
+    // are all api-brain models; optionsForChoice splits cloud vs ollama by the
+    // ":" in the id). Falls back to any models_by_brain the daemon might send.
+    const merged: Record<string, string[]> = { ...(s.models_by_brain ?? {}) }
+    if (r.models.length) merged.api = r.models
+    setModelsByBrain(merged)
     setAvailableBrains(s.available_brains ?? {})
     setApiKeysSet(s.api_keys_set ?? {})
 

@@ -96,17 +96,22 @@ function normalizeRisk(v: unknown): "low" | "medium" | "high" {
 // + mistral-large-latest (the operator's MCP routing needs an OpenAI-compatible
 // api brain, not a CLI/Anthropic one).
 async function operatorBrainModel(): Promise<{ brain: string; model: string }> {
+  // The operator's MCP routing (makeBrain's "proxmox-op-" branch) ONLY wires the
+  // full-power operator tool endpoint for an OpenAI-compatible `api` brain — a
+  // CLI brain (codex/claude) or Anthropic can't drive it and would just fail to
+  // start (e.g. "codex not found on PATH"). So the operator ALWAYS uses `api`;
+  // it adopts the user's chosen model only when they've selected the Cloud API
+  // brain, otherwise falls back to Mistral (the recommended CLI-less default).
   try {
     const r = await fetch("/_jarvis/settings", { credentials: "include" })
     if (r.ok) {
       const s = ((await r.json())?.settings ?? {}) as Record<string, unknown>
-      const brain = typeof s.default_brain === "string" && s.default_brain ? s.default_brain : "api"
-      const model =
-        typeof s.default_model === "string" && s.default_model ? s.default_model : "mistral-large-latest"
-      return { brain, model }
+      if (s.default_brain === "api" && typeof s.default_model === "string" && s.default_model) {
+        return { brain: "api", model: s.default_model }
+      }
     }
   } catch {
-    /* fall through to defaults */
+    /* fall through to the default */
   }
   return { brain: "api", model: "mistral-large-latest" }
 }
