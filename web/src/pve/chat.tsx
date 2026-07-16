@@ -294,10 +294,11 @@ export class ChatController {
         // is called, so a role:"user" replay of the same text would double it.
         if (String(ev.role ?? "") !== "assistant") return
         this.freezeThinking()
-        // Second-chance busy clear: if a reconnect drops the turn's `final`
-        // frame, an assistant message still frees the composer so it can't
-        // latch disabled forever.
-        this.setBusy(false)
+        // NB: do NOT clear busy here — an api model streams a text preamble as a
+        // `message` BEFORE its tool_calls/final, so clearing on message would
+        // re-enable the composer mid-turn (queuing a follow-up into a still-
+        // running/awaiting-approval turn). busy is cleared on final/error, and
+        // the __status handler clears it if the socket actually drops.
         this.push({ id: mkId(), kind: "assistant", text: String(ev.text ?? ""), live: true })
         return
       }

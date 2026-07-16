@@ -16,18 +16,23 @@ import type { PageDef } from "../router"
 
 // --- Proxmox task-log helpers -----------------------------------------------
 
-type TaskState = "running" | "ok" | "error"
+type TaskState = "running" | "ok" | "warning" | "error"
 
 function taskState(t: pve.TaskSummary): TaskState {
   if (t.endtime == null) return "running"
-  return String(t.status ?? "").toUpperCase().startsWith("OK") ? "ok" : "error"
+  const s = String(t.status ?? "").toUpperCase()
+  if (s.startsWith("OK")) return "ok"
+  // "WARNINGS: N" means the job COMPLETED (common for vzdump/snapshot) — not a
+  // failure. Surface it distinctly so admins don't chase nonexistent failures.
+  if (s.startsWith("WARNING")) return "warning"
+  return "error"
 }
 
 function taskStatusLabel(t: pve.TaskSummary): string {
   const st = taskState(t)
   if (st === "running") return "running"
   if (st === "ok") return "ok"
-  return t.status ? String(t.status) : "error"
+  return t.status ? String(t.status) : st
 }
 
 function relTime(epochSec: number, nowSec: number): string {
