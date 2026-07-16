@@ -35,6 +35,7 @@
 #include <QNetworkRequest>
 #include <QProcess>
 #include <QRandomGenerator>
+#include <QRegularExpression>
 #include <QSaveFile>
 #include <QSharedPointer>
 #include <QSet>
@@ -3895,6 +3896,7 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
         return false;
     }
     brain->cancel();
+    abortOperatorApprovals(sessionId); // release any parked operator-permission gate
     m_store.updateState(sessionId, QStringLiteral("idle"));
     // Canceling a turn ends any real-session take-over (overlay hides).
     if (m_takeOverActive.contains(sessionId))
@@ -3920,6 +3922,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     //    running tool loop is asked to stop, then delete + drop the map entry).
     if (Brain *brain = m_brains.take(sessionId)) {
         brain->cancel();
+        abortOperatorApprovals(sessionId); // release any parked operator gate first
         brain->deleteLater();
     }
     // 2) End any take-over and drop a held (gated) turn.
@@ -8752,17 +8755,52 @@ QString ControlServer::operatorResolveEffect(const QString &tool, const QJsonObj
     const QJsonObject policy = opReadJsonObj(kOpPolicyPath());
     const QString verb = args.value(QStringLiteral("action")).toString();
     const QString method = args.value(QStringLiteral("method")).toString().toUpper();
-    const bool hasVmid = args.contains(QStringLiteral("vmid"));
-    const int vmid = args.value(QStringLiteral("vmid")).toInt();
+    const QString path = args.value(QStringLiteral("path")).toString();
+    bool hasVmid = args.contains(QStringLiteral("vmid"));
+    int vmid = args.value(QStringLiteral("vmid")).toInt();
+    // For the generic passthrough there's no vmid arg, but a VM-scoped rule
+    // ({"vmid":106}) must still block e.g. proxmox_api DELETE /nodes/x/qemu/106.
+    // Derive the target id from the API path so those rules apply here too.
+    if (!hasVmid && tool == QStringLiteral("proxmox_api")) {
+        if (!path.isEmpty()) {
+            static const QRegularExpression kVmidInPath(QStringLiteral("/(?:qemu|lxc)/(\\d+)"));
+            const QRegularExpressionMatch mo = kVmidInPath.match(path);
+            if (mo.hasMatch()) {
+                hasVmid = true;
+                vmid = mo.captured(1).toInt();
+            }
+        }
+        // Many mutating calls carry the target in the BODY, not the path —
+        // POST /nodes/<n>/qemu {vmid}, POST /nodes/<n>/vzdump {vmid}, clone
+        // {newid} — so a VM-scoped deny ({"vmid":106}) would be bypassed via the
+        // generic escape hatch unless we also look at params.
+        if (!hasVmid) {
+            const QJsonObject p = args.value(QStringLiteral("params")).toObject();
+            for (const QString &k : {QStringLiteral("vmid"), QStringLiteral("newid")}) {
+                if (p.contains(k)) {
+                    hasVmid = true;
+                    vmid = p.value(k).toInt();
+                    break;
+                }
+            }
+        }
+    }
 
     if (matchOut) {
+        // The match an "always" answer persists — deliberately SCOPED so approving
+        // one action doesn't silently allow a whole class of destructive calls.
         QJsonObject mm;
         if (tool == QStringLiteral("proxmox_api")) {
+            // method + the exact path, never "every POST".
             mm.insert(QStringLiteral("method"), method);
+            if (!path.isEmpty())
+                mm.insert(QStringLiteral("path"), path);
         } else {
             mm.insert(QStringLiteral("tool"), tool);
             if (!verb.isEmpty())
                 mm.insert(QStringLiteral("verb"), verb);
+            if (hasVmid)
+                mm.insert(QStringLiteral("vmid"), vmid); // this VM, not the fleet
         }
         *matchOut = mm;
     }
@@ -8784,6 +8822,8 @@ QString ControlServer::operatorResolveEffect(const QString &tool, const QJsonObj
                 if (k.value().toString() != verb) { ok = false; break; }
             } else if (key == QStringLiteral("method")) {
                 if (k.value().toString().toUpper() != method) { ok = false; break; }
+            } else if (key == QStringLiteral("path")) {
+                if (k.value().toString() != path) { ok = false; break; }
             } else if (key == QStringLiteral("vmid")) {
                 if (!hasVmid || k.value().toInt() != vmid) { ok = false; break; }
             } else {
@@ -8864,6 +8904,20 @@ int ControlServer::operatorGate(const QString &sessionId, const QString &tool,
     }
     m_pendingApprovals.remove(approvalId);
     return decision;
+}
+
+void ControlServer::abortOperatorApprovals(const QString &sessionId)
+{
+    // Deny + quit each parked gate for this session; operatorGate's frame reads
+    // the decision after loop.exec() returns and removes its own entries, so we
+    // only flip the decision and wake the loop here.
+    for (auto it = m_operatorApprovals.begin(); it != m_operatorApprovals.end(); ++it) {
+        if (it->sessionId == sessionId) {
+            it->decision = 1; // deny
+            if (it->loop)
+                it->loop->quit();
+        }
+    }
 }
 
 void ControlServer::broadcastProxmoxOpApproval(const QString &sessionId,
@@ -9123,6 +9177,29 @@ Response ControlServer::handleOutpostInstallDashboard(const Request &req)
             "  /opt/jarvis-proxmox-agent/src/proxmox-mcp"), 180.0))
         return *fail;
 
+    // 1b. Refresh the co-located jarvisd AppImage to the latest release. The
+    //     dashboard depends on this daemon for proxmoxop.*, target_ref routing
+    //     and the operator gate — on a host whose workload manager predates this
+    //     release, the extracted jarvisd would 'unknown_method' every operator
+    //     call until refreshed. Same fetch/extract as the workload installer;
+    //     jarvisd-proxmox-agent is restarted in the enable step below.
+    if (auto fail = runStep(QStringLiteral("refresh jarvisd runtime"), QStringLiteral(
+            "set -e; install -d -m755 /opt/jarvis-proxmox-agent/appimage; "
+            "cd /opt/jarvis-proxmox-agent/appimage; AUTH=; "
+            "if [ -s /etc/jarvis-proxmox-agent/github_token ]; then "
+            "  AUTH=\"Authorization: Bearer $(cat /etc/jarvis-proxmox-agent/github_token)\"; fi; "
+            "curl -fsSL ${AUTH:+-H \"$AUTH\"} -o release.json "
+            "  https://api.github.com/repos/CrazyMan28/jarvis/releases/latest; "
+            "URL=$(python3 -c 'import json; "
+            "a=[x for x in json.load(open(\"release.json\")).get(\"assets\", []) "
+            "if x.get(\"name\", \"\").endswith(\".AppImage\")]; "
+            "print(a[0].get(\"url\", \"\") if a else \"\")'); "
+            "[ -n \"$URL\" ]; "
+            "curl -fsSL ${AUTH:+-H \"$AUTH\"} -H 'Accept: application/octet-stream' -L "
+            "  \"$URL\" -o Jarvis.AppImage; chmod +x Jarvis.AppImage; "
+            "rm -rf squashfs-root; ./Jarvis.AppImage --appimage-extract >/dev/null"), 300.0))
+        return *fail;
+
     // 2. Generate the operator + dashboard tokens and seed the policy/layout/
     //    tasks files — all guarded so a re-install NEVER clobbers a token or a
     //    policy the user has since edited.
@@ -9237,10 +9314,12 @@ Response ControlServer::handleOutpostInstallDashboard(const Request &req)
                                  QStringLiteral("failed writing dashboard systemd units to %1")
                                      .arg(machine));
 
-    // 6. Enable + start both.
+    // 6. Enable + start both, and RESTART jarvisd-proxmox-agent so it picks up
+    //    the refreshed AppImage (the new proxmoxop.* verbs + operator routing).
     if (auto fail = runStep(QStringLiteral("enable+start dashboard services"), QStringLiteral(
             "systemctl daemon-reload && systemctl enable --now "
-            "proxmox-operator-mcp.service proxmox-dashboard.service"), 30.0))
+            "proxmox-operator-mcp.service proxmox-dashboard.service && "
+            "systemctl restart jarvisd-proxmox-agent.service"), 30.0))
         return *fail;
 
     // Read back the dashboard token so the caller can surface it.
@@ -9255,10 +9334,14 @@ Response ControlServer::handleOutpostInstallDashboard(const Request &req)
 
     m_audit.record(QStringLiteral("outpost.install_dashboard"), true, QStringLiteral("high"),
                    QStringLiteral("installed Cindro Proxmox dashboard onto %1").arg(machine));
+    // `machine` may be an opaque Outpost id (ids are used for exec because names
+    // aren't unique); a caller can pass a resolvable `host` for the landing URL.
+    const QString displayHost = req.params.value(QStringLiteral("host")).toString().trimmed();
     QJsonObject result;
     result.insert(QStringLiteral("ok"), true);
     result.insert(QStringLiteral("machine"), machine);
-    result.insert(QStringLiteral("url"), QStringLiteral("https://%1:8443/").arg(machine));
+    result.insert(QStringLiteral("url"),
+                 QStringLiteral("https://%1:8443/").arg(displayHost.isEmpty() ? machine : displayHost));
     result.insert(QStringLiteral("dashboard_token"), dashToken);
     result.insert(QStringLiteral("note"),
                  QStringLiteral("Cindro Proxmox dashboard installed and running on "

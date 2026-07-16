@@ -12,6 +12,7 @@ and would normally never call a tool the policy denies.
 from __future__ import annotations
 
 import json
+import re
 
 from proxmox_mcp import config, operator_store, proxmox_ops
 
@@ -70,7 +71,29 @@ def guarded_write(tool: str, ctx: dict, verb: str, path: str,
     call is refused WITHOUT touching Proxmox. `ask`/`allow` both proceed here —
     an `ask` only reaches this server AFTER the daemon gate obtained the user's
     approval. Returns {ok, result} / {status:"denied",...} / {ok:False,error}."""
-    if operator_store.resolve_effect(tool, ctx) == "deny":
+    # Include the concrete path so path-scoped rules (the daemon persists a
+    # {method,path} match when a proxmox_api call is "always"-ed) evaluate here
+    # the same way — keeping the backstop in lock-step with the daemon gate.
+    full_ctx = dict(ctx)
+    full_ctx.setdefault("path", path)
+    # Derive the target VM/CT id from the path (proxmox_api has no vmid arg) so
+    # VM-scoped rules apply to the generic passthrough here too.
+    if "vmid" not in full_ctx:
+        m = re.search(r"/(?:qemu|lxc)/(\d+)", path)
+        if m:
+            full_ctx["vmid"] = int(m.group(1))
+        else:
+            # Many mutating calls carry the target in the BODY, not the path
+            # (create {vmid}, vzdump {vmid}, clone {newid}) — include it so a
+            # VM-scoped deny rule can't be bypassed through the passthrough.
+            for k in ("vmid", "newid"):
+                if isinstance(params, dict) and params.get(k) is not None:
+                    try:
+                        full_ctx["vmid"] = int(params[k])
+                    except (TypeError, ValueError):
+                        pass
+                    break
+    if operator_store.resolve_effect(tool, full_ctx) == "deny":
         return {"status": "denied",
                 "reason": "blocked by a permission-policy deny rule",
                 "tool": tool}

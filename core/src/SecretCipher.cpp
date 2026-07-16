@@ -10,6 +10,14 @@
 #include <windows.h>
 #include <wincrypt.h>
 #elif defined(Q_OS_LINUX) && defined(JARVIS_HAVE_LIBSECRET)
+// Qt defines `signals`/`slots` as preprocessor macros (signals -> public); the
+// GDBus headers libsecret pulls in use `signals` as a struct MEMBER name, which
+// then expands to `public` and fails to compile ("expected unqualified-id
+// before 'public'") on toolchains where <QtCore> has already defined them
+// (e.g. Debian/Qt6.8 + libsecret-1). This TU uses no Qt keyword forms, so drop
+// the macros for the C include.
+#undef signals
+#undef slots
 extern "C" {
 #include <libsecret/secret.h>
 }
