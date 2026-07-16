@@ -651,7 +651,7 @@ body {
 }
 .cx-dock.collapsed .cx-dock-toggle { margin-left: 0; }
 .cx-dock-toggle:hover { color: var(--accent-bright); background: var(--nav-active); }
-.cx-dock-body { flex: 1; min-height: 0; min-width: 380px; transition: opacity var(--dur-mid) ease; }
+.cx-dock-body { flex: 1; min-height: 0; min-width: 380px; display: flex; flex-direction: column; transition: opacity var(--dur-mid) ease; }
 .cx-dock.collapsed .cx-dock-body { opacity: 0; pointer-events: none; }
 
 @media (max-width: 1180px) {
