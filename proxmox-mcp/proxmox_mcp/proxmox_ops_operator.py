@@ -1,0 +1,80 @@
+"""pvesh read/write helpers for the full-power Proxmox operator.
+
+Layered on the existing single-subprocess seam `proxmox_ops.run()` (tests
+monkeypatch that ONE function, here as in tools_proxmox), these wrap the
+Proxmox REST tree exposed by `pvesh`. Reads are unrestricted; writes pass
+through `guarded_write()`, which consults the user permission policy and
+refuses any standing `deny` rule as a server-side backstop — even though the
+daemon's operatorGate is the primary, interactive enforcer (ask/allow/deny)
+and would normally never call a tool the policy denies.
+"""
+
+from __future__ import annotations
+
+import json
+
+from proxmox_mcp import config, operator_store, proxmox_ops
+
+# HTTP method (as the Proxmox API / the generic proxmox_api tool speak it) →
+# the pvesh subcommand that performs it.
+PVESH_VERB = {"GET": "get", "POST": "create", "PUT": "set", "DELETE": "delete"}
+
+
+def node() -> str:
+    """The Proxmox node these operations target (config.toml `node`, default
+    "pve"). Single-node hosts are the common case; multi-node paths can be
+    reached explicitly through proxmox_api."""
+    return config.settings()["node"]
+
+
+def _parse(output: str):
+    """pvesh --output-format json returns JSON; create/set/delete often return
+    just a UPID string (still valid JSON when quoted) or nothing."""
+    text = (output or "").strip()
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except ValueError:
+        return {"raw": text}
+
+
+def run_pvesh(verb: str, path: str, params: dict | None = None,
+              timeout: float = 25.0):
+    """Execute one pvesh call and return its parsed result. `verb` is a pvesh
+    subcommand (get/create/set/delete). The ONLY place operator writes/reads
+    shell out — through proxmox_ops.run (the shared test seam)."""
+    cmd = ["pvesh", verb, path]
+    for key, value in (params or {}).items():
+        if value is None:
+            continue
+        cmd += [f"-{key}", str(value)]
+    cmd += ["--output-format", "json"]
+    return _parse(proxmox_ops.run(cmd, timeout=timeout))
+
+
+def read(path: str, params: dict | None = None) -> dict:
+    """A GET against the Proxmox API tree. Returns {ok, result} / {ok:False,error}."""
+    try:
+        return {"ok": True, "result": run_pvesh("get", path, params)}
+    except proxmox_ops.CommandError as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def guarded_write(tool: str, ctx: dict, verb: str, path: str,
+                  params: dict | None = None) -> dict:
+    """A mutating pvesh call, gated by the permission policy's `deny` backstop.
+
+    `tool` is the operator tool name; `ctx` carries the rule-matching context
+    ({verb, method, vmid} as applicable). If the policy resolves to `deny`, the
+    call is refused WITHOUT touching Proxmox. `ask`/`allow` both proceed here —
+    an `ask` only reaches this server AFTER the daemon gate obtained the user's
+    approval. Returns {ok, result} / {status:"denied",...} / {ok:False,error}."""
+    if operator_store.resolve_effect(tool, ctx) == "deny":
+        return {"status": "denied",
+                "reason": "blocked by a permission-policy deny rule",
+                "tool": tool}
+    try:
+        return {"ok": True, "result": run_pvesh(verb, path, params)}
+    except proxmox_ops.CommandError as exc:
+        return {"ok": False, "error": str(exc)}
