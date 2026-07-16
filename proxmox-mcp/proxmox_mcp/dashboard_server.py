@@ -182,15 +182,34 @@ async def _pve_authed(cookie_value: str) -> bool:
         return False
 
 
+# The privileges a user must ALL hold on "/" to command the root-power operator
+# (create/delete/power guests, manage storage, configure the node). A single
+# delegated privilege (e.g. a network admin's Sys.Modify) is deliberately NOT
+# enough — the operator can do far more than that user's own Proxmox account.
+_OPERATOR_PRIVS = ("VM.Allocate", "VM.PowerMgmt", "Datastore.Allocate", "Sys.Modify")
+
+
+def _cookie_userid(cookie_value: str) -> str:
+    """The userid embedded in a PVEAuthCookie ("PVE:<userid>:<ts>::<sig>").
+    Only trusted AFTER the ticket is verified against pveproxy — a forged cookie
+    could claim any userid, but pveproxy would reject its signature."""
+    from urllib.parse import unquote
+    parts = unquote(cookie_value).split(":")
+    return parts[1] if len(parts) > 1 else ""
+
+
 async def _pve_admin(cookie_value: str) -> bool:
-    """True iff the ticket belongs to a Proxmox user with datacenter-level admin
-    rights (Sys.Modify or Permissions.Modify on '/'). A merely-VALID ticket
-    (any role, e.g. a read-only auditor or a single-VM user) is NOT enough to
-    reach /_jarvis/*: the Cindro operator can do anything a root shell can via
-    its full-power MCP, and the AI provider keys are host-wide secrets — so only
-    a datacenter admin may command it or configure it."""
+    """True iff the ticket belongs to a FULL Proxmox admin — root@pam, or a user
+    holding the complete operator privilege set on '/'. A merely-valid ticket, or
+    a single delegated privilege, is NOT enough: the Cindro operator can do
+    anything a root shell can via its full-power MCP, and the AI provider keys are
+    host-wide secrets, so only a genuine admin may command it or configure it."""
     if not cookie_value:
         return False
+    # root@pam is the built-in superuser — allow it, but only once pveproxy has
+    # confirmed the ticket is genuine (defeats a forged "root@pam" cookie).
+    if _cookie_userid(cookie_value) == "root@pam":
+        return await _pve_authed(cookie_value)
     try:
         async with httpx.AsyncClient(verify=False, timeout=8) as client:
             r = await client.get(f"{PVE_HTTP_BASE}/api2/json/access/permissions",
@@ -199,7 +218,7 @@ async def _pve_admin(cookie_value: str) -> bool:
             return False
         perms = (r.json() or {}).get("data") or {}
         root = perms.get("/", {}) if isinstance(perms, dict) else {}
-        return bool(root.get("Sys.Modify") or root.get("Permissions.Modify"))
+        return all(root.get(p) for p in _OPERATOR_PRIVS)
     except (httpx.HTTPError, ValueError):
         return False
 
@@ -474,13 +493,23 @@ _PLACEHOLDER = """<!doctype html><html><head><meta charset="utf-8">
 </body></html>""" % str(DIST)
 
 
+_DIST_RESOLVED = DIST.resolve()
+
+
 def _serve_spa(full_path: str) -> Response:
     """Static SPA with history-fallback: unknown non-proxy paths (including
-    the SPA's own client-side routes) always resolve to index.html."""
-    if full_path and ".." not in full_path:
-        candidate = DIST / full_path
-        if candidate.is_file():
-            return FileResponse(candidate)
+    the SPA's own client-side routes) always resolve to index.html.
+
+    SECURITY: reject absolute paths and anything that escapes DIST. `%2F`-encoded
+    input can decode to a leading slash, and `DIST / "/etc/passwd"` yields
+    "/etc/passwd" (an absolute right-hand operand drops the base) — so without the
+    containment check below this unauthenticated, root-run fallback would serve
+    arbitrary host files (e.g. the jarvisd control token)."""
+    if full_path and ".." not in full_path and not full_path.startswith("/"):
+        candidate = (DIST / full_path).resolve()
+        if str(candidate) == str(_DIST_RESOLVED) or str(candidate).startswith(str(_DIST_RESOLVED) + os.sep):
+            if candidate.is_file():
+                return FileResponse(candidate)
     index = DIST / "index.html"
     if index.is_file():
         return FileResponse(index)
