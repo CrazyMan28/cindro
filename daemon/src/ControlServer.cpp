@@ -4105,13 +4105,30 @@ Response ControlServer::handleSessionCreate(const Request &req)
 // path strings pass through unchanged. (Previously this did v.toString() on each
 // element, which yields "" for a JSON object — so phone images were silently
 // dropped and never reached the model.)
+// Path-safety for a CLIENT-SUPPLIED session id that becomes a directory segment
+// (file.push / file.get / session.send attachments). A paired phone controls
+// file.push{session_id}; without this a value like "../../../.config/systemd/user"
+// escapes the data tree and writes attacker bytes anywhere the daemon can. Returns
+// the id coerced to a single safe path segment ("" when unusable), so callers keep
+// files under the data dir no matter what the client sent. Valid ids ("sess_<hex>")
+// pass through unchanged.
+static QString safeSessionSegment(const QString &sessionId)
+{
+    static const QRegularExpression bad(QStringLiteral("[^A-Za-z0-9._-]"));
+    QString s = sessionId;
+    s.replace(bad, QStringLiteral("_"));    // kill '/', '\\', NUL, spaces, …
+    if (s.contains(QStringLiteral("..")))   // no parent-dir traversal
+        return QString();
+    return s;
+}
+
 static QStringList decodeSendImages(const QJsonArray &arr, const QString &sessionId)
 {
     QStringList paths;
     if (arr.isEmpty())
         return paths;
     const QString dir = dataDir()
-        + QStringLiteral("/attachments/") + sessionId;
+        + QStringLiteral("/attachments/") + safeSessionSegment(sessionId);
     QDir().mkpath(dir);
     int n = 0;
     for (const QJsonValue &v : arr) {
@@ -7011,8 +7028,9 @@ namespace {
 QString fileInboxDir(const QString &sessionId)
 {
     QString dir = dataDir() + QStringLiteral("/files");
-    if (!sessionId.isEmpty())
-        dir += QLatin1Char('/') + sessionId;
+    const QString seg = safeSessionSegment(sessionId);   // reject path traversal
+    if (!seg.isEmpty())
+        dir += QLatin1Char('/') + seg;
     QDir().mkpath(dir);
     return dir;
 }

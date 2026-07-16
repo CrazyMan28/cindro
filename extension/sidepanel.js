@@ -335,22 +335,41 @@ function onFrame(raw) {
   // Widget bus (render_widget / todo plan / charts) over the control WS.
   if (msg.event === "widget.render" && msg.data) {
     // Scope to the current session. No active session yet -> drop it, so another
-    // chat's widgets (incl. its PLAN card) can't paint into a blank panel. A
-    // session-less/global widget (empty session_id) is allowed only once THIS
-    // panel has a session, matching the transcript gate above.
-    const wsid = msg.data.session_id || "";
+    // chat's widgets (incl. its PLAN card) can't paint into a blank panel.
     if (!sessionId) return;
-    if (wsid && wsid !== sessionId) return;
+    const wsid = msg.data.session_id || "";
     // The model's live plan/checklist (id "__todo__:<session>") goes to the
-    // dedicated PLAN panel above the transcript, NOT inline in chat — matches
-    // the desktop peek's PLAN card so todos don't scroll away or clutter chat.
-    if (String(msg.data.id || "").indexOf("__todo__") === 0) { renderPlan(msg.data); return; }
+    // dedicated PLAN panel above the transcript, NOT inline in chat.
+    if (String(msg.data.id || "").indexOf("__todo__") === 0) {
+      // A plan card is SESSION-PRIVATE. Its true owner is encoded in the id
+      // ("__todo__:<owner>"); the session_id field can be blank when the shared
+      // global engine can't disambiguate (2+ running) — the OLD gate below
+      // (`wsid && wsid !== sessionId`) let that blank fall straight through, so
+      // another chat's plan painted into this panel (the reported leak). Derive
+      // the owner from the id and require it to match this session. An empty or
+      // "default" owner is the ambiguous shared-engine LIVE plan, adopted into
+      // the current session like the desktop does.
+      const owner = wsid || String(msg.data.id || "").replace(/^__todo__:?/, "");
+      if (owner && owner !== "default" && owner !== sessionId) return;
+      renderPlan(msg.data);
+      return;
+    }
+    // A session-less/global widget (empty session_id) is allowed only once THIS
+    // panel has a session, matching the transcript gate above.
+    if (wsid && wsid !== sessionId) return;
     renderWidget(msg.data);
     return;
   }
   if (msg.event === "widget.remove" && msg.data) {
     const rid = String(msg.data.id || "");
-    if (rid.indexOf("__todo__") === 0) { dismissPlan(); return; }
+    if (rid.indexOf("__todo__") === 0) {
+      // Only dismiss OUR plan — a foreign session clearing its own plan card
+      // (id "__todo__:<owner>") must not wipe the plan we're showing. Same
+      // owner rule as the render gate above.
+      const owner = rid.replace(/^__todo__:?/, "");
+      if (!owner || owner === "default" || owner === sessionId) dismissPlan();
+      return;
+    }
     removeWidget(rid);
     return;
   }

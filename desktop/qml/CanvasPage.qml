@@ -32,6 +32,19 @@ Item {
         target: bridge
         function onWidgetRendered(widget) {
             var id = widget.id !== undefined ? ("" + widget.id) : ""
+            // The model's live plan/checklist (id "__todo__:<session>") is
+            // SESSION-PRIVATE — it belongs only to the owning chat's PLAN panel
+            // (JarvisPanel routes it there, scoped by session). It must never land
+            // on the shared Canvas, or another session's plan shows up here while
+            // you're in a different chat (the reported cross-session leak).
+            if (id.indexOf("__todo__") === 0)
+                return
+            // The Canvas only shows canvas-destined widgets. A widget the model
+            // targeted at chat/voice/home is owned by THAT surface and must not
+            // also pile onto the Canvas (mirrors HomePage's target==="home" gate).
+            var target = ("" + (widget.target !== undefined ? widget.target : "canvas"))
+            if (target !== "canvas" && target !== "both")
+                return
             var row = {
                 "ts": widget.ts !== undefined ? widget.ts : 0,
                 "title": widget.title !== undefined ? ("" + widget.title) : "",

@@ -43,7 +43,11 @@ class HomeViewModel(
 
     private val _uiState = MutableStateFlow(
         HomeUiState(
-            latestCanvas = WidgetCatalog.list(appContext).firstOrNull()
+            // Never seed the "live widget" preview from a plan/checklist card
+            // (id "__todo__:<session>") — those are session-private (see the
+            // widgetEvents collector below).
+            latestCanvas = WidgetCatalog.list(appContext)
+                .firstOrNull { !it.id.startsWith("__todo__") }
                 ?.let { CanvasItem(it.id, it.title, it.specJson) },
         ),
     )
@@ -60,7 +64,12 @@ class HomeViewModel(
         }
         viewModelScope.launch {
             repo.widgetEvents.collect { w ->
-                if (w.op == "render" && w.spec != null) {
+                // Skip the session-private plan/checklist card (id "__todo__:<session>")
+                // — it belongs to its owning chat, not this session-neutral "live
+                // widget" preview (Home + new-chat composer). A LIVE plan update from
+                // any session would otherwise reappear here (the cross-session leak);
+                // filtering only the on-disk seed above is not enough.
+                if (w.op == "render" && w.spec != null && !w.id.startsWith("__todo__")) {
                     _uiState.update {
                         it.copy(latestCanvas = CanvasItem(w.id, w.title, w.spec.toString()))
                     }
