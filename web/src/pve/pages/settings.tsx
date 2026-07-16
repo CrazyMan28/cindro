@@ -309,6 +309,7 @@ const SettingsPage: Component = () => {
 
   const [brainChoice, setBrainChoice] = createSignal<BrainChoice>("api-cloud")
   const [defaultModel, setDefaultModel] = createSignal("")
+  const [customModel, setCustomModel] = createSignal(false) // "Custom…" picked -> free-type id
   const [brainSaving, setBrainSaving] = createSignal(false)
   const [brainSaved, setBrainSaved] = createSignal(false)
   const [brainErr, setBrainErr] = createSignal("")
@@ -353,6 +354,14 @@ const SettingsPage: Component = () => {
   const anyCloudKeySet = createMemo(() => CLOUD_KEY_PROVIDERS.some((p) => apiKeysSet()[p] === true))
 
   const modelOptions = createMemo(() => optionsForChoice(brainChoice(), modelsByBrain()))
+  // The dropdown's options: the live provider catalog, plus the currently-saved
+  // id if it isn't in the catalog (so it stays selected/visible).
+  const selectOptions = createMemo(() => {
+    const opts = [...modelOptions()]
+    const dm = defaultModel()
+    if (dm && !opts.includes(dm)) opts.unshift(dm)
+    return opts
+  })
 
   const pickBrain = (choice: BrainChoice) => {
     if (choice === brainChoice()) return
@@ -468,22 +477,41 @@ const SettingsPage: Component = () => {
           <div class="cx-settings-modelrow">
             <div class="cx-field cx-settings-model-field">
               <label class="cx-field-label" for="cx-settings-model-input">Default model</label>
-              <input
+              <select
                 id="cx-settings-model-input"
-                class="cx-input"
-                list="cx-settings-model-options"
-                autocomplete="off"
-                spellcheck={false}
-                placeholder={brainChoice() === "api-ollama" ? "e.g. llama3.2:3b" : "model id"}
-                value={defaultModel()}
-                onInput={(e) => {
-                  setDefaultModel(e.currentTarget.value)
+                class="cx-input cx-select"
+                value={customModel() ? "__custom__" : defaultModel()}
+                onChange={(e) => {
+                  const v = e.currentTarget.value
+                  if (v === "__custom__") {
+                    setCustomModel(true)
+                  } else {
+                    setCustomModel(false)
+                    setDefaultModel(v)
+                  }
                   setBrainSaved(false)
                 }}
-              />
-              <datalist id="cx-settings-model-options">
-                <For each={modelOptions()}>{(m) => <option value={m} />}</For>
-              </datalist>
+              >
+                <Show when={selectOptions().length === 0}>
+                  <option value="" disabled>fetching models from provider…</option>
+                </Show>
+                <For each={selectOptions()}>{(m) => <option value={m}>{m}</option>}</For>
+                <option value="__custom__">✎ Custom model id…</option>
+              </select>
+              <Show when={customModel()}>
+                <input
+                  class="cx-input"
+                  style={{ "margin-top": "0.55rem" }}
+                  autocomplete="off"
+                  spellcheck={false}
+                  placeholder={brainChoice() === "api-ollama" ? "e.g. llama3.2:3b" : "type a model id"}
+                  value={defaultModel()}
+                  onInput={(e) => {
+                    setDefaultModel(e.currentTarget.value)
+                    setBrainSaved(false)
+                  }}
+                />
+              </Show>
               <div class="cx-settings-model-hint">{modelHint()}</div>
             </div>
             <button
