@@ -133,7 +133,16 @@ async def _proxy_http(request: Request, full_path: str) -> Response:
     back — method, headers, cookies and body in both directions, unmodified,
     so Set-Cookie (PVEAuthCookie) and CSRFPreventionToken flow through exactly
     as they would talking to :8006 directly."""
-    url = f"{PVE_HTTP_BASE}/{full_path.lstrip('/')}"
+    # Use the RAW (still-percent-encoded) path from the ASGI scope, NOT the
+    # FastAPI-decoded `full_path`: a Proxmox volid like "local:backup/vzdump-..."
+    # arrives as "local%3Abackup%2Fvzdump-...", and decoding the %2F would split
+    # it into extra path segments pveproxy rejects (breaking backup/content ops).
+    # httpx preserves existing percent-encoding, so the encoded slash survives.
+    raw_path = request.scope.get("raw_path")
+    path = raw_path.decode("latin-1") if raw_path else request.url.path
+    if not path.startswith("/"):
+        path = "/" + path
+    url = f"{PVE_HTTP_BASE}{path}"
     if request.url.query:
         url += f"?{request.url.query}"
     fwd_headers = [(k, v) for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP]
