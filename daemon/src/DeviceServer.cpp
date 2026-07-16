@@ -716,13 +716,19 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         // outpost.exec/screenshot/pair_start/pair_status/list/revoke
         // directly over this WebSocket. Reject it here, at the channel
         // boundary, rather than narrowing isOpsMethod() itself.
-        if (m.startsWith(QStringLiteral("outpost.")) || m.startsWith(QStringLiteral("proxmox."))) {
+        if (m.startsWith(QStringLiteral("outpost.")) ||
+            m.startsWith(QStringLiteral("proxmox.")) ||
+            m.startsWith(QStringLiteral("proxmoxop."))) {
             // proxmox.* shares outpost.*'s rationale exactly (it IS an
             // outpost.exec proxy under the hood) — same narrower blast
-            // radius, desktop/TUI/web only.
+            // radius, desktop/TUI/web only. proxmoxop.* (the Cindro dashboard's
+            // operator: policy_set, layout/tasks writes, the tool proxy) is a
+            // host-local, dashboard-only surface — NOT "proxmox." (that prefix
+            // needs a trailing dot, so "proxmoxop." isn't caught above), so it
+            // gets its own explicit reject here rather than leaking to the phone.
             resp = Response::failure(req.id, QStringLiteral("channel_not_allowed"),
-                                     QStringLiteral("outpost.*/proxmox.* is not available over "
-                                                    "the phone/device channel"));
+                                     QStringLiteral("outpost.*/proxmox.*/proxmoxop.* is not "
+                                                    "available over the phone/device channel"));
         } else if (m.startsWith(QStringLiteral("diff."))) {
             // diff.* (stage/revert/commit/open_pr) runs real `git commit` /
             // `git push` / `gh pr create` against the session's workdir (and

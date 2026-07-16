@@ -90,6 +90,19 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN=1 QT_QPA_PLATFORM=offscreen ./dist/Cindro-*.AppImage --selftest
           echo "AppImage selftest OK"
 
+      # Gate: wayland-graphics-integration-client (wayland-egl) must actually be inside the
+      # squashfs, not just requested. --selftest above is offscreen-only and NEVER exercises
+      # this plugin, so it can't catch its absence — a prior release shipped without it and
+      # cindro-sidebar qFatal()-aborted on every real (non-offscreen) launch. build-appimage.sh
+      # bundles it manually + self-checks, but assert it here too so a future script edit that
+      # drops that check still reds this job instead of silently shipping a broken build.
+      - name: Assert wayland-egl plugin is bundled
+        run: |
+          APPIMAGE_EXTRACT_AND_RUN=1 ./dist/Cindro-*.AppImage --appimage-extract >/dev/null
+          test -e squashfs-root/usr/plugins/wayland-graphics-integration-client/libqt-plugin-wayland-egl.so
+          echo "wayland-egl plugin present OK"
+          rm -rf squashfs-root
+
       - name: Upload AppImage artifact
         # The AppImage is already built + selftested above; a transient GitHub
         # artifact-storage-quota hit must not red the whole PR. Short retention
@@ -102,14 +115,35 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # Build the host-served Cindro Proxmox dashboard SPA and publish it as
+      # cindro-proxmox-dashboard.tgz — the asset outpost.install_dashboard fetches
+      # onto a Proxmox host (see docs/PROXMOX_DASHBOARD.md). Best-effort: a bun/
+      # network hiccup must not red the release; without the asset the dashboard
+      # server just serves its placeholder page instead of the SPA.
+      - name: Build Proxmox dashboard bundle
+        continue-on-error: true
+        run: |
+          export BUN_INSTALL="$HOME/.bun"
+          command -v bun >/dev/null 2>&1 || curl -fsSL https://bun.sh/install | bash
+          export PATH="$BUN_INSTALL/bin:$PATH"
+          cd web
+          bun install --frozen-lockfile || bun install
+          bun run build:pve
+          cd ..
+          mkdir -p dist
+          tar czf dist/cindro-proxmox-dashboard.tgz -C web/dist-pve .
+          ls -la dist/cindro-proxmox-dashboard.tgz
+
       - name: Attach to Release (on a v* tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          # The AppImage plus the outpost-agent binaries (if the runner built
-          # them). fail_on_unmatched_files stays off so a Go-less runner still
-          # ships the AppImage rather than reddening the release.
+          # The AppImage, the outpost-agent binaries (if the runner built them),
+          # and the Proxmox dashboard bundle (if it built).
+          # fail_on_unmatched_files stays off so a Go-less runner (or a skipped
+          # dashboard build) still ships the AppImage rather than reddening the release.
           fail_on_unmatched_files: false
           files: |
             dist/Cindro-*.AppImage
             outpost-mcp/agent-bin/outpost-agent-*
+            dist/cindro-proxmox-dashboard.tgz

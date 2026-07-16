@@ -547,11 +547,24 @@ function Outpost() {
     setInstallingDash(true)
     setInstallMsg("")
     try {
-      const res = await app.client.call("outpost.install_dashboard", { machine }, 60000)
+      // The backend runs a git/pip sync (180s) + asset download (120s) + service
+      // enable — well past a 60s client timeout, which would falsely report
+      // failure while the install kept running. Wait longer than the backend
+      // budget. `host` (the machine NAME) is used only for the browsable URL —
+      // exec still targets the unique `machine` id.
+      const res = await app.client.call(
+        "outpost.install_dashboard",
+        { machine, host: selectedName() },
+        400000,
+      )
       if (!alive) return
       setInstallOk(true)
-      setInstallMsg(String(res.note ?? "Dashboard installed.") +
-        (res.url ? ` → ${String(res.url)}` : ""))
+      const url = String(res.url ?? `https://${selectedName()}:8443/`)
+      const token = String(res.dashboard_token ?? "")
+      setInstallMsg(
+        `${String(res.note ?? "Dashboard installed.")} Open ${url}` +
+          (token ? ` — sign in with token: ${token}` : ""),
+      )
     } catch (e) {
       if (!alive) return
       setInstallOk(false)
