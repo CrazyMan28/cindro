@@ -74,6 +74,21 @@ function clearAuthCookie(): void {
   }
 }
 
+// Proxmox's /access/ticket returns the ticket in the response BODY (it does NOT
+// send a Set-Cookie), so — exactly like the stock PVE web UI — the client must
+// set PVEAuthCookie itself. Without this, every /api2 request after login sends
+// no cookie and pveproxy answers 401, so the whole dashboard reads
+// "not authenticated". Value is encodeURIComponent'd (pveproxy url-decodes on
+// read); Secure because the dashboard is TLS-only.
+function setAuthCookie(ticket: string): void {
+  try {
+    document.cookie =
+      `PVEAuthCookie=${encodeURIComponent(ticket)}; path=/; secure; samesite=Lax`
+  } catch {
+    /* ignore (non-browser env) */
+  }
+}
+
 function enc(v: string | number): string {
   return encodeURIComponent(String(v))
 }
@@ -229,6 +244,7 @@ export async function login(
 
   const csrf = String(data.CSRFPreventionToken ?? "")
   const user = String(data.username ?? userid)
+  setAuthCookie(ticket) // MUST set the cookie or every subsequent /api2 call is unauthenticated
   rememberSession(user, csrf)
   return { ok: true, user, ticket, csrfToken: csrf, cap: data.cap }
 }
