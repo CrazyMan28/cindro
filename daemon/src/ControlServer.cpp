@@ -5776,15 +5776,18 @@ void ControlServer::readWidgetTail()
     // a no-op on '\n'-only content and only makes the arithmetic exact.
     if (!f.open(QIODevice::ReadOnly))
         return;
-    // Rotation/truncation: the bus file shrank out from under us (log rotation,
-    // or a fresh engine run). Our old byte offset no longer maps onto the new
-    // file, and re-reading from 0 would REPLAY every line still in the file as a
-    // fresh widget.render (double-render). Resync to the CURRENT EOF — matching
-    // startWidgetWatch()'s "start from EOF so old widgets don't replay" — and
-    // pick up genuinely new frames on the next poll instead.
+    // Rotation/truncation: the bus file shrank out from under us. widgets_bus's
+    // truncate-and-keep-tail rewrites the file to its last ~2 MiB and THEN appends
+    // the record that triggered the rotation, so the fresh tail holds both records
+    // we already broadcast AND genuinely-new ones (the trigger + anything written
+    // in the last poll interval). Jumping straight to EOF would drop the new ones;
+    // re-reading from 0 would replay the old ones as duplicate renders. Instead
+    // re-read from the start but DEDUP by each record's `ts`: skip anything at or
+    // before the newest ts we've already sent (m_lastWidgetTs), emit the rest.
+    bool rotated = false;
     if (f.size() < m_widgetOffset) {
-        m_widgetOffset = f.size();
-        return;
+        m_widgetOffset = 0;
+        rotated = true;
     }
     if (!f.seek(m_widgetOffset))
         return;
@@ -5809,6 +5812,12 @@ void ControlServer::readWidgetTail()
         if (perr.error != QJsonParseError::NoError || !d.isObject())
             continue;
         const QJsonObject o = d.object();
+        // On a rotation pass, the retained tail re-presents records we already
+        // broadcast; skip anything at or before the newest ts we've sent so they
+        // don't double-render. (Normal, in-order tailing never skips.)
+        const qint64 ts = o.value(QStringLiteral("ts")).toVariant().toLongLong();
+        if (rotated && ts <= m_lastWidgetTs)
+            continue;
         const QString op = o.value(QStringLiteral("op")).toString();
         QJsonObject data;
         QString eventName;
@@ -5836,6 +5845,9 @@ void ControlServer::readWidgetTail()
             data.insert(QStringLiteral("target"), o.value(QStringLiteral("target")).toString());
             data.insert(QStringLiteral("session_id"), o.value(QStringLiteral("session_id")).toString());
         }
+        // Committed to broadcasting this record: advance the rotation-dedup cursor.
+        if (ts > m_lastWidgetTs)
+            m_lastWidgetTs = ts;
         QJsonObject frame;
         frame.insert(QStringLiteral("v"), 1);
         frame.insert(QStringLiteral("event"), eventName);
@@ -9497,14 +9509,19 @@ namespace {
 
 // Deterministic id for a synced proxmox-agent memory row. Encodes the remote
 // row's own `created` stamp (so handleProxmoxReport's sync watermark can track
-// pve's clock, not our local insert time) plus a short content hash (so two
-// decisions made in the same remote millisecond don't collide). Re-importing an
-// identical row yields the same id -> MemoryStore::add upserts, never inserts a
-// duplicate.
-QString proxmoxReportRowId(qint64 remoteCreatedMs, const QString &text)
+// pve's clock, not our local insert time) plus a short hash of the AGENT identity
+// + content. Folding the agent in is what keeps two DIFFERENT machines that emit
+// the same decision text in the same remote millisecond from colliding: memory
+// ids are a global upsert key, so without it machine B's row would upsert machine
+// A's (rewriting its entityRef to B) — A then loses that report and re-imports it
+// forever, since its agent-scoped watermark can no longer see the overwritten row.
+// Re-importing an identical row (same agent) yields the same id -> MemoryStore::add
+// upserts, never inserts a duplicate. (The `created` stays parts[1] for the
+// watermark recovery below — only the hash input changed.)
+QString proxmoxReportRowId(qint64 remoteCreatedMs, const QString &agent, const QString &text)
 {
     const QByteArray h = QCryptographicHash::hash(
-        text.toUtf8(), QCryptographicHash::Sha1).toHex().left(12);
+        (agent + QLatin1Char('\n') + text).toUtf8(), QCryptographicHash::Sha1).toHex().left(12);
     return QStringLiteral("proxmoxrpt_%1_%2")
         .arg(remoteCreatedMs)
         .arg(QString::fromLatin1(h));
@@ -9586,7 +9603,7 @@ Response ControlServer::handleProxmoxReport(const Request &req)
         // hash: re-pulling the same decision UPSERTS (MemoryStore::add treats a
         // supplied id as an upsert key) instead of INSERTing a duplicate, and
         // makes the remote `created` recoverable for the watermark above.
-        m_memory.add(text, tags, proxmoxReportRowId(remoteCreated, text),
+        m_memory.add(text, tags, proxmoxReportRowId(remoteCreated, agentName, text),
                      QStringLiteral("agent"), agentName);
     }
 

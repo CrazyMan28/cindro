@@ -871,23 +871,32 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             "call_state", "call_timeout" -> {
                 val callState = event.state ?: event.type.removePrefix("call_")
-                _phone.update { CallStateReducer.reduce(it, PhoneAction.CallState(event.callId, callState)) }
-                val activeId = _phone.value.activeCallId
-                if ((callState == "timeout" || callState == "ended" || callState == "rejected" || callState == "failed") &&
-                    (event.callId == null || event.callId == activeId)
-                ) {
-                    // A terminal call_state/call_timeout ends the call just like an
-                    // explicit call_end — clear activeCallId, stop TTS, and tear down
-                    // the call foreground service (CallState alone leaves them pinned).
-                    // Gated to the active call: this codebase supports overlapping/multi-
-                    // socket calls, so a STALE terminal event for a non-active call must
-                    // not tear down a different live call (only fire when it targets the
-                    // active call, or carries no id).
+                val isTerminal = callState == "timeout" || callState == "ended" ||
+                    callState == "rejected" || callState == "failed"
+                // Capture the active call BEFORE reducing: PhoneAction.CallState
+                // retargets activeCallId to event.callId, so reading it afterwards would
+                // make the stale-event guard (event.callId == activeId) always true.
+                // This codebase supports overlapping/multi-socket calls, so a terminal
+                // event that doesn't target the active call must be ignored entirely —
+                // NOT reduced (that would hijack activeCallId) and not allowed to tear
+                // down a different live call.
+                val priorActiveId = _phone.value.activeCallId
+                val targetsActive = event.callId == null || event.callId == priorActiveId
+                if (isTerminal && !targetsActive) {
+                    // Stale/overlapping terminal event for a non-active call: drop it.
+                } else if (isTerminal) {
+                    // Terminal event for the active call: end it like an explicit
+                    // call_end — CallState alone leaves activeCallId, TTS, and the call
+                    // foreground service pinned.
+                    _phone.update { CallStateReducer.reduce(it, PhoneAction.CallState(event.callId, callState)) }
                     _phone.update { CallStateReducer.reduce(it, PhoneAction.CallEnded(event.callId)) }
                     event.callId?.let { audio.clearTtsForCall(it) }
                     app.stopService(Intent(app, CallForegroundService::class.java))
                     OutgoingCallBridge.publishState(OutgoingCallBridge.State.Ended(event.callId, callState))
                     outgoingCallShown = false
+                } else {
+                    // Non-terminal (ringing/connecting/…): update state as before.
+                    _phone.update { CallStateReducer.reduce(it, PhoneAction.CallState(event.callId, callState)) }
                 }
             }
             "call_message" -> {

@@ -986,6 +986,10 @@ private:
     QSet<QWebSocket *> m_widgetClients;
     QTimer *m_widgetTimer = nullptr;
     qint64 m_widgetOffset = 0;
+    // Newest widget-record `ts` we've already broadcast. Used ONLY on bus
+    // rotation to dedup the retained tail (which mixes already-sent records with
+    // genuinely-new ones) without either double-rendering or dropping frames.
+    qint64 m_lastWidgetTs = 0;
     void startWidgetWatch();
     void readWidgetTail();
     QString widgetsBusPath() const;

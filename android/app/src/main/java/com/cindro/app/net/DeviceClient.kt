@@ -225,7 +225,18 @@ class DeviceClient(
                     return
                 }
                 if (obj.has("authed") || obj.get("event")?.takeIf { it.isJsonPrimitive }?.asString == "authed") {
-                    val okAuth = obj.get("authed")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: true
+                    // A present `authed` must be a real boolean. A malformed value
+                    // (null/object/array/non-bool) is NOT success — defaulting it to
+                    // true would report CONNECTED and release pending requests without
+                    // a valid positive daemon ack. Only the legacy event-only shape
+                    // ({"event":"authed"}, no boolean field) counts as success by presence.
+                    val authedEl = obj.get("authed")
+                    val okAuth = if (authedEl != null) {
+                        authedEl.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }
+                            ?.asBoolean ?: false
+                    } else {
+                        true
+                    }
                     if (okAuth) {
                         checkIdentityFingerprint(obj)
                         authed = true
