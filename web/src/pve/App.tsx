@@ -44,6 +44,28 @@ const SECTION_LABEL: Record<Section, string> = {
   SYSTEM: "System",
 }
 
+// Docked chat rail: the operator can drag its left edge to widen/narrow it, and
+// the chosen width sticks across reloads (localStorage). Clamped so it can never
+// swallow the page or shrink the transcript into unreadability.
+const DOCK_WIDTH_KEY = "cindro.pve.dock.width.v1"
+const DOCK_MIN = 300
+const DOCK_MAX = 760
+const DOCK_DEFAULT = 380
+
+function clampDockWidth(w: number): number {
+  return Math.max(DOCK_MIN, Math.min(DOCK_MAX, Math.round(w)))
+}
+
+function readDockWidth(): number {
+  try {
+    const v = Number(localStorage.getItem(DOCK_WIDTH_KEY))
+    if (Number.isFinite(v) && v > 0) return clampDockWidth(v)
+  } catch {
+    /* storage unavailable */
+  }
+  return DOCK_DEFAULT
+}
+
 // ---------------------------------------------------------------------------
 // Boot splash — shown only for the instant checkAuth() takes to resolve, so
 // a valid session never flashes the login card before the shell.
@@ -235,6 +257,37 @@ export const App: Component = () => {
   const [page, setPage] = createSignal(pageFromHash())
   const [mountedIds, setMountedIds] = createSignal<string[]>([pageFromHash()])
   const [dockCollapsed, setDockCollapsed] = createSignal(false)
+  const [dockWidth, setDockWidth] = createSignal(readDockWidth())
+  const [dockResizing, setDockResizing] = createSignal(false)
+
+  // Drag the dock's left edge: moving left widens it (startW - dx). Pointer
+  // capture keeps the drag alive even if the cursor outruns the 8px handle, and
+  // the final width is persisted on release.
+  const onDockResizeDown = (e: PointerEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    if (dockCollapsed()) setDockCollapsed(false)
+    const el = e.currentTarget as HTMLElement
+    const startX = e.clientX
+    const startW = dockWidth()
+    el.setPointerCapture(e.pointerId)
+    setDockResizing(true)
+    const move = (ev: PointerEvent) => setDockWidth(clampDockWidth(startW - (ev.clientX - startX)))
+    const up = () => {
+      el.removeEventListener("pointermove", move)
+      el.removeEventListener("pointerup", up)
+      el.removeEventListener("pointercancel", up)
+      setDockResizing(false)
+      try {
+        localStorage.setItem(DOCK_WIDTH_KEY, String(dockWidth()))
+      } catch {
+        /* storage unavailable — width just won't persist */
+      }
+    }
+    el.addEventListener("pointermove", move)
+    el.addEventListener("pointerup", up)
+    el.addEventListener("pointercancel", up)
+  }
 
   const navigate = (id: string) => {
     if (!getPage(id)) return
@@ -355,7 +408,17 @@ export const App: Component = () => {
             </div>
 
             <Show when={page() !== "chat"}>
-              <aside class="cx-dock" classList={{ collapsed: dockCollapsed() }}>
+              <aside
+                class="cx-dock"
+                classList={{ collapsed: dockCollapsed(), resizing: dockResizing() }}
+                style={dockCollapsed() ? undefined : { "flex-basis": `${dockWidth()}px`, width: `${dockWidth()}px` }}
+              >
+                <div
+                  class="cx-dock-resize"
+                  onPointerDown={onDockResizeDown}
+                  title="Drag to resize"
+                  aria-hidden="true"
+                />
                 <div class="cx-dock-head">
                   <button
                     type="button"

@@ -62,6 +62,72 @@ const mkId = () => nextId++
 const TOOL_OUTPUT_CAP = 4000
 const THINKING_CAP = 4000
 
+// --- persistence -----------------------------------------------------------
+// The operator transcript + chosen model survive a page reload AND navigation
+// between pages via localStorage, so Cindro's Proxmox chat "keeps history" like
+// every other Cindro surface. This is DISPLAY continuity: the daemon session
+// itself can't be resumed across a browser reload (the dashboard proxy scopes
+// session.send/subscribe to sessions the CURRENT socket created — see
+// dashboard_server.py's allowed_sessions), so on reload the transcript is
+// restored for reading and the next message opens a fresh session. Switching
+// model does the same (the model is fixed at session.create), keeping history.
+const CHAT_STORE_KEY = "cindro.pve.chat.transcript.v1"
+const MODEL_STORE_KEY = "cindro.pve.chat.model.v1"
+const MAX_PERSISTED_ITEMS = 150
+const PERSIST_FIELD_CAP = 8000
+
+function capStr(s: string): string {
+  return s.length > PERSIST_FIELD_CAP ? `${s.slice(0, PERSIST_FIELD_CAP)}…` : s
+}
+
+/** Freeze a live item into a stable, replay-safe form for storage: no active
+ * typewriter/thinking timers, collapsed folds, capped strings, and no tool card
+ * left "running" (a turn cut off by the page close reads back as failed rather
+ * than spinning forever). */
+function sanitizeForStore(it: ChatItem): ChatItem {
+  switch (it.kind) {
+    case "assistant":
+      return { ...it, live: false, text: capStr(it.text) }
+    case "thinking":
+      return { ...it, expanded: false, endedAt: it.endedAt ?? it.startedAt, text: capStr(it.text) }
+    case "tool":
+      return it.state === "running"
+        ? {
+            ...it,
+            expanded: false,
+            state: "failed",
+            args: capStr(it.args),
+            output: it.output ? capStr(it.output) : "(interrupted — the page was closed mid-call)",
+          }
+        : { ...it, expanded: false, args: capStr(it.args), output: capStr(it.output) }
+    default:
+      return it
+  }
+}
+
+function isStoredItem(x: unknown): x is ChatItem {
+  return !!x && typeof x === "object" && typeof (x as { id?: unknown }).id === "number" && typeof (x as { kind?: unknown }).kind === "string"
+}
+
+function readStoredTranscript(): ChatItem[] {
+  try {
+    const raw = localStorage.getItem(CHAT_STORE_KEY)
+    if (!raw) return []
+    const arr: unknown = JSON.parse(raw)
+    return Array.isArray(arr) ? arr.filter(isStoredItem) : []
+  } catch {
+    return []
+  }
+}
+
+function readStoredModel(): string {
+  try {
+    return localStorage.getItem(MODEL_STORE_KEY) || ""
+  } catch {
+    return ""
+  }
+}
+
 function parseArgs(raw: unknown): Record<string, unknown> {
   if (raw && typeof raw === "object") return raw as Record<string, unknown>
   if (typeof raw === "string") {
@@ -90,36 +156,42 @@ function normalizeRisk(v: unknown): "low" | "medium" | "high" {
   return s === "high" || s === "low" ? s : "medium"
 }
 
+// The operator's MCP routing (makeBrain's "proxmox-op-" branch) ONLY wires the
+// full-power operator tool endpoint for an OpenAI-compatible `api` brain — a CLI
+// brain (codex/claude) or Anthropic can't drive it and would start a chat with
+// NO Proxmox tools (or fail outright, e.g. "codex not found on PATH"). So a
+// model is only "operator-capable" if it's a non-Anthropic api-brain model;
+// this gate applies to both the session default AND the in-chat picker list.
+function isOperatorCapableModel(model: string): boolean {
+  return !!model && !/^(claude|anthropic)/i.test(model)
+}
+
 // The operator session's brain/model come from the admin's AI Settings
-// (settings.get default_brain / default_model), so a host configured for
-// OpenAI / Ollama / etc. isn't forced onto Mistral. Falls back to the api brain
-// + mistral-large-latest (the operator's MCP routing needs an OpenAI-compatible
-// api brain, not a CLI/Anthropic one).
-async function operatorBrainModel(): Promise<{ brain: string; model: string }> {
-  // The operator's MCP routing (makeBrain's "proxmox-op-" branch) ONLY wires the
-  // full-power operator tool endpoint for an OpenAI-compatible `api` brain — a
-  // CLI brain (codex/claude) or Anthropic can't drive it and would just fail to
-  // start (e.g. "codex not found on PATH"). So the operator ALWAYS uses `api`;
-  // it adopts the user's chosen model only when they've selected the Cloud API
-  // brain, otherwise falls back to Mistral (the recommended CLI-less default).
+// (settings.get default_brain / default_model), surfaced by the dashboard's
+// /_jarvis/settings bridge, so a host configured for OpenAI / Ollama / etc.
+// isn't forced onto Mistral. Also returns the operator-capable model catalog so
+// the in-chat model picker has something to list. Falls back to the api brain +
+// mistral-large-latest (the recommended CLI-less default) when nothing usable
+// is configured.
+async function resolveOperatorConfig(): Promise<{ brain: string; model: string; models: string[] }> {
+  const fallback = { brain: "api", model: "mistral-large-latest", models: [] as string[] }
   try {
     const r = await fetch("/_jarvis/settings", { credentials: "include" })
-    if (r.ok) {
-      const s = ((await r.json())?.settings ?? {}) as Record<string, unknown>
-      if (s.default_brain === "api" && typeof s.default_model === "string" && s.default_model) {
-        // The operator needs an OpenAI-COMPATIBLE api brain: makeBrain's
-        // "proxmox-op-" branch attaches the operator MCP + gate only for
-        // non-Anthropic providers, so a Claude/anthropic model would start a
-        // chat with NO Proxmox tools. Skip those and fall back to Mistral.
-        if (!/^(claude|anthropic)/i.test(s.default_model)) {
-          return { brain: "api", model: s.default_model }
-        }
-      }
+    if (!r.ok) return fallback
+    const j = (await r.json()) as Record<string, unknown>
+    const s = ((j?.settings as Record<string, unknown>) ?? {}) as Record<string, unknown>
+    const rawModels = (j?.models as { models?: unknown })?.models
+    const models = (Array.isArray(rawModels) ? (rawModels as unknown[]) : []).filter(
+      (m): m is string => typeof m === "string" && isOperatorCapableModel(m),
+    )
+    let model = fallback.model
+    if (s.default_brain === "api" && typeof s.default_model === "string" && isOperatorCapableModel(s.default_model)) {
+      model = s.default_model
     }
+    return { brain: "api", model, models }
   } catch {
-    /* fall through to the default */
+    return fallback
   }
-  return { brain: "api", model: "mistral-large-latest" }
 }
 
 // ---------------------------------------------------------------------------
@@ -140,10 +212,36 @@ export class ChatController {
   private currentThinkingId: number | null = null
   private creating: Promise<string> | null = null
 
+  private persistTimer: ReturnType<typeof setTimeout> | undefined
+  private modelOverride = createSignal<string>(readStoredModel())
+  private hostDefaultModel = createSignal<string>("")
+  private modelList = createSignal<string[]>([])
+  private modelsLoaded = false
+
   constructor(private client: CindroClient) {
     const [items, setItems] = createStore<ChatItem[]>([])
     this.items = items
-    this.setItems = (fn) => setItems(produce(fn))
+    // Every mutation schedules a debounced localStorage write so the transcript
+    // is durable without persisting on every streamed token.
+    this.setItems = (fn) => {
+      setItems(produce(fn))
+      this.schedulePersist()
+    }
+
+    // Rehydrate any prior transcript BEFORE the event pump can push new items,
+    // and advance the id counter past the restored ids so new items never
+    // collide with (and clobber) a restored row of the same id.
+    const restored = readStoredTranscript()
+    if (restored.length) {
+      let maxId = 0
+      for (const it of restored) if (it.id > maxId) maxId = it.id
+      if (nextId <= maxId) nextId = maxId + 1
+      setItems(
+        produce((list) => {
+          for (const it of restored) list.push(it)
+        }),
+      )
+    }
 
     const [busy, setBusy] = createSignal(false)
     this.busy = busy
@@ -181,6 +279,86 @@ export class ChatController {
     this.unbindEvents = null
     this.unbindStatus?.()
     this.unbindStatus = null
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer)
+      this.persistTimer = undefined
+    }
+  }
+
+  // --- model picker + history controls -------------------------------------
+
+  /** The operator-capable model catalog for the in-chat picker. */
+  models(): string[] {
+    return this.modelList[0]()
+  }
+
+  /** The model the next session will use: the operator's explicit pick, else the
+   * host default from AI Settings, else Mistral. */
+  selectedModel(): string {
+    return this.modelOverride[0]() || this.hostDefaultModel[0]() || "mistral-large-latest"
+  }
+
+  /** Fetch the operator-capable model catalog + host default for the picker.
+   * Idempotent — the first caller wins, later calls are no-ops. */
+  async loadModels(): Promise<void> {
+    if (this.modelsLoaded) return
+    this.modelsLoaded = true
+    const cfg = await resolveOperatorConfig()
+    this.hostDefaultModel[1](cfg.model)
+    // Always keep the current selection listed, even if the live catalog didn't
+    // return it (a custom id, or a provider that's momentarily unreachable).
+    const list = [...cfg.models]
+    const sel = this.modelOverride[0]() || cfg.model
+    if (sel && !list.includes(sel)) list.unshift(sel)
+    this.modelList[1](list)
+  }
+
+  /** Switch the model for subsequent turns. The model is fixed at
+   * session.create, so this abandons the current daemon session (a fresh one
+   * opens on the next send) while KEEPING the visible transcript. */
+  setModel(model: string): void {
+    if (!model || model === this.selectedModel()) return
+    this.modelOverride[1](model)
+    try {
+      localStorage.setItem(MODEL_STORE_KEY, model)
+    } catch {
+      /* best-effort */
+    }
+    this.resetSession()
+    this.setBusy(false)
+  }
+
+  /** Wipe the transcript and start a brand-new conversation. */
+  newConversation(): void {
+    this.setItems((items) => {
+      items.splice(0, items.length)
+    })
+    this.resetSession()
+    this.setBusy(false)
+    try {
+      localStorage.removeItem(CHAT_STORE_KEY)
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  private resetSession(): void {
+    this.sid[1]("")
+    this.creating = null
+    this.currentThinkingId = null
+  }
+
+  private schedulePersist(): void {
+    if (this.persistTimer) clearTimeout(this.persistTimer)
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined
+      try {
+        const slice = this.items.slice(-MAX_PERSISTED_ITEMS).map(sanitizeForStore)
+        localStorage.setItem(CHAT_STORE_KEY, JSON.stringify(slice))
+      } catch {
+        /* quota exceeded / storage unavailable — history is best-effort */
+      }
+    }, 400)
   }
 
   private push(item: ChatItem): void {
@@ -194,10 +372,13 @@ export class ChatController {
     if (existing) return existing
     if (this.creating) return this.creating
     this.creating = (async () => {
-      // Honor the operator model/brain the admin picked on the AI Settings page
-      // instead of hard-coding Mistral — on a host with only an OpenAI key or a
-      // local Ollama model, a hard-coded mistral-large-latest would just fail.
-      const { brain, model } = await operatorBrainModel()
+      // Honor the model the operator picked in the chat header, else the
+      // brain/model the admin chose on AI Settings — on a host with only an
+      // OpenAI key or a local Ollama model, a hard-coded mistral would just fail.
+      const override = this.modelOverride[0]()
+      const { brain, model } = override
+        ? { brain: "api", model: override }
+        : await resolveOperatorConfig()
       const res = await this.client.call(
         "session.create",
         {
@@ -559,6 +740,63 @@ const ErrorCard: Component<{ text: string }> = (props) => (
   </div>
 )
 
+/** Compact, self-closing dropdown to switch the operator's model on the fly.
+ * Custom (not a native <select>) so it stays in the HUD's dark palette in every
+ * browser and fits the narrow docked rail. Lists the operator-capable catalog
+ * from AI Settings (see ChatController.loadModels / resolveOperatorConfig). */
+const ModelPicker: Component<{ controller: ChatController }> = (props) => {
+  const [open, setOpen] = createSignal(false)
+  let wrapRef: HTMLDivElement | undefined
+  onMount(() => {
+    void props.controller.loadModels()
+    const onDocPointer = (e: PointerEvent) => {
+      if (wrapRef && !wrapRef.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener("pointerdown", onDocPointer)
+    onCleanup(() => document.removeEventListener("pointerdown", onDocPointer))
+  })
+  const selected = createMemo(() => props.controller.selectedModel())
+  return (
+    <div class="cx-model-picker" ref={wrapRef}>
+      <button
+        type="button"
+        class="cx-model-btn"
+        classList={{ open: open() }}
+        title={`Model: ${selected()} — click to switch`}
+        onClick={() => {
+          void props.controller.loadModels()
+          setOpen((v) => !v)
+        }}
+      >
+        <span class="cx-model-btn-label">{selected()}</span>
+        <span class="cx-model-btn-caret">▾</span>
+      </button>
+      <Show when={open()}>
+        <div class="cx-model-menu">
+          <For
+            each={props.controller.models()}
+            fallback={<div class="cx-model-empty">No models available — add a provider key in AI Settings.</div>}
+          >
+            {(m) => (
+              <button
+                type="button"
+                class="cx-model-item"
+                classList={{ active: m === selected() }}
+                onClick={() => {
+                  props.controller.setModel(m)
+                  setOpen(false)
+                }}
+              >
+                {m}
+              </button>
+            )}
+          </For>
+        </div>
+      </Show>
+    </div>
+  )
+}
+
 const TranscriptRow: Component<{
   item: ChatItem
   onToggleTool: (id: number) => void
@@ -641,7 +879,19 @@ export const ChatPanel: Component<{ controller: ChatController; compact?: boolea
     <div class={`cx-chat ${props.compact ? "cx-chat-compact" : ""}`}>
       <div class="cx-chat-head">
         <span class="cx-chat-wordmark">CINDRO</span>
-        <span class={`cx-chat-link ${props.controller.connected() ? "live" : ""}`} />
+        <div class="cx-chat-head-tools">
+          <ModelPicker controller={props.controller} />
+          <button
+            type="button"
+            class="cx-chat-new"
+            title="New conversation"
+            aria-label="New conversation"
+            onClick={() => props.controller.newConversation()}
+          >
+            ⟲
+          </button>
+          <span class={`cx-chat-link ${props.controller.connected() ? "live" : ""}`} />
+        </div>
       </div>
       <div class="cx-chat-scroll" ref={scrollRef} onScroll={onScroll}>
         <Show when={props.controller.items.length > 0} fallback={<EmptyState compact={props.compact} />}>
