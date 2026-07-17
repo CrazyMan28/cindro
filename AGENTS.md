@@ -1253,6 +1253,54 @@ The Cindro Proxmox dashboard's operator chat (`web/src/pve/chat.tsx`) and Home w
   the inline width doesn't fight the 46px collapsed rule; the resize grip is `display:none` while
   collapsed (expand via the toggle first).
 
+## New subsystems (2026-07-16) — auto-spawned chats now get a REAL isolated agent desktop again
+
+Bug report: asking Cindro for "an agent desktop" during an **auto-spawned** chat (the "let Cindro use
+a computer" toggle, no explicit co-work session) visibly switched the user's real KDE screen to a
+new, empty virtual desktop instead of quietly spinning up the nested headless-Sway agent desktop.
+
+Root cause: `ControlServer::createSession()`'s `autoComputer` branch deliberately skipped
+`AgentDesktop::ensure()` (up to a ~45s synchronous nested-compositor + engine cold-start, avoided on
+every plain chat's first turn) and instead injected the **GLOBAL** `:8794` engine under the **same**
+`computer_use` MCP tool name that an explicit coworker+agent session uses for its truly isolated
+nested engine. That global engine's `which="active"` default resolves to whatever the real host
+compositor is (KDE here) — it drives the user's REAL screen, not an isolated one. The one-time
+co-work preamble that explains the `real_screen` vs `computer_use` split was gated on
+`m_agentDesktops.has(sessionId)`, false on this fallback path, so the model never learned any of
+this. Asked for "your own" / "an agent" desktop with only the mislabeled real-screen tools available,
+it improvised — calling `workspace_create`/`switch_workspace` (`computer_use_mcp/workspaces.py`),
+which switches the user's actual visible KDE desktop.
+
+**First pass (prompt-level, superseded below):** extended the one-time co-work guide to also fire for
+`m_autoGlobalEngineSessions` sessions with a clause telling the model the truth about that fallback.
+Kept as a safety net (see below) but not the real fix — the user explicitly asked for the
+architectural fix instead of papering over it with instructions the model could still ignore.
+
+**Real fix — restore actual isolation.** Investigating turned up that the daemon already has a full
+battery-aware lifecycle for exactly this case, just fed from nowhere: `m_autoComputerSessions` (a
+session set marked "auto-provisioned, ok to idle-teardown"), `sweepIdleDesktops()` (tears the
+compositor+engine down after 8 min unviewed/idle, keeping the reserved port+bearer), and a
+BATTERY re-provision check at the top of `sendToSession()` (`if
+(m_autoComputerSessions.contains(sessionId) && !m_agentDesktops.has(sessionId)) ensure(...)` —
+transparently revives the SAME reserved engine so a brain that baked the MCP config at spawn keeps
+working). Nothing in the current codebase ever called `m_autoComputerSessions.insert(...)` — this
+machinery was orphaned when the `m_autoGlobalEngineSessions` shortcut was introduced. The
+`autoComputer` branch now calls `m_agentDesktops.ensure()` synchronously (identical to the explicit
+`explicitAgent` branch) and feeds success back into `m_autoComputerSessions`, so auto-spawned chats
+get the SAME real nested-Sway isolation an explicit co-work session gets, complete with idle-teardown
+and re-provisioning. `m_autoGlobalEngineSessions` (+ the prompt-level guide clause from the first
+pass) is now reserved for the two cases where isolation is genuinely unavailable: stock Windows
+without the v2 sandbox opt-in (`!AgentDesktop::nestedDesktopSupported()` — the documented v1
+take-over default) — a real `ensure()` failure on a platform that CAN isolate just skips computer-use
+for that session entirely rather than silently degrading to the mislabeled real screen again.
+
+**Trade-off, accepted deliberately:** `createSession()` now pays the same up-to-45s synchronous
+provisioning cost on an auto-spawned chat's first turn that an explicit co-work session already pays.
+`AgentDesktop::ensure()`'s internal waits use nested `QEventLoop::exec()` polling, which still pumps
+the daemon's event loop, so other sessions/clients are not frozen — only this one request's response
+is delayed. Chosen over the previous shortcut because the shortcut silently broke isolation; the cost
+is a one-time hit per session, not per turn (idle-teardown reuses the same reserved port+bearer).
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.
