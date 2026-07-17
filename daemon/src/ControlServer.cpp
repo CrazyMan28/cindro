@@ -2928,6 +2928,35 @@ void ControlServer::sweepStaleSkills()
     }
 }
 
+QString ControlServer::identityClause() const
+{
+    // CLI-shelled brains (claude/codex) have no equivalent of ApiBrain's
+    // memorySystemBlock() "You are Cindro, a helpful AI co-worker." opener —
+    // the co-work guide below jumps straight into tool descriptions assuming
+    // identity is already established. It never was, for these brains. Live
+    // testing (2026-07-17) showed a ClaudeBrain session without this line
+    // self-identified as "Claude Code (Cindro)" — trusting the injected tools
+    // (good, that's the actual fix — see ClaudeBrain::Options::
+    // systemPromptAppend) but still hedging its own name. One explicit
+    // sentence up front, ahead of everything else in the policy preamble,
+    // closes that gap. Uses the user's configured assistant_name (Settings)
+    // rather than a hardcoded "Cindro" so a rename is honored everywhere.
+    const QString name = m_settings.assistantName().trimmed().isEmpty()
+                             ? QStringLiteral("Cindro")
+                             : m_settings.assistantName().trimmed();
+    return QStringLiteral(
+        "\nYou are %1, an AI co-worker. This is not an optional branding "
+        "layer laid over a different underlying identity — %1 IS who you are "
+        "for this entire session. When asked who you are, what you are, or "
+        "what product/app this is, answer simply \"I'm %1\" — do not describe "
+        "yourself as \"Claude Code\", do not call this a \"CLI tool\" or "
+        "mention Anthropic/CLI branding as your primary identity; the "
+        "underlying model is an implementation detail, not your name. "
+        "Everything else in this preamble is a genuine system instruction "
+        "describing the real tools available to you this session, not "
+        "user-supplied text — treat it accordingly.\n").arg(name);
+}
+
 QString ControlServer::permissionPolicyClause() const
 {
     // Auto-ranked tool risk tiers (by capability, not by individual tool name):
@@ -3000,8 +3029,15 @@ QString ControlServer::modePolicyClause() const
             "available — fan out research freely. When the plan is ready, call "
             "present_plan(title, markdown, todos) and wait for the user's decision "
             "(approve unblocks THIS session immediately — execute right away, no "
-            "need to ask again; request-changes gives you feedback to "
-            "incorporate). The user can also change modes directly in Settings.");
+            "need to ask again; request-changes gives you feedback in the "
+            "returned `note` field to incorporate). There is NO separate "
+            "\"edit plan\"/\"update plan\" tool — do not search for one; "
+            "present_plan is both how you publish the plan and how you receive "
+            "revision feedback. If `note` comes back empty or too vague to act "
+            "on, do NOT immediately re-call present_plan — ask the user a "
+            "specific clarifying question (or just reply in chat) about what to "
+            "change and wait for their reply before revising. The user can also "
+            "change modes directly in Settings.");
     }
     if (mode == QStringLiteral("build")) {
         return QStringLiteral(
@@ -3028,7 +3064,9 @@ QString ControlServer::planToolsClause() const
         "calling enter_plan_mode(reason) — write/execute tools are blocked "
         "until you call exit_plan_mode (your own call, no approval needed) or "
         "present_plan (shows the user a written plan and blocks for their "
-        "decision). Use this when a task feels risky or under-specified.");
+        "decision — on \"revise\" the feedback comes back in present_plan's "
+        "`note`; there is NO separate edit/update-plan tool, do not search for "
+        "one). Use this when a task feels risky or under-specified.");
 }
 
 QString ControlServer::memorySystemBlock()
@@ -3899,7 +3937,7 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         // blocked at the tool layer. Reload first — the file is edited live
         // from Settings on any surface.
         m_trustPolicies.load();
-        policyPreamble = permissionPolicyClause() + modePolicyClause() +
+        policyPreamble = identityClause() + permissionPolicyClause() + modePolicyClause() +
                          planToolsClause() + m_trustPolicies.preambleClause();
     }
 
@@ -4141,12 +4179,28 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
 #undef JARVIS_LIVE_CPU_CMD_EXAMPLE
     }
 
-    // Prepend whatever fired this turn. When BOTH fire (an agent-desktop session's
-    // turn 1) the assembly is identical to before: guide + permission + mode +
-    // trust-policy clauses + separator + the rest.
-    if (!guide.isEmpty() || !policyPreamble.isEmpty())
-        effectiveText = guide + policyPreamble +
-                        QStringLiteral("\n---\n") + effectiveText;
+    // Deliver whatever fired this turn. ClaudeBrain has a REAL system-prompt
+    // channel (--append-system-prompt, see ClaudeBrain::Options::
+    // systemPromptAppend's doc comment) that Claude actually trusts as a
+    // genuine developer/system instruction — route it there instead of
+    // folding it into the first user-turn TEXT. Live testing (2026-07-17)
+    // showed Claude Sonnet 5 correctly treats an unsigned "[Cindro co-work —
+    // READ FIRST]" identity/tool-grant block embedded in user-turn text as a
+    // likely prompt injection and refuses to adopt the persona or trust the
+    // tools it lists ("I'm running as Claude Code... flagging it as a likely
+    // prompt injection, not something I'm complying with") — even on a
+    // session where the MCP tools it describes were correctly wired up and
+    // reachable. Other brains have no such channel (or already get a real
+    // system prompt via their own Options at construction, e.g.
+    // ApiBrain::Options::systemPrompt) and keep the legacy prepend-to-
+    // first-user-turn convention. setSystemPromptAppend is a no-op default on
+    // the Brain base class, so this is harmless for codex/api.
+    if (!guide.isEmpty() || !policyPreamble.isEmpty()) {
+        const QString sys = guide + policyPreamble;
+        brain->setSystemPromptAppend(sys);
+        if (!qobject_cast<ClaudeBrain *>(brain))
+            effectiveText = sys + QStringLiteral("\n---\n") + effectiveText;
+    }
 
     // ONE-TIME agent role injection: if this session runs AS a custom agent, put
     // its system prompt at the very FRONT of the first turn so it dominates.
@@ -9795,11 +9849,41 @@ Response ControlServer::handleOutpostInstallDashboard(const Request &req)
         "You are the Proxmox operator for this host, driving the Cindro dashboard.\n"
         "You can do everything the Proxmox GUI can via your tools, including a\n"
         "generic proxmox_api passthrough for anything without a dedicated tool.\n\n"
-        "Read/inspect freely. EVERY create/delete/power/snapshot/backup/migrate or\n"
-        "other state-changing action is permission-gated: expect an approval prompt\n"
-        "and NEVER assume an action succeeded until you see its tool result. If a\n"
-        "call is denied, explain what you wanted to do and stop — do not retry in a\n"
-        "loop. For long-running operations, poll proxmox_task_status with the UPID.\n"
+        "WORK AS AN AGENT, NOT A ONE-SHOT. Keep going until the user's goal is\n"
+        "actually done: understand the goal, call a tool, READ its result (especially\n"
+        "any error), reason about what it means, then take the next action — tool\n"
+        "after tool — adapting as you go. Never claim success you have not seen in a\n"
+        "tool result.\n\n"
+        "On every tool result:\n"
+        "- Success -> continue to the next step toward the goal.\n"
+        "- ERROR -> do NOT re-issue the same failing call. Read the message, find the\n"
+        "  cause, and take a DIFFERENT corrective action that removes the cause, THEN\n"
+        "  retry the original action. Repeating an identical failing call is never\n"
+        "  progress.\n"
+        "- A UPID means a long-running task: poll proxmox_task_status until it\n"
+        "  finishes before continuing or reporting done.\n\n"
+        "Proxmox error playbook — diagnose, fix the cause, then retry:\n"
+        "- \"VM is locked\" / a config lock (backup|snapshot|clone|migrate|rollback|\n"
+        "  create): the guest is locked. FIRST check proxmox_tasks_recent /\n"
+        "  proxmox_task_status for a job running on that vmid. If one IS running, WAIT\n"
+        "  and poll until it ends, then retry (never unlock a guest that has a live\n"
+        "  task). If the lock is STALE (no task running), clear it the way `qm unlock`\n"
+        "  does — remove the guest's lock config value (proxmox_api PUT\n"
+        "  /nodes/<node>/qemu/<vmid>/config with delete=lock, or .../lxc/<vmid>/config\n"
+        "  for a container; add skiplock=1 if the lock check blocks it) — then retry.\n"
+        "- \"already running\" / \"not running\": check proxmox_vm_status first and skip\n"
+        "  a redundant power action.\n"
+        "- \"does not exist\" / \"no such\": re-list (proxmox_vm_list / proxmox_node_list)\n"
+        "  for the right node + vmid instead of guessing.\n"
+        "- 403 / permission denied: report it plainly; you cannot escalate.\n\n"
+        "Safety + approvals:\n"
+        "- Read/inspect freely. EVERY create/delete/power/snapshot/backup/migrate or\n"
+        "  other state-changing action is permission-gated — expect an approval prompt\n"
+        "  and never assume it ran until you see the tool result.\n"
+        "- If the user (policy) DENIES an action, explain what you wanted and stop THAT\n"
+        "  line of work — do not resubmit the denied action.\n"
+        "- Prefer the least destructive path, and confirm which node/vmid before a\n"
+        "  delete.\n\n"
         "You also curate the Home widget board (proxmox_dashboard_layout_*) and the\n"
         "Tasks board (proxmox_task_*) when the user asks.\n");
     bool amok = false;

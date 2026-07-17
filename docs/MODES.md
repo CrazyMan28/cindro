@@ -84,6 +84,18 @@ tools; each CLI's own native file/shell tools need brain-specific handling too
   to the MCP-side gate). `Task` is included so subagent dispatch is forced through
   Cindro's own gated `agent_start`, not Claude's native ungated Task tool.
 
+**Persona note (2026-07-17 live-testing fix):** the co-work guide + policy preamble
+(tool grants, permission/mode policy, identity) used to be PREPENDED into the first
+user-turn's text for every brain, including ClaudeBrain — but Claude Sonnet 5 correctly
+treats an unsigned instruction block riding inside user-turn text as a plausible prompt
+injection, and refused to adopt the persona or trust the tools it listed even though they
+were genuinely wired up. Fixed by giving `Brain` a `setSystemPromptAppend(text)` virtual
+(no-op default) and routing the preamble through it for ClaudeBrain, which wires to the
+real `claude` CLI's `--append-system-prompt` flag (accumulates across calls, never
+replaces). CodexBrain/ApiBrain keep the legacy prepend convention. See
+`ControlServer::identityClause()`/`sendToSession()` and
+`ClaudeBrain::Options::systemPromptAppend`.
+
 ## Presenting a plan — `present_plan`
 
 `present_plan(title, markdown, todos)` (`computer_use_mcp/tools_plan.py`) publishes the
@@ -97,7 +109,21 @@ plan-restricted session whose own plan was never shown to the user (a real bug a
 earlier version of this had — Codex review, PR #130/#132). Then busts the gate's cache
 so the very next tool call in the same turn is already unblocked. Request Changes returns
 the user's feedback as `note` for the model to incorporate before calling `present_plan`
-again.
+again — there is **no** separate edit/update-plan tool; `present_plan` is both how a plan
+is published and how revision feedback comes back, and the docstrings/`modePolicyClause`/
+`planToolsClause` say so explicitly so the model doesn't go looking for one. On the UI
+side, `ChatDelegate.qml`'s plan card detects `present_plan`'s fixed two-option shape and
+opens "Request Changes" into a focused text field instead of submitting the bare label as
+the answer (2026-07-17 live-testing fix — the bare label left the model with a
+`note` containing no actual feedback to act on).
+
+Approve/deny matching across every `ask_bus`-backed gate (this one, trust-policy,
+phone, command-scan) goes through `ask_bus.is_affirmative(answer, yes_label)`, not an
+exact `answer == "allow"` string match — the latter silently denied legitimate
+free-text affirmatives typed into a question card's custom-answer field (2026-07-17
+live-testing fix). Matching order: exact match against the button's own label first,
+then a small literal whitelist, then a narrow `"yes "`/`"sure "`/etc. prefix match —
+deliberately not fuzzy/substring, so a genuinely ambiguous reply still fails closed.
 
 ## Steering a dispatched subagent — `agent_send`
 

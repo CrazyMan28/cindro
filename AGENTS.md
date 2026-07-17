@@ -1264,6 +1264,11 @@ The Cindro Proxmox dashboard's operator chat (`web/src/pve/chat.tsx`) and Home w
   `cindro.pve.dock.width.v1`, clamped 300–760px). The `.cx-dock.collapsed` width uses `!important` so
   the inline width doesn't fight the 46px collapsed rule; the resize grip is `display:none` while
   collapsed (expand via the toggle first).
+- **`.cx-chat-scroll` is a flex COLUMN, so pin its rows with `.cx-chat-scroll > * { flex-shrink: 0 }`.**
+  Without it, once the transcript overflows, flexbox shrinks the children to fit instead of scrolling;
+  text bubbles resist (their text sets a min height) but the approval card (`overflow:hidden`) gets
+  squished and its Authorize/Always/Deny buttons are clipped away — invisible AND unclickable. That
+  looked like "the approval buttons aren't there" but they were being flex-squished off the card.
 
 ## New subsystems (2026-07-16) — auto-spawned chats now get a REAL isolated agent desktop again
 
@@ -1756,6 +1761,65 @@ changed this round); the new `LicenseVerifyTest` seat-enforcement tests (8/8 in 
 isolation too. `php -l` clean on all 7 touched/new PHP files. `computer-use`'s `policy.py`/
 `test_policy.py` parse clean (`ast.parse`). The C++ changes were reviewed manually line-by-line
 against the existing rebind pattern (compilation isn't available in this environment).
+
+## New subsystems (2026-07-17, seventh wave) — live-testing bug wave on Plan Mode
+
+Three bugs surfaced by actually running the rebuilt daemon/desktop and using it, not by review —
+found and fixed in parallel with (and independent of) the fourth-through-sixth Codex review rounds
+above, before this branch merged their work in:
+
+- **ClaudeBrain sessions "acted like plain Claude Code"** — denied having Cindro's phone/computer-use
+  tools, self-identified as "Claude Code" and even "Claude Code (Cindro)". Root cause: the co-work
+  guide + policy preamble (tool grants, permission policy, mode policy) were PREPENDED into the
+  first user-turn's text, same as every other brain — but Claude Sonnet 5 correctly recognizes an
+  unsigned "[Cindro co-work — READ FIRST]" block riding inside user-turn text as a plausible prompt
+  injection and refuses to adopt the persona or trust the tools it lists, even when those tools are
+  genuinely wired up and reachable. Fixed by giving `Brain` a new virtual `setSystemPromptAppend(text)`
+  (no-op default) and routing the preamble through it for ClaudeBrain specifically
+  (`ControlServer::sendToSession`), which wires to the real `claude` CLI's `--append-system-prompt`
+  flag (`ClaudeBrain::Options::systemPromptAppend`, accumulates across calls — the guide can fire on
+  a later turn than the policy preamble, e.g. once an agent desktop comes up). CodexBrain/ApiBrain
+  keep the legacy prepend-to-user-turn-text convention (ApiBrain already has a real system prompt
+  channel via its own `Options`; Codex has neither issue nor fix here). Also added `identityClause()`
+  — one explicit "You are {assistant_name}" sentence at the very front of the preamble, since
+  CLI-shelled brains have no equivalent of `ApiBrain`'s memory-block identity opener.
+- **"Request Changes" on a plan card gave the model nothing to act on** — tapping it submitted the
+  literal label as `present_plan`'s answer, so the model got back `note:"Request Changes"` with zero
+  actual feedback, and (per user reports) sometimes went hunting for a nonexistent "edit plan" tool
+  instead of just re-reading the existing plan. Fixed in two places: `ChatDelegate.qml`'s plan-decision
+  card now detects `present_plan`'s fixed two-option shape and opens "Request Changes" into a focused
+  "What should Cindro change?" text field instead of submitting immediately (Enter with nothing typed
+  still sends an explicit "no specific feedback given yet" note, never the bare label); and
+  `present_plan`/`enter_plan_mode`/`exit_plan_mode`'s docstrings plus `modePolicyClause()`/
+  `planToolsClause()` now say outright that there is no separate edit/update-plan tool and that empty
+  feedback should prompt a clarifying question, not a blind re-call.
+- **A session stuck in Plan Mode despite Build mode being selected in Settings** — traced to
+  `ask_bus`'s Allow/Deny-style gates doing an exact-string `answer == "allow"` match; anything else
+  (including some legitimate free-text affirmatives typed into the generic question card's custom
+  text field) fell through to the deny/timeout path. Added `ask_bus.is_affirmative(answer, yes_label)`
+  — exact match against the button's own label wins first, then a small literal whitelist of common
+  affirmatives, then a narrow `"yes "`/`"sure "`/etc. prefix match (deliberately not fuzzy/substring,
+  to keep fail-closed behavior for genuinely ambiguous replies) — and wired it into all four
+  `policy.py` gates (`gate()`, `_phone_gate()`, `_scan_command()`, `_scan_tui_layout()`) plus
+  `present_plan`'s own approve check. The specific stuck session also had an ambiguous
+  `current_session_id()` at the moment `plan.exit`/`plan.approve` were called (see the "resolve sid
+  BEFORE the blocking ask_bus.ask() call" comment in `tools_plan.py` — those calls can block up to a
+  day, by which point another session may well be running too) — needed manual DB clearing, not a
+  code fix; if a session is ever stuck the same way again, cancel/delete it rather than trying to
+  message it back to a working state.
+
+**Also, unrelated to the bugs above:** the user reset their local `trust_policies.json` `default`
+from `"ask"` to `"allow"` after the Allow/Deny fix — that's a local config change, not a repo one.
+
+**Reconciled with rounds 4-6 above on merge:** round 6 removed `agent_send` from `_PLAN_SAFE_TOOLS`
+(it can direct an existing child dispatched before the parent's Plan Mode restriction) — that stayed
+removed; nothing here re-adds it. Round 6's `m_pendingPlanModeRebind`/`markPlanRebindIfClaudeLive`
+(rebuilds a live ClaudeBrain's baked-in `--disallowedTools` when Plan Mode state changes mid-session)
+and this wave's `setSystemPromptAppend()`/`identityClause()` routing both touch `sendToSession()`'s
+brain-dispatch path but are independent — the rebind block tears down/reconstructs the `Brain*`
+object, after which the (also per-call) system-prompt routing still applies to whichever brain
+pointer is live by the time it runs. Verified by re-reading the merged `sendToSession()` top to
+bottom, not just trusting a clean auto-merge.
 
 ## Conventions
 

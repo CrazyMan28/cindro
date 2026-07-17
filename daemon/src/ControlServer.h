@@ -731,6 +731,12 @@ private:
     QString prefetchMemoryBlock(const QString &query);
     void syncTurnMemory(const QString &sessionId, const QString &userText);
 
+    // First line of the policy preamble: explicitly states the assistant's
+    // name/identity (Settings' assistant_name, default "Cindro"). CLI-shelled
+    // brains (claude/codex) have no other system-prompt-level identity
+    // establishment — see the doc comment at the definition for why this was
+    // added (2026-07-17 live-tested regression).
+    QString identityClause() const;
     // Soft permission policy injected into the co-work preamble. Auto-ranks
     // tools high/medium/low by capability and tells the model to call ask_user
     // before acting at/above the user's configured permission_level. Returns a

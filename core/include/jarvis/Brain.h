@@ -37,6 +37,17 @@ public:
         Q_UNUSED(decision);
     }
 
+    // Append to a REAL, out-of-band system-prompt channel for this brain, if
+    // the underlying CLI/API exposes one (ClaudeBrain's --append-system-prompt
+    // today). Default no-op: most brains have no such channel (or already take
+    // a system prompt via their own Options at construction, e.g. ApiBrain) and
+    // keep relying on the daemon's legacy convention of prepending guidance
+    // text to the first user turn instead. Callers should feel free to call
+    // this more than once per session (e.g. once per newly-fired guidance
+    // block); overriders must ACCUMULATE, not replace, so a later call never
+    // silently drops text an earlier call already set.
+    virtual void setSystemPromptAppend(const QString &text) { Q_UNUSED(text); }
+
     // True while a turn is in flight.
     virtual bool isBusy() const = 0;
 

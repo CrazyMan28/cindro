@@ -905,6 +905,21 @@ Item {
                 try { return JSON.parse(del.text) }
                 catch (e) { return { "q": del.text, "options": [] } }
             }
+            // present_plan (tools_plan.py) always uses exactly these two literal
+            // options — detect it so this card can (a) label itself as a plan
+            // presentation rather than a generic question, and (b) give
+            // "Request Changes" richer behavior below (see requestingChanges).
+            property bool isPlanDecision: qRoot.parsed.options
+                && qRoot.parsed.options.length === 2
+                && qRoot.parsed.options[0] === "Approve & Build"
+                && qRoot.parsed.options[1] === "Request Changes"
+            // Tapping "Request Changes" used to submit that literal label as the
+            // answer — present_plan then got back note:"Request Changes" with no
+            // actual feedback, leaving the model nothing to act on (it would go
+            // looking for a nonexistent "edit plan" tool instead). Now it opens
+            // this card into a focused text-entry step instead of submitting
+            // immediately, so the user is prompted to say what to change.
+            property bool requestingChanges: false
             implicitHeight: qCol.implicitHeight + 28
             color: Qt.rgba(0.0, 0.78, 0.92, 0.06)
             border.color: Theme.accent
@@ -939,7 +954,7 @@ Item {
                 spacing: 11
 
                 Text {
-                    text: "❔ CINDRO IS ASKING"
+                    text: qRoot.isPlanDecision ? "📋 CINDRO PRESENTS A PLAN" : "❔ CINDRO IS ASKING"
                     color: Theme.accent
                     font.weight: Font.DemiBold
                     font.letterSpacing: Theme.trackMid
@@ -948,6 +963,7 @@ Item {
                 }
                 Text {
                     Layout.fillWidth: true
+                    visible: !qRoot.requestingChanges
                     text: qRoot.parsed.q ? qRoot.parsed.q : del.text
                     color: Theme.text
                     wrapMode: Text.Wrap
@@ -956,16 +972,57 @@ Item {
                     lineHeight: 1.4
                     textFormat: Text.PlainText
                 }
+                // Entered once "Request Changes" is tapped on a plan card: replaces
+                // the plan text with a focused prompt for what to change, instead of
+                // silently submitting "Request Changes" as the answer with nothing
+                // for the model to act on.
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: qRoot.requestingChanges
+                    spacing: 6
+                    Text {
+                        Layout.fillWidth: true
+                        text: "What should Cindro change?"
+                        color: Theme.text
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                        font.family: Theme.fontSans
+                    }
+                    Text {
+                        text: "← back"
+                        color: Theme.textFaint
+                        font.pixelSize: 12
+                        font.family: Theme.fontSans
+                        MouseArea {
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: qRoot.requestingChanges = false
+                        }
+                    }
+                }
                 Flow {
                     Layout.fillWidth: true
                     spacing: 8
-                    visible: !qRoot.answered
+                    visible: !qRoot.answered && !qRoot.requestingChanges
                     Repeater {
                         model: qRoot.parsed.options ? qRoot.parsed.options : []
                         ApprovalButton {
                             label: modelData
                             primary: true
-                            onClicked: qRoot.answer(modelData)
+                            onClicked: {
+                                // present_plan's fixed "Request Changes" option: don't
+                                // submit the bare label as the answer (present_plan
+                                // would get back note:"Request Changes" — no actual
+                                // feedback to act on). Open the text field instead and
+                                // focus it so the user's next Enter carries real detail.
+                                if (qRoot.isPlanDecision && modelData === "Request Changes") {
+                                    qRoot.requestingChanges = true
+                                    customInput.forceActiveFocus()
+                                } else {
+                                    qRoot.answer(modelData)
+                                }
+                            }
                         }
                     }
                 }
@@ -974,7 +1031,7 @@ Item {
                     visible: !qRoot.answered
                     radius: Theme.radiusSm
                     color: Qt.rgba(1, 1, 1, 0.05)
-                    border.color: Theme.hairline
+                    border.color: qRoot.requestingChanges ? Theme.accent : Theme.hairline
                     border.width: 1
                     implicitHeight: 34
                     TextInput {
@@ -987,12 +1044,25 @@ Item {
                         font.pixelSize: 13
                         font.family: Theme.fontSans
                         clip: true
-                        onAccepted: if (text.trim().length) qRoot.answer(text.trim())
+                        onAccepted: {
+                            if (text.trim().length) {
+                                qRoot.answer(text.trim())
+                            } else if (qRoot.requestingChanges) {
+                                // They pressed Enter with nothing typed: still send a
+                                // clearly-flagged note (never the bare "Request
+                                // Changes" label) so the model asks a follow-up
+                                // instead of silently re-presenting the same plan.
+                                qRoot.answer("(Request changes — no specific feedback " +
+                                             "given yet; ask me what to change)")
+                            }
+                        }
                         Text {
                             anchors.fill: parent
                             verticalAlignment: Text.AlignVCenter
                             visible: !customInput.text.length
-                            text: "Type a custom answer, then Enter…"
+                            text: qRoot.requestingChanges
+                                  ? "What would you like changed? Press Enter to send…"
+                                  : "Type a custom answer, then Enter…"
                             color: Theme.textFaint
                             font: customInput.font
                         }

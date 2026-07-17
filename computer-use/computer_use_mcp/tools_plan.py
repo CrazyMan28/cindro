@@ -52,7 +52,15 @@ def register(mcp: FastMCP) -> None:
         present_plan/approval). If you want the global mode itself changed,
         tell the user to do that in Settings.
         On "revise": the user's feedback is in `note` — incorporate it and call
-        present_plan again when ready; do NOT start executing.
+        present_plan again when ready; do NOT start executing. There is NO
+        separate "edit plan" or "update plan" tool — present_plan IS how you
+        both publish a plan and receive revision feedback; do not search for
+        another tool. If `note` is empty or unhelpful (e.g. the user just
+        tapped "Request Changes" with no detail — the UI now nudges them to
+        type something, but they can still send nothing), do NOT re-call
+        present_plan blindly: ask a specific clarifying question about what to
+        change (ask_user, or just reply in chat) and wait for their next
+        message before revising.
         On "timeout": the user hasn't responded — try again later or keep
         researching; you are still in PLAN mode."""
         try:
@@ -74,7 +82,7 @@ def register(mcp: FastMCP) -> None:
                 timeout=float(os.environ.get("JARVIS_PLAN_ASK_TIMEOUT", "86400")),
             )
             answer = str((res or {}).get("answer", "")).strip().lower()
-            if answer == "approve & build":
+            if ask_bus.is_affirmative(answer, "approve & build"):
                 try:
                     daemon_client.call("plan.exit", {"session_id": sid})
                 except Exception:
