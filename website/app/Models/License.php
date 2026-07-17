@@ -7,10 +7,12 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 #[Fillable([
     'user_id', 'key', 'tier', 'status', 'seats',
     'stripe_subscription_id', 'issued_at', 'expires_at', 'last_verified_at', 'notes',
+    'last_stripe_event_at',
 ])]
 class License extends Model
 {
@@ -24,6 +26,7 @@ class License extends Model
             'issued_at' => 'datetime',
             'expires_at' => 'datetime',
             'last_verified_at' => 'datetime',
+            'last_stripe_event_at' => 'datetime',
         ];
     }
 
@@ -31,6 +34,12 @@ class License extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    /** @return HasMany<LicenseActivation, $this> */
+    public function activations(): HasMany
+    {
+        return $this->hasMany(LicenseActivation::class);
     }
 
     /**

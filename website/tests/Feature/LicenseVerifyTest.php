@@ -54,4 +54,61 @@ class LicenseVerifyTest extends TestCase
 
         $response->assertOk()->assertJson(['valid' => false, 'reason' => 'revoked']);
     }
+
+    public function test_a_known_device_is_always_allowed(): void
+    {
+        // Codex review (PR #130): device_id was accepted but never enforced —
+        // a single one-seat key returned valid:true for arbitrarily many
+        // devices. Re-verifying from an ALREADY-recorded device must keep
+        // working regardless of how many times it's called.
+        $license = License::factory()->create(['status' => 'active', 'seats' => 1]);
+
+        $this->postJson('/api/license/verify', ['license_key' => $license->key, 'device_id' => 'device-a'])
+            ->assertOk()->assertJson(['valid' => true]);
+        $this->postJson('/api/license/verify', ['license_key' => $license->key, 'device_id' => 'device-a'])
+            ->assertOk()->assertJson(['valid' => true]);
+
+        $this->assertSame(1, $license->activations()->count());
+    }
+
+    public function test_a_new_device_beyond_seats_is_rejected(): void
+    {
+        $license = License::factory()->create(['status' => 'active', 'seats' => 1]);
+
+        $this->postJson('/api/license/verify', ['license_key' => $license->key, 'device_id' => 'device-a'])
+            ->assertOk()->assertJson(['valid' => true]);
+
+        $response = $this->postJson('/api/license/verify', [
+            'license_key' => $license->key, 'device_id' => 'device-b',
+        ]);
+
+        $response->assertOk()->assertJson(['valid' => false, 'reason' => 'seat_limit_exceeded']);
+        $this->assertSame(1, $license->activations()->count());
+    }
+
+    public function test_multiple_devices_allowed_up_to_the_seat_count(): void
+    {
+        $license = License::factory()->create(['status' => 'active', 'seats' => 3]);
+
+        foreach (['device-a', 'device-b', 'device-c'] as $deviceId) {
+            $this->postJson('/api/license/verify', ['license_key' => $license->key, 'device_id' => $deviceId])
+                ->assertOk()->assertJson(['valid' => true]);
+        }
+
+        $this->assertSame(3, $license->activations()->count());
+    }
+
+    public function test_no_device_id_skips_seat_enforcement(): void
+    {
+        // device_id is nullable — there's no identity to track without it.
+        $license = License::factory()->create(['status' => 'active', 'seats' => 1]);
+        $license->activations()->create([
+            'device_id' => 'device-a', 'first_seen_at' => now(), 'last_seen_at' => now(),
+        ]);
+
+        $response = $this->postJson('/api/license/verify', ['license_key' => $license->key]);
+
+        $response->assertOk()->assertJson(['valid' => true]);
+        $this->assertSame(1, $license->activations()->count());
+    }
 }
