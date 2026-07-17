@@ -24,13 +24,17 @@
 #
 # paths-ignore: website/** — the Laravel marketing/billing site has its own lightweight
 # website-ci.yml gate and doesn't ship a versioned product artifact, so a website-only
-# merge shouldn't bump/tag a product release.
+# merge shouldn't bump/tag a product release. Codex review (PR #130): website/** alone
+# didn't cover website-ci.yml itself (it lives in .github/workflows/, not website/) — a
+# merge that only edited that CI config still bumped/tagged a product release AND fired
+# every product build workflow for it. Ignore that workflow file too, here and in the
+# five product build workflows' own pull_request paths-ignore.
 name: auto-release
 
 on:
   push:
     branches: [main]
-    paths-ignore: ['website/**']
+    paths-ignore: ['website/**', '.github/workflows/website-ci.yml']
   workflow_dispatch: {}
 
 permissions:
