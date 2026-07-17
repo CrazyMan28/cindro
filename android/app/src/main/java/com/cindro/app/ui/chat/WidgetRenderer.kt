@@ -440,7 +440,15 @@ private fun ButtonNode(node: JsonObject, onAction: (JsonObject) -> Unit) {
 private fun PagerNode(node: JsonObject, onAction: (JsonObject) -> Unit) {
     val pages = node.arr("pages").objs()
     if (pages.isEmpty()) return
-    var page by remember { mutableIntStateOf(node.num("page", 0f).toInt().coerceIn(0, pages.size - 1)) }
+    // Key the page state on the page COUNT: a live widget.render update that changes the
+    // pager's structure (adds/removes pages) resets to the declared start page, but a
+    // benign in-place update (title/text/dots) keeps the user on their current page. The
+    // coerceIn below is what actually prevents an out-of-bounds index after a shrink; the
+    // key deliberately is NOT the whole spec string (that reset paging on every update and
+    // ran a full toString() per recomposition).
+    var page by remember(pages.size) {
+        mutableIntStateOf(node.num("page", 0f).toInt().coerceIn(0, pages.size - 1))
+    }
     // Intercept navigation; bubble everything else (send/skill) to the host.
     val pagerAction: (JsonObject) -> Unit = { a ->
         when {

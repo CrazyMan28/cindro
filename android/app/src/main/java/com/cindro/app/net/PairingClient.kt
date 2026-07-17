@@ -72,10 +72,10 @@ class PairingClient(private val identity: DeviceIdentity) {
                         }.toString())
                     }
 
-                    obj.has("paired") || obj.get("event")?.asString == "paired" -> {
-                        val ok = obj.get("paired")?.asBoolean ?: true
+                    obj.has("paired") || obj.get("event")?.takeIf { it.isJsonPrimitive }?.asString == "paired" -> {
+                        val ok = obj.get("paired")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: true
                         if (ok) {
-                            val id = obj.get("device_id")?.asString ?: identity.fingerprint
+                            val id = obj.get("device_id")?.takeIf { it.isJsonPrimitive }?.asString ?: identity.fingerprint
                             val fp = obj.get("fp")
                                 ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
                                 ?.asString
@@ -91,7 +91,8 @@ class PairingClient(private val identity: DeviceIdentity) {
                     }
 
                     obj.has("error") && obj.get("error").isJsonObject -> {
-                        val msg = obj.getAsJsonObject("error").get("message")?.asString
+                        val msg = obj.get("error")?.takeIf { it.isJsonObject }?.asJsonObject
+                            ?.get("message")?.takeIf { it.isJsonPrimitive }?.asString
                             ?: "pairing error"
                         complete(done, ws, Result.Failed(msg))
                     }

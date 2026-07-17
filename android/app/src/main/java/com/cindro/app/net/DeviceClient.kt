@@ -127,7 +127,10 @@ class DeviceClient(
         wsUrl = url
         deviceName = name
         shouldRun = true
-        if (socket == null) openSocket()
+        // Synchronize the check-then-open on `this` — the SAME monitor the reconnect
+        // thread ([scheduleReconnect]) uses — so a caller thread and the reconnect
+        // thread can't both see socket==null and open TWO WebSockets (TOCTOU).
+        synchronized(this) { if (socket == null) openSocket() }
     }
 
     /** Permanently stop reconnecting and close the socket. */
@@ -221,8 +224,8 @@ class DeviceClient(
                     ws.send(JsonObject().apply { addProperty("sig", sig) }.toString())
                     return
                 }
-                if (obj.has("authed") || obj.get("event")?.asString == "authed") {
-                    val okAuth = obj.get("authed")?.asBoolean ?: true
+                if (obj.has("authed") || obj.get("event")?.takeIf { it.isJsonPrimitive }?.asString == "authed") {
+                    val okAuth = obj.get("authed")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: true
                     if (okAuth) {
                         checkIdentityFingerprint(obj)
                         authed = true
@@ -236,7 +239,8 @@ class DeviceClient(
                     return
                 }
                 if (obj.has("error") && obj.get("error").isJsonObject) {
-                    val msg = obj.getAsJsonObject("error").get("message")?.asString ?: "handshake error"
+                    val msg = obj.getAsJsonObject("error").get("message")
+                        ?.takeIf { it.isJsonPrimitive }?.asString ?: "handshake error"
                     handleAuthRejected(ws, msg)
                     return
                 }

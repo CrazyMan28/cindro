@@ -64,6 +64,9 @@ final class DeviceClient: NSObject, ObservableObject {
 
     private var authed = false
     private var shouldRun = false
+    /// Set by `shutdown()` so the resulting socket-down is resolved as a clean disconnect
+    /// (not an `.error` banner reading a stale reason like "cancelled").
+    private var intentionalClose = false
     private var wsUrl: String?
     private var deviceName = "iPhone"
     private var reconnectAttempts = 0
@@ -91,6 +94,7 @@ final class DeviceClient: NSObject, ObservableObject {
         wsUrl = url
         deviceName = name
         shouldRun = true
+        intentionalClose = false   // (re)starting: subsequent drops are not a deliberate close
         let existing = task
         let noSocket = task == nil
         lock.unlock()
@@ -107,6 +111,7 @@ final class DeviceClient: NSObject, ObservableObject {
         lock.lock()
         shouldRun = false
         authed = false
+        intentionalClose = true         // the cancel below must resolve to a clean disconnect
         let t = task
         task = nil
         lock.unlock()
@@ -114,6 +119,7 @@ final class DeviceClient: NSObject, ObservableObject {
         failAllPending(reason: "client shutdown")
         resumeWaiters(success: false)   // fail-fast any request() parked in awaitAuth
         setState(.disconnected)
+        DispatchQueue.main.async { self.lastError = nil }
     }
 
     func dismissIdentityWarning() { DispatchQueue.main.async { self.identityWarning = nil } }
@@ -297,6 +303,7 @@ final class DeviceClient: NSObject, ObservableObject {
     private func onDown(reason: String, retry: Bool) {
         lock.lock()
         let wasAuthed = authed
+        let intentional = intentionalClose
         authed = false
         task = nil
         let run = shouldRun
@@ -308,6 +315,10 @@ final class DeviceClient: NSObject, ObservableObject {
         if run && retry {
             setState(.connecting)
             scheduleReconnect()
+        } else if intentional {
+            // A deliberate shutdown() — resolve cleanly, don't raise an error banner.
+            setState(.disconnected)
+            DispatchQueue.main.async { self.lastError = nil }
         } else {
             setState(wasAuthed ? .disconnected : .error)
             DispatchQueue.main.async { self.lastError = reason }
@@ -353,10 +364,13 @@ extension DeviceClient: URLSessionWebSocketDelegate {
                     didOpenWithProtocol proto: String?) {
         // Step 2 (handshake): send hello for an already-paired device.
         setState(.handshaking)
+        // `deviceName` is written under `lock` in connect(); snapshot it the same way — this
+        // runs on the URLSession delegate queue, so a bare read would race the writer.
+        lock.lock(); let name = deviceName; lock.unlock()
         let hello: JSONObject = [
             "hello": true,
             "device_pubkey": identity.publicKeyB64,
-            "name": deviceName,
+            "name": name,
         ]
         webSocketTask.send(.string(WireProtocol.encode(hello))) { _ in }
     }

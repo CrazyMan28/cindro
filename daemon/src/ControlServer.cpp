@@ -33,6 +33,7 @@
 #include <QNetworkInterface>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QProcess>
 #include <QRandomGenerator>
 #include <QRegularExpression>
@@ -472,6 +473,16 @@ void ControlServer::sendResponse(QWebSocket *client, const Response &resp)
 
 void ControlServer::handleRequest(QWebSocket *client, const Request &req)
 {
+    // USE-AFTER-FREE guard. A handler for a proxmox.*/proxmoxop.tool/outpost.*
+    // method spins a NESTED QEventLoop (outpostHttp / execOnMachine, up to
+    // ~300s) that reentrantly pumps THIS socket's events — including a
+    // `disconnected` that runs onSocketDisconnected() -> client->deleteLater(),
+    // which the same nested loop then reaps, FREEING `client` before we return
+    // here to send the response. Track the socket through a QPointer so the
+    // sendResponse() below sees nullptr (and no-ops) instead of writing to a
+    // dangling QWebSocket. (The pre-existing `if (!client)` guard inside
+    // sendResponse never fired: this raw local copy was never nulled.)
+    QPointer<QWebSocket> clientGuard(client);
     Response resp;
     const QString &m = req.method;
 
@@ -645,7 +656,9 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = Response::failure(req.id, QStringLiteral("unknown_method"),
                                  QStringLiteral("unknown method: ") + m);
 
-    sendResponse(client, resp);
+    // clientGuard is nullptr if a nested-event-loop handler above let this
+    // socket's disconnect free it; sendResponse() no-ops on nullptr.
+    sendResponse(clientGuard, resp);
 }
 
 // --- method handlers -------------------------------------------------------
@@ -3913,6 +3926,14 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     m_lastToolCall.remove(sessionId);
     m_toolLoopWarned.remove(sessionId);
     m_toolLoopStopping.remove(sessionId);
+    // Drop any HELD turn (queued guardrail nudge / gated send) and pending
+    // subagent parent-wake for this session. Cancelling means the user aborted
+    // the turn; without this, the cancelled brain's turnFinished() would replay
+    // the held turn (m_pendingTurns.take at the end of onTurnFinished) or wake a
+    // parent for work that never completed. deleteSession() already scrubs both
+    // (.:3949/.:3955) — cancel must too.
+    m_pendingTurns.remove(sessionId);
+    m_subagentPendingWake.remove(sessionId);
     return true;
 }
 
@@ -3953,6 +3974,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_toolLoopWarned.remove(sessionId);
     m_toolLoopStopping.remove(sessionId);
     m_pendingTurns.remove(sessionId);
+    m_titleGenStarted.remove(sessionId);   // one-shot title-gen guard, per session
     // 4) Drop the row + its event stream from the store.
     if (!m_store.deleteSession(sessionId)) {
         if (err)
@@ -4557,10 +4579,15 @@ Response ControlServer::handleMcpCliSetEnabled(const Request &req)
         if (match.isEmpty())
             return Response::failure(req.id, QStringLiteral("not_found"),
                                      QStringLiteral("CLI server not found"));
-        m_mcp->add(synthetic, match.value(QStringLiteral("transport")).toString(),
-                   match.value(QStringLiteral("endpoint")).toString(),
-                   match.value(QStringLiteral("token")).toString(), true,
-                   QStringLiteral("medium"));
+        // Check the store write (mirrors handleMcpAdd): a discarded return here
+        // reported {ok:true} even when the import row never persisted.
+        const QString id = m_mcp->add(synthetic,
+                                      match.value(QStringLiteral("transport")).toString(),
+                                      match.value(QStringLiteral("endpoint")).toString(),
+                                      match.value(QStringLiteral("token")).toString(), true,
+                                      QStringLiteral("medium"));
+        if (id.isEmpty())
+            return Response::failure(req.id, QStringLiteral("store_error"), m_store.lastError());
     }
     QJsonObject result;
     result.insert(QStringLiteral("ok"), true);
@@ -5741,16 +5768,39 @@ void ControlServer::readWidgetTail()
     if (m_widgetClients.isEmpty())   // nobody listening on the control WS -> skip
         return;
     QFile f(widgetsBusPath());
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+    // Open WITHOUT QIODevice::Text: m_widgetOffset is a RAW byte position (seeded
+    // from / compared to f.size() and fed to f.seek()), so the complete.size()
+    // we add below must count raw file bytes too. Text mode strips '\r' on read,
+    // which would undercount vs. the on-disk length and drift the offset on CRLF
+    // content; the per-line trimmed() already discards any stray '\r', so this is
+    // a no-op on '\n'-only content and only makes the arithmetic exact.
+    if (!f.open(QIODevice::ReadOnly))
         return;
-    if (f.size() < m_widgetOffset)   // truncated/rotated -> restart
-        m_widgetOffset = 0;
+    // Rotation/truncation: the bus file shrank out from under us (log rotation,
+    // or a fresh engine run). Our old byte offset no longer maps onto the new
+    // file, and re-reading from 0 would REPLAY every line still in the file as a
+    // fresh widget.render (double-render). Resync to the CURRENT EOF — matching
+    // startWidgetWatch()'s "start from EOF so old widgets don't replay" — and
+    // pick up genuinely new frames on the next poll instead.
+    if (f.size() < m_widgetOffset) {
+        m_widgetOffset = f.size();
+        return;
+    }
     if (!f.seek(m_widgetOffset))
         return;
     const QByteArray chunk = f.readAll();
-    m_widgetOffset = f.pos();
+    // Consume only up to the LAST newline. A trailing partial line is a frame
+    // still mid-write by the engine; advancing past it would parse the half
+    // record (JSON error -> dropped) AND then read its completion as a fresh
+    // line starting mid-JSON (also dropped), silently losing the whole record.
+    // Leaving the offset before it lets the next poll re-read it once complete.
+    const qsizetype lastNl = chunk.lastIndexOf('\n');
+    if (lastNl < 0)
+        return; // no complete line yet — wait for more
+    const QByteArray complete = chunk.left(lastNl + 1);
+    m_widgetOffset += complete.size();
 
-    for (const QByteArray &lineRaw : chunk.split('\n')) {
+    for (const QByteArray &lineRaw : complete.split('\n')) {
         const QByteArray line = lineRaw.trimmed();
         if (line.isEmpty())
             continue;
@@ -5765,8 +5815,17 @@ void ControlServer::readWidgetTail()
         if (op == QStringLiteral("remove")) {
             eventName = QStringLiteral("widget.remove");
             data.insert(QStringLiteral("id"), o.value(QStringLiteral("id")).toString());
+            // Carry the originating session so a client can filter these: a
+            // remove/clear emitted by session A must not wipe session B's canvas
+            // widgets. (Empty when the engine omits it — clients treat absent as
+            // unscoped; the engine writing session_id on these frames is the
+            // matching front-end half.)
+            data.insert(QStringLiteral("session_id"),
+                        o.value(QStringLiteral("session_id")).toString());
         } else if (op == QStringLiteral("clear")) {
             eventName = QStringLiteral("widget.clear");
+            data.insert(QStringLiteral("session_id"),
+                        o.value(QStringLiteral("session_id")).toString());
         } else {
             if (!o.contains(QStringLiteral("spec")))
                 continue;
@@ -6984,24 +7043,19 @@ void ControlServer::propagateDefaultVoiceToPhone()
         QFile::setPermissions(envPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
     }
 
-    // Restart the phone subsystem so it re-reads the ref clip. A default change is
-    // a rare, user-driven Settings action; the ~1-2s blip won't drop a call the
-    // user isn't on. Best-effort — a failure just logs (applies on next restart).
-    QProcess restart;
-    restart.start(QStringLiteral("systemctl"),
-                  {QStringLiteral("--user"), QStringLiteral("restart"),
-                   QStringLiteral("jarvis-phone.service")});
-    if (!restart.waitForStarted(3000)) {
-        qWarning("jarvisd: could not invoke systemctl to restart jarvis-phone.service");
-        return;
-    }
-    restart.waitForFinished(15000);
-    if (restart.exitStatus() != QProcess::NormalExit || restart.exitCode() != 0)
-        qWarning("jarvisd: jarvis-phone.service restart exit=%d (default voice applies "
-                 "on its next restart)", restart.exitCode());
-    else
-        qInfo("jarvisd: default voice -> phone calls (%s); jarvis-phone.service restarted",
+    // Restart the phone subsystem so it re-reads the ref clip — FIRE-AND-FORGET
+    // (QProcess::startDetached via restartPhoneService), never blocking on the
+    // daemon's single event loop. The old waitForStarted(3000)+waitForFinished(15000)
+    // froze the whole loop (every client + live chat) for up to ~18s from inside
+    // this RPC handler. A default change is a rare, user-driven Settings action;
+    // the ~1-2s restart blip won't drop a call the user isn't on. Best-effort —
+    // on failure the change just applies on the phone server's next start.
+    if (restartPhoneService())
+        qInfo("jarvisd: default voice -> phone calls (%s); jarvis-phone.service restart launched",
               clip.isEmpty() ? "stock" : qPrintable(clip));
+    else
+        qWarning("jarvisd: could not launch jarvis-phone.service restart (default voice "
+                 "applies on its next start)");
 }
 
 // --- device->phone file push (Contract C) -----------------------------------
@@ -9439,6 +9493,41 @@ Response ControlServer::handleProxmoxStatus(const Request &req)
     return Response::success(req.id, result);
 }
 
+namespace {
+
+// Deterministic id for a synced proxmox-agent memory row. Encodes the remote
+// row's own `created` stamp (so handleProxmoxReport's sync watermark can track
+// pve's clock, not our local insert time) plus a short content hash (so two
+// decisions made in the same remote millisecond don't collide). Re-importing an
+// identical row yields the same id -> MemoryStore::add upserts, never inserts a
+// duplicate.
+QString proxmoxReportRowId(qint64 remoteCreatedMs, const QString &text)
+{
+    const QByteArray h = QCryptographicHash::hash(
+        text.toUtf8(), QCryptographicHash::Sha1).toHex().left(12);
+    return QStringLiteral("proxmoxrpt_%1_%2")
+        .arg(remoteCreatedMs)
+        .arg(QString::fromLatin1(h));
+}
+
+// Recover the remote `created` stamp embedded by proxmoxReportRowId(); 0 if the
+// id predates this scheme (older empty-id inserts) or is otherwise unparseable
+// — which just leaves it out of the watermark max, at worst a one-time harmless
+// re-pull (the re-pulled row upserts on its deterministic id).
+qint64 proxmoxReportRemoteCreated(const QString &id)
+{
+    if (!id.startsWith(QStringLiteral("proxmoxrpt_")))
+        return 0;
+    const QStringList parts = id.split(QLatin1Char('_'));
+    if (parts.size() < 3)
+        return 0;
+    bool ok = false;
+    const qint64 v = parts.at(1).toLongLong(&ok);
+    return ok ? v : 0;
+}
+
+} // namespace
+
 Response ControlServer::handleProxmoxReport(const Request &req)
 {
     const QString machine = req.params.value(QStringLiteral("machine")).toString();
@@ -9447,22 +9536,22 @@ Response ControlServer::handleProxmoxReport(const Request &req)
                                  QStringLiteral("machine is required"));
     const QString agentName = QStringLiteral("proxmox-") + machine;
 
-    // Watermark: the newest `created` we already have locally for this agent
-    // — only pull remote rows added since then. Self-describing (no separate
-    // watermark file); correct as long as a remote decision is always synced
-    // strictly after it was made (always true — we can't read it earlier).
-    // NOTE: sinceMs is a LOCAL insert timestamp (MemoryStore::add always
-    // stamps QDateTime::currentMSecsSinceEpoch(), never a caller-supplied
-    // value), not the remote row's own `created` — so two remote decisions
-    // landing in the very same millisecond on pve's clock do NOT collide
-    // with this watermark's granularity the way comparing remote-to-remote
-    // timestamps would; the boundary this compares against is always safely
-    // between "already synced" and "not yet decided" by causality.
+    // Watermark on the PVE host's OWN clock. Each imported row is stored under a
+    // deterministic, content-addressed id that embeds the remote row's `created`
+    // stamp (see proxmoxReportRowId), so the newest remote `created` we've
+    // already synced is recoverable WITHOUT mixing clocks: the WHERE below
+    // compares remote-to-remote (pve's own clock), never remote-against-our-
+    // local-insert-time. That closes both failure modes the old local-timestamp
+    // watermark had under clock skew between us and pve — duplicated rows (pve
+    // clock ahead of ours) and permanently-skipped rows (pve clock behind ours).
+    // Scanning a bounded window of the agent's rows for the max embedded stamp
+    // is safe to under-estimate: a miss only re-pulls an already-synced row,
+    // which upserts harmlessly on its id.
     qint64 sinceMs = 0;
-    {
-        const auto latest = m_memory.search(QString(), 1, agentName, true);
-        if (!latest.isEmpty())
-            sinceMs = latest.first().created;
+    for (const MemoryRow &prev : m_memory.search(QString(), 2000, agentName, true)) {
+        const qint64 rc = proxmoxReportRemoteCreated(prev.id);
+        if (rc > sinceMs)
+            sinceMs = rc;
     }
 
     const QString cmd = QStringLiteral(
@@ -9491,7 +9580,14 @@ Response ControlServer::handleProxmoxReport(const Request &req)
         const QString tagsRaw = row.value(QStringLiteral("tags")).toString();
         if (!tagsRaw.isEmpty())
             tags << tagsRaw;
-        m_memory.add(text, tags, QString(), QStringLiteral("agent"), agentName);
+        const qint64 remoteCreated =
+            row.value(QStringLiteral("created")).toVariant().toLongLong();
+        // Deterministic id keyed on the remote row's own `created` + a content
+        // hash: re-pulling the same decision UPSERTS (MemoryStore::add treats a
+        // supplied id as an upsert key) instead of INSERTing a duplicate, and
+        // makes the remote `created` recoverable for the watermark above.
+        m_memory.add(text, tags, proxmoxReportRowId(remoteCreated, text),
+                     QStringLiteral("agent"), agentName);
     }
 
     QJsonArray arr;

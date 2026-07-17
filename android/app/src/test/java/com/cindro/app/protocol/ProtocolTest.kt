@@ -39,6 +39,40 @@ class ProtocolTest {
     }
 
     @Test
+    fun responseWithExplicitNullResultDoesNotThrow() {
+        // {"id":5,"ok":true,"result":null} — JsonNull must not ClassCastException.
+        val resp = WsResponse.from(obj("""{"id":5,"ok":true,"result":null}"""))!!
+        assertEquals(5, resp.id)
+        assertTrue(resp.ok)
+        assertNull(resp.result)
+    }
+
+    @Test
+    fun errorWithNullFieldsDoesNotThrow() {
+        // Null error.code / error.message must decode to null, not throw.
+        val resp = WsResponse.from(obj("""{"id":5,"ok":false,"error":{"code":null}}"""))!!
+        assertFalse(resp.ok)
+        assertNull(resp.errorCode)
+        assertNull(resp.errorMessage)
+    }
+
+    @Test
+    fun explicitNullErrorDoesNotThrow() {
+        // {"id":5,"ok":true,"error":null} — JsonNull error must not ClassCastException.
+        val resp = WsResponse.from(obj("""{"id":5,"ok":true,"error":null}"""))!!
+        assertTrue(resp.ok)
+        assertNull(resp.errorCode)
+    }
+
+    @Test
+    fun sessionEventWithNonObjectDataDropped() {
+        // A malformed frame with a non-object `data` must be dropped, not crash.
+        assertNull(SessionEvent.from(obj("""{"event":"session.event","data":"foo"}""")))
+        assertNull(SessionEvent.from(obj("""{"event":"session.event","data":null}""")))
+        assertNull(SessionEvent.from(obj("""{"event":"session.event","data":{"session_id":"s","ev":"x"}}""")))
+    }
+
+    @Test
     fun responseFromIgnoresEvents() {
         assertNull(
             WsResponse.from(

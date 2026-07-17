@@ -66,6 +66,10 @@ object Biometric {
                     }
                 },
             )
+            // If the awaiting coroutine is cancelled (e.g. the caller navigates away or
+            // the ViewModel is cleared), dismiss the system prompt instead of leaving it
+            // dangling on screen with no one listening for its result.
+            cont.invokeOnCancellation { runCatching { prompt.cancelAuthentication() } }
             val builder = BiometricPrompt.PromptInfo.Builder()
                 .setTitle(title)
                 .setSubtitle(subtitle)

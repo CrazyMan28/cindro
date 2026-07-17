@@ -79,9 +79,13 @@ class TtsPlayer(context: Context) {
             )
             mp.setOnCompletionListener { onClipDone(f) }
             mp.setOnErrorListener { _, _, _ -> onClipDone(f); true }
+            // Prepare OFF the main thread: play() is driven from the UI/ViewModel, and a
+            // synchronous prepare() on a network/large clip blocks the main looper → ANR.
+            // prepareAsync() decodes on a background thread and starts in onPrepared.
+            // (runCatching guards a start() that races a stop()/reset() barge-in.)
+            mp.setOnPreparedListener { p -> runCatching { p.start() } }
             mp.setDataSource(f.absolutePath)
-            mp.prepare()
-            mp.start()
+            mp.prepareAsync()
         }.onFailure {
             // Couldn't play this clip — drop it and advance so the queue never stalls.
             onClipDone(f)

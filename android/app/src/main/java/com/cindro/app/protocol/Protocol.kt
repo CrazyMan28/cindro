@@ -44,14 +44,22 @@ data class WsResponse(
         fun from(obj: JsonObject): WsResponse? {
             if (!obj.has("id") || obj.has("event")) return null
             if (!obj.has("ok")) return null
-            val id = obj.get("id").asInt
-            val ok = obj.get("ok").asBoolean
-            val result = obj.getAsJsonObject("result")
+            // Defensive: a malformed daemon frame (null/object/non-numeric `id`, or a
+            // non-boolean `ok`) must NOT throw out of the onMessage callback and crash
+            // the app — treat it as "not a response" and drop it (mirrors the handshake
+            // `challenge` guard in DeviceClient).
+            val id = obj.get("id")?.takeIf { it.isJsonPrimitive }
+                ?.let { runCatching { it.asInt }.getOrNull() } ?: return null
+            val ok = obj.get("ok")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: return null
+            // `result`/`error` may arrive as explicit null (JsonNull) or a non-object —
+            // a bare getAsJsonObject cast throws ClassCastException. Only treat them as
+            // objects when they actually are one.
+            val result = obj.get("result")?.takeIf { it.isJsonObject }?.asJsonObject
             var code: String? = null
             var msg: String? = null
-            obj.getAsJsonObject("error")?.let { err ->
-                code = err.get("code")?.asString
-                msg = err.get("message")?.asString
+            obj.get("error")?.takeIf { it.isJsonObject }?.asJsonObject?.let { err ->
+                code = err.get("code")?.takeIf { it.isJsonPrimitive }?.asString
+                msg = err.get("message")?.takeIf { it.isJsonPrimitive }?.asString
             }
             return WsResponse(id, ok, result, code, msg)
         }
@@ -65,8 +73,10 @@ data class WsResponse(
  */
 data class BrainEvent(val kind: String, val fields: JsonObject) {
 
-    fun str(key: String): String? = fields.get(key)?.takeIf { !it.isJsonNull }?.asString
-    fun bool(key: String): Boolean? = fields.get(key)?.takeIf { !it.isJsonNull }?.asBoolean
+    // isJsonPrimitive (not just !isJsonNull): a field that arrives as an object/array
+    // would still throw out of .asString/.asBoolean and crash the onMessage callback.
+    fun str(key: String): String? = fields.get(key)?.takeIf { it.isJsonPrimitive }?.asString
+    fun bool(key: String): Boolean? = fields.get(key)?.takeIf { it.isJsonPrimitive }?.asBoolean
     fun obj(key: String): JsonObject? = fields.getAsJsonObject(key)
 
     val threadId: String? get() = str("thread_id")
@@ -87,7 +97,7 @@ data class BrainEvent(val kind: String, val fields: JsonObject) {
     companion object {
         /** Parse the inner `ev` object of a session.event frame. */
         fun from(ev: JsonObject): BrainEvent {
-            val kind = ev.get("kind")?.asString ?: "unknown"
+            val kind = ev.get("kind")?.takeIf { it.isJsonPrimitive }?.asString ?: "unknown"
             val fields = JsonObject()
             for ((k, v) in ev.entrySet()) if (k != "kind") fields.add(k, v)
             return BrainEvent(kind, fields)
@@ -100,10 +110,12 @@ data class SessionEvent(val sessionId: String, val event: BrainEvent) {
     companion object {
         /** Returns null if [obj] is not a session.event frame. */
         fun from(obj: JsonObject): SessionEvent? {
-            if (obj.get("event")?.asString != "session.event") return null
-            val data = obj.getAsJsonObject("data") ?: return null
-            val sid = data.get("session_id")?.asString ?: return null
-            val ev = data.getAsJsonObject("ev") ?: return null
+            if (obj.get("event")?.takeIf { it.isJsonPrimitive }?.asString != "session.event") return null
+            // A non-object `data`/`ev` (e.g. {"data":"foo"} or {"data":null}) must not
+            // ClassCastException out of onMessage — treat as "not this frame" and drop.
+            val data = obj.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
+            val sid = data.get("session_id")?.takeIf { it.isJsonPrimitive }?.asString ?: return null
+            val ev = data.get("ev")?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
             return SessionEvent(sid, BrainEvent.from(ev))
         }
     }
@@ -117,8 +129,8 @@ data class SessionEvent(val sessionId: String, val event: BrainEvent) {
 data class FileOfferEvent(val offer: FileOffer) {
     companion object {
         fun from(obj: JsonObject): FileOfferEvent? {
-            if (obj.get("event")?.asString != "file.offer") return null
-            val data = obj.getAsJsonObject("data") ?: return null
+            if (obj.get("event")?.takeIf { it.isJsonPrimitive }?.asString != "file.offer") return null
+            val data = obj.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
             return FileOfferEvent(FileOffer.from(data))
         }
     }
@@ -132,8 +144,8 @@ data class FileOfferEvent(val offer: FileOffer) {
 data class SessionOpenedEvent(val opened: SessionOpened) {
     companion object {
         fun from(obj: JsonObject): SessionOpenedEvent? {
-            if (obj.get("event")?.asString != "session.opened") return null
-            val data = obj.getAsJsonObject("data") ?: return null
+            if (obj.get("event")?.takeIf { it.isJsonPrimitive }?.asString != "session.opened") return null
+            val data = obj.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
             return SessionOpenedEvent(SessionOpened.from(data))
         }
     }
@@ -155,20 +167,20 @@ data class WidgetEvent(
 ) {
     companion object {
         fun from(obj: JsonObject): WidgetEvent? {
-            val op = when (obj.get("event")?.asString) {
+            val op = when (obj.get("event")?.takeIf { it.isJsonPrimitive }?.asString) {
                 "widget.render" -> "render"
                 "widget.remove" -> "remove"
                 "widget.clear" -> "clear"
                 else -> return null
             }
-            val data = obj.getAsJsonObject("data") ?: JsonObject()
+            val data = obj.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject()
             return WidgetEvent(
                 op = op,
-                id = data.get("id")?.asString ?: "",
-                title = data.get("title")?.asString ?: "",
-                target = data.get("target")?.asString ?: "canvas",
-                sessionId = data.get("session_id")?.asString?.ifBlank { null },
-                spec = data.getAsJsonObject("spec"),
+                id = data.get("id")?.takeIf { it.isJsonPrimitive }?.asString ?: "",
+                title = data.get("title")?.takeIf { it.isJsonPrimitive }?.asString ?: "",
+                target = data.get("target")?.takeIf { it.isJsonPrimitive }?.asString ?: "canvas",
+                sessionId = data.get("session_id")?.takeIf { it.isJsonPrimitive }?.asString?.ifBlank { null },
+                spec = data.get("spec")?.takeIf { it.isJsonObject }?.asJsonObject,
             )
         }
     }
