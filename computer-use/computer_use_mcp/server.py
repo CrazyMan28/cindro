@@ -16,7 +16,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from computer_use_mcp import (
     __version__, agent_bus, auth, live_widgets, policy, screen, session,
     tools_bg, tools_browser, tools_commands, tools_desktop, tools_jarvis_ops,
-    tools_lsp, tools_phone, tools_todo, tools_tui_ops, tools_video,
+    tools_lsp, tools_phone, tools_plan, tools_todo, tools_tui_ops, tools_video,
     tools_widgets, tools_workflows,
 )
 from computer_use_mcp.browser_bridge import bridge
@@ -43,7 +43,8 @@ tools_tui_ops.register(mcp)      # tui_list_pages/add/edit/remove/reorder — se
 tools_commands.register(mcp)     # create_slash_command/list_slash_commands/remove_slash_command — self-authored / commands
 tools_video.register(mcp)        # video_watch/analyze/detail/info/setup/configure — watch + hear videos (YouTube or local)
 tools_workflows.register(mcp)   # workflow_create/list/delete — managed jobs (proxied to jarvisd)
-policy.install(mcp)              # trust-policy gate over EVERY tool call (jarvis#71)
+tools_plan.register(mcp)         # present_plan/enter_plan_mode/exit_plan_mode — Plan Mode
+policy.install(mcp)              # trust-policy + plan-mode gate over EVERY tool call (jarvis#71)
 mcp_app = mcp.streamable_http_app()
 
 

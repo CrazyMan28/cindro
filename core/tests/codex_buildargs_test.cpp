@@ -74,6 +74,29 @@ int main()
               "drive mode is NOT workspace-write");
     }
 
+    // --- PLAN MODE + drive: sandboxMode="read-only" is OVERRIDDEN back to
+    // danger-full-access by the ctor whenever driveMcp is set (see the class
+    // comment above and CodexBrain's ctor) — Plan Mode for Codex sessions is
+    // therefore enforced for MCP tools only (by computer_use_mcp/policy.py),
+    // NOT by this sandbox flag, whenever computer-use is injected. This test
+    // documents that as INTENTIONAL, guarded behavior, not a latent bug.
+    {
+        CodexBrain::Options opts;
+        opts.profile = QStringLiteral("coworker");
+        opts.driveMcp = true;
+        opts.sandboxMode = QStringLiteral("read-only"); // what makeBrain() sets in PLAN mode
+        opts.cwd = QStringLiteral("/home/user");
+        CodexBrain brain(opts);
+        const QStringList args = brain.buildArgs(prompt);
+
+        check(hasPair(args, QStringLiteral("--sandbox"),
+                      QStringLiteral("danger-full-access")),
+              "plan mode + drive: sandboxMode=read-only is still overridden to "
+              "danger-full-access (native codex tools are NOT hard-blocked here)");
+        check(!hasPair(args, QStringLiteral("--sandbox"), QStringLiteral("read-only")),
+              "plan mode + drive: read-only sandbox never actually reaches argv");
+    }
+
     // --- NON-drive (default coder): stays workspace-write, no approval flag ---
     {
         CodexBrain::Options opts;

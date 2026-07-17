@@ -673,6 +673,27 @@ def register(mcp: FastMCP) -> None:
             return _err(exc)
 
     @mcp.tool()
+    def agent_send(session_id: str, message: str) -> str:
+        """Send a NEW message to a subagent you already dispatched with agent_start,
+        to steer or update it — without waiting for it to finish first.
+
+        IMPORTANT — semantics: this does NOT interrupt the subagent mid-task. Both
+        the codex and claude CLIs run a dispatched subagent's entire task (every
+        tool call it makes) inside ONE non-interruptible process invocation; there
+        is no way to inject text into that process while it's running. Your
+        message is QUEUED and delivered as the subagent's NEXT turn, the instant
+        its CURRENT turn finishes (whether that's because it finished the task, or
+        it's already idle). If you send twice before it picks up the first message,
+        only the newest one survives. Use this to give a follow-up instruction for
+        "when you're done with this pass" — not to abort what it's doing right now
+        (use agent_stop for that instead, then agent_start a corrected task)."""
+        try:
+            return json.dumps(daemon_client.call(
+                "session.send", {"session_id": session_id, "text": message}))
+        except Exception as exc:  # noqa: BLE001
+            return _err(exc)
+
+    @mcp.tool()
     def agent_stop(session_id: str) -> str:
         """Stop a running agent (child session) by its session_id (from
         agent_start / agent_status)."""

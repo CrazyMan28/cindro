@@ -171,6 +171,7 @@ bool ControlServer::start()
     // model loads when asked what it can do). Idempotent — only writes if missing.
     seedInternalDocsSkill();
     seedPhoneSkill();
+    seedPlanningSkill();
     // MIRROR HEAL: skills only mirror into ~/.claude/skills / ~/.codex/skills at
     // creation time, and the mirror silently skips a CLI that isn't installed
     // yet. Re-mirror everything each start so "installed claude/codex AFTER
@@ -506,6 +507,12 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionWake(req);
     else if (m == QStringLiteral("session.cancel"))
         resp = handleSessionCancel(req);
+    else if (m == QStringLiteral("plan.enter"))
+        resp = handlePlanEnter(req);
+    else if (m == QStringLiteral("plan.exit"))
+        resp = handlePlanExit(req);
+    else if (m == QStringLiteral("plan.status"))
+        resp = handlePlanStatus(req);
     else if (m == QStringLiteral("session.delete"))
         resp = handleSessionDelete(req);
     else if (m == QStringLiteral("session.list"))
@@ -2405,12 +2412,30 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         return false;
     }();
 
+    // Plan Mode (Settings-driven, global): read-only research, hard-enforced
+    // primarily by computer_use_mcp/policy.py's _plan_mode_gate (the one choke
+    // point every brain's MCP tool call passes through). These Options are
+    // defense-in-depth on top of that, brain-specific and each with real caveats
+    // — see the comments at each use site below.
+    const bool planMode = m_settings.agentMode() == QStringLiteral("plan");
+
     if (row.brain == QStringLiteral("codex")) {
         CodexBrain::Options opts;
         opts.cwd = cwdOverride.isEmpty() ? m_config.effectiveCwd() : cwdOverride;
         opts.model = coerceModelForBrain(row.brain, row.model);
         opts.profile = row.profile;
-        opts.sandboxMode = CodexBrain::sandboxForProfile(row.profile);
+        // NOTE: this is a no-op for the common case. Any session with a
+        // computer-use MCP server injected forces opts.driveMcp = true below,
+        // and CodexBrain's ctor unconditionally overrides sandboxMode back to
+        // danger-full-access whenever driveMcp is set (codex auto-cancels every
+        // MCP tool call under a narrower sandbox headless, with no interactive
+        // approver — seed comment a few lines down). So for Codex sessions that
+        // also need present_plan/agent_start/todo_write, PLAN mode is enforced
+        // for MCP tools only (via policy.py) — Codex's NATIVE shell/apply_patch
+        // tools are invisible to that gate and are NOT hard-blocked. Still
+        // correct to set here for the rare non-driveMcp Codex session.
+        opts.sandboxMode = planMode ? QStringLiteral("read-only")
+                                     : CodexBrain::sandboxForProfile(row.profile);
         // RESUME prior context when re-spawning a brain for an EXISTING session
         // (daemon restart / crash / idle-teardown): seed the codex thread id from
         // the persisted row so the first send() resumes the real conversation
@@ -2498,6 +2523,24 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
             // tools must be pre-authorized to be callable at all. Jarvis's own
             // permission policy (ask_user + injection guard) still applies.
             opts.permissionMode = QStringLiteral("bypassPermissions");
+        }
+        // Plan Mode override — wins over whatever the branches above set. NOTE:
+        // deliberately NOT `--permission-mode plan` (Claude Code's own native
+        // plan mode) — live-tested and rejected: it blanket-denies EVERY MCP
+        // tool call with no allowlist override, which would also break
+        // present_plan/agent_start/todo_write (themselves MCP tools). The
+        // verified working mechanism is `bypassPermissions` (so MCP tools —
+        // gated instead by policy.py's _plan_mode_gate — actually run headless)
+        // + `--disallowedTools` to remove Claude's NATIVE mutating tools, which
+        // are invisible to the MCP-side gate. `Task` is included so subagent
+        // dispatch is forced through Cindro's own gated agent_start, not
+        // Claude's native ungated Task tool.
+        if (planMode) {
+            if (!mcpJson.isEmpty())
+                opts.permissionMode = QStringLiteral("bypassPermissions");
+            opts.disallowedTools = {QStringLiteral("Write"), QStringLiteral("Edit"),
+                                     QStringLiteral("NotebookEdit"), QStringLiteral("Bash"),
+                                     QStringLiteral("Task")};
         }
         opts.mcpConfigJson = mcpJson;
         auto *brain = new ClaudeBrain(opts, this);
@@ -2888,11 +2931,16 @@ QString ControlServer::modePolicyClause() const
     if (mode == QStringLiteral("plan")) {
         return QStringLiteral(
             "\n[MODE: PLAN] You are in PLAN mode. RESEARCH the task and produce a "
-            "clear, step-by-step PLAN using todo_write (one item per step). Do NOT "
-            "make changes yet — no file edits, no installs, nothing destructive or "
-            "outward-facing; read-only investigation only. When the plan is ready, "
-            "present it and ask the user to approve (and switch to BUILD mode) "
-            "before you execute. The user picks the mode in Settings.");
+            "clear, step-by-step PLAN using todo_write (one item per step). "
+            "Write/execute tools are HARD-BLOCKED at the tool layer while planning "
+            "— not just discouraged, calling one will fail with an error. Subagent "
+            "research tools (agent_create/agent_list/agent_get/agent_start/"
+            "agent_wait/agent_status/agent_result/agent_stop/agent_send) remain "
+            "available — fan out research freely. When the plan is ready, call "
+            "present_plan(title, markdown, todos) and wait for the user's decision "
+            "(approve switches you to BUILD mode automatically; request-changes "
+            "gives you feedback to incorporate). The user can also change modes "
+            "directly in Settings.");
     }
     if (mode == QStringLiteral("build")) {
         return QStringLiteral(
@@ -2905,6 +2953,21 @@ QString ControlServer::modePolicyClause() const
     // "coworker" (default): no extra clause — the balanced behavior already lives
     // in the co-work guide + the permission policy.
     return QString();
+}
+
+QString ControlServer::planToolsClause() const
+{
+    // Always present, regardless of current agent_mode (this is the SELF-
+    // initiated entry path — see tools_plan.py's enter_plan_mode/exit_plan_mode
+    // and ControlServer::handlePlanEnter/handlePlanExit/handlePlanStatus) —
+    // mirroring how Claude Code's own system prompt always mentions plan mode
+    // is available, not only when the user has pre-selected it.
+    return QStringLiteral(
+        "\nYou can go read-only to investigate at ANY TIME, in any mode, by "
+        "calling enter_plan_mode(reason) — write/execute tools are blocked "
+        "until you call exit_plan_mode (your own call, no approval needed) or "
+        "present_plan (shows the user a written plan and blocks for their "
+        "decision). Use this when a task feels risky or under-specified.");
 }
 
 QString ControlServer::memorySystemBlock()
@@ -3708,7 +3771,7 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         // from Settings on any surface.
         m_trustPolicies.load();
         policyPreamble = permissionPolicyClause() + modePolicyClause() +
-                         m_trustPolicies.preambleClause();
+                         planToolsClause() + m_trustPolicies.preambleClause();
     }
 
     // ONE-TIME co-work guidance: the first turn a session has computer-use, teach
@@ -3984,6 +4047,7 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     m_agentDesktops.releaseSession(sessionId);   // drop the desktop + its reservation
     m_autoComputerSessions.remove(sessionId);
     m_autoGlobalEngineSessions.remove(sessionId);
+    m_selfPlanModeSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
@@ -4025,6 +4089,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_agentDesktops.releaseSession(sessionId);
     m_autoComputerSessions.remove(sessionId);
     m_autoGlobalEngineSessions.remove(sessionId);
+    m_selfPlanModeSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_coworkGuided.remove(sessionId);
     m_policyGuided.remove(sessionId);
@@ -4316,6 +4381,40 @@ Response ControlServer::handleSessionCancel(const Request &req)
     if (!cancelSession(sessionId, &err))
         return Response::failure(req.id, QStringLiteral("no_session"), err);
     return Response::success(req.id);
+}
+
+Response ControlServer::handlePlanEnter(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    if (sessionId.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("session_id required"));
+    m_selfPlanModeSessions.insert(sessionId);
+    return Response::success(req.id);
+}
+
+Response ControlServer::handlePlanExit(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    m_selfPlanModeSessions.remove(sessionId); // no-op if never set (e.g. global-mode session)
+    return Response::success(req.id);
+}
+
+Response ControlServer::handlePlanStatus(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    QJsonObject r;
+    if (m_settings.agentMode() == QStringLiteral("plan")) {
+        r.insert(QStringLiteral("restricted"), true);
+        r.insert(QStringLiteral("source"), QStringLiteral("settings"));
+    } else if (!sessionId.isEmpty() && m_selfPlanModeSessions.contains(sessionId)) {
+        r.insert(QStringLiteral("restricted"), true);
+        r.insert(QStringLiteral("source"), QStringLiteral("self"));
+    } else {
+        r.insert(QStringLiteral("restricted"), false);
+        r.insert(QStringLiteral("source"), QString());
+    }
+    return Response::success(req.id, r);
 }
 
 Response ControlServer::handleSessionDelete(const Request &req)
@@ -6365,6 +6464,68 @@ void ControlServer::seedPhoneSkill()
     m_skills.create(QStringLiteral("phone"),
                     QStringLiteral("Call & text the user, and answer when they call/text in — "
                                    "the phone subsystem playbook (~56 tools)."),
+                    body, QStringLiteral("builtin"));
+}
+
+void ControlServer::seedPlanningSkill()
+{
+    // Builtin "planning" methodology. Versioned like internal_docs/phone so an
+    // install picks up updates, but never clobbers a user's own edits to a
+    // same-named skill.
+    const QString kMarker = QStringLiteral("[planning skill v1]");
+    if (auto existing = m_skills.get(QStringLiteral("planning"))) {
+        QFile f(existing->path);
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QString cur = QString::fromUtf8(f.readAll());
+            f.close();
+            if (cur.contains(kMarker))
+                return; // already current
+            if (existing->fm.group != QStringLiteral("builtin"))
+                return; // user-owned skill named "planning" — leave it alone
+        }
+        m_skills.remove(QStringLiteral("planning")); // stale builtin -> refresh
+    }
+    const QString body = QStringLiteral(
+        "[planning skill v1] Use this whenever you're in PLAN mode (Settings-driven "
+        "or self-initiated via enter_plan_mode) or otherwise asked to plan before "
+        "acting.\n\n"
+        "# Planning — research first, present a real plan, wait for the decision\n\n"
+        "## Research before you write anything\n"
+        "Read before you propose. Use your read-only tools to actually understand "
+        "the task — the code, the docs, prior art in this codebase — before "
+        "drafting a plan. A plan built on assumptions gets rejected; one built on "
+        "what you actually found gets approved.\n\n"
+        "## Fan out with subagents for genuinely separable work\n"
+        "Use agent_start to dispatch independent research threads in parallel "
+        "(e.g. \"how does X work\" and \"what does Y depend on\" at the same time) "
+        "instead of doing everything serially. agent_wait / agent_result collect "
+        "what they found; agent_send can steer an already-dispatched subagent with "
+        "a follow-up once its current turn finishes. Don't dispatch a subagent for "
+        "something you could answer yourself in one or two tool calls — that only "
+        "adds latency.\n\n"
+        "## What a good plan contains\n"
+        "- **Goal** — what problem this solves and why.\n"
+        "- **Approach** — the path you chose and, briefly, what you ruled out.\n"
+        "- **Steps** — concrete, file-by-file where it matters. Vague steps produce "
+        "vague execution.\n"
+        "- **Risks / open questions** — anything uncertain, unverified, or that "
+        "could go wrong.\n"
+        "- **A todo list** — call todo_write with the steps so the checklist card "
+        "matches the plan doc.\n\n"
+        "## Always finish with present_plan — never just narrate a plan in chat\n"
+        "Call present_plan(title, markdown, todos) to submit the finished plan. It "
+        "blocks for the user's decision:\n"
+        "- **Approve & Build** — you're switched to BUILD mode (or your "
+        "self-initiated restriction is lifted) automatically. Execute immediately, "
+        "don't ask again.\n"
+        "- **Request Changes** — their feedback comes back as `note`. Incorporate "
+        "it and call present_plan again. Do NOT start executing on a rejected "
+        "plan.\n\n"
+        "Write/execute tools are hard-blocked while planning — you cannot skip this "
+        "and start editing files or running commands before the plan is approved.\n");
+    m_skills.create(QStringLiteral("planning"),
+                    QStringLiteral("Plan Mode methodology — research first, fan out via "
+                                   "subagents, present a real plan with present_plan."),
                     body, QStringLiteral("builtin"));
 }
 

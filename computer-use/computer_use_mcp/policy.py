@@ -42,7 +42,7 @@ from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
-from . import ask_bus, cmd_scan
+from . import ask_bus, cmd_scan, daemon_client
 
 _DEFAULT_FILE = Path(
     os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")
@@ -471,6 +471,100 @@ def _scan_tui_layout(tool: str, arguments: Any) -> None:
     )
 
 
+# --- PLAN MODE gate ----------------------------------------------------------
+# Cindro's own "Plan Mode" (see tools_plan.py): while active, every tool call
+# EXCEPT a small read/plan-safe allowlist is hard-denied — not just
+# discouraged in the system prompt, but actually blocked here, the one choke
+# point every brain's tool call already passes through. Two ways a session
+# ends up restricted (daemon-side, `plan.status`):
+#   "settings" — the user's global PLAN agent_mode (Settings). Only present_plan's
+#                Approve & Build can lift this.
+#   "self"     — the model called enter_plan_mode() on its own judgment for THIS
+#                session only. The model can lift it itself with exit_plan_mode().
+# Session-scoped (the shared global :8794 engine serves multiple concurrent
+# sessions — see daemon_client.current_session_id()'s own docstring for the
+# same concern) with a short TTL cache so this doesn't add a daemon round-trip
+# to every single tool call.
+_PLAN_CACHE: dict[str, dict] = {}
+_PLAN_CACHE_TTL = float(os.environ.get("JARVIS_PLAN_GATE_TTL", "2.0"))
+
+_PLAN_SAFE_TOOLS = frozenset({
+    # Plan output / control
+    "present_plan", "enter_plan_mode", "exit_plan_mode",
+    # Checklist — the plan IS a todo list
+    "todo_write", "todo_read", "todo_add", "todo_edit", "todo_done", "todo_del", "todo_clear",
+    # Ask/notify
+    "ask_user", "notify_user",
+    # Read-only desktop/window introspection
+    "session_info", "desktop_screenshot", "window_list", "workspace_list",
+    "app_list", "clipboard_get",
+    # Read-only browser introspection — NOT navigate/click/type/select/scroll/
+    # eval/cdp/tab_new/tab_close/tab_activate
+    "browser_status", "browser_tabs", "browser_snapshot", "browser_screenshot",
+    "browser_console",
+    # Subagent research fan-out — planning is explicitly allowed to delegate
+    "agent_create", "agent_list", "agent_get", "agent_start", "agent_wait",
+    "agent_status", "agent_result", "agent_stop", "agent_send",
+    "agent_committee", "agent_moa",
+    # Read-only self-management
+    "list_skills", "get_skill", "skill_load", "list_schedules", "queue_list",
+    "session_search", "list_memories", "hooks_list",
+    # Read-only background-job / LSP introspection
+    "bg_status", "bg_logs", "bg_list", "bg_wait", "lsp_diagnostics", "lsp_server_status",
+    # Read-only TUI/command introspection
+    "tui_list_pages", "list_slash_commands", "workflow_list",
+    # Video analysis (consumption only, no external side effect)
+    "video_info", "video_setup", "video_configure", "video_watch",
+    "video_analyze", "video_detail",
+})
+
+
+def _plan_status() -> tuple[bool, str]:
+    """-> (restricted, source in {"settings","self",""}). Session-scoped, TTL-cached."""
+    try:
+        sid = daemon_client.current_session_id()
+    except Exception:
+        sid = ""
+    now = time.time()
+    cached = _PLAN_CACHE.get(sid)
+    if cached and now - cached["ts"] < _PLAN_CACHE_TTL:
+        return cached["restricted"], cached["source"]
+    try:
+        res = daemon_client.call("plan.status", {"session_id": sid}, timeout=5)
+        restricted, source = bool(res.get("restricted", False)), str(res.get("source", ""))
+    except Exception:
+        # Deliberate deviation from this file's usual fail-OPEN convention: plan
+        # mode's whole contract is a safety guarantee, so an unreachable daemon
+        # must not silently grant full write access. Mirrors gate()'s ask flow,
+        # which already fails CLOSED (a timed-out ask is a deny).
+        restricted, source = True, "unreachable"
+    _PLAN_CACHE[sid] = {"ts": now, "restricted": restricted, "source": source}
+    return restricted, source
+
+
+def bust_plan_cache(session_id: str = "") -> None:
+    """Force the next _plan_status() call to re-fetch. Call this right after
+    present_plan/enter_plan_mode/exit_plan_mode change server-side state, so the
+    SAME turn doesn't spuriously stay gated for up to _PLAN_CACHE_TTL."""
+    sid = session_id or daemon_client.current_session_id()
+    _PLAN_CACHE.pop(sid, None)
+
+
+def _plan_mode_gate(tool: str, arguments: Any) -> None:
+    if tool in _PLAN_SAFE_TOOLS:
+        return
+    restricted, source = _plan_status()
+    if not restricted:
+        return
+    _log(tool, "", "deny", {"id": "plan_mode"}, False)
+    raise PermissionError(
+        f"Blocked: PLAN mode is active ({source}) — '{tool}' is a write/execute "
+        "action and is not allowed while planning. Keep researching (read-only "
+        "tools, agent_start/agent_wait for subagent research, todo_write for "
+        "your checklist) and call present_plan when the plan is ready."
+    )
+
+
 def install(mcp) -> None:
     """Wrap FastMCP's ToolManager.call_tool so EVERY tool passes the gate."""
     mgr = mcp._tool_manager
@@ -479,6 +573,7 @@ def install(mcp) -> None:
     orig = mgr.call_tool
 
     async def gated_call_tool(name: str, arguments: dict, *args, **kwargs):
+        _plan_mode_gate(name, arguments)  # PLAN mode: hard deny, no ask-bus escalation
         gate(name)  # trust policy: raises to reject; FastMCP turns it into an error
         _phone_gate(name, arguments)  # phone permissions: deny + interactive ask
         _scan_command(name, arguments)  # command scanner: raises to reject
