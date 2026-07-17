@@ -513,6 +513,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handlePlanExit(req);
     else if (m == QStringLiteral("plan.status"))
         resp = handlePlanStatus(req);
+    else if (m == QStringLiteral("plan.approve"))
+        resp = handlePlanApprove(req);
     else if (m == QStringLiteral("session.delete"))
         resp = handleSessionDelete(req);
     else if (m == QStringLiteral("session.list"))
@@ -2425,8 +2427,13 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
     // it up the next time this Brain is (re)constructed (new session, or a
     // respawn after daemon restart/idle-teardown), same as the pre-existing
     // Settings-driven path.
-    const bool planMode = m_settings.agentMode() == QStringLiteral("plan") ||
-                           m_selfPlanModeSessions.contains(row.id);
+    // present_plan's per-session Approve & Build (m_planApprovedSessions) wins
+    // over the global setting — a brain (re)built for an approved session must
+    // not come back read-only just because Settings is still "plan" for
+    // everyone else. See handlePlanStatus for the same precedence.
+    const bool planMode = !m_planApprovedSessions.contains(row.id) &&
+                          (m_settings.agentMode() == QStringLiteral("plan") ||
+                           m_selfPlanModeSessions.contains(row.id));
 
     if (row.brain == QStringLiteral("codex")) {
         CodexBrain::Options opts;
@@ -3281,6 +3288,15 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
             qWarning("jarvisd: auto agent desktop transiently busy for %s (%s); "
                      "will retry on next turn", qPrintable(row.id), qPrintable(deskErr));
             m_autoComputerSessions.insert(row.id);
+            // Codex review follow-up (PR #130): the retry above brings the DESKTOP
+            // up later, but the brain we're about to construct right below gets
+            // built with agentOverrides EMPTY (desk.up is false right now) — its
+            // codex/claude config is fixed at spawn, so even once ensure() later
+            // succeeds this same brain object still has no MCP connection to it.
+            // Mark the session for a one-time REBIND: sendToSession()'s BATTERY
+            // check reconstructs the brain (with the now-live overrides) the
+            // first time it successfully re-provisions one of these.
+            m_pendingComputerUseRebind.insert(row.id);
         } else {
             // A REAL provisioning failure on a platform that CAN isolate
             // (crashed process, port conflict, ...): the chat still works, it
@@ -3674,6 +3690,35 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
     if (m_autoComputerSessions.contains(sessionId) && !m_agentDesktops.has(sessionId)) {
         QString deskErr;
         m_agentDesktops.ensure(sessionId, &deskErr);
+    }
+    // Codex review (PR #130): a brain constructed while its desktop was
+    // transiently busy (createSession()'s sandbox_busy branch) has NO
+    // computer-use MCP baked in — codex/claude fix their config at spawn, so
+    // bringing the desktop up above isn't enough for an ALREADY-LIVE brain
+    // object. One-time REBIND: the first time we find the desktop actually up
+    // for one of these (and the brain isn't mid-turn — never destroy a busy
+    // one), tear down + reconstruct it with the now-available overrides,
+    // exactly as createSession() would have done if ensure() had succeeded
+    // the first time.
+    if (m_pendingComputerUseRebind.contains(sessionId) && m_agentDesktops.has(sessionId) &&
+        !brain->isBusy()) {
+        if (auto row = m_store.get(sessionId)) {
+            const AgentDesktopInfo desk = m_agentDesktops.info(sessionId);
+            Brain *rebuilt = makeBrain(*row, m_sessionCwd.value(sessionId),
+                                      agentMcpOverridesFor(desk));
+            if (rebuilt) {
+                brain->disconnect();
+                brain->deleteLater();
+                connect(rebuilt, &Brain::event, this, &ControlServer::onBrainEvent);
+                connect(rebuilt, &Brain::turnFinished, this, &ControlServer::onTurnFinished);
+                m_brains.insert(sessionId, rebuilt);
+                brain = rebuilt;
+                qInfo("jarvisd: rebound %s's brain with computer-use now that its "
+                      "agent desktop is up (was transiently busy at creation)",
+                      qPrintable(sessionId));
+            }
+        }
+        m_pendingComputerUseRebind.remove(sessionId);
     }
     m_deskLastActive.insert(sessionId, QDateTime::currentMSecsSinceEpoch());
 
@@ -4085,7 +4130,9 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     m_agentDesktops.releaseSession(sessionId);   // drop the desktop + its reservation
     m_autoComputerSessions.remove(sessionId);
     m_autoGlobalEngineSessions.remove(sessionId);
+    m_pendingComputerUseRebind.remove(sessionId);
     m_selfPlanModeSessions.remove(sessionId);
+    m_planApprovedSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
@@ -4127,7 +4174,9 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_agentDesktops.releaseSession(sessionId);
     m_autoComputerSessions.remove(sessionId);
     m_autoGlobalEngineSessions.remove(sessionId);
+    m_pendingComputerUseRebind.remove(sessionId);
     m_selfPlanModeSessions.remove(sessionId);
+    m_planApprovedSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_coworkGuided.remove(sessionId);
     m_policyGuided.remove(sessionId);
@@ -4442,7 +4491,13 @@ Response ControlServer::handlePlanStatus(const Request &req)
 {
     const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
     QJsonObject r;
-    if (m_settings.agentMode() == QStringLiteral("plan")) {
+    // Codex review (PR #130): checked FIRST, ahead of the global setting — a
+    // session present_plan already approved must stay unrestricted even while
+    // OTHER sessions remain under the same global Settings PLAN mode.
+    if (!sessionId.isEmpty() && m_planApprovedSessions.contains(sessionId)) {
+        r.insert(QStringLiteral("restricted"), false);
+        r.insert(QStringLiteral("source"), QStringLiteral("approved"));
+    } else if (m_settings.agentMode() == QStringLiteral("plan")) {
         r.insert(QStringLiteral("restricted"), true);
         r.insert(QStringLiteral("source"), QStringLiteral("settings"));
     } else if (!sessionId.isEmpty() && m_selfPlanModeSessions.contains(sessionId)) {
@@ -4453,6 +4508,16 @@ Response ControlServer::handlePlanStatus(const Request &req)
         r.insert(QStringLiteral("source"), QString());
     }
     return Response::success(req.id, r);
+}
+
+Response ControlServer::handlePlanApprove(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    if (sessionId.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("session_id required"));
+    m_planApprovedSessions.insert(sessionId);
+    return Response::success(req.id);
 }
 
 Response ControlServer::handleSessionDelete(const Request &req)

@@ -1432,6 +1432,58 @@ the `/api/license/verify` contract, and the full "known limitations" list. Load-
   `paths-ignore: ['website/**']` added so a website-only PR/merge doesn't bump a product version or
   burn self-hosted/GitHub-hosted runner time on unrelated platform builds.
 
+## New subsystems (2026-07-17, later) — third Codex review round on PR #130 (qa→main)
+
+By this point PR #130 had absorbed dev's full history — including the Plan Mode feature above and
+the Proxmox dashboard work — so Codex's third review pass on the combined diff surfaced findings
+across all of it, not just the original agent-desktop fix. Fixed:
+
+- **`vm-create.tsx` regression I introduced earlier the same day:** `resetAll()` (called every time
+  the modal reopens) didn't reset the `created` signal from the "finalize creation when only start
+  fails" fix — reopening left `created()` true from the PREVIOUS VM, so `submit()`'s `if
+  (!created())` guard skipped the create call entirely and tried to start a VMID that was never
+  created this time. Added `setCreated(false)` to `resetAll()`.
+- **`ControlServer.cpp` sandbox-busy brain rebind:** the earlier `transientBusy` fix (tracking the
+  session in `m_autoComputerSessions` so `sendToSession()`'s BATTERY check retries `ensure()`) wasn't
+  enough — the BRAIN itself was already constructed with `agentOverrides` empty, and codex/claude
+  bake their MCP config at spawn, so even once the desktop came up later that SAME brain object still
+  had no connection to it. Added `m_pendingComputerUseRebind`: the first time the BATTERY check finds
+  the desktop up for one of these (and the brain isn't mid-turn), it tears down and reconstructs the
+  brain with the now-available overrides.
+- **Plan Mode, revisiting the "deliberately left as limitations" note above** — the user asked for
+  these to actually be fixed once Codex flagged them as P1s, not just documented:
+  - `policy._plan_status()` now fails CLOSED on an ambiguous empty `current_session_id()` (0 or 2+
+    sessions on the shared global engine) instead of querying `plan.status` with `""`, which could
+    read as "unrestricted" and cache that for the real (restricted) session for up to the TTL.
+  - `present_plan`'s "Approve & Build" no longer flips the GLOBAL Settings `agent_mode` from `"plan"`
+    to `"build"` — that un-restricted EVERY session under global Plan Mode, not just the approved
+    one. New `plan.approve` RPC + `m_planApprovedSessions` (checked first in `handlePlanStatus` and
+    in `makeBrain()`'s `planMode` computation) exempts only that session, per-session, in-memory.
+  - `_PLAN_SAFE_TOOLS` wrongly allowlisted `video_setup`/`video_configure`/`video_watch` — all three
+    have real side effects (multi-GB model download, persistent settings + cache-clearing, remote
+    video download + cloud transcription) despite the "consumption only" comment. Allowlisted tools
+    skip `_plan_status()` entirely, so these ran even under a hard Plan Mode restriction. Removed;
+    kept the genuinely read-only `video_info`/`video_analyze`/`video_detail`.
+- **Proxmox dashboard WS proxy, two more gaps in the session-scoping work above:**
+  - `backend_to_browser()` relayed EVERY `session.event`/`session.opened` frame from the daemon
+    straight to the browser BEFORE checking `allowed_sessions` — jarvisd's own scoping
+    (`m_scopedClients`) only kicks in once a client sends `session.subscribe`, which this proxy never
+    does on the backend connection's own behalf, so a fresh connection (or one that never chats) sat
+    in "legacy broadcast" indefinitely, leaking other sessions' events. Now filtered client-side
+    against `allowed_sessions` (starts empty, so nothing leaks before an operator session exists),
+    independent of whatever scoping state the daemon connection happens to be in.
+  - A transient WebSocket reconnect rebuilds `allowed_sessions` from empty (it's per-connection,
+    in-memory), permanently stranding a `ChatController` that kept its old `sid` — every future
+    `session.send` came back `method_not_allowed` forever. Rather than trying to let the proxy
+    re-verify cross-connection session ownership (a bigger, riskier change), `chat.tsx`'s `send()`
+    now detects that specific rejection (`CindroError.code === "method_not_allowed"`) and
+    transparently starts a fresh operator session once, instead of repeating the same failure.
+  - `App.tsx` constructs `ChatController` synchronously, before `checkAuth()`/login resolves, but the
+    constructor used to eagerly read the (cookie-userid-namespaced) persisted transcript — reading
+    either a STALE cookie's history (previous operator, not yet expired client-side) or the wrong
+    (unnamespaced) key if no cookie was present yet. Deferred to a new
+    `loadForAuthenticatedUser()`, called only once `checkAuth()` succeeds or a fresh login completes.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

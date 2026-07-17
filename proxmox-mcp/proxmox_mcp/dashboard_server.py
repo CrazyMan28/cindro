@@ -511,6 +511,24 @@ async def jarvis_ws(ws: WebSocket):
                                 sid = (frame.get("result") or {}).get("session_id")
                                 if isinstance(sid, str) and sid:
                                     allowed_sessions.add(sid)
+                        # Codex review (PR #130): this backend connection opens
+                        # UNSCOPED (jarvisd's ControlServer only scopes a client
+                        # once IT sends session.subscribe — this proxy doesn't do
+                        # that on the browser's behalf until the browser's first
+                        # chat message) and stays that way indefinitely for a
+                        # dashboard tab that never chats — jarvisd's "legacy
+                        # broadcast" then relays EVERY session's session.event/
+                        # session.opened frames here, which we'd otherwise hand
+                        # straight to the browser. Filter these two event kinds
+                        # against this connection's own allowed_sessions
+                        # (starts empty, so nothing leaks before an operator
+                        # session is actually created) instead of relying on the
+                        # daemon-side scoping this proxy never establishes.
+                        if isinstance(frame, dict) and frame.get("event") in (
+                                "session.event", "session.opened"):
+                            sid = (frame.get("data") or {}).get("session_id")
+                            if sid not in allowed_sessions:
+                                continue
                         await ws.send_text(msg)
                 except Exception:
                     pass
