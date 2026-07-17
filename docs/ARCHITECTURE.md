@@ -51,7 +51,10 @@ Methods (v1): `ping`; `settings.get`; `settings.set{patch}`;
 `session.create{profile:"coder"|"coworker", brain:"codex"|"claude"|"api", model?, cwd?, target?:"agent"|"real"}` -> `{session_id, thread_id?}`;
 `session.send{session_id, text, images?}`; `session.cancel{session_id}`;
 `session.list`; `session.history{session_id, limit?}`;
-`approval.respond{session_id, approval_id, decision:"allow"|"deny"|"always"}`.
+`approval.respond{session_id, approval_id, decision:"allow"|"deny"|"always"}`;
+`plan.enter{session_id}` / `plan.exit{session_id}` / `plan.status{session_id}` ->
+`{restricted, source:"settings"|"self"|""}` — Plan Mode's self-initiated entry path
+(engine-facing only; see [MODES.md](MODES.md)).
 
 `settings.get` returns (among others) `permission_level: "high"|"medium"|"low"` — the
 **soft ask-before-risky policy** (default `medium`). `settings.set{patch:{permission_level}}`

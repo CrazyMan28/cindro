@@ -148,6 +148,8 @@ QStringList ClaudeBrain::buildArgs(const QString &prompt, const QStringList &ima
     args << QStringLiteral("--strict-mcp-config");
     if (!m_opts.permissionMode.isEmpty())
         args << QStringLiteral("--permission-mode") << m_opts.permissionMode;
+    if (!m_opts.disallowedTools.isEmpty())
+        args << QStringLiteral("--disallowedTools") << m_opts.disallowedTools.join(QStringLiteral(","));
     // The prompt is NOT passed as a positional arg — it is fed via stdin in send()
     // (quoting-safe on every platform; a Windows claude.cmd + cmd.exe would otherwise
     // mangle a multi-word command-line prompt, leaving claude with none). `prompt` is
