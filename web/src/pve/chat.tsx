@@ -18,7 +18,7 @@ import { For, Show, createMemo, createSignal, onCleanup, onMount, type Component
 import { createStore, produce } from "solid-js/store"
 
 import { ArcReactor } from "../components/ArcReactor"
-import type { CindroClient } from "./cindro-client"
+import { CindroError, type CindroClient } from "./cindro-client"
 import { operatorTargetRef } from "./env"
 
 // ---------------------------------------------------------------------------
@@ -135,6 +135,13 @@ function sanitizeForStore(it: ChatItem): ChatItem {
       // approval could never be answered. Persist it fail-closed (not
       // authorized) rather than as a live button that silently does nothing.
       return it.resolved ? it : { ...it, resolved: "deny" }
+    case "user":
+    case "error":
+      // Cap these too: an operator pasting a large log into the composer would
+      // otherwise store an uncapped `user` item, and a few of those can blow the
+      // localStorage quota — every later write then throws (silently), wedging
+      // persistence so reloads restore a stale transcript.
+      return { ...it, text: capStr(it.text) }
     default:
       return it
   }
@@ -273,10 +280,19 @@ export class ChatController {
   private creating: Promise<string> | null = null
 
   private persistTimer: ReturnType<typeof setTimeout> | undefined
-  private modelOverride = createSignal<string>(readStoredModel())
+  private modelOverride = createSignal<string>("")
   private hostDefaultModel = createSignal<string>("")
   private modelList = createSignal<string[]>([])
   private modelsLoaded = false
+
+  /** Codex review (PR #130): App constructs this controller BEFORE
+   * checkAuth()/login resolves, so reading localStorage at construction time
+   * (keyed by the PVEAuthCookie's userid) could load the WRONG operator's
+   * transcript (a stale cookie from a previous session) or fail to load the
+   * RIGHT one (no cookie yet). Call this once the authenticated identity is
+   * actually known — App.tsx does, right after checkAuth() succeeds or a
+   * fresh login completes — never at construction time. */
+  loadForAuthenticatedUser: () => void = () => {}
 
   constructor(private client: CindroClient) {
     const [items, setItems] = createStore<ChatItem[]>([])
@@ -288,19 +304,22 @@ export class ChatController {
       this.schedulePersist()
     }
 
-    // Rehydrate any prior transcript BEFORE the event pump can push new items,
-    // and advance the id counter past the restored ids so new items never
-    // collide with (and clobber) a restored row of the same id.
-    const restored = readStoredTranscript()
-    if (restored.length) {
-      let maxId = 0
-      for (const it of restored) if (it.id > maxId) maxId = it.id
-      if (nextId <= maxId) nextId = maxId + 1
+    this.loadForAuthenticatedUser = () => {
+      // Rehydrate any prior transcript BEFORE the event pump can push new
+      // items, and advance the id counter past the restored ids so new items
+      // never collide with (and clobber) a restored row of the same id.
+      const restored = readStoredTranscript()
       setItems(
         produce((list) => {
+          list.length = 0
           for (const it of restored) list.push(it)
         }),
       )
+      let maxId = 0
+      for (const it of restored) if (it.id > maxId) maxId = it.id
+      if (nextId <= maxId) nextId = maxId + 1
+      const storedModel = readStoredModel()
+      if (storedModel) this.modelOverride[1](storedModel)
     }
 
     const [busy, setBusy] = createSignal(false)
@@ -365,8 +384,23 @@ export class ChatController {
     this.modelsLoaded = true
     const cfg = await resolveOperatorConfig()
     this.hostDefaultModel[1](cfg.model)
-    // Always keep the current selection listed, even if the live catalog didn't
-    // return it (a custom id, or a provider that's momentarily unreachable).
+    // Drop a persisted override whose provider key has since been removed — the
+    // usable catalog loaded but no longer lists it — so we don't open a session
+    // on a model with no key (the turn would just fail); fall back to the host
+    // default. Guard on a NON-EMPTY catalog so a transient settings-fetch failure
+    // (empty list) doesn't wipe a still-valid pick.
+    const override = this.modelOverride[0]()
+    if (override && cfg.models.length > 0 && !cfg.models.includes(override)) {
+      this.modelOverride[1]("")
+      try {
+        localStorage.removeItem(modelStoreKey())
+      } catch {
+        /* best-effort */
+      }
+    }
+    // Keep the (now-validated) current selection listed even if the catalog
+    // didn't return it — e.g. the host default the admin set, or an offline
+    // provider — so the header never shows a model that's missing from its menu.
     const list = [...cfg.models]
     const sel = this.modelOverride[0]() || cfg.model
     if (sel && !list.includes(sel)) list.unshift(sel)
@@ -459,18 +493,15 @@ export class ChatController {
     if (existing) return existing
     if (this.creating) return this.creating
     this.creating = (async () => {
-      // Honor the model the operator picked in the chat header, else the
-      // brain/model the admin chose on AI Settings — on a host with only an
-      // OpenAI key or a local Ollama model, a hard-coded mistral would just fail.
-      // Reuse the default the picker already fetched (loadModels) when present so
-      // opening a conversation doesn't re-hit /_jarvis/settings for the same data.
+      // Resolve the catalog first (idempotent, single fetch): this populates the
+      // host default AND drops a persisted override whose provider key was
+      // removed, so we never open a session on a model with no usable key.
+      await this.loadModels()
+      // Then honor the operator's (validated) pick, else the admin's default,
+      // else Mistral — a host with only an OpenAI key or a local Ollama model
+      // shouldn't be forced onto a hard-coded mistral.
       const brain = "api"
-      let model = this.modelOverride[0]() || this.hostDefaultModel[0]()
-      if (!model) {
-        const cfg = await resolveOperatorConfig()
-        model = cfg.model
-        this.hostDefaultModel[1](cfg.model)
-      }
+      const model = this.selectedModel()
       const res = await this.client.call(
         "session.create",
         {
@@ -500,10 +531,27 @@ export class ChatController {
     if (!t || this.busy()) return
     this.push({ id: mkId(), kind: "user", text: t })
     this.setBusy(true)
+    await this.sendCurrent(t)
+  }
+
+  private async sendCurrent(t: string, retried = false): Promise<void> {
     try {
       const sid = await this.ensureSession()
       await this.client.call("session.send", { session_id: sid, text: t }, 30000)
+      this.setBusy(false)
     } catch (e) {
+      // Codex review (PR #130): a transient WebSocket reconnect rebuilds the
+      // dashboard proxy's allowed_sessions from empty (dashboard_server.py),
+      // so a session this controller legitimately created before the drop is
+      // permanently rejected (method_not_allowed) afterward, stranding the
+      // conversation forever. Detect that specific rejection once and
+      // transparently start a fresh operator session instead of repeating the
+      // same failure on every future send.
+      if (!retried && e instanceof CindroError && e.code === "method_not_allowed") {
+        this.resetSession()
+        await this.sendCurrent(t, true)
+        return
+      }
       this.setBusy(false)
       this.push({ id: mkId(), kind: "error", text: e instanceof Error ? e.message : String(e) })
     }

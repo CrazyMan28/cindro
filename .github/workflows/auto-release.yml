@@ -21,11 +21,16 @@
 # the release builds. Until it's set, this job no-ops with a warning.
 #
 # Runs on the self-hosted Linux runner (no GitHub-hosted minutes). Manual trigger too.
+#
+# paths-ignore: website/** — the Laravel marketing/billing site has its own lightweight
+# website-ci.yml gate and doesn't ship a versioned product artifact, so a website-only
+# merge shouldn't bump/tag a product release.
 name: auto-release
 
 on:
   push:
     branches: [main]
+    paths-ignore: ['website/**']
   workflow_dispatch: {}
 
 permissions:

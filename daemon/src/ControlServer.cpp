@@ -513,6 +513,8 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handlePlanExit(req);
     else if (m == QStringLiteral("plan.status"))
         resp = handlePlanStatus(req);
+    else if (m == QStringLiteral("plan.approve"))
+        resp = handlePlanApprove(req);
     else if (m == QStringLiteral("session.delete"))
         resp = handleSessionDelete(req);
     else if (m == QStringLiteral("session.list"))
@@ -2425,8 +2427,13 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
     // it up the next time this Brain is (re)constructed (new session, or a
     // respawn after daemon restart/idle-teardown), same as the pre-existing
     // Settings-driven path.
-    const bool planMode = m_settings.agentMode() == QStringLiteral("plan") ||
-                           m_selfPlanModeSessions.contains(row.id);
+    // present_plan's per-session Approve & Build (m_planApprovedSessions) wins
+    // over the global setting — a brain (re)built for an approved session must
+    // not come back read-only just because Settings is still "plan" for
+    // everyone else. See handlePlanStatus for the same precedence.
+    const bool planMode = !m_planApprovedSessions.contains(row.id) &&
+                          (m_settings.agentMode() == QStringLiteral("plan") ||
+                           m_selfPlanModeSessions.contains(row.id));
 
     if (row.brain == QStringLiteral("codex")) {
         CodexBrain::Options opts;
@@ -2947,9 +2954,9 @@ QString ControlServer::modePolicyClause() const
             "agent_wait/agent_status/agent_result/agent_stop/agent_send) remain "
             "available — fan out research freely. When the plan is ready, call "
             "present_plan(title, markdown, todos) and wait for the user's decision "
-            "(approve switches you to BUILD mode automatically; request-changes "
-            "gives you feedback to incorporate). The user can also change modes "
-            "directly in Settings.");
+            "(approve unblocks THIS session immediately — execute right away, no "
+            "need to ask again; request-changes gives you feedback to "
+            "incorporate). The user can also change modes directly in Settings.");
     }
     if (mode == QStringLiteral("build")) {
         return QStringLiteral(
@@ -3036,7 +3043,7 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
                                      const QString &title, QString *err,
                                      const QString &target, const QString &parentSessionId,
                                      const QString &agent, const QString &agentPromptOverride,
-                                     const QString &scheduleTargetRef)
+                                     const QString &scheduleTargetRef, bool inheritSelfPlanMode)
 {
     // Custom-agent (subagent) resolution: when this session runs AS an agent,
     // a DEFINED agent supplies its brain/model/profile + system prompt; but an
@@ -3064,6 +3071,12 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
 
     SessionRow row;
     row.id = genSessionId();
+    // Mark self-plan-mode BEFORE makeBrain() runs below (createSession() calls
+    // it internally) so a plan-restricted parent's child is born with the
+    // right Brain Options (e.g. ClaudeBrain's --disallowedTools) already
+    // baked in, not just gated live by the MCP-side policy.py gate.
+    if (inheritSelfPlanMode)
+        m_selfPlanModeSessions.insert(row.id);
     row.parentSessionId = parentSessionId;
     row.agent = agentName;
     row.profile = effProfile.isEmpty() ? QStringLiteral("coder") : effProfile;
@@ -3281,6 +3294,15 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
             qWarning("jarvisd: auto agent desktop transiently busy for %s (%s); "
                      "will retry on next turn", qPrintable(row.id), qPrintable(deskErr));
             m_autoComputerSessions.insert(row.id);
+            // Codex review follow-up (PR #130): the retry above brings the DESKTOP
+            // up later, but the brain we're about to construct right below gets
+            // built with agentOverrides EMPTY (desk.up is false right now) — its
+            // codex/claude config is fixed at spawn, so even once ensure() later
+            // succeeds this same brain object still has no MCP connection to it.
+            // Mark the session for a one-time REBIND: sendToSession()'s BATTERY
+            // check reconstructs the brain (with the now-live overrides) the
+            // first time it successfully re-provisions one of these.
+            m_pendingComputerUseRebind.insert(row.id);
         } else {
             // A REAL provisioning failure on a platform that CAN isolate
             // (crashed process, port conflict, ...): the chat still works, it
@@ -3365,6 +3387,16 @@ void ControlServer::wakeParentForSubagent(const QString &childSid)
 {
     // One-shot: only the FIRST trigger (final OR turnFinished) wakes the parent.
     if (!m_subagentPendingWake.contains(childSid))
+        return;
+    // DEFER if a turn is already queued for this child (agent_send steered it
+    // while it was busy — see sendToSession's m_pendingTurns.insert). Without
+    // this, THIS turn's Final event would consume the one-shot wake before the
+    // queued turn even starts, so the queued turn's own completion would later
+    // find m_subagentPendingWake already empty and silently never notify the
+    // parent (Codex review, PR #132). The queued turn's own Final event will
+    // retry this call once it eventually finishes, by which time it will have
+    // been dequeued (drained in the post-turn cleanup right after this event).
+    if (m_pendingTurns.contains(childSid))
         return;
     const QString parentSid = m_subagentPendingWake.take(childSid);
     const bool parentOk = m_store.get(parentSid).has_value();
@@ -3674,6 +3706,35 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
     if (m_autoComputerSessions.contains(sessionId) && !m_agentDesktops.has(sessionId)) {
         QString deskErr;
         m_agentDesktops.ensure(sessionId, &deskErr);
+    }
+    // Codex review (PR #130): a brain constructed while its desktop was
+    // transiently busy (createSession()'s sandbox_busy branch) has NO
+    // computer-use MCP baked in — codex/claude fix their config at spawn, so
+    // bringing the desktop up above isn't enough for an ALREADY-LIVE brain
+    // object. One-time REBIND: the first time we find the desktop actually up
+    // for one of these (and the brain isn't mid-turn — never destroy a busy
+    // one), tear down + reconstruct it with the now-available overrides,
+    // exactly as createSession() would have done if ensure() had succeeded
+    // the first time.
+    if (m_pendingComputerUseRebind.contains(sessionId) && m_agentDesktops.has(sessionId) &&
+        !brain->isBusy()) {
+        if (auto row = m_store.get(sessionId)) {
+            const AgentDesktopInfo desk = m_agentDesktops.info(sessionId);
+            Brain *rebuilt = makeBrain(*row, m_sessionCwd.value(sessionId),
+                                      agentMcpOverridesFor(desk));
+            if (rebuilt) {
+                brain->disconnect();
+                brain->deleteLater();
+                connect(rebuilt, &Brain::event, this, &ControlServer::onBrainEvent);
+                connect(rebuilt, &Brain::turnFinished, this, &ControlServer::onTurnFinished);
+                m_brains.insert(sessionId, rebuilt);
+                brain = rebuilt;
+                qInfo("jarvisd: rebound %s's brain with computer-use now that its "
+                      "agent desktop is up (was transiently busy at creation)",
+                      qPrintable(sessionId));
+            }
+        }
+        m_pendingComputerUseRebind.remove(sessionId);
     }
     m_deskLastActive.insert(sessionId, QDateTime::currentMSecsSinceEpoch());
 
@@ -4085,7 +4146,9 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     m_agentDesktops.releaseSession(sessionId);   // drop the desktop + its reservation
     m_autoComputerSessions.remove(sessionId);
     m_autoGlobalEngineSessions.remove(sessionId);
+    m_pendingComputerUseRebind.remove(sessionId);
     m_selfPlanModeSessions.remove(sessionId);
+    m_planApprovedSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
@@ -4127,7 +4190,9 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_agentDesktops.releaseSession(sessionId);
     m_autoComputerSessions.remove(sessionId);
     m_autoGlobalEngineSessions.remove(sessionId);
+    m_pendingComputerUseRebind.remove(sessionId);
     m_selfPlanModeSessions.remove(sessionId);
+    m_planApprovedSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_coworkGuided.remove(sessionId);
     m_policyGuided.remove(sessionId);
@@ -4442,7 +4507,13 @@ Response ControlServer::handlePlanStatus(const Request &req)
 {
     const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
     QJsonObject r;
-    if (m_settings.agentMode() == QStringLiteral("plan")) {
+    // Codex review (PR #130): checked FIRST, ahead of the global setting — a
+    // session present_plan already approved must stay unrestricted even while
+    // OTHER sessions remain under the same global Settings PLAN mode.
+    if (!sessionId.isEmpty() && m_planApprovedSessions.contains(sessionId)) {
+        r.insert(QStringLiteral("restricted"), false);
+        r.insert(QStringLiteral("source"), QStringLiteral("approved"));
+    } else if (m_settings.agentMode() == QStringLiteral("plan")) {
         r.insert(QStringLiteral("restricted"), true);
         r.insert(QStringLiteral("source"), QStringLiteral("settings"));
     } else if (!sessionId.isEmpty() && m_selfPlanModeSessions.contains(sessionId)) {
@@ -4453,6 +4524,16 @@ Response ControlServer::handlePlanStatus(const Request &req)
         r.insert(QStringLiteral("source"), QString());
     }
     return Response::success(req.id, r);
+}
+
+Response ControlServer::handlePlanApprove(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    if (sessionId.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("session_id required"));
+    m_planApprovedSessions.insert(sessionId);
+    return Response::success(req.id);
 }
 
 Response ControlServer::handleSessionDelete(const Request &req)
@@ -6808,22 +6889,25 @@ Response ControlServer::handleAgentsDispatch(const Request &req, bool remote)
     // Spawn a CHILD session that runs AS the agent. A stored def supplies brain/
     // model/profile + system prompt; an unknown name + inline brain/model/
     // system_prompt makes an ad-hoc subagent. parent_session_id links it for the tree.
+    // A self-initiated PLAN restriction (enter_plan_mode) must propagate to a
+    // dispatched subagent — otherwise a plan-restricted session could delegate
+    // the actual writing to an unrestricted child, defeating the read-only
+    // guarantee. The GLOBAL Settings-driven restriction needs no such
+    // propagation: agent_mode is global, so the child is already covered.
+    // MUST be computed and passed INTO createSession() (not applied after it
+    // returns) — createSession() calls makeBrain() internally, so applying
+    // this after the fact is too late to affect the child's Brain Options.
+    const bool inheritSelfPlanMode = !parent.isEmpty() && m_selfPlanModeSessions.contains(parent);
     QString err;
     const QString sid = createSession(
         /*profile=*/QString(), /*brain=*/brain, /*model=*/model,
         /*cwd=*/p.value(QStringLiteral("cwd")).toString(),
         /*title=*/label, &err, /*target=*/QString(),
         /*parentSessionId=*/parent, /*agent=*/label,
-        /*agentPromptOverride=*/sysPrompt);
+        /*agentPromptOverride=*/sysPrompt, /*scheduleTargetRef=*/QString(),
+        inheritSelfPlanMode);
     if (sid.isEmpty())
         return Response::failure(req.id, QStringLiteral("dispatch_failed"), err);
-    // A self-initiated PLAN restriction (enter_plan_mode) must propagate to a
-    // dispatched subagent — otherwise a plan-restricted session could delegate
-    // the actual writing to an unrestricted child, defeating the read-only
-    // guarantee. The GLOBAL Settings-driven restriction needs no such
-    // propagation: agent_mode is global, so the child is already covered.
-    if (!parent.isEmpty() && m_selfPlanModeSessions.contains(parent))
-        m_selfPlanModeSessions.insert(sid);
     // Every subagent MUST end with a summary so the parent can act on its result.
     const QString taskWithSummary = task +
         QStringLiteral("\n\n[IMPORTANT] When you finish, end your final reply with a "

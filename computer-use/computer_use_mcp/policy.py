@@ -513,26 +513,46 @@ _PLAN_SAFE_TOOLS = frozenset({
     "bg_status", "bg_logs", "bg_list", "bg_wait", "lsp_diagnostics", "lsp_server_status",
     # Read-only TUI/command introspection
     "tui_list_pages", "list_slash_commands", "workflow_list",
-    # Video analysis (consumption only, no external side effect)
-    "video_info", "video_setup", "video_configure", "video_watch",
-    "video_analyze", "video_detail",
+    # Video analysis (consumption only, no external side effect). Codex review
+    # (PR #130/#132): video_setup/video_configure/video_watch were WRONGLY
+    # here — video_setup(prewarm=true) downloads/loads a multi-GB whisper
+    # model, video_configure writes persistent settings and can wipe the
+    # cached-frame store (clear_sessions=true), and video_watch downloads
+    # remote videos, populates caches, and can invoke cloud transcription.
+    # Only the read-only inspection tools belong in a Plan-Mode allowlist
+    # (allowlisted tools skip _plan_status() entirely).
+    "video_info", "video_analyze", "video_detail",
 })
 
 
 def _plan_status() -> tuple[bool, str]:
-    """-> (restricted, source in {"settings","self","","unreachable"}). Session-scoped, TTL-cached.
+    """-> (restricted, source in {"settings","self","approved","","unreachable",
+    "ambiguous_session"}). Session-scoped, TTL-cached.
 
     A cache MISS runs a synchronous, blocking daemon round-trip on the calling
     coroutine (same tradeoff gate()'s ask-bus flow already accepts elsewhere in
-    this file) — acceptable at a ~2s TTL, but note current_session_id() is
-    itself uncached and can fall back to an extra "session.list" round-trip on
-    the shared global engine (no JARVIS_AGENT_SESSION), and its "" fallback on
-    an ambiguous multi-session process is a known pre-existing limitation (see
-    its own docstring) that this cache inherits, not something new here."""
+    this file) — acceptable at a ~2s TTL. current_session_id() is itself
+    uncached and can fall back to an extra "session.list" round-trip on the
+    shared global engine (no JARVIS_AGENT_SESSION); when it can't disambiguate
+    (2+ concurrent sessions, no way to tell which is calling) this fails
+    CLOSED ("ambiguous_session") rather than querying plan.status with an
+    empty id, which would ask the wrong question and could leak another
+    session's status into this one's cache entry."""
     try:
         sid = daemon_client.current_session_id()
     except Exception:
         sid = ""
+    if not sid:
+        # Codex review (PR #130): an empty sid means the shared global engine
+        # couldn't tell which of its concurrent sessions is calling (see
+        # current_session_id()'s docstring). Querying plan.status with "" asks
+        # the WRONG question — if some OTHER session happens to be unrestricted,
+        # or "" was never marked restricted, this reports unrestricted and the
+        # cache then lets THIS call's write tools through for up to the TTL,
+        # defeating session-scoped enforcement in exactly the concurrent case
+        # this module calls out. Fail closed instead of guessing, same
+        # deliberate deviation as the "unreachable" branch below.
+        return True, "ambiguous_session"
     now = time.time()
     cached = _PLAN_CACHE.get(sid)
     if cached and now - cached["ts"] < _PLAN_CACHE_TTL:

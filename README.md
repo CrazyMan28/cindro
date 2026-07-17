@@ -148,6 +148,9 @@ android/      Kotlin/Compose app (MVVM, Room, DataStore, foreground WS service)
 kde-applet/   Plasma 6 applet to toggle the sidebar
 plugins/      Plugin SDK + signed-package format + registry
 packaging/    systemd user units, Sway keybind, install scripts
+website/      Marketing/billing site — Laravel + Breeze + Cashier/Stripe + Filament admin,
+              /api/license/verify is the intended integration point back into core/
+              (see website/README.md)
 docs/         Architecture, build spec, feature specs (see docs/ARCHITECTURE.md)
 scripts/      Live verification scripts (WS round-trips, voice, auth gate, etc.)
 ```

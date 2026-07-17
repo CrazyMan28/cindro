@@ -29,16 +29,17 @@ def tools(monkeypatch):
     return m.tools
 
 
-def test_present_plan_approve_flips_global_settings_mode(tools, monkeypatch):
+def test_present_plan_approve_grants_session_scoped_override(tools, monkeypatch):
+    """Approve & Build must call plan.exit (clears any self-initiated flag) AND
+    plan.approve (grants a SESSION-SCOPED override) — and must NEVER touch the
+    global settings.set, regardless of what the global agent_mode currently is.
+    Approving one session's plan flipping the shared global setting would
+    silently unblock a different, concurrently-running plan-restricted session
+    whose own plan was never shown to the user (Codex review, PR #130/#132 —
+    this test guards the fix)."""
     calls = []
-
-    def fake_call(method, params=None, timeout=15.0):
-        calls.append((method, params))
-        if method == "settings.get":
-            return {"agent_mode": "plan"}
-        return {}
-
-    monkeypatch.setattr(daemon_client, "call", fake_call)
+    monkeypatch.setattr(daemon_client, "call",
+                         lambda method, params=None, timeout=15.0: calls.append((method, params)))
     monkeypatch.setattr(ask_bus, "ask",
                          lambda q, opts, timeout=180.0: {"answer": "Approve & Build",
                                                           "answered": True, "timed_out": False})
@@ -48,32 +49,11 @@ def test_present_plan_approve_flips_global_settings_mode(tools, monkeypatch):
     result = json.loads(tools["present_plan"]("Title", "body", todos=None))
     assert result == {"decision": "approve", "note": ""}
     assert ("plan.exit", {"session_id": "sess-1"}) in calls
-    assert ("settings.set", {"patch": {"agent_mode": "build"}}) in calls
+    assert ("plan.approve", {"session_id": "sess-1"}) in calls
+    assert not any(m == "settings.set" for m, _ in calls), \
+        "present_plan must never touch the global agent_mode setting"
+    assert not any(m == "settings.get" for m, _ in calls)
     assert busted == ["sess-1"]
-
-
-def test_present_plan_approve_leaves_non_plan_global_mode_alone(tools, monkeypatch):
-    # Self-initiated (enter_plan_mode) session where the GLOBAL setting is
-    # something other than "plan" (e.g. "coworker") — approving must NOT
-    # force the global mode to "build".
-    calls = []
-
-    def fake_call(method, params=None, timeout=15.0):
-        calls.append((method, params))
-        if method == "settings.get":
-            return {"agent_mode": "coworker"}
-        return {}
-
-    monkeypatch.setattr(daemon_client, "call", fake_call)
-    monkeypatch.setattr(ask_bus, "ask",
-                         lambda q, opts, timeout=180.0: {"answer": "Approve & Build",
-                                                          "answered": True, "timed_out": False})
-    monkeypatch.setattr(policy, "bust_plan_cache", lambda sid="": None)
-
-    result = json.loads(tools["present_plan"]("Title", "body"))
-    assert result["decision"] == "approve"
-    assert ("plan.exit", {"session_id": "sess-1"}) in calls
-    assert not any(m == "settings.set" for m, _ in calls)
 
 
 def test_present_plan_writes_todos_when_given(tools, monkeypatch):

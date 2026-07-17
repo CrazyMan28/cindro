@@ -178,6 +178,11 @@ public:
     // ScheduleRow::targetRef (e.g. "proxmox-<hostname>") — stored on the
     // session and read by makeBrain() to route the api brain at that agent's
     // own MCP endpoint. Empty for every other caller.
+    // `inheritSelfPlanMode`: true when the caller (handleAgentsDispatch) already
+    // knows this NEW child must be born self-plan-mode-restricted (its parent
+    // is). Must be applied BEFORE makeBrain() runs inside this function (not
+    // after createSession() returns, which is too late — the child's Brain
+    // Options would already be baked without the PLAN-mode restriction).
     QString createSession(const QString &profile, const QString &brain,
                           const QString &model, const QString &cwd,
                           const QString &title, QString *err,
@@ -185,7 +190,8 @@ public:
                           const QString &parentSessionId = QString(),
                           const QString &agent = QString(),
                           const QString &agentPromptOverride = QString(),
-                          const QString &scheduleTargetRef = QString());
+                          const QString &scheduleTargetRef = QString(),
+                          bool inheritSelfPlanMode = false);
 
     // target="real" take-over: after a biometric approval the agent drives the
     // user's ACTIVE real session via the global :8794 engine. requestTakeOver
@@ -294,6 +300,13 @@ private:
     Response handlePlanEnter(const Request &req);
     Response handlePlanExit(const Request &req);
     Response handlePlanStatus(const Request &req);
+    // plan.approve — present_plan's "Approve & Build" decision, per-session.
+    // Codex review (PR #130): present_plan used to flip the GLOBAL Settings
+    // agent_mode from "plan" to "build" on approval, which unrestricted EVERY
+    // session under global Plan Mode, not just the one whose plan was actually
+    // approved. This exempts just that session (m_planApprovedSessions) without
+    // touching the global setting or any other session.
+    Response handlePlanApprove(const Request &req);
     Response handleSessionDelete(const Request &req);
     Response handleSessionList(const Request &req);
     Response handleSessionHistory(const Request &req);
@@ -977,12 +990,28 @@ private:
     // screen here, instead of silently believing (and faking) it has an isolated
     // agent desktop.
     QSet<QString> m_autoGlobalEngineSessions;
+    // sessionIds whose brain was constructed WITHOUT computer-use overrides
+    // because AgentDesktop::ensure() hit transient contention (Windows
+    // "sandbox_busy:") at createSession() time — codex/claude bake their MCP
+    // config at spawn, so simply re-provisioning the desktop later (the BATTERY
+    // check below) isn't enough; sendToSession() rebinds (tears down + rebuilds)
+    // the brain the first time it finds the desktop actually up for one of
+    // these, then drops it from this set. See createSession()'s autoComputer
+    // transientBusy branch.
+    QSet<QString> m_pendingComputerUseRebind;
     // sessionIds the MODEL put into PLAN mode itself via enter_plan_mode (Plan
     // Mode, ephemeral/self-initiated path) — distinct from the global, persisted
     // Settings agent_mode. In-memory only; cleared on session cancel/delete and
     // by exit_plan_mode/present_plan's Approve & Build. See plan.enter/plan.exit/
     // plan.status and computer_use_mcp/policy.py's _plan_mode_gate.
     QSet<QString> m_selfPlanModeSessions;
+    // sessionIds present_plan's "Approve & Build" has approved OUT of the
+    // GLOBAL Settings-driven PLAN agent_mode (plan.approve) — per-session, so
+    // approving one session's plan never lifts the restriction for another
+    // session still under the same global setting. Checked FIRST in
+    // handlePlanStatus, ahead of the global setting. In-memory only; cleared
+    // on session cancel/delete.
+    QSet<QString> m_planApprovedSessions;
     // sessionId -> last turn time (ms). Drives the idle-teardown sweep below.
     QHash<QString, qint64> m_deskLastActive;
     // Idle-teardown sweep: tears an AUTO desktop down when its session hasn't been

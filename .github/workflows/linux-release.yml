@@ -19,6 +19,7 @@ on:
   # which creates the v* tag -> that tag build attaches the artifact.
   pull_request:
     branches: [main]
+    paths-ignore: ['website/**']
   push:
     tags: ["v*"]
   workflow_dispatch:

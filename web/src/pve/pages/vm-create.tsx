@@ -169,6 +169,11 @@ export const VmCreateModal: Component<{
     setFirewall(false)
     setStartAfterCreate(true)
     setCreating(false)
+    // Codex review (PR #130): reopening the still-mounted modal without
+    // resetting this left `created()` true from the PREVIOUS VM, so submit()'s
+    // `if (!created())` guard skipped the create call entirely and tried to
+    // start a VMID that was never actually created this time.
+    setCreated(false)
     setCreateErr("")
     setLoadErr("")
     setVmidAuto(true)
