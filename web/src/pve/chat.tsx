@@ -251,9 +251,20 @@ async function resolveOperatorConfig(): Promise<{ brain: string; model: string; 
     const models = (Array.isArray(rawModels) ? (rawModels as unknown[]) : []).filter(
       (m): m is string => typeof m === "string" && isOperatorCapableModel(m) && isModelUsable(m, apiKeysSet),
     )
+    // Codex review (PR #130): the default was accepted without checking
+    // isModelUsable (only isOperatorCapableModel, which just excludes
+    // claude/anthropic prefixes) — a default_model whose provider key had
+    // been removed, or the hard-coded Mistral fallback on a Mistral-less
+    // host, created an operator session with an unavailable provider that
+    // failed on every turn. Validate the default the same way the `models`
+    // list already is, and fall back to an actually-usable model from that
+    // list before falling back to the hard-coded default.
     let model = fallback.model
-    if (s.default_brain === "api" && typeof s.default_model === "string" && isOperatorCapableModel(s.default_model)) {
+    if (s.default_brain === "api" && typeof s.default_model === "string" &&
+        isOperatorCapableModel(s.default_model) && isModelUsable(s.default_model, apiKeysSet)) {
       model = s.default_model
+    } else if (!isModelUsable(model, apiKeysSet) && models.length) {
+      model = models[0]
     }
     return { brain: "api", model, models }
   } catch {
@@ -537,8 +548,14 @@ export class ChatController {
   private async sendCurrent(t: string, retried = false): Promise<void> {
     try {
       const sid = await this.ensureSession()
+      // Codex review (PR #130): session.send resolving only means the daemon
+      // ACCEPTED the turn, not that the brain finished — clearing busy here (a
+      // regression from the reconnect self-heal fix below) re-enabled the
+      // composer while tools/an approval were still running, so a rapid
+      // follow-up got silently coalesced into the still-active turn (only the
+      // newest pending turn survives). The event pump already clears busy on
+      // `final`/`error`; leave it set on the successful RPC path.
       await this.client.call("session.send", { session_id: sid, text: t }, 30000)
-      this.setBusy(false)
     } catch (e) {
       // Codex review (PR #130): a transient WebSocket reconnect rebuilds the
       // dashboard proxy's allowed_sessions from empty (dashboard_server.py),

@@ -463,7 +463,14 @@ async def jarvis_ws(ws: WebSocket):
                                 continue
                             if frame_id is not None:
                                 pending_operator_creates.add(frame_id)
-                        elif method == "session.send":
+                        elif method in ("session.send", "approval.respond"):
+                            # Codex review (PR #130): approval.respond was forwarded
+                            # with no session check at all — combined with the
+                            # proxmoxop.approval broadcast leak above, a compromised
+                            # same-origin bundle that learned another operator
+                            # session's approval_id could approve/deny that
+                            # session's root-level action from this connection.
+                            # Same allowed_sessions check as session.send.
                             sid = params.get("session_id")
                             if not isinstance(sid, str) or sid not in allowed_sessions:
                                 await ws.send_text(json.dumps({
@@ -518,14 +525,23 @@ async def jarvis_ws(ws: WebSocket):
                         # chat message) and stays that way indefinitely for a
                         # dashboard tab that never chats — jarvisd's "legacy
                         # broadcast" then relays EVERY session's session.event/
-                        # session.opened frames here, which we'd otherwise hand
-                        # straight to the browser. Filter these two event kinds
-                        # against this connection's own allowed_sessions
-                        # (starts empty, so nothing leaks before an operator
-                        # session is actually created) instead of relying on the
-                        # daemon-side scoping this proxy never establishes.
+                        # session.opened/proxmoxop.approval frames here, which
+                        # we'd otherwise hand straight to the browser.
+                        # proxmoxop.approval (ControlServer::broadcastProxmoxOpApproval)
+                        # is UNCONDITIONALLY sent to every control client — no
+                        # daemon-side scoping at all — so a compromised same-origin
+                        # bundle could learn another admin's operator session's
+                        # approval_id from this broadcast and then call
+                        # approval.respond with it (see the browser_to_backend
+                        # guard below) to approve/deny a root-level action it
+                        # never should have seen. Filter all three event kinds
+                        # against this connection's own allowed_sessions (starts
+                        # empty, so nothing leaks before an operator session is
+                        # actually created) instead of relying on daemon-side
+                        # scoping this proxy never establishes (or, for
+                        # proxmoxop.approval, that doesn't exist at all).
                         if isinstance(frame, dict) and frame.get("event") in (
-                                "session.event", "session.opened"):
+                                "session.event", "session.opened", "proxmoxop.approval"):
                             sid = (frame.get("data") or {}).get("session_id")
                             if sid not in allowed_sessions:
                                 continue

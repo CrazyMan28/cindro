@@ -66,14 +66,15 @@ def register(mcp: FastMCP) -> None:
         try:
             if todos:
                 write_todos(todos)
-            # Resolve sid BEFORE the blocking wait, not after: on the shared
-            # global engine, current_session_id() only resolves reliably while
-            # THIS is the sole "running" session, but the ask below can block
-            # for up to a day (JARVIS_PLAN_ASK_TIMEOUT) -- by the time the user
-            # answers, another session may well be running too, making this
-            # resolve to "" (ambiguous). plan.exit/plan.approve would then
-            # silently no-op (swallowed below) while present_plan still reports
-            # "approve", leaving writes blocked with no visible cause.
+            # Codex review (PR #130): this used to resolve `sid` AFTER the
+            # blocking ask_bus.ask() call returned. On the shared global engine,
+            # current_session_id() only resolves reliably while THIS is the
+            # sole running session — but the ask can block for up to a day, so
+            # by the time the user answers, another session may well be
+            # running too, making this resolve empty. plan.exit/plan.approve
+            # would then both silently fail (swallowed below) while
+            # present_plan still reported "approve", leaving writes blocked.
+            # Capture it BEFORE the blocking wait instead.
             sid = daemon_client.current_session_id()
             res = ask_bus.ask(
                 f"# {title}\n\n{markdown}",

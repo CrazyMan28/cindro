@@ -2421,12 +2421,18 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
     // when this Brain was constructed). These Options are defense-in-depth on
     // top of that, brain-specific and each with real caveats — see the
     // comments at each use site below. CAVEAT: Options are baked in at Brain
-    // construction time (here) and reused for every subsequent turn's subprocess
-    // respawn — calling enter_plan_mode() mid-conversation restricts tools
-    // immediately via the MCP gate, but this defense-in-depth layer only picks
-    // it up the next time this Brain is (re)constructed (new session, or a
-    // respawn after daemon restart/idle-teardown), same as the pre-existing
-    // Settings-driven path.
+    // construction time (here) and reused for every subsequent turn's
+    // subprocess respawn, so a mid-conversation plan.enter/plan.exit/
+    // plan.approve doesn't retroactively change an ALREADY-LIVE brain's
+    // Options just by itself. For CLAUDE this is closed by
+    // markPlanRebindIfClaudeLive() + sendToSession()'s rebind (Codex review,
+    // PR #130) — the brain is torn down and reconstructed (picking up the
+    // change here) the next time it's found idle. CodexBrain has no
+    // equivalent: its --sandbox is a single whole-process setting that ALSO
+    // controls whether MCP tool calls auto-cancel, so tightening it on Plan
+    // entry would break computer-use for that session — that gap stays
+    // documented, not fixed (core/tests/codex_buildargs_test.cpp asserts it
+    // deliberately).
     // present_plan's per-session Approve & Build (m_planApprovedSessions) wins
     // over the global setting — a brain (re)built for an approved session must
     // not come back read-only just because Settings is still "plan" for
@@ -2713,6 +2719,45 @@ CodexMcpOverrides ControlServer::agentMcpOverridesFor(const AgentDesktopInfo &de
         }
     }
     return out;
+}
+
+CodexMcpOverrides ControlServer::provisionAutoComputerDesktop(const SessionRow &row)
+{
+    QString deskErr;
+    const AgentDesktopInfo desk = m_agentDesktops.ensure(row.id, &deskErr);
+    if (desk.up) {
+        m_autoComputerSessions.insert(row.id);
+        return agentMcpOverridesFor(desk);
+    }
+    if (!AgentDesktop::nestedDesktopSupported()) {
+        // Stock Windows without the v2 sandbox opt-in: isolation was never
+        // available on this platform at all — this is the documented v1
+        // take-over default (see makeBrain()'s v1TakeoverFallback), not a
+        // failure. Fall back to the global engine; the no-isolation branch
+        // of the co-work guide (sendToSession) tells the model this
+        // session's "computer_use" tools are actually the real screen, so
+        // it asks before acting instead of assuming isolation.
+        m_autoGlobalEngineSessions.insert(row.id);
+        return {};
+    }
+    // This platform CAN isolate but ensure() failed right now — either
+    // "sandbox_busy:" (windows/shell/AgentDesktop.cpp — TRANSIENT contention,
+    // another sandbox still up/releasing) or a genuine failure (crashed
+    // process, port conflict). Track for retry (m_autoComputerSessions,
+    // consumed by sendToSession()'s BATTERY re-provision check) AND for the
+    // eventual brain REBIND once a later ensure() succeeds
+    // (m_pendingComputerUseRebind — the brain built with these EMPTY
+    // overrides has no MCP connection to a desktop that comes up later,
+    // since codex/claude fix their config at construction). Do NOT fall back
+    // to the global real-screen engine under the "computer_use" name here —
+    // that would silently drive the user's real screen under a name that
+    // means "isolated" everywhere else.
+    qWarning("jarvisd: auto agent desktop unavailable for %s (%s); "
+             "session continues without computer-use, will retry",
+             qPrintable(row.id), qPrintable(deskErr));
+    m_autoComputerSessions.insert(row.id);
+    m_pendingComputerUseRebind.insert(row.id);
+    return {};
 }
 
 QString ControlServer::resolveConnectorEnv(const QString &valueOrRef) const
@@ -3301,56 +3346,9 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
         // is a one-time hit per session (the nested compositor + engine then
         // idle-teardown/re-provision on the SAME reserved port+bearer via
         // m_autoComputerSessions — see sweepIdleDesktops() + the BATTERY
-        // re-provision check in sendToSession()).
-        QString deskErr;
-        const AgentDesktopInfo desk = m_agentDesktops.ensure(row.id, &deskErr);
-        // "sandbox_busy:" (windows/shell/AgentDesktop.cpp) is TRANSIENT contention
-        // — another sandbox still up/releasing — not a real provisioning failure;
-        // see the identical check in the explicitAgent branch above.
-        const bool transientBusy = deskErr.startsWith(QStringLiteral("sandbox_busy:"));
-        if (desk.up) {
-            agentOverrides = agentMcpOverridesFor(desk);
-            m_autoComputerSessions.insert(row.id);
-        } else if (!AgentDesktop::nestedDesktopSupported()) {
-            // Stock Windows without the v2 sandbox opt-in: isolation was never
-            // available on this platform at all — this is the documented v1
-            // take-over default (see makeBrain()'s v1TakeoverFallback), not a
-            // failure. Fall back to the global engine; the no-isolation branch
-            // of the co-work guide (sendToSession) tells the model this
-            // session's "computer_use" tools are actually the real screen, so
-            // it asks before acting instead of assuming isolation.
-            m_autoGlobalEngineSessions.insert(row.id);
-        } else if (transientBusy) {
-            // Codex review (PR #130): treating transient sandbox contention as a
-            // permanent failure stranded the session in NEITHER set, so the
-            // BATTERY re-provision check in sendToSession() (which only looks at
-            // m_autoComputerSessions) never retried it — every such session
-            // permanently lacked computer-use even once the sandbox freed up.
-            // Track it here instead so the next turn's ensure() retries
-            // automatically (a no-op once up); do NOT fall back to the global
-            // real-screen engine for what is just contention, not unavailability.
-            qWarning("jarvisd: auto agent desktop transiently busy for %s (%s); "
-                     "will retry on next turn", qPrintable(row.id), qPrintable(deskErr));
-            m_autoComputerSessions.insert(row.id);
-            // Codex review follow-up (PR #130): the retry above brings the DESKTOP
-            // up later, but the brain we're about to construct right below gets
-            // built with agentOverrides EMPTY (desk.up is false right now) — its
-            // codex/claude config is fixed at spawn, so even once ensure() later
-            // succeeds this same brain object still has no MCP connection to it.
-            // Mark the session for a one-time REBIND: sendToSession()'s BATTERY
-            // check reconstructs the brain (with the now-live overrides) the
-            // first time it successfully re-provisions one of these.
-            m_pendingComputerUseRebind.insert(row.id);
-        } else {
-            // A REAL provisioning failure on a platform that CAN isolate
-            // (crashed process, port conflict, ...): the chat still works, it
-            // just can't use the computer this turn. Do NOT silently fall back
-            // to the global real-screen engine under the "computer_use" name —
-            // that reintroduces the exact isolation-mislabeling bug above.
-            qWarning("jarvisd: auto agent desktop failed for %s (%s); session "
-                     "continues without computer-use",
-                     qPrintable(row.id), qPrintable(deskErr));
-        }
+        // re-provision check in sendToSession()). Shared with the resume path
+        // in sendToSession() — see provisionAutoComputerDesktop().
+        agentOverrides = provisionAutoComputerDesktop(row);
     }
 
     // Remember the RESOLVED workdir for this session (diff.* runs git here).
@@ -3722,7 +3720,26 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         // user can keep talking instead of hitting "inactive session". The on-disk
         // transcript is shown by the app; the fresh brain continues the thread.
         if (auto row = m_store.get(sessionId)) {
-            brain = makeBrain(*row, QString(), CodexMcpOverrides{});
+            // Codex review (PR #130): this used to always pass EMPTY overrides,
+            // so a resumed session's computer-use silently vanished (in-memory
+            // tracking sets don't survive a restart) until deleted and
+            // recreated. Reconstruct the same need createSession() would have
+            // determined — the exact original `target` isn't persisted on
+            // SessionRow, so an explicit target="real" take-over resumes as an
+            // auto-computer session instead; rare and not harmful.
+            CodexMcpOverrides resumeOverrides;
+            const bool isCoworkerResume = (row->profile == QStringLiteral("coworker"));
+            const bool apiCanDriveResume = m_settings.hasApiKey(QStringLiteral("openai")) ||
+                                          m_settings.hasApiKey(QStringLiteral("mistral"));
+            const bool brainCanDriveResume =
+                row->brain == QStringLiteral("codex") || row->brain == QStringLiteral("claude") ||
+                (row->brain == QStringLiteral("api") && apiCanDriveResume);
+            const bool wantsComputerUseResume = isCoworkerResume ||
+                (m_settings.letJarvisUseComputer() && brainCanDriveResume &&
+                 row->targetRef.isEmpty());
+            if (wantsComputerUseResume)
+                resumeOverrides = provisionAutoComputerDesktop(*row);
+            brain = makeBrain(*row, QString(), resumeOverrides);
             if (brain) {
                 connect(brain, &Brain::event, this, &ControlServer::onBrainEvent);
                 connect(brain, &Brain::turnFinished, this, &ControlServer::onTurnFinished);
@@ -3773,6 +3790,32 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             }
         }
         m_pendingComputerUseRebind.remove(sessionId);
+    }
+    // Codex review (PR #130): a Claude brain's --disallowedTools (Plan Mode's
+    // native-tool block, applied alongside the MCP-side policy.py gate) are
+    // baked in at construction. plan.enter/plan.exit/plan.approve mark this
+    // session in m_pendingPlanModeRebind (markPlanRebindIfClaudeLive) when
+    // they fire — always mid-turn, since they're themselves MCP tool calls,
+    // so they can't rebuild the brain that's currently running them. Rebind
+    // the first time it's next found idle so the restriction (or its lifting)
+    // actually takes effect, instead of only the next NEW session/restart.
+    if (m_pendingPlanModeRebind.contains(sessionId) && !brain->isBusy()) {
+        if (auto row = m_store.get(sessionId)) {
+            CodexMcpOverrides planOverrides;
+            if (m_agentDesktops.has(sessionId))
+                planOverrides = agentMcpOverridesFor(m_agentDesktops.info(sessionId));
+            if (Brain *rebuilt = makeBrain(*row, m_sessionCwd.value(sessionId), planOverrides)) {
+                brain->disconnect();
+                brain->deleteLater();
+                connect(rebuilt, &Brain::event, this, &ControlServer::onBrainEvent);
+                connect(rebuilt, &Brain::turnFinished, this, &ControlServer::onTurnFinished);
+                m_brains.insert(sessionId, rebuilt);
+                brain = rebuilt;
+                qInfo("jarvisd: rebound %s's brain to apply its current Plan-mode "
+                      "restriction", qPrintable(sessionId));
+            }
+        }
+        m_pendingPlanModeRebind.remove(sessionId);
     }
     m_deskLastActive.insert(sessionId, QDateTime::currentMSecsSinceEpoch());
 
@@ -4193,16 +4236,35 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     // Canceling a turn ends any real-session take-over (overlay hides).
     if (m_takeOverActive.contains(sessionId))
         setTakeOverActive(sessionId, false);
-    // For a coworker+agent session, cancel is the session's "release" signal
-    // (Contract A has no separate session.close): tear down the nested desktop +
-    // its bound engine so we don't leak a compositor/engine per session. A fresh
-    // desktop is spun up if the session is recreated.
-    m_agentDesktops.releaseSession(sessionId);   // drop the desktop + its reservation
-    m_autoComputerSessions.remove(sessionId);
-    m_autoGlobalEngineSessions.remove(sessionId);
-    m_pendingComputerUseRebind.remove(sessionId);
-    m_selfPlanModeSessions.remove(sessionId);
-    m_planApprovedSessions.remove(sessionId);
+    // Codex review (PR #130): an AUTO-computer session's brain has its MCP
+    // config (the desktop's port+bearer) baked in at construction. A routine
+    // session.cancel (interrupt THIS turn, not "end this chat") used to
+    // unconditionally releaseSession() (tears down AND drops the port/bearer
+    // reservation) and stop tracking it in m_autoComputerSessions — so
+    // sendToSession()'s BATTERY re-provision check never fired again, and the
+    // very next "stop"/rephrase permanently orphaned computer-use for the rest
+    // of the chat. Keep the lighter teardown() (keeps the reservation) and
+    // KEEP tracking it here instead, same as an idle-teardown.
+    if (m_autoComputerSessions.contains(sessionId)) {
+        m_agentDesktops.teardown(sessionId);
+    } else {
+        // For a coworker+agent session, cancel IS the session's "release" signal
+        // (Contract A has no separate session.close): tear down the nested desktop +
+        // its bound engine so we don't leak a compositor/engine per session. A fresh
+        // desktop is spun up if the session is recreated.
+        m_agentDesktops.releaseSession(sessionId);   // drop the desktop + its reservation
+        m_autoGlobalEngineSessions.remove(sessionId);
+        m_pendingComputerUseRebind.remove(sessionId);
+    }
+    // Codex review (PR #130): session.cancel interrupts THIS TURN only — it
+    // must not silently exit self-initiated Plan mode too. enter_plan_mode's
+    // own contract ("no user approval needed to enter OR exit... until you
+    // call exit_plan_mode or present_plan") means the restriction should
+    // survive a Stop; clearing it here let the model call enter_plan_mode,
+    // get interrupted, and have its VERY NEXT turn silently report
+    // unrestricted and permit writes. m_selfPlanModeSessions/
+    // m_planApprovedSessions are correctly cleared in deleteSession() (the
+    // session is actually gone there), just not here.
     m_deskLastActive.remove(sessionId);
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
@@ -4247,6 +4309,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_pendingComputerUseRebind.remove(sessionId);
     m_selfPlanModeSessions.remove(sessionId);
     m_planApprovedSessions.remove(sessionId);
+    m_pendingPlanModeRebind.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_coworkGuided.remove(sessionId);
     m_policyGuided.remove(sessionId);
@@ -4540,6 +4603,14 @@ Response ControlServer::handleSessionCancel(const Request &req)
     return Response::success(req.id);
 }
 
+void ControlServer::markPlanRebindIfClaudeLive(const QString &sessionId)
+{
+    if (Brain *brain = m_brains.value(sessionId, nullptr)) {
+        if (qobject_cast<ClaudeBrain *>(brain))
+            m_pendingPlanModeRebind.insert(sessionId);
+    }
+}
+
 Response ControlServer::handlePlanEnter(const Request &req)
 {
     const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
@@ -4547,6 +4618,7 @@ Response ControlServer::handlePlanEnter(const Request &req)
         return Response::failure(req.id, QStringLiteral("bad_request"),
                                  QStringLiteral("session_id required"));
     m_selfPlanModeSessions.insert(sessionId);
+    markPlanRebindIfClaudeLive(sessionId);
     return Response::success(req.id);
 }
 
@@ -4554,6 +4626,7 @@ Response ControlServer::handlePlanExit(const Request &req)
 {
     const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
     m_selfPlanModeSessions.remove(sessionId); // no-op if never set (e.g. global-mode session)
+    markPlanRebindIfClaudeLive(sessionId);
     return Response::success(req.id);
 }
 
@@ -4587,6 +4660,7 @@ Response ControlServer::handlePlanApprove(const Request &req)
         return Response::failure(req.id, QStringLiteral("bad_request"),
                                  QStringLiteral("session_id required"));
     m_planApprovedSessions.insert(sessionId);
+    markPlanRebindIfClaudeLive(sessionId);
     return Response::success(req.id);
 }
 
@@ -9757,11 +9831,41 @@ Response ControlServer::handleOutpostInstallDashboard(const Request &req)
         "You are the Proxmox operator for this host, driving the Cindro dashboard.\n"
         "You can do everything the Proxmox GUI can via your tools, including a\n"
         "generic proxmox_api passthrough for anything without a dedicated tool.\n\n"
-        "Read/inspect freely. EVERY create/delete/power/snapshot/backup/migrate or\n"
-        "other state-changing action is permission-gated: expect an approval prompt\n"
-        "and NEVER assume an action succeeded until you see its tool result. If a\n"
-        "call is denied, explain what you wanted to do and stop — do not retry in a\n"
-        "loop. For long-running operations, poll proxmox_task_status with the UPID.\n"
+        "WORK AS AN AGENT, NOT A ONE-SHOT. Keep going until the user's goal is\n"
+        "actually done: understand the goal, call a tool, READ its result (especially\n"
+        "any error), reason about what it means, then take the next action — tool\n"
+        "after tool — adapting as you go. Never claim success you have not seen in a\n"
+        "tool result.\n\n"
+        "On every tool result:\n"
+        "- Success -> continue to the next step toward the goal.\n"
+        "- ERROR -> do NOT re-issue the same failing call. Read the message, find the\n"
+        "  cause, and take a DIFFERENT corrective action that removes the cause, THEN\n"
+        "  retry the original action. Repeating an identical failing call is never\n"
+        "  progress.\n"
+        "- A UPID means a long-running task: poll proxmox_task_status until it\n"
+        "  finishes before continuing or reporting done.\n\n"
+        "Proxmox error playbook — diagnose, fix the cause, then retry:\n"
+        "- \"VM is locked\" / a config lock (backup|snapshot|clone|migrate|rollback|\n"
+        "  create): the guest is locked. FIRST check proxmox_tasks_recent /\n"
+        "  proxmox_task_status for a job running on that vmid. If one IS running, WAIT\n"
+        "  and poll until it ends, then retry (never unlock a guest that has a live\n"
+        "  task). If the lock is STALE (no task running), clear it the way `qm unlock`\n"
+        "  does — remove the guest's lock config value (proxmox_api PUT\n"
+        "  /nodes/<node>/qemu/<vmid>/config with delete=lock, or .../lxc/<vmid>/config\n"
+        "  for a container; add skiplock=1 if the lock check blocks it) — then retry.\n"
+        "- \"already running\" / \"not running\": check proxmox_vm_status first and skip\n"
+        "  a redundant power action.\n"
+        "- \"does not exist\" / \"no such\": re-list (proxmox_vm_list / proxmox_node_list)\n"
+        "  for the right node + vmid instead of guessing.\n"
+        "- 403 / permission denied: report it plainly; you cannot escalate.\n\n"
+        "Safety + approvals:\n"
+        "- Read/inspect freely. EVERY create/delete/power/snapshot/backup/migrate or\n"
+        "  other state-changing action is permission-gated — expect an approval prompt\n"
+        "  and never assume it ran until you see the tool result.\n"
+        "- If the user (policy) DENIES an action, explain what you wanted and stop THAT\n"
+        "  line of work — do not resubmit the denied action.\n"
+        "- Prefer the least destructive path, and confirm which node/vmid before a\n"
+        "  delete.\n\n"
         "You also curate the Home widget board (proxmox_dashboard_layout_*) and the\n"
         "Tasks board (proxmox_task_*) when the user asks.\n");
     bool amok = false;

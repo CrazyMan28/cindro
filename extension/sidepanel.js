@@ -271,7 +271,16 @@ function onAuthState(challengeId, state) {
 }
 
 // ----------------------------------------------------------------- RPC
-function rpc(method, params) {
+// Codex review (PR #130): session.create now synchronously provisions an
+// isolated agent desktop when "let Cindro use a computer" is on (see
+// AgentDesktop::ensure(), which the daemon's own comments document as taking
+// up to ~45-60s, longer on a cold first-run venv sync). The default 30s
+// safety timeout was shorter than that, so this call could time out CLIENT
+// SIDE while the daemon kept going server-side and created the session
+// anyway — the panel reports failure for a session that actually exists.
+// Give session.create its own longer timeout instead of shortening the
+// daemon's provisioning.
+function rpc(method, params, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       reject(new Error("not connected to Cindro daemon"));
@@ -286,7 +295,7 @@ function rpc(method, params) {
         pending.delete(id);
         reject(new Error(`timeout: ${method}`));
       }
-    }, 30000);
+    }, timeoutMs);
   });
 }
 
@@ -1154,7 +1163,9 @@ async function ensureSession() {
   const model = els.model.value || "";   // "" = daemon default
   const params = { profile: "coder", brain };
   if (model) params.model = model;
-  const res = await rpc("session.create", params);
+  // 65s: comfortably above AgentDesktop::ensure()'s documented ~45-60s worst
+  // case (cold nested-compositor + engine venv-sync boot) — see the rpc() note.
+  const res = await rpc("session.create", params, 65000);
   sessionId = res.session_id;
   if (!sessionId) throw new Error("session.create returned no session_id");
   sessionPrimed = false;

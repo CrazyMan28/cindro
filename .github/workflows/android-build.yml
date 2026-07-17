@@ -19,7 +19,11 @@ on:
   # it to the GitHub Release. Day-to-day pushes to dev/qa/main trigger nothing.
   pull_request:
     branches: [main]
-    paths-ignore: ['website/**']
+    # Codex review (PR #130): a PR that only touches website-ci.yml (the
+    # website's own CI config) belongs solely to the non-versioned site, but
+    # wasn't covered by website/** — it still ran this product build. Ignore
+    # that workflow file too.
+    paths-ignore: ['website/**', '.github/workflows/website-ci.yml']
   push:
     tags: ["v*"]
   workflow_dispatch:
