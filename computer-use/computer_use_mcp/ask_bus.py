@@ -77,3 +77,45 @@ def ask(question: str, options: list[str] | None = None,
     if answer is None:
         return {"answer": "", "answered": False, "timed_out": True}
     return {"answer": str(answer), "answered": True, "timed_out": False}
+
+
+# Free-text answers a user could reasonably type as "yes" to an Allow/Deny-
+# style ask, beyond the exact button label. The Question card's buttons always
+# send the option label VERBATIM (so a tap is a guaranteed exact match), but
+# its custom-text box explicitly invites the user to type anything instead —
+# and every caller of ask() used to do a strict `answer == "allow"` that
+# silently treated "yes"/"sure"/"go ahead" as a DENIAL. Live-tested regression
+# (2026-07-17): a user answered a tool-permission ask with "yes", got blocked
+# anyway, retried, got blocked again — a confusing allow/deny loop with no
+# visible cause. Deliberately a small, literal whitelist (not fuzzy NLU) so a
+# genuinely ambiguous or off-topic reply still falls through to the safe
+# "not approved" default instead of guessing wrong in the permissive
+# direction.
+_AFFIRMATIVE_WORDS = {
+    "yes", "y", "yeah", "yea", "yep", "yup", "sure", "ok", "okay", "k",
+    "allow", "allow it", "approve", "approved", "confirm", "confirmed",
+    "go ahead", "do it", "please", "fine",
+}
+
+
+def is_affirmative(answer: str, yes_label: str = "allow") -> bool:
+    """True if `answer` should count as approving an Allow/Deny-style ask.
+
+    `yes_label` is the exact button label THIS ask used (e.g. "allow",
+    "approve & build") — matched verbatim first (case-insensitive) so a
+    button tap always works regardless of the whitelist below. Free text is
+    then checked against a small set of common affirmatives, including a
+    prefix match ("yes please", "sure, go ahead") so a short affirmative
+    phrase still counts — but a longer sentence that merely CONTAINS a "yes"
+    substring (e.g. "no, not that one") does NOT match, keeping the default
+    fail-closed for anything actually ambiguous.
+    """
+    a = (answer or "").strip().lower()
+    if not a:
+        return False
+    if a == yes_label.strip().lower():
+        return True
+    if a in _AFFIRMATIVE_WORDS:
+        return True
+    return any(a.startswith(w + " ") for w in
+               ("yes", "yeah", "yep", "sure", "allow", "approve", "ok", "okay"))

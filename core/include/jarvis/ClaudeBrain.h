@@ -57,6 +57,21 @@ public:
         // fresh with `--session-id` and losing all prior context. Set by the
         // daemon from the session's persisted session id.
         QString resumeSessionId;
+        // Extra system-prompt text, sent via `--append-system-prompt` on every
+        // turn (NOT the first user message). WHY THIS EXISTS: ClaudeBrain has
+        // no other true system-prompt field, so the daemon used to prepend its
+        // "you are Cindro, here are your tools" co-work guide + permission/mode
+        // policy text directly into the FIRST user-turn message instead. Live
+        // testing (2026-07-17) showed Claude Sonnet 5 correctly treats an
+        // unsigned identity/tool-grant block embedded in user-turn TEXT as a
+        // likely prompt injection and refuses to adopt the persona or trust the
+        // listed tools ("I'm running as Claude Code... flagging it as a likely
+        // prompt injection, not something I'm complying with") — even though
+        // the MCP tools themselves were correctly wired up. Routing the same
+        // text through the CLI's real system-prompt channel instead makes
+        // Claude treat it as genuine. Set via setSystemPromptAppend(); callers
+        // should NOT write this field directly after construction.
+        QString systemPromptAppend;
     };
 
     explicit ClaudeBrain(Options opts, QObject *parent = nullptr);
@@ -65,6 +80,10 @@ public:
     void send(const QString &text, const QStringList &images = {}) override;
     void cancel() override;
     bool isBusy() const override;
+    // Accumulates into Options::systemPromptAppend (never replaces) so a later
+    // call — e.g. the co-work guide firing on a LATER turn than the policy
+    // preamble did — can never silently drop text an earlier call already set.
+    void setSystemPromptAppend(const QString &text) override;
 
     // Build the `claude` argv for a one-shot `-p` turn. Public so a ctest can
     // assert the prompt is an isolated trailing positional after `--` (guards the

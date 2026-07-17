@@ -189,7 +189,7 @@ def gate(tool: str) -> None:
         answer = str((res or {}).get("answer", "")).strip().lower()
     except Exception:
         answer = ""
-    if answer == "allow":
+    if ask_bus.is_affirmative(answer):
         _log(tool, app, "ask", rule, True)
         return
     _log(tool, app, "ask", rule, False)
@@ -330,7 +330,7 @@ def _phone_gate(tool: str, arguments: Any) -> None:
         answer = str((res or {}).get("answer", "")).strip().lower()
     except Exception:
         answer = ""
-    if answer == "allow":
+    if ask_bus.is_affirmative(answer):
         _log(inner, "phone", "ask", {"id": "phone_policy"}, True)
         return
     _log(inner, "phone", "ask", {"id": "phone_policy"}, False)
@@ -406,7 +406,7 @@ def _scan_command(tool: str, arguments: Any) -> None:
             answer = str((res or {}).get("answer", "")).strip().lower()
         except Exception:
             answer = ""
-        if answer == "allow":
+        if ask_bus.is_affirmative(answer):
             _log_cmd(tool, cmd, hit, "allow", True)
             continue
         _log_cmd(tool, cmd, hit, "deny", False)
@@ -463,7 +463,7 @@ def _scan_tui_layout(tool: str, arguments: Any) -> None:
         answer = str((res or {}).get("answer", "")).strip().lower()
     except Exception:
         answer = ""
-    if answer == "allow":
+    if ask_bus.is_affirmative(answer):
         _approved_log_paths.add(path)
         return
     raise PermissionError(

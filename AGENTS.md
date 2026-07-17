@@ -1493,6 +1493,53 @@ across all of it, not just the original agent-desktop fix. Fixed:
     (unnamespaced) key if no cookie was present yet. Deferred to a new
     `loadForAuthenticatedUser()`, called only once `checkAuth()` succeeds or a fresh login completes.
 
+## New subsystems (2026-07-17, later still) — live-testing bug wave on Plan Mode
+
+Three bugs surfaced by actually running the rebuilt daemon/desktop and using it, not by review:
+
+- **ClaudeBrain sessions "acted like plain Claude Code"** — denied having Cindro's phone/computer-use
+  tools, self-identified as "Claude Code" and even "Claude Code (Cindro)". Root cause: the co-work
+  guide + policy preamble (tool grants, permission policy, mode policy) were PREPENDED into the
+  first user-turn's text, same as every other brain — but Claude Sonnet 5 correctly recognizes an
+  unsigned "[Cindro co-work — READ FIRST]" block riding inside user-turn text as a plausible prompt
+  injection and refuses to adopt the persona or trust the tools it lists, even when those tools are
+  genuinely wired up and reachable. Fixed by giving `Brain` a new virtual `setSystemPromptAppend(text)`
+  (no-op default) and routing the preamble through it for ClaudeBrain specifically
+  (`ControlServer::sendToSession`), which wires to the real `claude` CLI's `--append-system-prompt`
+  flag (`ClaudeBrain::Options::systemPromptAppend`, accumulates across calls — the guide can fire on
+  a later turn than the policy preamble, e.g. once an agent desktop comes up). CodexBrain/ApiBrain
+  keep the legacy prepend-to-user-turn-text convention (ApiBrain already has a real system prompt
+  channel via its own `Options`; Codex has neither issue nor fix here). Also added `identityClause()`
+  — one explicit "You are {assistant_name}" sentence at the very front of the preamble, since
+  CLI-shelled brains have no equivalent of `ApiBrain`'s memory-block identity opener.
+- **"Request Changes" on a plan card gave the model nothing to act on** — tapping it submitted the
+  literal label as `present_plan`'s answer, so the model got back `note:"Request Changes"` with zero
+  actual feedback, and (per user reports) sometimes went hunting for a nonexistent "edit plan" tool
+  instead of just re-reading the existing plan. Fixed in two places: `ChatDelegate.qml`'s plan-decision
+  card now detects `present_plan`'s fixed two-option shape and opens "Request Changes" into a focused
+  "What should Cindro change?" text field instead of submitting immediately (Enter with nothing typed
+  still sends an explicit "no specific feedback given yet" note, never the bare label); and
+  `present_plan`/`enter_plan_mode`/`exit_plan_mode`'s docstrings plus `modePolicyClause()`/
+  `planToolsClause()` now say outright that there is no separate edit/update-plan tool and that empty
+  feedback should prompt a clarifying question, not a blind re-call.
+- **A session stuck in Plan Mode despite Build mode being selected in Settings** — traced to
+  `ask_bus`'s Allow/Deny-style gates doing an exact-string `answer == "allow"` match; anything else
+  (including some legitimate free-text affirmatives typed into the generic question card's custom
+  text field) fell through to the deny/timeout path. Added `ask_bus.is_affirmative(answer, yes_label)`
+  — exact match against the button's own label wins first, then a small literal whitelist of common
+  affirmatives, then a narrow `"yes "`/`"sure "`/etc. prefix match (deliberately not fuzzy/substring,
+  to keep fail-closed behavior for genuinely ambiguous replies) — and wired it into all four
+  `policy.py` gates (`gate()`, `_phone_gate()`, `_scan_command()`, `_scan_tui_layout()`) plus
+  `present_plan`'s own approve check. The specific stuck session also had an ambiguous
+  `current_session_id()` at the moment `plan.exit`/`plan.approve` were called (see the "resolve sid
+  BEFORE the blocking ask_bus.ask() call" comment in `tools_plan.py` — those calls can block up to a
+  day, by which point another session may well be running too) — needed manual DB clearing, not a
+  code fix; if a session is ever stuck the same way again, cancel/delete it rather than trying to
+  message it back to a working state.
+
+**Also, unrelated to the bugs above:** the user reset their local `trust_policies.json` `default`
+from `"ask"` to `"allow"` after the Allow/Deny fix — that's a local config change, not a repo one.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.
