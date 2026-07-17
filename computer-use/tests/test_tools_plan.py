@@ -30,12 +30,13 @@ def tools(monkeypatch):
 
 
 def test_present_plan_approve_grants_session_scoped_override(tools, monkeypatch):
-    """Approve & Build must call plan.exit{approved:true} — a SESSION-SCOPED
-    override — and must NEVER touch the global settings.set, regardless of
-    what the global agent_mode currently is. Approving one session's plan
-    flipping the shared global setting would silently unblock a different,
-    concurrently-running plan-restricted session whose own plan was never
-    shown to the user (Codex review, PR #132 — this test guards the fix)."""
+    """Approve & Build must call plan.exit (clears any self-initiated flag) AND
+    plan.approve (grants a SESSION-SCOPED override) — and must NEVER touch the
+    global settings.set, regardless of what the global agent_mode currently is.
+    Approving one session's plan flipping the shared global setting would
+    silently unblock a different, concurrently-running plan-restricted session
+    whose own plan was never shown to the user (Codex review, PR #130/#132 —
+    this test guards the fix)."""
     calls = []
     monkeypatch.setattr(daemon_client, "call",
                          lambda method, params=None, timeout=15.0: calls.append((method, params)))
@@ -47,7 +48,8 @@ def test_present_plan_approve_grants_session_scoped_override(tools, monkeypatch)
 
     result = json.loads(tools["present_plan"]("Title", "body", todos=None))
     assert result == {"decision": "approve", "note": ""}
-    assert ("plan.exit", {"session_id": "sess-1", "approved": True}) in calls
+    assert ("plan.exit", {"session_id": "sess-1"}) in calls
+    assert ("plan.approve", {"session_id": "sess-1"}) in calls
     assert not any(m == "settings.set" for m, _ in calls), \
         "present_plan must never touch the global agent_mode setting"
     assert not any(m == "settings.get" for m, _ in calls)

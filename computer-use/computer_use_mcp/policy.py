@@ -526,15 +526,18 @@ _PLAN_SAFE_TOOLS = frozenset({
 
 
 def _plan_status() -> tuple[bool, str]:
-    """-> (restricted, source in {"settings","self","","unreachable"}). Session-scoped, TTL-cached.
+    """-> (restricted, source in {"settings","self","approved","","unreachable",
+    "ambiguous_session"}). Session-scoped, TTL-cached.
 
     A cache MISS runs a synchronous, blocking daemon round-trip on the calling
     coroutine (same tradeoff gate()'s ask-bus flow already accepts elsewhere in
-    this file) — acceptable at a ~2s TTL, but note current_session_id() is
-    itself uncached and can fall back to an extra "session.list" round-trip on
-    the shared global engine (no JARVIS_AGENT_SESSION), and its "" fallback on
-    an ambiguous multi-session process is a known pre-existing limitation (see
-    its own docstring) that this cache inherits, not something new here."""
+    this file) — acceptable at a ~2s TTL. current_session_id() is itself
+    uncached and can fall back to an extra "session.list" round-trip on the
+    shared global engine (no JARVIS_AGENT_SESSION); when it can't disambiguate
+    (2+ concurrent sessions, no way to tell which is calling) this fails
+    CLOSED ("ambiguous_session") rather than querying plan.status with an
+    empty id, which would ask the wrong question and could leak another
+    session's status into this one's cache entry."""
     try:
         sid = daemon_client.current_session_id()
     except Exception:

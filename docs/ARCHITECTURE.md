@@ -53,11 +53,11 @@ Methods (v1): `ping`; `settings.get`; `settings.set{patch}`;
 `session.send{session_id, text, images?}`; `session.cancel{session_id}`;
 `session.list`; `session.history{session_id, limit?}`;
 `approval.respond{session_id, approval_id, decision:"allow"|"deny"|"always"}`;
-`plan.enter{session_id}` / `plan.exit{session_id, approved?}` / `plan.status{session_id}` ->
-`{restricted, source:"settings"|"self"|""}` — Plan Mode's self-initiated entry path plus
-the session-scoped approve override (`plan.exit{approved:true}`, set only by
-`present_plan`'s Approve & Build — never flips the global `agent_mode`) (engine-facing
-only; see [MODES.md](MODES.md)).
+`plan.enter{session_id}` / `plan.exit{session_id}` / `plan.approve{session_id}` /
+`plan.status{session_id}` -> `{restricted, source:"settings"|"self"|"approved"|""}` —
+Plan Mode's self-initiated entry path plus the session-scoped approve override
+(`plan.approve`, called only by `present_plan`'s Approve & Build — never flips the
+global `agent_mode`) (engine-facing only; see [MODES.md](MODES.md)).
 
 `settings.get` returns (among others) `permission_level: "high"|"medium"|"low"` — the
 **soft ask-before-risky policy** (default `medium`). `settings.set{patch:{permission_level}}`

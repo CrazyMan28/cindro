@@ -1358,8 +1358,10 @@ guarantee, not a convenience default.
 requires `present_plan`'s "Approve & Build" to exit. A NEW `enter_plan_mode(reason)` tool lets the
 model go read-only on its own judgment, for just that session (`ControlServer::m_selfPlanModeSessions`,
 in-memory, never persisted) — `exit_plan_mode(summary)` leaves it with no user approval needed.
-`present_plan`'s approve action is one code path for both: it unconditionally clears the
-self-initiated flag AND, only if the global setting was actually `"plan"`, flips it to `"build"`.
+`present_plan`'s approve action calls both `plan.exit` (clears the self-initiated flag, if set) and
+`plan.approve` (grants a per-session override, `m_planApprovedSessions`, checked first in
+`handlePlanStatus`) — it deliberately never flips the global `agent_mode` setting, so approving one
+session's plan can't silently unblock a different concurrently-running plan-restricted session.
 
 **`agent_send(session_id, message)`** (`tools_jarvis_ops.py`) steers an already-`agent_start`-ed
 subagent. Turned out to need zero new C++: `agent_start` already spins up a real daemon session
@@ -1390,15 +1392,22 @@ defense-in-depth layer only picks it up the next time the Brain object itself is
 (new session, or a respawn after daemon restart/idle-teardown) — this is why the MCP gate, not the
 brain `Options`, is documented as the real source of truth.
 
-**Two other findings from the review, deliberately left as documented limitations, not fixed:**
-`policy._plan_status()`'s cache is keyed by `daemon_client.current_session_id()`, which resolves to
-an ambiguous empty string when 0 or 2+ sessions are `running` on the shared global `:8794` engine —
-the same pre-existing, already-accepted limitation the todo/widget bus's session-scoping comment
-documents ("a time-based cache could attribute session B's todo to session A"), not a new class of
-bug. And `present_plan`'s "Approve & Build" path can return `decision:"approve"` even if the
-underlying `plan.exit`/`settings.set` calls silently failed (network hiccup) — it fails *safe*, not
-open: the model's very next write attempt gets denied again by the (unrelated, still-live)
-`policy.py` gate, so the worst outcome is one confusing turn, not an actual restriction bypass.
+**One finding deliberately left as a documented limitation, not fixed:** `present_plan`'s
+"Approve & Build" path can return `decision:"approve"` even if the underlying `plan.exit`/
+`plan.approve` calls silently failed (network hiccup) — it fails *safe*, not open: the model's
+very next write attempt gets denied again by the (unrelated, still-live) `policy.py` gate, so the
+worst outcome is one confusing turn, not an actual restriction bypass.
+
+**Reconciled with a parallel fix (2026-07-17, later same day):** a separate session pushed its own
+fix for the SAME concurrency bug (global-flip-on-approve) directly to `dev` while this PR's fixes
+were in flight, plus two findings this PR hadn't addressed: `_plan_status()` now fails CLOSED
+("ambiguous_session") when `current_session_id()` can't disambiguate 2+ concurrent sessions instead
+of silently reporting unrestricted, and `video_watch` (can download remote videos / invoke cloud
+transcription) was removed from `_PLAN_SAFE_TOOLS` alongside `video_setup`/`video_configure`. Their
+approach used a dedicated `plan.approve` RPC + `m_planApprovedSessions` instead of extending
+`plan.exit` with an `approved` flag — adopted theirs as the canonical mechanism on merge (one
+approval path, not two) and layered this PR's `createSession()`/`handleAgentsDispatch` ordering fix
+and `wakeParentForSubagent`'s queued-turn defer on top, since their commit didn't include either.
 
 ## New subsystems (2026-07-17) — `website/` marketing/billing site scaffold
 

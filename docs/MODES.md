@@ -39,12 +39,16 @@ Surfaced as a HUD chip on every surface and selectable in Settings.
    to. Tracked server-side in `ControlServer::m_selfPlanModeSessions` (in-memory only).
 
 Both paths are checked by the same `plan.status{session_id}` Contract A method
-(`{restricted, source: "settings"|"self"|""}`) — see `handlePlanEnter`/`handlePlanExit`/
-`handlePlanStatus` in `daemon/src/ControlServer.cpp`. A third, per-session
-`m_planApprovedSessions` set (granted by `plan.exit{session_id, approved:true}`, which
-only `present_plan`'s Approve & Build path sets) is checked FIRST and always wins,
+(`{restricted, source: "settings"|"self"|"approved"|""}`) — see `handlePlanEnter`/
+`handlePlanExit`/`handlePlanStatus`/`handlePlanApprove` in `daemon/src/ControlServer.cpp`.
+A third, per-session `m_planApprovedSessions` set (granted by `plan.approve{session_id}`,
+which only `present_plan`'s Approve & Build path calls) is checked FIRST and always wins,
 regardless of the current global/self state — this is what makes approval session-scoped
-instead of leaking across concurrently-running plan-restricted sessions.
+instead of leaking across concurrently-running plan-restricted sessions. On the Python
+side, `policy._plan_status()` also reports `source: "unreachable"` (daemon unreachable,
+fails closed) or `"ambiguous_session"` (the shared global engine couldn't tell which of
+2+ concurrent sessions is calling — also fails closed, rather than querying with an empty
+session id and risking another session's status leaking into this one's cache entry).
 
 ## How PLAN is enforced
 
@@ -85,14 +89,14 @@ tools; each CLI's own native file/shell tools need brain-specific handling too
 `present_plan(title, markdown, todos)` (`computer_use_mcp/tools_plan.py`) publishes the
 plan and blocks (via the existing `ask_bus`, the same mechanism trust-policy/phone/
 command-scan "ask" already use — no new UI plumbing) for the user's **Approve & Build**
-or **Request Changes**. Approve calls `plan.exit{approved:true}`, which clears the
-self-initiated flag (if set) AND grants the session-scoped approved-override — it
+or **Request Changes**. Approve calls both `plan.exit` (clears the self-initiated flag,
+if set) and `plan.approve` (grants the session-scoped approved-override) — it
 deliberately does **not** flip the global `agent_mode` setting, so approving one
 session's plan can never silently unblock a different, concurrently-running
 plan-restricted session whose own plan was never shown to the user (a real bug an
-earlier version of this had — Codex review, PR #132). Then busts the gate's cache so the
-very next tool call in the same turn is already unblocked. Request Changes returns the
-user's feedback as `note` for the model to incorporate before calling `present_plan`
+earlier version of this had — Codex review, PR #130/#132). Then busts the gate's cache
+so the very next tool call in the same turn is already unblocked. Request Changes returns
+the user's feedback as `note` for the model to incorporate before calling `present_plan`
 again.
 
 ## Steering a dispatched subagent — `agent_send`
