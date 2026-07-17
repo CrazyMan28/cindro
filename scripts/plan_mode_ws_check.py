@@ -147,6 +147,27 @@ async def run() -> int:
         await client.call("plan.exit", {"session_id": "never-entered"})
         print("PASS  plan.exit on a session never in self-plan-mode does not raise")
 
+        # --- 4. Session-scoped approval (Codex review, PR #132): approving one
+        # session's plan must NOT flip the global setting and silently unblock a
+        # DIFFERENT, concurrently-running plan-restricted session. ---
+        await client.call("settings.set", {"patch": {"agent_mode": "plan"}})
+        SID_C, SID_D = "test-sess-C", "test-sess-D"
+        await client.call("plan.exit", {"session_id": SID_C, "approved": True})
+        status_c = await client.call("plan.status", {"session_id": SID_C})
+        ok &= check(status_c.get("restricted") is False,
+                    f"plan.exit(C, approved=true) -> C unblocked (got {status_c})")
+
+        status_d = await client.call("plan.status", {"session_id": SID_D})
+        ok &= check(status_d.get("restricted") is True and status_d.get("source") == "settings",
+                    f"approving C must NOT unblock a different session D "
+                    f"still under the global setting (got {status_d})")
+
+        settings_after = await client.call("settings.get")
+        ok &= check(settings_after.get("agent_mode") == "plan",
+                    "approving a session must NOT flip the global agent_mode setting "
+                    f"(got {settings_after.get('agent_mode')!r})")
+        await client.call("settings.set", {"patch": {"agent_mode": "coworker"}})
+
         print("\n=== plan mode WS check: ALL PASS ===" if ok else
               "\n=== plan mode WS check: SOME CHECKS FAILED ===")
         return 0 if ok else 1

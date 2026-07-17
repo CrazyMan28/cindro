@@ -141,6 +141,11 @@ export const VmCreateModal: Component<{
   // (now-existing) VMID — see submit() below.
   const [created, setCreated] = createSignal(false)
   const [loadErr, setLoadErr] = createSignal("")
+  // Codex review (PR #130): a plain (non-reactive) guard, not a signal — it
+  // exists to stop the reopen createEffect above from resetting shared state
+  // out from under a still-running submit() coroutine, not to drive any UI
+  // (creating() already does that).
+  let submitInFlight = false
 
   const isoStorages = createMemo(() => storageList().filter((s) => (s.content ?? "").includes("iso")))
   const diskStorages = createMemo(() => storageList().filter((s) => {
@@ -169,6 +174,11 @@ export const VmCreateModal: Component<{
     setFirewall(false)
     setStartAfterCreate(true)
     setCreating(false)
+    // Codex review (PR #130): reopening the still-mounted modal without
+    // resetting this left `created()` true from the PREVIOUS VM, so submit()'s
+    // `if (!created())` guard skipped the create call entirely and tried to
+    // start a VMID that was never actually created this time.
+    setCreated(false)
     setCreateErr("")
     setLoadErr("")
     setVmidAuto(true)
@@ -248,6 +258,16 @@ export const VmCreateModal: Component<{
   // (re)load everything fresh each time the modal opens.
   createEffect(() => {
     if (props.open) {
+      // Codex review (PR #130): if the user closed the modal during a still-
+      // running submit() (allowed since requestClose() no longer blocks on
+      // creating()) and reopens before it finishes, resetting here presented
+      // a fresh, submittable form while the OLD coroutine was still mutating
+      // these same shared signals — a second submit() could then run
+      // CONCURRENTLY with the first, each one able to close/overwrite the
+      // other's state. Skip the reset entirely while one is in flight; the
+      // modal just reopens showing that same in-progress state until it
+      // actually finishes (submitInFlight, set/cleared in submit() below).
+      if (submitInFlight) return
       resetAll()
       void loadNodes()
       void loadNextId()
@@ -310,6 +330,18 @@ export const VmCreateModal: Component<{
 
   async function submit() {
     if (creating()) return
+    // Codex review (PR #130): flags this coroutine as in-flight for the
+    // reopen createEffect above, cleared in `finally` below on EVERY exit
+    // path (success, any of the early error returns, or a thrown exception).
+    submitInFlight = true
+    try {
+      await submitInner()
+    } finally {
+      submitInFlight = false
+    }
+  }
+
+  async function submitInner(): Promise<void> {
     setCreateErr("")
     setCreating(true)
     const n = node()

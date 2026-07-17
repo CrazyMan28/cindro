@@ -178,6 +178,11 @@ public:
     // ScheduleRow::targetRef (e.g. "proxmox-<hostname>") — stored on the
     // session and read by makeBrain() to route the api brain at that agent's
     // own MCP endpoint. Empty for every other caller.
+    // `inheritSelfPlanMode`: true when the caller (handleAgentsDispatch) already
+    // knows this NEW child must be born self-plan-mode-restricted (its parent
+    // is). Must be applied BEFORE makeBrain() runs inside this function (not
+    // after createSession() returns, which is too late — the child's Brain
+    // Options would already be baked without the PLAN-mode restriction).
     QString createSession(const QString &profile, const QString &brain,
                           const QString &model, const QString &cwd,
                           const QString &title, QString *err,
@@ -185,7 +190,8 @@ public:
                           const QString &parentSessionId = QString(),
                           const QString &agent = QString(),
                           const QString &agentPromptOverride = QString(),
-                          const QString &scheduleTargetRef = QString());
+                          const QString &scheduleTargetRef = QString(),
+                          bool inheritSelfPlanMode = false);
 
     // target="real" take-over: after a biometric approval the agent drives the
     // user's ACTIVE real session via the global :8794 engine. requestTakeOver
@@ -294,6 +300,19 @@ private:
     Response handlePlanEnter(const Request &req);
     Response handlePlanExit(const Request &req);
     Response handlePlanStatus(const Request &req);
+    // plan.approve — present_plan's "Approve & Build" decision, per-session.
+    // Codex review (PR #130): present_plan used to flip the GLOBAL Settings
+    // agent_mode from "plan" to "build" on approval, which unrestricted EVERY
+    // session under global Plan Mode, not just the one whose plan was actually
+    // approved. This exempts just that session (m_planApprovedSessions) without
+    // touching the global setting or any other session.
+    Response handlePlanApprove(const Request &req);
+    // Codex review (PR #130): called from handlePlanEnter/handlePlanExit/
+    // handlePlanApprove — if `sessionId` has a LIVE Claude brain, mark it in
+    // m_pendingPlanModeRebind so sendToSession() rebinds it (with the now-
+    // current Plan-mode Options) the next time it's found idle. A no-op for
+    // any other brain kind or if there's no live brain yet.
+    void markPlanRebindIfClaudeLive(const QString &sessionId);
     Response handleSessionDelete(const Request &req);
     Response handleSessionList(const Request &req);
     Response handleSessionHistory(const Request &req);
@@ -685,6 +704,19 @@ private:
     // value in CodexMcpOverrides::env (codex 0.135 rejects inline bearers).
     CodexMcpOverrides agentMcpOverridesFor(const AgentDesktopInfo &desk) const;
 
+    // Codex review (PR #130): m_autoComputerSessions/m_autoGlobalEngineSessions/
+    // m_pendingComputerUseRebind are ALL in-memory only, never persisted, so
+    // resuming a session (daemon restart, or reopening an old chat whose brain
+    // was never live) used to call makeBrain() with EMPTY overrides regardless
+    // of whether the session originally had a nested desktop — computer-use
+    // silently vanished from every resumed auto-computer/coworker chat until
+    // the user deleted and recreated it. Shared by createSession()'s
+    // autoComputer branch and sendToSession()'s resume path: ensures a nested
+    // desktop for `sessionId`, tracks it in the right set for BATTERY
+    // re-provision / rebind, and returns the overrides to feed makeBrain().
+    // Returns empty overrides if `row` doesn't want computer-use at all.
+    CodexMcpOverrides provisionAutoComputerDesktop(const SessionRow &row);
+
     // Claude `--mcp-config` JSON ({"mcpServers":{...}}) for a coworker session:
     //   - FromRegistry: every enabled MCP server (incl. built-in computer-use).
     //   - ForAgent(desk): computer-use pointed at the nested per-session engine.
@@ -977,12 +1009,47 @@ private:
     // screen here, instead of silently believing (and faking) it has an isolated
     // agent desktop.
     QSet<QString> m_autoGlobalEngineSessions;
+    // sessionIds whose brain was constructed WITHOUT computer-use overrides
+    // because AgentDesktop::ensure() hit transient contention (Windows
+    // "sandbox_busy:") at createSession() time — codex/claude bake their MCP
+    // config at spawn, so simply re-provisioning the desktop later (the BATTERY
+    // check below) isn't enough; sendToSession() rebinds (tears down + rebuilds)
+    // the brain the first time it finds the desktop actually up for one of
+    // these, then drops it from this set. See createSession()'s autoComputer
+    // transientBusy branch.
+    QSet<QString> m_pendingComputerUseRebind;
     // sessionIds the MODEL put into PLAN mode itself via enter_plan_mode (Plan
     // Mode, ephemeral/self-initiated path) — distinct from the global, persisted
-    // Settings agent_mode. In-memory only; cleared on session cancel/delete and
-    // by exit_plan_mode/present_plan's Approve & Build. See plan.enter/plan.exit/
-    // plan.status and computer_use_mcp/policy.py's _plan_mode_gate.
+    // Settings agent_mode. In-memory only; cleared on session DELETE (not
+    // cancel — session.cancel only interrupts the current turn, per
+    // enter_plan_mode's own "lasts until exit_plan_mode/present_plan" contract
+    // — Codex review, PR #130) and by exit_plan_mode/present_plan's Approve &
+    // Build. See plan.enter/plan.exit/plan.status and computer_use_mcp/
+    // policy.py's _plan_mode_gate.
     QSet<QString> m_selfPlanModeSessions;
+    // sessionIds present_plan's "Approve & Build" has approved OUT of the
+    // GLOBAL Settings-driven PLAN agent_mode (plan.approve) — per-session, so
+    // approving one session's plan never lifts the restriction for another
+    // session still under the same global setting. Checked FIRST in
+    // handlePlanStatus, ahead of the global setting. In-memory only; cleared
+    // on session delete (not cancel — see m_selfPlanModeSessions above).
+    QSet<QString> m_planApprovedSessions;
+    // sessionIds whose Plan-mode status (self-initiated enter/exit, or
+    // present_plan's approval) changed while their live brain was mid-turn —
+    // ClaudeBrain's --disallowedTools (Write/Edit/NotebookEdit/Bash/Task) are
+    // baked in at construction, so a plan.enter/plan.exit/plan.approve call
+    // (always itself an MCP tool call FROM within the current turn — the
+    // brain is inherently busy right then, so it can't be rebuilt
+    // synchronously) marks the session here instead. sendToSession() rebinds
+    // (tears down + rebuilds) the brain the first time it's next found idle,
+    // same pattern as m_pendingComputerUseRebind. Codex review (PR #130):
+    // CodexBrain has no equivalent — its --sandbox is a single whole-process
+    // setting that ALSO controls whether MCP tool calls auto-cancel, so
+    // tightening it on Plan entry would break computer-use; that gap stays
+    // documented, not fixed (core/tests/codex_buildargs_test.cpp asserts it
+    // deliberately). Claude's permissionMode/disallowedTools are independent,
+    // so rebuilding costs nothing extra here.
+    QSet<QString> m_pendingPlanModeRebind;
     // sessionId -> last turn time (ms). Drives the idle-teardown sweep below.
     QHash<QString, qint64> m_deskLastActive;
     // Idle-teardown sweep: tears an AUTO desktop down when its session hasn't been

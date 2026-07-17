@@ -1,0 +1,71 @@
+# CI for the website/ Laravel app (marketing/billing site) — a standard PHP/Node
+# stack, unrelated to the C++/Qt6 product this repo otherwise ships. Runs on
+# the self-hosted Proxmox Linux fleet (`pve-ubuntu-runner-*`, same as
+# linux-ci.yml/linux-release.yml) — moved off GitHub-hosted ubuntu-latest once
+# GitHub-hosted minutes ran out. shivammathur/setup-php + actions/setup-node
+# provision their own toolchains on demand, same as on a hosted runner, so no
+# extra baked-in image work was needed.
+#
+# Scoped to website/** via `paths:` so it never runs on product-only changes.
+name: website-ci
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['website/**', '.github/workflows/website-ci.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: [self-hosted, Linux, X64]
+    # First self-hosted run hung indefinitely in shivammathur/setup-php's apt install: Ubuntu's
+    # needrestart hooks into dpkg and pops an interactive "which services should be restarted?"
+    # prompt on package installs that touch daemons — with no TTY in a CI job, that prompt just
+    # waits forever instead of failing. GitHub-hosted runners preinstall PHP so this never fired
+    # there. NEEDRESTART_MODE=a (auto-restart, no prompt) + DEBIAN_FRONTEND=noninteractive (no
+    # debconf prompts either) fixes it without touching the runner host itself. Belt-and-suspenders
+    # timeout so a future hang releases the runner slot instead of sitting for the 360min default.
+    timeout-minutes: 20
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      NEEDRESTART_MODE: a
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      # This runner's _work dir is shared with linux-ci.yml/linux-release.yml, which run inside
+      # a Docker container (as root) — files that container writes land root-owned on the host,
+      # which the unprivileged runner user then can't unlink, and actions/checkout@v4 fails
+      # outright instead of falling back to a fresh clone. Force-clear it first every run.
+      - name: Clear any root-owned files left by a container-based job on this runner
+        run: sudo rm -rf "$GITHUB_WORKSPACE" && mkdir -p "$GITHUB_WORKSPACE"
+
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, pdo_sqlite, sqlite3, dom, curl, libxml, bcmath
+
+      - run: composer install --no-interaction --prefer-dist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm ci
+      - run: npm run build
+
+      - run: cp .env.example .env
+      - run: php artisan key:generate
+
+      # Laravel's default phpunit.xml points DB_DATABASE at sqlite :memory:,
+      # so no separate migrate step is needed before the suite runs.
+      - run: php artisan test

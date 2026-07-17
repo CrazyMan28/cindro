@@ -18,7 +18,7 @@ import { For, Show, createMemo, createSignal, onCleanup, onMount, type Component
 import { createStore, produce } from "solid-js/store"
 
 import { ArcReactor } from "../components/ArcReactor"
-import type { CindroClient } from "./cindro-client"
+import { CindroError, type CindroClient } from "./cindro-client"
 import { operatorTargetRef } from "./env"
 
 // ---------------------------------------------------------------------------
@@ -251,9 +251,20 @@ async function resolveOperatorConfig(): Promise<{ brain: string; model: string; 
     const models = (Array.isArray(rawModels) ? (rawModels as unknown[]) : []).filter(
       (m): m is string => typeof m === "string" && isOperatorCapableModel(m) && isModelUsable(m, apiKeysSet),
     )
+    // Codex review (PR #130): the default was accepted without checking
+    // isModelUsable (only isOperatorCapableModel, which just excludes
+    // claude/anthropic prefixes) — a default_model whose provider key had
+    // been removed, or the hard-coded Mistral fallback on a Mistral-less
+    // host, created an operator session with an unavailable provider that
+    // failed on every turn. Validate the default the same way the `models`
+    // list already is, and fall back to an actually-usable model from that
+    // list before falling back to the hard-coded default.
     let model = fallback.model
-    if (s.default_brain === "api" && typeof s.default_model === "string" && isOperatorCapableModel(s.default_model)) {
+    if (s.default_brain === "api" && typeof s.default_model === "string" &&
+        isOperatorCapableModel(s.default_model) && isModelUsable(s.default_model, apiKeysSet)) {
       model = s.default_model
+    } else if (!isModelUsable(model, apiKeysSet) && models.length) {
+      model = models[0]
     }
     return { brain: "api", model, models }
   } catch {
@@ -280,10 +291,19 @@ export class ChatController {
   private creating: Promise<string> | null = null
 
   private persistTimer: ReturnType<typeof setTimeout> | undefined
-  private modelOverride = createSignal<string>(readStoredModel())
+  private modelOverride = createSignal<string>("")
   private hostDefaultModel = createSignal<string>("")
   private modelList = createSignal<string[]>([])
   private modelsLoaded = false
+
+  /** Codex review (PR #130): App constructs this controller BEFORE
+   * checkAuth()/login resolves, so reading localStorage at construction time
+   * (keyed by the PVEAuthCookie's userid) could load the WRONG operator's
+   * transcript (a stale cookie from a previous session) or fail to load the
+   * RIGHT one (no cookie yet). Call this once the authenticated identity is
+   * actually known — App.tsx does, right after checkAuth() succeeds or a
+   * fresh login completes — never at construction time. */
+  loadForAuthenticatedUser: () => void = () => {}
 
   constructor(private client: CindroClient) {
     const [items, setItems] = createStore<ChatItem[]>([])
@@ -295,19 +315,22 @@ export class ChatController {
       this.schedulePersist()
     }
 
-    // Rehydrate any prior transcript BEFORE the event pump can push new items,
-    // and advance the id counter past the restored ids so new items never
-    // collide with (and clobber) a restored row of the same id.
-    const restored = readStoredTranscript()
-    if (restored.length) {
-      let maxId = 0
-      for (const it of restored) if (it.id > maxId) maxId = it.id
-      if (nextId <= maxId) nextId = maxId + 1
+    this.loadForAuthenticatedUser = () => {
+      // Rehydrate any prior transcript BEFORE the event pump can push new
+      // items, and advance the id counter past the restored ids so new items
+      // never collide with (and clobber) a restored row of the same id.
+      const restored = readStoredTranscript()
       setItems(
         produce((list) => {
+          list.length = 0
           for (const it of restored) list.push(it)
         }),
       )
+      let maxId = 0
+      for (const it of restored) if (it.id > maxId) maxId = it.id
+      if (nextId <= maxId) nextId = maxId + 1
+      const storedModel = readStoredModel()
+      if (storedModel) this.modelOverride[1](storedModel)
     }
 
     const [busy, setBusy] = createSignal(false)
@@ -519,10 +542,33 @@ export class ChatController {
     if (!t || this.busy()) return
     this.push({ id: mkId(), kind: "user", text: t })
     this.setBusy(true)
+    await this.sendCurrent(t)
+  }
+
+  private async sendCurrent(t: string, retried = false): Promise<void> {
     try {
       const sid = await this.ensureSession()
+      // Codex review (PR #130): session.send resolving only means the daemon
+      // ACCEPTED the turn, not that the brain finished — clearing busy here (a
+      // regression from the reconnect self-heal fix below) re-enabled the
+      // composer while tools/an approval were still running, so a rapid
+      // follow-up got silently coalesced into the still-active turn (only the
+      // newest pending turn survives). The event pump already clears busy on
+      // `final`/`error`; leave it set on the successful RPC path.
       await this.client.call("session.send", { session_id: sid, text: t }, 30000)
     } catch (e) {
+      // Codex review (PR #130): a transient WebSocket reconnect rebuilds the
+      // dashboard proxy's allowed_sessions from empty (dashboard_server.py),
+      // so a session this controller legitimately created before the drop is
+      // permanently rejected (method_not_allowed) afterward, stranding the
+      // conversation forever. Detect that specific rejection once and
+      // transparently start a fresh operator session instead of repeating the
+      // same failure on every future send.
+      if (!retried && e instanceof CindroError && e.code === "method_not_allowed") {
+        this.resetSession()
+        await this.sendCurrent(t, true)
+        return
+      }
       this.setBusy(false)
       this.push({ id: mkId(), kind: "error", text: e instanceof Error ? e.message : String(e) })
     }

@@ -297,6 +297,25 @@ def test_plan_status_fails_closed(monkeypatch):
     assert policy._plan_status() == (True, "unreachable")
 
 
+def test_plan_status_fails_closed_on_ambiguous_session(monkeypatch):
+    # Codex review (PR #130): an empty current_session_id() (0 or 2+ sessions
+    # running on the shared global engine) must not query plan.status with ""
+    # — some other session's cached state (or lack of it) could read back as
+    # unrestricted and get cached under the empty key for this call too.
+    from computer_use_mcp import daemon_client
+
+    _reset_plan_cache()
+    monkeypatch.setattr(daemon_client, "current_session_id", lambda default="": "")
+
+    calls = []
+    monkeypatch.setattr(daemon_client, "call",
+                         lambda method, params=None, timeout=15.0:
+                         calls.append((method, params)) or {"restricted": False, "source": ""})
+
+    assert policy._plan_status() == (True, "ambiguous_session")
+    assert not calls, "must fail closed WITHOUT querying plan.status for an ambiguous session"
+
+
 def test_bust_plan_cache_forces_refetch(monkeypatch):
     from computer_use_mcp import daemon_client
 
@@ -347,8 +366,16 @@ def test_plan_mode_gate_denies_unsafe_allows_safe(tmp_path, monkeypatch):
 
     # present_plan / agent_start / todo_write / read tools stay callable.
     for safe_tool in ("present_plan", "agent_start", "todo_write", "enter_plan_mode",
-                       "exit_plan_mode", "agent_send"):
+                       "exit_plan_mode"):
         assert asyncio.run(call(safe_tool, {})) == "ran:" + safe_tool
+
+    # Codex review (PR #130): agent_send was removed from _PLAN_SAFE_TOOLS —
+    # it can direct an EXISTING child dispatched before the parent entered
+    # Plan mode (so the child never inherited the restriction) to perform the
+    # writes the parent itself can no longer perform. It must now be denied
+    # like any other write/execute tool, not silently allowed through.
+    with pytest.raises(PermissionError):
+        asyncio.run(call("agent_send", {}))
 
 
 def test_plan_mode_gate_noop_when_unrestricted(tmp_path, monkeypatch):

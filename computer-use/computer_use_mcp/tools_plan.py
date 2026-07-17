@@ -11,8 +11,11 @@ Three tools:
 
 Both entry paths are enforced by the SAME gate (policy.py's _plan_mode_gate) via
 the daemon's `plan.status`; see ControlServer's plan.enter/plan.exit/plan.status
-handlers for the server-side state (SettingsStore's global agent_mode vs. a
-per-session in-memory flag).
+handlers for the server-side state (SettingsStore's global agent_mode, a
+per-session self-initiated flag, and a per-session approved-override set that
+present_plan's "Approve & Build" grants — SCOPED to the approving session only,
+never by flipping the shared global setting, so approving one session's plan
+never silently unblocks a different concurrently-running plan-restricted one).
 """
 
 from __future__ import annotations
@@ -40,11 +43,14 @@ def register(mcp: FastMCP) -> None:
 
         Returns JSON {"decision": "approve"|"revise"|"timeout", "note": <str>}.
 
-        On "approve": if you're in the user's global PLAN mode (Settings), this
-        switches the session to BUILD mode for you — execute immediately after
-        this call returns, do not ask again. If you entered plan mode yourself via
-        enter_plan_mode, this simply clears that self-imposed restriction (which
-        you could also have lifted yourself with exit_plan_mode).
+        On "approve": you're unblocked to execute immediately after this call
+        returns, do not ask again — whether you were in the user's global PLAN
+        mode (Settings) or self-initiated via enter_plan_mode. This unblocks
+        THIS session specifically; it does NOT change the global Settings mode
+        (so a concurrently-running, separately plan-restricted session isn't
+        silently unblocked by your approval — its own plan still needs its own
+        present_plan/approval). If you want the global mode itself changed,
+        tell the user to do that in Settings.
         On "revise": the user's feedback is in `note` — incorporate it and call
         present_plan again when ready; do NOT start executing.
         On "timeout": the user hasn't responded — try again later or keep
@@ -52,12 +58,21 @@ def register(mcp: FastMCP) -> None:
         try:
             if todos:
                 write_todos(todos)
+            # Codex review (PR #130): this used to resolve `sid` AFTER the
+            # blocking ask_bus.ask() call returned. On the shared global engine,
+            # current_session_id() only resolves reliably while THIS is the
+            # sole running session — but the ask can block for up to a day, so
+            # by the time the user answers, another session may well be
+            # running too, making this resolve empty. plan.exit/plan.approve
+            # would then both silently fail (swallowed below) while
+            # present_plan still reported "approve", leaving writes blocked.
+            # Capture it BEFORE the blocking wait instead.
+            sid = daemon_client.current_session_id()
             res = ask_bus.ask(
                 f"# {title}\n\n{markdown}",
                 ["Approve & Build", "Request Changes"],
                 timeout=float(os.environ.get("JARVIS_PLAN_ASK_TIMEOUT", "86400")),
             )
-            sid = daemon_client.current_session_id()
             answer = str((res or {}).get("answer", "")).strip().lower()
             if answer == "approve & build":
                 try:
@@ -65,9 +80,13 @@ def register(mcp: FastMCP) -> None:
                 except Exception:
                     pass
                 try:
-                    cur = daemon_client.call("settings.get")
-                    if cur.get("agent_mode") == "plan":
-                        daemon_client.call("settings.set", {"patch": {"agent_mode": "build"}})
+                    # Codex review (PR #130): this used to flip the GLOBAL
+                    # Settings agent_mode from "plan" to "build" here, which
+                    # un-restricted EVERY session under global Plan Mode, not
+                    # just the one whose plan was actually approved. plan.approve
+                    # exempts only THIS session (per-session, in-memory) without
+                    # touching the global setting or any other session.
+                    daemon_client.call("plan.approve", {"session_id": sid})
                 except Exception:
                     pass
                 policy.bust_plan_cache(sid)

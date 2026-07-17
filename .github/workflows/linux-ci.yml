@@ -15,6 +15,11 @@ on:
   # Day-to-day work on dev / qa / main triggers no test run here.
   pull_request:
     branches: [main]
+    # Codex review (PR #130): a PR that only touches website-ci.yml (the
+    # website's own CI config) belongs solely to the non-versioned site, but
+    # wasn't covered by website/** — it still ran this product build. Ignore
+    # that workflow file too.
+    paths-ignore: ['website/**', '.github/workflows/website-ci.yml']
   workflow_dispatch:
 
 # Least privilege: this is a read-only test gate; it never writes to the repo.

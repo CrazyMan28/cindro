@@ -502,9 +502,19 @@ _PLAN_SAFE_TOOLS = frozenset({
     # eval/cdp/tab_new/tab_close/tab_activate
     "browser_status", "browser_tabs", "browser_snapshot", "browser_screenshot",
     "browser_console",
-    # Subagent research fan-out — planning is explicitly allowed to delegate
-    "agent_create", "agent_list", "agent_get", "agent_start", "agent_wait",
-    "agent_status", "agent_result", "agent_stop", "agent_send",
+    # Subagent research fan-out — planning is explicitly allowed to delegate,
+    # but ONLY via paths that reliably propagate the restriction to the child
+    # (agent_start/agent_committee/agent_moa all route through
+    # ControlServer::handleAgentsDispatch, which inserts the new child into
+    # m_selfPlanModeSessions when the parent is self-plan-restricted) or that
+    # are genuinely read-only. Codex review (PR #130): agent_create and
+    # agent_send were WRONGLY here — agent_create persists/overwrites a reusable
+    # agent definition (a write), and agent_send can direct an EXISTING child
+    # that was dispatched BEFORE the parent entered self-initiated Plan mode
+    # (so it never inherited the restriction) to perform the writes the parent
+    # itself is now forbidden to perform.
+    "agent_list", "agent_get", "agent_start", "agent_wait",
+    "agent_status", "agent_result", "agent_stop",
     "agent_committee", "agent_moa",
     # Read-only self-management
     "list_skills", "get_skill", "skill_load", "list_schedules", "queue_list",
@@ -513,26 +523,53 @@ _PLAN_SAFE_TOOLS = frozenset({
     "bg_status", "bg_logs", "bg_list", "bg_wait", "lsp_diagnostics", "lsp_server_status",
     # Read-only TUI/command introspection
     "tui_list_pages", "list_slash_commands", "workflow_list",
-    # Video analysis (consumption only, no external side effect)
-    "video_info", "video_setup", "video_configure", "video_watch",
-    "video_analyze", "video_detail",
+    # Video analysis (consumption only, no external side effect). Codex review
+    # (PR #130/#132): video_setup/video_configure/video_watch were WRONGLY
+    # here — video_setup(prewarm=true) downloads/loads a multi-GB whisper
+    # model, video_configure writes persistent settings and can wipe the
+    # cached-frame store (clear_sessions=true), and video_watch downloads
+    # remote videos, populates caches, and can invoke cloud transcription.
+    # Follow-up (PR #130): video_analyze and video_detail were ALSO wrongly
+    # here — both call resolve_source(), which downloads a not-yet-cached
+    # YouTube URL; video_analyze(transcription=true) can additionally invoke
+    # cloud transcription and save an analysis manifest, and video_detail
+    # extracts and caches frames to disk. Only video_info is genuinely
+    # side-effect-free (it explicitly probes YouTube URLs WITHOUT
+    # downloading — see its docstring). Allowlisted tools skip
+    # _plan_status() entirely, so anything with a real side effect belongs
+    # outside this set, gated like video_watch instead.
+    "video_info",
 })
 
 
 def _plan_status() -> tuple[bool, str]:
-    """-> (restricted, source in {"settings","self","","unreachable"}). Session-scoped, TTL-cached.
+    """-> (restricted, source in {"settings","self","approved","","unreachable",
+    "ambiguous_session"}). Session-scoped, TTL-cached.
 
     A cache MISS runs a synchronous, blocking daemon round-trip on the calling
     coroutine (same tradeoff gate()'s ask-bus flow already accepts elsewhere in
-    this file) — acceptable at a ~2s TTL, but note current_session_id() is
-    itself uncached and can fall back to an extra "session.list" round-trip on
-    the shared global engine (no JARVIS_AGENT_SESSION), and its "" fallback on
-    an ambiguous multi-session process is a known pre-existing limitation (see
-    its own docstring) that this cache inherits, not something new here."""
+    this file) — acceptable at a ~2s TTL. current_session_id() is itself
+    uncached and can fall back to an extra "session.list" round-trip on the
+    shared global engine (no JARVIS_AGENT_SESSION); when it can't disambiguate
+    (2+ concurrent sessions, no way to tell which is calling) this fails
+    CLOSED ("ambiguous_session") rather than querying plan.status with an
+    empty id, which would ask the wrong question and could leak another
+    session's status into this one's cache entry."""
     try:
         sid = daemon_client.current_session_id()
     except Exception:
         sid = ""
+    if not sid:
+        # Codex review (PR #130): an empty sid means the shared global engine
+        # couldn't tell which of its concurrent sessions is calling (see
+        # current_session_id()'s docstring). Querying plan.status with "" asks
+        # the WRONG question — if some OTHER session happens to be unrestricted,
+        # or "" was never marked restricted, this reports unrestricted and the
+        # cache then lets THIS call's write tools through for up to the TTL,
+        # defeating session-scoped enforcement in exactly the concurrent case
+        # this module calls out. Fail closed instead of guessing, same
+        # deliberate deviation as the "unreachable" branch below.
+        return True, "ambiguous_session"
     now = time.time()
     cached = _PLAN_CACHE.get(sid)
     if cached and now - cached["ts"] < _PLAN_CACHE_TTL:

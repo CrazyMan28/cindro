@@ -578,8 +578,9 @@ derived from the other). Load-bearing truths:
 - **The `.xcodeproj` is GENERATED, never committed** (`project.yml` → `xcodegen generate`), the same
   discipline as the Android app being pure-Gradle: a hand-edited pbxproj drifts. CI runs
   `xcodegen generate` before every `xcodebuild`.
-- **`ios-build.yml` runs on GitHub-hosted `macos-latest`** — the ONE sanctioned exception to the
-  "100% self-hosted / zero GitHub-hosted minutes" rule below, because iOS needs Xcode on macOS and
+- **`ios-build.yml` runs on GitHub-hosted `macos-latest`** — the one sanctioned exception to the
+  "100% self-hosted / zero GitHub-hosted minutes" rule below (`website-ci.yml`/`android-build.yml`
+  moved to the self-hosted fleet too — see that section), because iOS needs Xcode on macOS and
   the Proxmox fleet is Windows + Linux only. The owner opted into the Actions minutes. It rides the
   SAME `v*` tag `auto-release.yml` already creates, so merge-to-main attaches an **unsigned** `.ipa`
   next to the `.exe`/`.apk`/AppImage with no tagger change. Signed TestFlight/App Store builds need
@@ -603,14 +604,25 @@ work on dev  →  push  →  test  →  promote dev → qa  →  test  →  PR q
 
 Do day-to-day work on **`dev`**. When it's good, fast-forward/merge into **`qa`** and
 test. When qa passes, open a **PR into `main`** and merge it. Never commit directly to
-`main` (the branch protection will reject it).
+`main` (the branch protection will reject it). `website/` follows the exact same flow —
+it just has its own lightweight `website-ci.yml` gate instead of the platform build
+workflows, and a website-only merge is deliberately excluded (`paths-ignore`) from
+triggering `auto-release.yml`'s version bump (see below).
 
 ## GitHub / CI / releases (how Issac runs this repo)
 
-- **CI is 100% self-hosted — ZERO GitHub-hosted minutes.** Windows builds run on
-  `win-runner-1` (the winvm / Proxmox VM 106 box); Linux CI/release/auto-release run on the
-  six `pve-ubuntu-runner-*` (VM 104). **Never** switch a workflow to `windows-latest` /
-  `ubuntu-latest` — all four workflow files use `runs-on: [self-hosted, …]`. The Windows
+- **CI is 100% self-hosted for the product build workflows — ZERO GitHub-hosted minutes.**
+  Windows builds run on `win-runner-1` (the winvm / Proxmox VM 106 box); Linux CI/release/
+  auto-release/website-ci/android-build all run on the six `pve-ubuntu-runner-*` (VM 104, raw
+  Ubuntu host — only linux-ci/linux-release additionally run inside the baked `jarvis-ci`
+  container via `container:`, since website-ci/android-build's toolchains (PHP/Node/JDK/Android
+  SDK) come from their own setup actions instead). **Never** switch one of these six workflow
+  files to `windows-latest` / `ubuntu-latest` — they use `runs-on: [self-hosted, …]`.
+  (`ios-build.yml` is the one sanctioned GitHub-hosted exception — see above; `website-ci.yml`/
+  `android-build.yml` moved off `ubuntu-latest` once GitHub-hosted minutes ran out, so what were
+  GitHub-hosted-only tools now get provisioned per-run: `android-actions/setup-android` for the
+  Android SDK, `shivammathur/setup-php` + `actions/setup-node` for PHP/Node — same as before, just
+  running on the self-hosted fleet instead.) The Windows
   runner is **prebuilt** (git, vcpkg + libsodium/libqrencode, Inno Setup, VS Build Tools,
   PowerShell 7, Python, Qt, Ninja, CMake, Node) via `windows/scripts/setup-runner-*.ps1`, so
   the workflow does **no per-run tool downloads** (mirrors the Linux prebuilt CI image). After
@@ -1352,8 +1364,10 @@ guarantee, not a convenience default.
 requires `present_plan`'s "Approve & Build" to exit. A NEW `enter_plan_mode(reason)` tool lets the
 model go read-only on its own judgment, for just that session (`ControlServer::m_selfPlanModeSessions`,
 in-memory, never persisted) — `exit_plan_mode(summary)` leaves it with no user approval needed.
-`present_plan`'s approve action is one code path for both: it unconditionally clears the
-self-initiated flag AND, only if the global setting was actually `"plan"`, flips it to `"build"`.
+`present_plan`'s approve action calls both `plan.exit` (clears the self-initiated flag, if set) and
+`plan.approve` (grants a per-session override, `m_planApprovedSessions`, checked first in
+`handlePlanStatus`) — it deliberately never flips the global `agent_mode` setting, so approving one
+session's plan can't silently unblock a different concurrently-running plan-restricted session.
 
 **`agent_send(session_id, message)`** (`tools_jarvis_ops.py`) steers an already-`agent_start`-ed
 subagent. Turned out to need zero new C++: `agent_start` already spins up a real daemon session
@@ -1384,15 +1398,364 @@ defense-in-depth layer only picks it up the next time the Brain object itself is
 (new session, or a respawn after daemon restart/idle-teardown) — this is why the MCP gate, not the
 brain `Options`, is documented as the real source of truth.
 
-**Two other findings from the review, deliberately left as documented limitations, not fixed:**
-`policy._plan_status()`'s cache is keyed by `daemon_client.current_session_id()`, which resolves to
-an ambiguous empty string when 0 or 2+ sessions are `running` on the shared global `:8794` engine —
-the same pre-existing, already-accepted limitation the todo/widget bus's session-scoping comment
-documents ("a time-based cache could attribute session B's todo to session A"), not a new class of
-bug. And `present_plan`'s "Approve & Build" path can return `decision:"approve"` even if the
-underlying `plan.exit`/`settings.set` calls silently failed (network hiccup) — it fails *safe*, not
-open: the model's very next write attempt gets denied again by the (unrelated, still-live)
-`policy.py` gate, so the worst outcome is one confusing turn, not an actual restriction bypass.
+**One finding deliberately left as a documented limitation, not fixed:** `present_plan`'s
+"Approve & Build" path can return `decision:"approve"` even if the underlying `plan.exit`/
+`plan.approve` calls silently failed (network hiccup) — it fails *safe*, not open: the model's
+very next write attempt gets denied again by the (unrelated, still-live) `policy.py` gate, so the
+worst outcome is one confusing turn, not an actual restriction bypass.
+
+**Reconciled with a parallel fix (2026-07-17, later same day):** a separate session pushed its own
+fix for the SAME concurrency bug (global-flip-on-approve) directly to `dev` while this PR's fixes
+were in flight, plus two findings this PR hadn't addressed: `_plan_status()` now fails CLOSED
+("ambiguous_session") when `current_session_id()` can't disambiguate 2+ concurrent sessions instead
+of silently reporting unrestricted, and `video_watch` (can download remote videos / invoke cloud
+transcription) was removed from `_PLAN_SAFE_TOOLS` alongside `video_setup`/`video_configure`. Their
+approach used a dedicated `plan.approve` RPC + `m_planApprovedSessions` instead of extending
+`plan.exit` with an `approved` flag — adopted theirs as the canonical mechanism on merge (one
+approval path, not two) and layered this PR's `createSession()`/`handleAgentsDispatch` ordering fix
+and `wakeParentForSubagent`'s queued-turn defer on top, since their commit didn't include either.
+
+## New subsystems (2026-07-17) — `website/` marketing/billing site scaffold
+
+Built the Laravel site sell.md's "Laravel plan" section specs: Breeze (Blade auth) + Cashier
+(Stripe) + Filament (admin) + Tailwind, styled dark/"hacker meets macOS" (terminal-window chrome,
+monospace accents). Self-contained under `website/` — own `composer.json`/`package.json`, zero
+CMake integration, same as `web/`/`android/`/`computer-use/`. See `website/README.md` for setup,
+the `/api/license/verify` contract, and the full "known limitations" list. Load-bearing points:
+
+- **Not Laravel 11.** sell.md specified Laravel 11, but every Laravel 11.x release recent enough
+  to still be installable had unpatched security advisories by build time (Composer's audit-block
+  refused them). Used the current stable major (Laravel 13) instead — same stack, not an EOL
+  version. Re-check this if you ever touch `website/composer.json`'s framework constraint.
+- **`License` (not Cashier's `Subscription`) is the source of truth `/api/license/verify` reads.**
+  A `SyncLicenseFromStripeWebhook` listener (on Cashier's `WebhookHandled` event) projects Stripe
+  subscription state into the local `licenses` table on `customer.subscription.*` events — this is
+  the one piece of real business logic tying billing to licensing. Manually-issued licenses (via
+  Filament's "Issue Manual License" action) simply have `stripe_subscription_id = null`.
+- **No `core/` changes.** `/api/license/verify`'s JSON contract is designed for a future `core/`
+  `LicenseStore` (mirroring `SettingsStore`'s shape) to consume, but that class doesn't exist yet —
+  sell.md lists its design as an explicit open question. Don't assume it's wired up.
+- **Everything Stripe/GitHub-token-dependent is code-complete but placeholder-only.** No real
+  Stripe test keys or `GITHUB_TOKEN` were available at build time — checkout/webhooks are only
+  tested via `Http::fake()`/mocked events, and `/download` only exercises its no-token fallback
+  path. See `website/README.md`'s "Known limitations" for the full list (also: the product repo
+  being **private** means even a real `GITHUB_TOKEN` doesn't make GitHub's release *asset* URLs
+  anonymously downloadable — flagged as a `// TODO` in `GitHubReleaseService`, not solved).
+- **CI**: `website-ci.yml` (self-hosted `pve-ubuntu-runner-*` — see the CI section above) runs
+  `composer install` + `npm run build` + `php artisan test`, gated to `paths: ['website/**']`. All
+  six workflows (`auto-release.yml` + the five product build workflows) got
+  `paths-ignore: ['website/**']` added so a website-only PR/merge doesn't bump a product version or
+  burn self-hosted/GitHub-hosted runner time on unrelated platform builds.
+
+## New subsystems (2026-07-17, later) — third Codex review round on PR #130 (qa→main)
+
+By this point PR #130 had absorbed dev's full history — including the Plan Mode feature above and
+the Proxmox dashboard work — so Codex's third review pass on the combined diff surfaced findings
+across all of it, not just the original agent-desktop fix. Fixed:
+
+- **`vm-create.tsx` regression I introduced earlier the same day:** `resetAll()` (called every time
+  the modal reopens) didn't reset the `created` signal from the "finalize creation when only start
+  fails" fix — reopening left `created()` true from the PREVIOUS VM, so `submit()`'s `if
+  (!created())` guard skipped the create call entirely and tried to start a VMID that was never
+  created this time. Added `setCreated(false)` to `resetAll()`.
+- **`ControlServer.cpp` sandbox-busy brain rebind:** the earlier `transientBusy` fix (tracking the
+  session in `m_autoComputerSessions` so `sendToSession()`'s BATTERY check retries `ensure()`) wasn't
+  enough — the BRAIN itself was already constructed with `agentOverrides` empty, and codex/claude
+  bake their MCP config at spawn, so even once the desktop came up later that SAME brain object still
+  had no connection to it. Added `m_pendingComputerUseRebind`: the first time the BATTERY check finds
+  the desktop up for one of these (and the brain isn't mid-turn), it tears down and reconstructs the
+  brain with the now-available overrides.
+- **Plan Mode, revisiting the "deliberately left as limitations" note above** — the user asked for
+  these to actually be fixed once Codex flagged them as P1s, not just documented:
+  - `policy._plan_status()` now fails CLOSED on an ambiguous empty `current_session_id()` (0 or 2+
+    sessions on the shared global engine) instead of querying `plan.status` with `""`, which could
+    read as "unrestricted" and cache that for the real (restricted) session for up to the TTL.
+  - `present_plan`'s "Approve & Build" no longer flips the GLOBAL Settings `agent_mode` from `"plan"`
+    to `"build"` — that un-restricted EVERY session under global Plan Mode, not just the approved
+    one. New `plan.approve` RPC + `m_planApprovedSessions` (checked first in `handlePlanStatus` and
+    in `makeBrain()`'s `planMode` computation) exempts only that session, per-session, in-memory.
+  - `_PLAN_SAFE_TOOLS` wrongly allowlisted `video_setup`/`video_configure`/`video_watch` — all three
+    have real side effects (multi-GB model download, persistent settings + cache-clearing, remote
+    video download + cloud transcription) despite the "consumption only" comment. Allowlisted tools
+    skip `_plan_status()` entirely, so these ran even under a hard Plan Mode restriction. Removed;
+    kept the genuinely read-only `video_info`/`video_analyze`/`video_detail`.
+- **Proxmox dashboard WS proxy, two more gaps in the session-scoping work above:**
+  - `backend_to_browser()` relayed EVERY `session.event`/`session.opened` frame from the daemon
+    straight to the browser BEFORE checking `allowed_sessions` — jarvisd's own scoping
+    (`m_scopedClients`) only kicks in once a client sends `session.subscribe`, which this proxy never
+    does on the backend connection's own behalf, so a fresh connection (or one that never chats) sat
+    in "legacy broadcast" indefinitely, leaking other sessions' events. Now filtered client-side
+    against `allowed_sessions` (starts empty, so nothing leaks before an operator session exists),
+    independent of whatever scoping state the daemon connection happens to be in.
+  - A transient WebSocket reconnect rebuilds `allowed_sessions` from empty (it's per-connection,
+    in-memory), permanently stranding a `ChatController` that kept its old `sid` — every future
+    `session.send` came back `method_not_allowed` forever. Rather than trying to let the proxy
+    re-verify cross-connection session ownership (a bigger, riskier change), `chat.tsx`'s `send()`
+    now detects that specific rejection (`CindroError.code === "method_not_allowed"`) and
+    transparently starts a fresh operator session once, instead of repeating the same failure.
+  - `App.tsx` constructs `ChatController` synchronously, before `checkAuth()`/login resolves, but the
+    constructor used to eagerly read the (cookie-userid-namespaced) persisted transcript — reading
+    either a STALE cookie's history (previous operator, not yet expired client-side) or the wrong
+    (unnamespaced) key if no cookie was present yet. Deferred to a new
+    `loadForAuthenticatedUser()`, called only once `checkAuth()` succeeds or a fresh login completes.
+
+## New subsystems (2026-07-17, night) — fourth Codex review round on PR #130
+
+A fourth review pass (triggered by the third round's push) found 14 more findings spanning the
+agent-desktop/Plan-Mode/dashboard-proxy work above AND the unrelated `website/` Laravel site that
+also happened to be sitting on this PR. Fixed 13; one left as a documented, deliberate limitation
+(explained below, not skipped by oversight).
+
+**My own follow-ups:**
+- `chat.tsx`'s reconnect self-heal fix (round 3) had added `setBusy(false)` right after the
+  `session.send` RPC resolved — but that RPC only confirms the daemon ACCEPTED the turn, not that
+  the brain finished. Re-enabled the composer mid-turn, letting a rapid follow-up get silently
+  coalesced into the still-active turn. Removed; the event pump already clears `busy` on
+  `final`/`error`.
+- `cancelSession()`: an AUTO-computer session's brain has its MCP config (port+bearer) baked in at
+  construction. A routine `session.cancel` (interrupt THIS turn — a very ordinary "stop, let me
+  rephrase") used to unconditionally `releaseSession()` (drops the port/bearer reservation too) and
+  stop tracking the session in `m_autoComputerSessions`, so `sendToSession()`'s BATTERY
+  re-provision check never fired again — the very next cancel permanently orphaned computer-use for
+  the rest of that chat. Auto-computer sessions now get the lighter `teardown()` (keeps the
+  reservation) and stay tracked, same as an idle-teardown; an explicit coworker+agent session keeps
+  the existing full-release behavior (cancel really is its close signal there).
+- `AgentDesktop::ensure()`'s up-to-45-60s synchronous provisioning (the deliberate
+  correctness-over-latency trade-off from earlier today) exceeds the Chrome extension's generic 30s
+  RPC safety timeout (`extension/sidepanel.js`) for `session.create` specifically, when "let Cindro
+  use a computer" is on and the extension's `profile:"coder"` session qualifies for `autoComputer`.
+  Rather than touch the sensitive cross-platform `AgentDesktop` timeout (would need a build/test
+  loop this environment can't run), gave `session.create` its own 65s timeout client-side — a
+  1-line, zero-risk JS change that closes the actual mismatch without reopening the isolation
+  decision.
+- `vm-create.tsx`: reopening the still-mounted modal while a PREVIOUS `submit()` coroutine was still
+  running (e.g. closed during a long task poll, allowed since round 3) reset `creating`/`created`
+  and presented a fresh, submittable form — a second `submit()` could then run CONCURRENTLY with the
+  first, both mutating the same shared signals. Added a plain (non-reactive) `submitInFlight` guard:
+  the reopen effect skips the reset while one is in flight, so the modal just reopens showing that
+  same in-progress state.
+
+**Plan Mode, two more gaps:**
+- `makeBrain()`'s `planMode` precedence didn't account for `m_planApprovedSessions` (round 3's
+  per-session approval) in the OTHER direction: once approved, `handlePlanStatus` always returned
+  unrestricted before even checking `m_selfPlanModeSessions` — so if the model later called
+  `enter_plan_mode` for a NEW risky task in the same (already-approved) session, the self-restriction
+  was recorded but `plan.status` still reported "approved" and the MCP gate let writes through.
+  Reordered: an active self-initiated restriction now wins over a prior approval.
+- `agent_create`/`agent_send` were wrongly in `_PLAN_SAFE_TOOLS` — `agent_create` persists/overwrites
+  a reusable agent definition (a write), and `agent_send` can direct an EXISTING child dispatched
+  BEFORE the parent entered self-initiated Plan mode (so the child never inherited the restriction)
+  to perform the writes the parent itself can no longer perform. `agent_start`/`agent_committee`/
+  `agent_moa` stay — all three route through `handleAgentsDispatch`, which already propagates the
+  restriction to new children.
+
+**Left as a documented, deliberate limitation, NOT fixed this round:** Codex re-flagged that a
+Plan-mode Codex session with computer-use injected gets `driveMcp=true`, and `CodexBrain`'s ctor
+unconditionally overrides `sandboxMode` back to `danger-full-access` whenever `driveMcp` is set —
+so Codex's NATIVE shell/`apply_patch` tools are NOT actually blocked in Plan Mode for a
+computer-use-enabled session, only MCP tool calls are (via `policy.py`'s gate). This is not an
+oversight: `core/tests/codex_buildargs_test.cpp` has an EXISTING assertion (`"plan mode + drive:
+sandboxMode=read-only is still overridden to danger-full-access (native codex tools are NOT
+hard-blocked here)"`) proving the original Plan Mode author already investigated this and
+deliberately left it — because `--sandbox` is a single, whole-process setting: loosening it to
+`danger-full-access` is what stops codex auto-cancelling MCP tool calls headless (proven live-tested
+per the ClaudeBrain comparison above), and there's no evident way to keep MCP calls working while
+blocking codex's OWN native tools without either (a) redesigning codex's sandboxing in a way this
+environment can't build/test against a real `codex` CLI, or (b) disabling computer-use entirely for
+Plan-mode Codex sessions, which would ALSO break the genuinely-safe MCP tools Plan Mode explicitly
+wants available (`desktop_screenshot`, `present_plan`, `todo_write`, etc., all in
+`_PLAN_SAFE_TOOLS`). Shipping an unverified change to a security-critical sandbox mechanism felt
+like the wrong call versus leaving the existing, deliberate, tested trade-off in place.
+
+**`website/` findings (unrelated feature, same PR):** Stripe webhook sync unconditionally set
+license status to "active" for both created/updated events regardless of Stripe's own subscription
+status (`past_due`/`unpaid`/`incomplete`/`paused` kept granting a valid license) — now mapped via
+Stripe's status (note: the `status` column is a DB-level enum `active|suspended|revoked|expired`, so
+Stripe's raw status strings had to be MAPPED, not passed through verbatim — caught this the hard way
+via the actual Laravel test suite, see below). `User` had `MustVerifyEmail` commented out despite the
+`verified` middleware and Breeze's verify-email routes already being fully wired — every unverified
+address could reach the dashboard. Account deletion left every license (`user_id` is `nullOnDelete`)
+still "active" forever with an orphaned row and no way for a later Stripe webhook to fix it (looks
+the user up by `stripe_id`, now gone) — now cancels live Cashier subscriptions and marks licenses
+`revoked` before the user row disappears. `PricingCatalog::booleanFeatureFlags()` flagged EVERY
+string-valued pricing cell as `true`, including explicit exclusions like Starter's cloned_voice "not
+included" — so `/api/license/verify` told a Starter client features were available that the pricing
+table explicitly excludes; now only strings NOT starting with "not included" flag true.
+
+**Verification note:** PHP/Composer/`php artisan test` turned out to be available on this box —
+actually ran the full website test suite (not just `php -l` syntax checks) for the first time this
+session, which is how the enum-mismatch in the Stripe status mapping got caught before shipping (the
+DB would have rejected the raw Stripe status string on the first webhook). 15/15 targeted tests
+passed after the fix. Two unrelated pre-existing failures (`Vite manifest not found` — no frontend
+build in this environment) are environmental, not regressions.
+
+## New subsystems (2026-07-17, CI-speed wave) — self-hosted runner speedups + gotchas
+
+Instrumented the Proxmox self-hosted fleet end-to-end (per-step timings from real runs + in-guest
+checks) and attacked the measured hot spots. Baseline: windows-build took ~26 min solo / 40–49 min
+when both win-runners built concurrently; ~10 of those min were the engine PyInstaller stage, ~6 C++,
+~3 outpost PyInstaller, ~3 LZMA compression, and up to 8 min of "checkout" that was actually
+`git clean -ffdx` deleting the previous build from the shared ROTATIONAL disk. Changes:
+
+- `windows-build.yml` checks out with `clean: ${{ github.event_name != 'pull_request' }}` — PR
+  builds now KEEP `windows/build-win/` + both `.venv-win`s between runs (incremental ninja/pip);
+  tag builds still fully clean. GOTCHA: anything cached in the tree must tolerate staleness —
+  `build.ps1` now deletes the stale payload AND stale `Cindro-Setup-*.exe` up front (the old
+  installer would otherwise ALSO match the upload/release glob).
+- `build.ps1` runs its five C++-independent stages (engine PyInstaller, outpost-mcp PyInstaller,
+  Go cross-compiles, phone-server npm, portable-Node fetch) as `Start-Job` BACKGROUND PROCESSES
+  overlapped with the foreground C++/bun/windeployqt work, joined before the isolation-assets
+  stage. Process (not thread) jobs on purpose: the Go stage mutates `GOOS`/`GOARCH` env.
+  Fatality preserved: engine + node-runtime fatal, go/outpost/phone warn-and-continue.
+- PR installers compress with `zip` (`-FastCompress` -> `/DFastCompress` -> `#ifdef` in
+  `jarvis.iss`); tag/release builds keep `lzma2`+solid. The Node zip now caches in `C:\ci-cache`
+  (outside the repo) so even clean tag builds skip the download.
+- `setup-runner-buildtools.ps1` restarts EVERY `actions.runner.*` service (was hardcoded to
+  win-runner-1 — provisioning win-runner-2 never restarted its own runner).
+- android-build (self-hosted since the infra/self-hosted-website-android merge): sherpa AAR now
+  cached at `~/ci-cache` on the runner VM's persistent disk (actions/cache restore of that one
+  56 MB file measured ~1m40s); `setup-gradle` remote cache disabled (`cache-disabled: true`) —
+  `~/.gradle` persists locally, the GitHub round-trip was pure overhead.
+- NEW `.github/workflows/runner-maintenance.yml` (workflow_dispatch only): the Linux runner VM
+  (`gh-runner-linux`, VMID 104) has NO ssh key authorized and NO qemu-guest-agent running, so a CI
+  job is the only management path onto it. It pre-installs PHP 8.4+composer (makes website-ci's
+  per-run `setup-php` apt-install a no-op) and qemu-guest-agent (VM config has `agent:enabled=1`
+  but the agent was never installed in-guest). GOTCHA: `workflow_dispatch` only becomes
+  runnable once the file exists on `main` — dispatch it after the promotion PR merges.
+- Proxmox host side (done live over SSH, not in-repo): VM 104 got `cpu: host` (was the ancient
+  `kvm64` default — no SSE4/AES/POPCNT exposed to compilers), `cpuunits 200`, and
+  `cache=writeback` on its disk — cpu/cache apply at its NEXT power-cycle. Win-runner VMs
+  106/107 still want the same treatment (+6 cores each) plus Windows Defender exclusions for
+  `C:\actions-runner`/`C:\Qt`/`C:\vcpkg` + build processes (both VMs measured with RTP on and
+  ZERO exclusions — the classic Windows CI tax); those needed explicit user approval.
+- Fleet topology gotcha: all six `pve-ubuntu-runner*` slots live on ONE 6-vCPU VM, and a PR into
+  main fires linux-ci + linux-release + android + website simultaneously — 4 concurrent jobs
+  each assuming `nproc` parallelism on 6 shared vCPUs (plus everything else on a 24-thread
+  2010-era host). Fewer slots or more vCPUs is the lever if linux jobs feel slow.
+## New subsystems (2026-07-17, later still) — fifth Codex review round on PR #130
+
+A fifth review pass (triggered by the fourth round's push) found 6 more findings: one in my own
+`tools_plan.py` fix, three more in the `website/` billing logic (compounding on round 4's fixes),
+and a CI path-filter gap affecting six workflow files.
+
+- **`tools_plan.py`**: `present_plan` resolved `sid = daemon_client.current_session_id()` AFTER the
+  blocking `ask_bus.ask()` call (which can wait up to a day). On the shared global engine,
+  `current_session_id()` only resolves reliably while this is the SOLE running session — by the time
+  a slow approval came back, another session could easily be running too, resolving empty and
+  silently failing both `plan.exit` and `plan.approve` (swallowed) while `present_plan` still
+  reported `"decision": "approve"`. Moved the resolve to before the blocking wait.
+- **`SyncLicenseFromStripeWebhook.php`, two more gaps on top of round 4's status-mapping fix:**
+  - The "upgrade an existing no-subscription license in place" fallback matched ANY active license
+    with no `stripe_subscription_id` — including a manually issued one (e.g. a Filament-granted
+    lifetime enterprise license). Buying an unrelated Starter subscription and later canceling it
+    would overwrite and eventually expire that manual grant. Scoped the fallback to `tier=trial`,
+    the only kind Stripe webhooks are ever meant to upgrade in place.
+  - `grantFoundingMemberStatusIfSlotAvailable()` ran for every recognized event, including the
+    `incomplete`/`past_due`/`unpaid`/`paused` ones round 4 mapped to `"suspended"` — an abandoned or
+    failed checkout consumed a founding-member slot, excluding a later paying customer. Gated it on
+    `$status === 'active'`.
+- **`DashboardController.php`**: picked the "primary" license solely by `latest('issued_at')`, so a
+  user holding multiple licenses (explicitly allowed by the admin resources) could have downloads
+  denied and an invalid license displayed while an OLDER, still-valid license sat unused —
+  `/api/license/verify` would have accepted that valid key. Now prefers a currently-valid license
+  (newest among valid ones), falling back to the newest overall only when none are valid.
+- **`CheckoutController.php`**: `subscribe()` always started a brand-new Stripe Checkout session,
+  even for a user who already has an active `default` subscription — the pricing page stays
+  reachable and the subscriptions table doesn't enforce one row per user/type, so a repeat visit (or
+  picking a different tier) could complete a second concurrent subscription and double-bill them.
+  Already-subscribed users are now redirected to the billing portal instead.
+- **CI**: `paths-ignore: ['website/**']` (on six workflows: the five product-build gates' PR
+  triggers + `auto-release.yml`'s push trigger) didn't cover `.github/workflows/website-ci.yml`
+  itself, which lives outside `website/`. A PR that only edited the website's own CI config still
+  ran every product build AND (on merge to main) bumped/tagged a product release for a change that
+  belongs solely to the non-versioned site. Added that workflow file to all six `paths-ignore` lists.
+
+**Verification:** ran the FULL website test suite this round (not just the targeted files) —
+45/58 passed; all 13 failures are the identical pre-existing `Vite manifest not found` error (no
+frontend build in this environment — confirmed by trying `npm install && npm run build`, which hit
+an unrelated native-module resolution issue with the `rolldown` bundler on this Windows box).
+None of the 13 touch any file changed this round. All 6 modified GitHub Actions workflow files
+parsed clean with PyYAML.
+
+## New subsystems (2026-07-17, sixth round) — sixth Codex review round on PR #130
+
+A sixth review pass found 5 more findings: two in `ControlServer.cpp`'s auto-desktop/Plan-Mode
+tracking (both in-memory-only-state gaps of the same shape rounds 3-5 already fixed elsewhere),
+one Plan-Mode/session-cancel interaction, one more `SyncLicenseFromStripeWebhook.php` gap, and one
+in `website/`'s license verification (unenforced per-seat licensing). Plus one leftover
+`_PLAN_SAFE_TOOLS` overbreadth Codex flagged alongside them.
+
+- **`ControlServer.cpp`/`.h` — auto-desktop tracking didn't survive session resume:**
+  `m_autoComputerSessions`/`m_autoGlobalEngineSessions`/`m_pendingComputerUseRebind` are in-memory
+  only, never persisted. Resuming a session (daemon restart, or reopening a chat whose brain was
+  never live) called `makeBrain()` with empty MCP overrides regardless of whether the session
+  originally had a nested desktop — computer-use silently vanished from every resumed
+  auto-computer/coworker chat until the user deleted and recreated it. Extracted the existing
+  `createSession()` auto-desktop logic into a new shared `provisionAutoComputerDesktop(row)`
+  helper (also collapsing what was a 4-way up/unsupported/transient/failure branch into 3, since
+  transient-contention and genuine failure now get identical retry+rebind treatment — a leftover
+  round-3 finding) and call it from `sendToSession()`'s resume path too, reconstructing the
+  original classification from the persisted `profile`/`brain`/`targetRef` fields (the one edge
+  case that can't be reconstructed exactly — an explicit `target="real"` take-over — resumes as a
+  plain non-computer-use session instead; judged rare and non-harmful, documented inline).
+- **`ControlServer.cpp`/`.h` — Plan Mode state changes didn't reach a live Claude brain:**
+  `ClaudeBrain`'s `--disallowedTools` (Write/Edit/NotebookEdit/Bash/Task) is baked in at
+  construction. `enter_plan_mode`/`exit_plan_mode`/`plan.approve` update the tracking sets
+  (`m_selfPlanModeSessions`/`m_planApprovedSessions`) but a live brain kept its ORIGINAL
+  permissions until the session was next fully rebuilt — a session that entered Plan Mode
+  mid-conversation could still have its live ClaudeBrain accept writes, and one that exited Plan
+  Mode stayed needlessly restricted. Added `m_pendingPlanModeRebind` (same "mark now, rebind on
+  next idle turn" pattern as `m_pendingComputerUseRebind`) via a new
+  `markPlanRebindIfClaudeLive(sessionId)`, called from all three Plan-Mode handlers; a new block
+  in `sendToSession()` tears down and rebuilds the brain the first time it's next found idle.
+  CodexBrain has no equivalent fix — its `--sandbox` is one whole-process setting that also gates
+  MCP tool auto-cancel, so tightening it on Plan entry would break computer-use; that gap stays
+  deliberately unfixed (see `core/tests/codex_buildargs_test.cpp`), same call as round 5.
+- **`ControlServer.cpp` — `cancelSession()` cleared Plan-Mode state on a mere turn interruption:**
+  it was clearing `m_selfPlanModeSessions`/`m_planApprovedSessions` for `sessionId`, but
+  `session.cancel` only interrupts the current turn — `enter_plan_mode`'s own contract says Plan
+  Mode "lasts until exit_plan_mode/present_plan", not until the next cancel. Canceling a turn while
+  self-initiated Plan Mode was active silently dropped out of Plan Mode. Removed those two lines
+  from `cancelSession()`; they remain correctly cleared in `deleteSession()` (which now also clears
+  the new `m_pendingPlanModeRebind`).
+- **`SyncLicenseFromStripeWebhook.php`, a third gap on top of rounds 4-5's fixes:** Stripe doesn't
+  guarantee webhook delivery order, so an out-of-order-delivered older event (e.g. a stale
+  `customer.subscription.updated` arriving after a newer `deleted`) could revert a license's status
+  backwards. Added a nullable `licenses.last_stripe_event_at` column (new migration) and an
+  `$isStale` check (event's own `created` timestamp vs. the license's stored one) short-circuiting
+  both the `subscription.deleted` path and the create/update path before writing anything. Also
+  folded in two smaller gaps found alongside it: `expires_at` wasn't cleared on an update/create
+  (a previously-expired license that later got a fresh subscription could still read as expired
+  until its next natural verify), and a resolvable-tier-but-existing-license event with an
+  unresolvable price ID silently skipped the status sync entirely instead of at least updating
+  `status` on the license Stripe already knows about.
+- **`LicenseVerifyController.php` (P2) — per-seat licensing was unenforceable:** `device_id` was
+  accepted in the request and documented in the docblock, but never recorded or checked, so a
+  single one-seat Business license returned `valid: true` for arbitrarily many devices. Added a new
+  `license_activations` table (migration + `LicenseActivation` model + `License::activations()`
+  HasMany) recording one row per `(license, device_id)` pair actually seen; a device already on
+  file is always allowed (and its `last_seen_at` refreshed), a genuinely new device beyond
+  `license->seats` is rejected with a new `seat_limit_exceeded` reason, and omitting `device_id`
+  (still nullable) skips enforcement entirely since there's no identity to track. Added four new
+  tests to `LicenseVerifyTest.php` covering: repeat calls from a known device, a new device beyond
+  the seat count, multiple devices up to the seat count, and the no-`device_id` bypass.
+- **`computer_use_mcp/policy.py` — `_PLAN_SAFE_TOOLS` still had two side-effecting entries:**
+  `video_analyze` and `video_detail` were left in the Plan-Mode allowlist from round 5's
+  `video_watch` fix, but both call `resolve_source()` (which can download a not-yet-cached YouTube
+  URL), and `video_analyze(transcription=true)` can additionally invoke cloud transcription and
+  write an analysis manifest, while `video_detail` extracts and caches frames to disk. Only
+  `video_info` is genuinely side-effect-free (its own docstring says it probes YouTube URLs WITHOUT
+  downloading). Removed both, leaving only `video_info`. `agent_send` was likewise removed
+  separately — it can direct an EXISTING child agent dispatched before the parent entered Plan Mode
+  (so the child never inherited the restriction) to perform writes the parent itself no longer can;
+  it must now be denied like any other write/execute tool. Updated `test_policy.py` to match both.
+
+**Verification:** ran the full website test suite (62 tests) — 49 passed, 13 failed, all 13 the
+same pre-existing `Vite manifest not found` gap from rounds 3-5 (confirmed none touch any file
+changed this round); the new `LicenseVerifyTest` seat-enforcement tests (8/8 in that file) pass in
+isolation too. `php -l` clean on all 7 touched/new PHP files. `computer-use`'s `policy.py`/
+`test_policy.py` parse clean (`ast.parse`). The C++ changes were reviewed manually line-by-line
+against the existing rebind pattern (compilation isn't available in this environment).
 
 ## Conventions
 
