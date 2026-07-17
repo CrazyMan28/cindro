@@ -288,6 +288,12 @@ private:
     // their work finishes. Also drives the wake_notify phone behavior.
     Response handleSessionWake(const Request &req);
     Response handleSessionCancel(const Request &req);
+    // plan.enter/plan.exit/plan.status — Plan Mode's self-initiated (ephemeral,
+    // per-session) entry path, engine-facing only (see m_selfPlanModeSessions).
+    // Distinct from the global, Settings-driven agent_mode == "plan".
+    Response handlePlanEnter(const Request &req);
+    Response handlePlanExit(const Request &req);
+    Response handlePlanStatus(const Request &req);
     Response handleSessionDelete(const Request &req);
     Response handleSessionList(const Request &req);
     Response handleSessionHistory(const Request &req);
@@ -703,6 +709,9 @@ private:
     // appended to the co-work preamble right after permissionPolicyClause().
     // Empty for the balanced "coworker" default (the guide already covers it).
     QString modePolicyClause() const;
+    // Always-present clause advertising the self-initiated Plan Mode entry path
+    // (enter_plan_mode/exit_plan_mode), independent of the current agent_mode.
+    QString planToolsClause() const;
 
     // Render the base system block (memory) injected into ApiBrain's system
     // prompt at session.create time.
@@ -845,6 +854,9 @@ private:
     // Seed the built-in "phone" skill — the playbook for calling/texting the user
     // and answering when they call/text in. Re-seeds on a version marker bump.
     void seedPhoneSkill();
+    // Seed the built-in "planning" skill — Plan Mode methodology (research-first,
+    // subagent fan-out, present_plan). Re-seeds on a version marker bump.
+    void seedPlanningSkill();
     // Seed the native phone subsystem's MCP endpoint (call_user / notify_user /
     // twilio_* etc.) into the brain's registry from ~/.config/jarvis/phone.env, if
     // present. Idempotent; no-op when the phone isn't set up.
@@ -898,7 +910,10 @@ private:
     // Sessions that have already received the one-time policy preamble
     // (permission_level + agent_mode + trust-policy clauses). Fires on turn 1 of
     // EVERY non-subagent session, independent of whether an agent desktop exists
-    // — the co-work screen-targeting guide (m_coworkGuided) stays gated on one.
+    // — the co-work screen-targeting guide (m_coworkGuided) stays gated on either
+    // a real nested desktop OR the auto-global-engine fallback (m_autoGlobalEngineSessions):
+    // a session with NEITHER has no computer-use tools at all, so there's nothing
+    // to guide.
     QSet<QString> m_policyGuided;
     // Per-session custom-agent system prompt (set when a session runs AS an agent)
     // and the set of sessions that have already had it injected (turn 1 only).
@@ -956,8 +971,18 @@ private:
     // sessionIds marked at createSession() time for the auto-computer-use
     // global-engine fallback (see createSession()'s autoComputer branch) —
     // skipped the isolated nested desktop entirely, so makeBrain() must inject
-    // the global :8794 engine instead of leaving computer-use tools empty.
+    // the global :8794 engine instead of leaving computer-use tools empty. Also
+    // used to gate the no-isolation variant of the co-work guide (m_coworkGuided)
+    // so the model is told its "computer_use" tools are actually the user's REAL
+    // screen here, instead of silently believing (and faking) it has an isolated
+    // agent desktop.
     QSet<QString> m_autoGlobalEngineSessions;
+    // sessionIds the MODEL put into PLAN mode itself via enter_plan_mode (Plan
+    // Mode, ephemeral/self-initiated path) — distinct from the global, persisted
+    // Settings agent_mode. In-memory only; cleared on session cancel/delete and
+    // by exit_plan_mode/present_plan's Approve & Build. See plan.enter/plan.exit/
+    // plan.status and computer_use_mcp/policy.py's _plan_mode_gate.
+    QSet<QString> m_selfPlanModeSessions;
     // sessionId -> last turn time (ms). Drives the idle-teardown sweep below.
     QHash<QString, qint64> m_deskLastActive;
     // Idle-teardown sweep: tears an AUTO desktop down when its session hasn't been

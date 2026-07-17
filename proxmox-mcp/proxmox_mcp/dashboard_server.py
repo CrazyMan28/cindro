@@ -227,8 +227,15 @@ async def _pve_admin(cookie_value: str) -> bool:
                 cookies={PVE_AUTH_COOKIE: cookie_value})
             if role_r.status_code != 200:
                 return False
-            admin_privs = (role_r.json() or {}).get("data") or {}
-            required = [p for p, v in admin_privs.items() if v] if isinstance(admin_privs, dict) else []
+            # Codex review (PR #130): a role object represents its privileges as a
+            # single comma-separated `privs` STRING (e.g. "VM.Allocate,Sys.Modify,...")
+            # not a map of privilege-name -> bool. Treating .items() as that map
+            # produced required == ["privs"], which /access/permissions never has a
+            # key for, so every non-root@pam admin failed this check. Parse + split
+            # the real privs string instead.
+            admin_role = (role_r.json() or {}).get("data") or {}
+            privs_str = admin_role.get("privs", "") if isinstance(admin_role, dict) else ""
+            required = [p for p in privs_str.split(",") if p]
             if not required:
                 return False
             r = await client.get(f"{PVE_HTTP_BASE}/api2/json/access/permissions",
@@ -443,7 +450,18 @@ async def jarvis_ws(ws: WebSocket):
                         if method == "session.create":
                             agent = params.get("agent")
                             target_ref = params.get("target_ref") or params.get("target") or ""
-                            is_operator = agent == "proxmox-operator" or (
+                            brain = params.get("brain")
+                            # Codex review (PR #130): the `or` let a caller satisfy just ONE
+                            # marker (e.g. agent=="proxmox-operator" alone) while choosing an
+                            # arbitrary brain/profile/cwd and a blank/non-operator target_ref.
+                            # ControlServer::makeBrain only routes "proxmox-op-*" through the
+                            # approval-gated operator MCP for the "api" brain — a codex/claude
+                            # session created this way would run OUTSIDE that policy while still
+                            # passing this check and landing in allowed_sessions. Require the
+                            # agent, an operator target_ref, AND brain=="api" together — exactly
+                            # what the legitimate dashboard client sends (chat.tsx).
+                            is_operator = (
+                                agent == "proxmox-operator" and brain == "api" and
                                 isinstance(target_ref, str) and target_ref.startswith("proxmox-op-"))
                             if not is_operator:
                                 await ws.send_text(json.dumps({
@@ -455,9 +473,27 @@ async def jarvis_ws(ws: WebSocket):
                                 continue
                             if frame_id is not None:
                                 pending_operator_creates.add(frame_id)
-                        elif method in ("session.send", "session.subscribe"):
+                        elif method == "session.send":
                             sid = params.get("session_id")
                             if not isinstance(sid, str) or sid not in allowed_sessions:
+                                await ws.send_text(json.dumps({
+                                    "id": frame_id, "ok": False,
+                                    "error": {"code": "method_not_allowed",
+                                              "message": f"{method} is not permitted for this "
+                                                         "session from the dashboard"},
+                                }))
+                                continue
+                        elif method == "session.subscribe":
+                            # Codex review (PR #130): the dashboard client sends this as
+                            # {session_ids: [...]} (plural array, cindro-client.ts), not the
+                            # singular session_id session.send uses — looking for session_id
+                            # here rejected every legitimate subscription, leaving the backend
+                            # connection in legacy unscoped broadcast mode (every daemon
+                            # session's events, not just the operator's). Validate every id in
+                            # the array belongs to this connection's own allowed_sessions.
+                            sids = params.get("session_ids")
+                            if (not isinstance(sids, list) or not sids or
+                                    not all(isinstance(s, str) and s in allowed_sessions for s in sids)):
                                 await ws.send_text(json.dumps({
                                     "id": frame_id, "ok": False,
                                     "error": {"code": "method_not_allowed",

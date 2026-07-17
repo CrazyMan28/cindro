@@ -155,6 +155,35 @@ int main()
               "prompt still absent from argv with image dirs added");
     }
 
+    // Case 5: PLAN MODE — bypassPermissions (so MCP tools, gated separately by
+    // computer_use_mcp/policy.py, still run headless) + --disallowedTools to
+    // remove Claude's NATIVE mutating tools (invisible to that MCP-side gate).
+    // Deliberately NOT --permission-mode plan: live-tested against a real MCP
+    // server and confirmed to blanket-deny EVERY MCP tool call with no allowlist
+    // override, which would also break present_plan/agent_start/todo_write.
+    {
+        ClaudeBrain::Options opts;
+        opts.configDir = tmpCfg;
+        opts.cwd = QStringLiteral("/tmp/plan");
+        opts.permissionMode = QStringLiteral("bypassPermissions");
+        opts.disallowedTools = {QStringLiteral("Write"), QStringLiteral("Edit"),
+                                 QStringLiteral("NotebookEdit"), QStringLiteral("Bash"),
+                                 QStringLiteral("Task")};
+        ClaudeBrain brain(opts);
+        const QStringList args = brain.buildArgs(prompt);
+        check(args.contains(QStringLiteral("--permission-mode")) &&
+                  args.contains(QStringLiteral("bypassPermissions")),
+              "plan mode: --permission-mode bypassPermissions present");
+        check(!args.contains(QStringLiteral("plan")),
+              "plan mode: --permission-mode is NOT the literal CLI 'plan' value");
+        check(args.contains(QStringLiteral("--disallowedTools")),
+              "plan mode: --disallowedTools flag present");
+        const int idx = args.indexOf(QStringLiteral("--disallowedTools"));
+        check(idx >= 0 && idx + 1 < args.size() &&
+                  args[idx + 1] == QStringLiteral("Write,Edit,NotebookEdit,Bash,Task"),
+              "plan mode: --disallowedTools value is the joined native-tool list");
+    }
+
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

@@ -44,6 +44,38 @@ const SECTION_LABEL: Record<Section, string> = {
   SYSTEM: "System",
 }
 
+// Docked chat rail: the operator can drag its left edge to widen/narrow it, and
+// the chosen width sticks across reloads (localStorage). Clamped so it can never
+// swallow the page or shrink the transcript into unreadability.
+const DOCK_WIDTH_KEY = "cindro.pve.dock.width.v1"
+const DOCK_MIN = 300
+const DOCK_MAX = 760
+const DOCK_DEFAULT = 380
+// Space the nav rail (~168px) + a usable minimum for the actual Proxmox page
+// must always keep. The dock's effective max is capped at viewport − this, so a
+// persisted 760px width can never crowd the page down to an unusable strip on a
+// small (but still >900px, i.e. dock-visible) window.
+const DOCK_VIEWPORT_RESERVE = 560
+
+function dockCeiling(viewportW: number): number {
+  return Math.max(DOCK_MIN, Math.min(DOCK_MAX, viewportW - DOCK_VIEWPORT_RESERVE))
+}
+
+function clampDockWidth(w: number, viewportW?: number): number {
+  const ceil = viewportW && Number.isFinite(viewportW) ? dockCeiling(viewportW) : DOCK_MAX
+  return Math.max(DOCK_MIN, Math.min(ceil, Math.round(w)))
+}
+
+function readDockWidth(): number {
+  try {
+    const v = Number(localStorage.getItem(DOCK_WIDTH_KEY))
+    if (Number.isFinite(v) && v > 0) return clampDockWidth(v)
+  } catch {
+    /* storage unavailable */
+  }
+  return DOCK_DEFAULT
+}
+
 // ---------------------------------------------------------------------------
 // Boot splash — shown only for the instant checkAuth() takes to resolve, so
 // a valid session never flashes the login card before the shell.
@@ -235,6 +267,40 @@ export const App: Component = () => {
   const [page, setPage] = createSignal(pageFromHash())
   const [mountedIds, setMountedIds] = createSignal<string[]>([pageFromHash()])
   const [dockCollapsed, setDockCollapsed] = createSignal(false)
+  const [dockWidth, setDockWidth] = createSignal(readDockWidth())
+  const [dockResizing, setDockResizing] = createSignal(false)
+  const [viewportW, setViewportW] = createSignal(typeof window !== "undefined" ? window.innerWidth : 1280)
+  // The width actually applied: the operator's chosen width, capped so it never
+  // eats the page on the current viewport (re-evaluates as the window resizes).
+  const effectiveDockWidth = () => Math.min(dockWidth(), dockCeiling(viewportW()))
+
+  // Drag the dock's left edge: moving left widens it (startW - dx). Pointer
+  // capture keeps the drag alive even if the cursor outruns the 8px handle, and
+  // the final width is persisted on release.
+  const onDockResizeDown = (e: PointerEvent) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const el = e.currentTarget as HTMLElement
+    const startX = e.clientX
+    const startW = effectiveDockWidth()
+    el.setPointerCapture(e.pointerId)
+    setDockResizing(true)
+    const move = (ev: PointerEvent) => setDockWidth(clampDockWidth(startW - (ev.clientX - startX), viewportW()))
+    const up = () => {
+      el.removeEventListener("pointermove", move)
+      el.removeEventListener("pointerup", up)
+      el.removeEventListener("pointercancel", up)
+      setDockResizing(false)
+      try {
+        localStorage.setItem(DOCK_WIDTH_KEY, String(dockWidth()))
+      } catch {
+        /* storage unavailable — width just won't persist */
+      }
+    }
+    el.addEventListener("pointermove", move)
+    el.addEventListener("pointerup", up)
+    el.addEventListener("pointercancel", up)
+  }
 
   const navigate = (id: string) => {
     if (!getPage(id)) return
@@ -251,6 +317,16 @@ export const App: Component = () => {
 
   onMount(async () => {
     window.addEventListener("hashchange", () => navigate(pageFromHash()))
+    const onResize = () => {
+      setViewportW(window.innerWidth)
+      // Shrink a too-wide persisted width to fit the new viewport so the page
+      // keeps usable space (effectiveDockWidth already caps display; this keeps
+      // the stored value sane too).
+      const ceil = dockCeiling(window.innerWidth)
+      if (dockWidth() > ceil) setDockWidth(ceil)
+    }
+    window.addEventListener("resize", onResize)
+    onCleanup(() => window.removeEventListener("resize", onResize))
     const ok = await pve.checkAuth()
     if (ok) {
       setAuthedUser(pve.currentUsername())
@@ -267,6 +343,10 @@ export const App: Component = () => {
   }
 
   const onLogout = async () => {
+    // Purge this operator's persisted transcript BEFORE the cookie is cleared,
+    // so a shared admin browser doesn't hand the next signer-in the previous
+    // operator's messages / tool outputs / approval summaries.
+    controller.forgetHistory()
     client.close()
     await pve.logout()
     location.reload()
@@ -355,7 +435,21 @@ export const App: Component = () => {
             </div>
 
             <Show when={page() !== "chat"}>
-              <aside class="cx-dock" classList={{ collapsed: dockCollapsed() }}>
+              <aside
+                class="cx-dock"
+                classList={{ collapsed: dockCollapsed(), resizing: dockResizing() }}
+                style={
+                  dockCollapsed()
+                    ? undefined
+                    : { "flex-basis": `${effectiveDockWidth()}px`, width: `${effectiveDockWidth()}px` }
+                }
+              >
+                <div
+                  class="cx-dock-resize"
+                  onPointerDown={onDockResizeDown}
+                  title="Drag to resize"
+                  aria-hidden="true"
+                />
                 <div class="cx-dock-head">
                   <button
                     type="button"

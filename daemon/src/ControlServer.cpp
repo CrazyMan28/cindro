@@ -171,6 +171,7 @@ bool ControlServer::start()
     // model loads when asked what it can do). Idempotent — only writes if missing.
     seedInternalDocsSkill();
     seedPhoneSkill();
+    seedPlanningSkill();
     // MIRROR HEAL: skills only mirror into ~/.claude/skills / ~/.codex/skills at
     // creation time, and the mirror silently skips a CLI that isn't installed
     // yet. Re-mirror everything each start so "installed claude/codex AFTER
@@ -506,6 +507,12 @@ void ControlServer::handleRequest(QWebSocket *client, const Request &req)
         resp = handleSessionWake(req);
     else if (m == QStringLiteral("session.cancel"))
         resp = handleSessionCancel(req);
+    else if (m == QStringLiteral("plan.enter"))
+        resp = handlePlanEnter(req);
+    else if (m == QStringLiteral("plan.exit"))
+        resp = handlePlanExit(req);
+    else if (m == QStringLiteral("plan.status"))
+        resp = handlePlanStatus(req);
     else if (m == QStringLiteral("session.delete"))
         resp = handleSessionDelete(req);
     else if (m == QStringLiteral("session.list"))
@@ -2405,12 +2412,39 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
         return false;
     }();
 
+    // Plan Mode — Settings-driven (global) OR self-initiated (per-session, see
+    // m_selfPlanModeSessions/handlePlanEnter): read-only research, hard-enforced
+    // primarily by computer_use_mcp/policy.py's _plan_mode_gate (the one choke
+    // point every brain's MCP tool call passes through, live regardless of
+    // when this Brain was constructed). These Options are defense-in-depth on
+    // top of that, brain-specific and each with real caveats — see the
+    // comments at each use site below. CAVEAT: Options are baked in at Brain
+    // construction time (here) and reused for every subsequent turn's subprocess
+    // respawn — calling enter_plan_mode() mid-conversation restricts tools
+    // immediately via the MCP gate, but this defense-in-depth layer only picks
+    // it up the next time this Brain is (re)constructed (new session, or a
+    // respawn after daemon restart/idle-teardown), same as the pre-existing
+    // Settings-driven path.
+    const bool planMode = m_settings.agentMode() == QStringLiteral("plan") ||
+                           m_selfPlanModeSessions.contains(row.id);
+
     if (row.brain == QStringLiteral("codex")) {
         CodexBrain::Options opts;
         opts.cwd = cwdOverride.isEmpty() ? m_config.effectiveCwd() : cwdOverride;
         opts.model = coerceModelForBrain(row.brain, row.model);
         opts.profile = row.profile;
-        opts.sandboxMode = CodexBrain::sandboxForProfile(row.profile);
+        // NOTE: this is a no-op for the common case. Any session with a
+        // computer-use MCP server injected forces opts.driveMcp = true below,
+        // and CodexBrain's ctor unconditionally overrides sandboxMode back to
+        // danger-full-access whenever driveMcp is set (codex auto-cancels every
+        // MCP tool call under a narrower sandbox headless, with no interactive
+        // approver — seed comment a few lines down). So for Codex sessions that
+        // also need present_plan/agent_start/todo_write, PLAN mode is enforced
+        // for MCP tools only (via policy.py) — Codex's NATIVE shell/apply_patch
+        // tools are invisible to that gate and are NOT hard-blocked. Still
+        // correct to set here for the rare non-driveMcp Codex session.
+        opts.sandboxMode = planMode ? QStringLiteral("read-only")
+                                     : CodexBrain::sandboxForProfile(row.profile);
         // RESUME prior context when re-spawning a brain for an EXISTING session
         // (daemon restart / crash / idle-teardown): seed the codex thread id from
         // the persisted row so the first send() resumes the real conversation
@@ -2498,6 +2532,24 @@ Brain *ControlServer::makeBrain(const SessionRow &row, const QString &cwdOverrid
             // tools must be pre-authorized to be callable at all. Jarvis's own
             // permission policy (ask_user + injection guard) still applies.
             opts.permissionMode = QStringLiteral("bypassPermissions");
+        }
+        // Plan Mode override — wins over whatever the branches above set. NOTE:
+        // deliberately NOT `--permission-mode plan` (Claude Code's own native
+        // plan mode) — live-tested and rejected: it blanket-denies EVERY MCP
+        // tool call with no allowlist override, which would also break
+        // present_plan/agent_start/todo_write (themselves MCP tools). The
+        // verified working mechanism is `bypassPermissions` (so MCP tools —
+        // gated instead by policy.py's _plan_mode_gate — actually run headless)
+        // + `--disallowedTools` to remove Claude's NATIVE mutating tools, which
+        // are invisible to the MCP-side gate. `Task` is included so subagent
+        // dispatch is forced through Cindro's own gated agent_start, not
+        // Claude's native ungated Task tool.
+        if (planMode) {
+            if (!mcpJson.isEmpty())
+                opts.permissionMode = QStringLiteral("bypassPermissions");
+            opts.disallowedTools = {QStringLiteral("Write"), QStringLiteral("Edit"),
+                                     QStringLiteral("NotebookEdit"), QStringLiteral("Bash"),
+                                     QStringLiteral("Task")};
         }
         opts.mcpConfigJson = mcpJson;
         auto *brain = new ClaudeBrain(opts, this);
@@ -2888,11 +2940,16 @@ QString ControlServer::modePolicyClause() const
     if (mode == QStringLiteral("plan")) {
         return QStringLiteral(
             "\n[MODE: PLAN] You are in PLAN mode. RESEARCH the task and produce a "
-            "clear, step-by-step PLAN using todo_write (one item per step). Do NOT "
-            "make changes yet — no file edits, no installs, nothing destructive or "
-            "outward-facing; read-only investigation only. When the plan is ready, "
-            "present it and ask the user to approve (and switch to BUILD mode) "
-            "before you execute. The user picks the mode in Settings.");
+            "clear, step-by-step PLAN using todo_write (one item per step). "
+            "Write/execute tools are HARD-BLOCKED at the tool layer while planning "
+            "— not just discouraged, calling one will fail with an error. Subagent "
+            "research tools (agent_create/agent_list/agent_get/agent_start/"
+            "agent_wait/agent_status/agent_result/agent_stop/agent_send) remain "
+            "available — fan out research freely. When the plan is ready, call "
+            "present_plan(title, markdown, todos) and wait for the user's decision "
+            "(approve switches you to BUILD mode automatically; request-changes "
+            "gives you feedback to incorporate). The user can also change modes "
+            "directly in Settings.");
     }
     if (mode == QStringLiteral("build")) {
         return QStringLiteral(
@@ -2905,6 +2962,21 @@ QString ControlServer::modePolicyClause() const
     // "coworker" (default): no extra clause — the balanced behavior already lives
     // in the co-work guide + the permission policy.
     return QString();
+}
+
+QString ControlServer::planToolsClause() const
+{
+    // Always present, regardless of current agent_mode (this is the SELF-
+    // initiated entry path — see tools_plan.py's enter_plan_mode/exit_plan_mode
+    // and ControlServer::handlePlanEnter/handlePlanExit/handlePlanStatus) —
+    // mirroring how Claude Code's own system prompt always mentions plan mode
+    // is available, not only when the user has pre-selected it.
+    return QStringLiteral(
+        "\nYou can go read-only to investigate at ANY TIME, in any mode, by "
+        "calling enter_plan_mode(reason) — write/execute tools are blocked "
+        "until you call exit_plan_mode (your own call, no approval needed) or "
+        "present_plan (shows the user a written plan and blocks for their "
+        "decision). Use this when a task feels risky or under-specified.");
 }
 
 QString ControlServer::memorySystemBlock()
@@ -3164,15 +3236,61 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
         }
     } else if (autoComputer) {
         // Auto-spawned chat ("let Cindro use a computer" on, no explicit
-        // co-work request): never pay AgentDesktop::ensure()'s up-to-45s
-        // synchronous provisioning cost just to answer a chat message — that
-        // used to block the daemon's single Qt main thread for every plain
-        // chat's first turn, and hangs even longer when the isolated desktop
-        // (Windows Sandbox) fails to boot at all. Skip the isolated nested
-        // desktop entirely for this path; makeBrain() falls back to the
-        // always-on global :8794 engine for any session id in
-        // m_autoGlobalEngineSessions, with zero added latency.
-        m_autoGlobalEngineSessions.insert(row.id);
+        // co-work request): provision a REAL isolated nested desktop, exactly
+        // like an explicit coworker+agent session — this used to be skipped
+        // (falling back straight to the GLOBAL :8794 engine, mislabeled under
+        // the same "computer_use" tool name an isolated desktop uses) to avoid
+        // AgentDesktop::ensure()'s up-to-45s synchronous provisioning cost on
+        // every plain chat's first turn. That shortcut broke isolation: the
+        // model believed "computer_use" was its own private desktop and, when
+        // asked for "an agent desktop", drove the user's REAL screen instead
+        // (jarvis: "asks for an agent desktop, it just moves my KDE screen to
+        // a new virtual desktop"). Correctness over latency — the cost is the
+        // SAME one an explicit co-work session already pays and accepts, and
+        // is a one-time hit per session (the nested compositor + engine then
+        // idle-teardown/re-provision on the SAME reserved port+bearer via
+        // m_autoComputerSessions — see sweepIdleDesktops() + the BATTERY
+        // re-provision check in sendToSession()).
+        QString deskErr;
+        const AgentDesktopInfo desk = m_agentDesktops.ensure(row.id, &deskErr);
+        // "sandbox_busy:" (windows/shell/AgentDesktop.cpp) is TRANSIENT contention
+        // — another sandbox still up/releasing — not a real provisioning failure;
+        // see the identical check in the explicitAgent branch above.
+        const bool transientBusy = deskErr.startsWith(QStringLiteral("sandbox_busy:"));
+        if (desk.up) {
+            agentOverrides = agentMcpOverridesFor(desk);
+            m_autoComputerSessions.insert(row.id);
+        } else if (!AgentDesktop::nestedDesktopSupported()) {
+            // Stock Windows without the v2 sandbox opt-in: isolation was never
+            // available on this platform at all — this is the documented v1
+            // take-over default (see makeBrain()'s v1TakeoverFallback), not a
+            // failure. Fall back to the global engine; the no-isolation branch
+            // of the co-work guide (sendToSession) tells the model this
+            // session's "computer_use" tools are actually the real screen, so
+            // it asks before acting instead of assuming isolation.
+            m_autoGlobalEngineSessions.insert(row.id);
+        } else if (transientBusy) {
+            // Codex review (PR #130): treating transient sandbox contention as a
+            // permanent failure stranded the session in NEITHER set, so the
+            // BATTERY re-provision check in sendToSession() (which only looks at
+            // m_autoComputerSessions) never retried it — every such session
+            // permanently lacked computer-use even once the sandbox freed up.
+            // Track it here instead so the next turn's ensure() retries
+            // automatically (a no-op once up); do NOT fall back to the global
+            // real-screen engine for what is just contention, not unavailability.
+            qWarning("jarvisd: auto agent desktop transiently busy for %s (%s); "
+                     "will retry on next turn", qPrintable(row.id), qPrintable(deskErr));
+            m_autoComputerSessions.insert(row.id);
+        } else {
+            // A REAL provisioning failure on a platform that CAN isolate
+            // (crashed process, port conflict, ...): the chat still works, it
+            // just can't use the computer this turn. Do NOT silently fall back
+            // to the global real-screen engine under the "computer_use" name —
+            // that reintroduces the exact isolation-mislabeling bug above.
+            qWarning("jarvisd: auto agent desktop failed for %s (%s); session "
+                     "continues without computer-use",
+                     qPrintable(row.id), qPrintable(deskErr));
+        }
     }
 
     // Remember the RESOLVED workdir for this session (diff.* runs git here).
@@ -3678,7 +3796,7 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         // from Settings on any surface.
         m_trustPolicies.load();
         policyPreamble = permissionPolicyClause() + modePolicyClause() +
-                         m_trustPolicies.preambleClause();
+                         planToolsClause() + m_trustPolicies.preambleClause();
     }
 
     // ONE-TIME co-work guidance: the first turn a session has computer-use, teach
@@ -3687,8 +3805,22 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
     // model's own private nested desktop (default, watched on the Computer page);
     // "real" = the user's REAL screen (glowing banner shows). If the user doesn't
     // say whose screen, the model MUST ask_user first.
+    //
+    // ALSO fires for the auto-spawned-chat fallback (m_autoGlobalEngineSessions):
+    // that path skips AgentDesktop::ensure() for latency (see createSession()) and
+    // binds the SAME "computer_use" tool name straight to the GLOBAL engine — i.e.
+    // the user's REAL screen, with no isolated desktop at all. Without this guide
+    // the model never learns that, and when asked for "your own" / "an agent"
+    // desktop it had nothing isolated to offer — it improvised by calling
+    // workspace_create/switch_workspace against the real KDE session, which visibly
+    // yanks the user's screen to a fresh empty virtual desktop (reported bug: "ask
+    // for an agent desktop, it just moves my KDE screen to a new virtual desktop
+    // instead of spinning up its own invisible sway thing"). The no-isolation
+    // branch below tells the model the truth so it asks instead of faking it.
     QString guide;
-    if (!isSubagent && m_agentDesktops.has(sessionId) && !m_coworkGuided.contains(sessionId)) {
+    const bool autoGlobalEngine = m_autoGlobalEngineSessions.contains(sessionId);
+    if (!isSubagent && (m_agentDesktops.has(sessionId) || autoGlobalEngine) &&
+        !m_coworkGuided.contains(sessionId)) {
         m_coworkGuided.insert(sessionId);
         // MSVC's classic preprocessor chokes on a bare #ifdef mid-argument-list
         // inside a macro call ("C2121: '#': invalid character") — hoist the
@@ -3702,29 +3834,69 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
 #define JARVIS_LIVE_CPU_CMD_EXAMPLE \
     "\"top -bn1 | awk '/Cpu/{print 100-$8}'\", "
 #endif
-        guide = QStringLiteral(
-            "[Cindro co-work — READ FIRST] You have TWO separate computer-use tool "
-            "sets, plus ask_user, schedule_task, remember/recall/forget, create_skill.\n"
-            "  * The \"real_screen\" tools operate the USER'S REAL screen + windows "
-            "(what they physically see). A glowing \"Cindro is using this computer\" "
-            "banner appears while you act there.\n"
-            "  * The \"computer_use\" tools operate YOUR OWN private agent desktop (a "
-            "separate screen the user watches on the Computer page). This is the DEFAULT.\n"
-            "Pick the tool set by which SCREEN to use — do NOT pass a `which` "
-            "argument (each set already targets the right screen; valid `which` "
-            "values are only active/kde/agent, never \"real\").\n"
-            "RULES:\n"
-            "1) User explicitly says THEIR screen/computer/monitor -> use the "
-            "real_screen tools.\n"
-            "2) User says YOUR OWN / a new / the agent desktop -> use the "
-            "computer_use tools.\n"
-            "RESET: if your own agent desktop gets cluttered or an app is stuck, call "
-            "desktop_reset to close every window on it and start fresh (it never touches "
-            "the user's real screen).\n"
-            "3) If they ask you to operate a computer or app but do NOT say whose "
-            "screen (e.g. just \"open spotify\"), you MUST call ask_user(\"Use your "
-            "real screen, or my own agent desktop?\", [\"My real screen\", \"Your own "
-            "agent desktop\"]) FIRST, then use the matching tool set. Never guess.\n"
+        const QString coworkClause = m_agentDesktops.has(sessionId)
+            ? QStringLiteral(
+                "[Cindro co-work — READ FIRST] You have TWO separate computer-use tool "
+                "sets, plus ask_user, schedule_task, remember/recall/forget, create_skill.\n"
+                "  * The \"real_screen\" tools operate the USER'S REAL screen + windows "
+                "(what they physically see). A glowing \"Cindro is using this computer\" "
+                "banner appears while you act there.\n"
+                "  * The \"computer_use\" tools operate YOUR OWN private agent desktop (a "
+                "separate screen the user watches on the Computer page). This is the DEFAULT.\n"
+                "Pick the tool set by which SCREEN to use — do NOT pass a `which` "
+                "argument (each set already targets the right screen; valid `which` "
+                "values are only active/kde/agent, never \"real\").\n"
+                "RULES:\n"
+                "1) User explicitly says THEIR screen/computer/monitor -> use the "
+                "real_screen tools.\n"
+                "2) User says YOUR OWN / a new / the agent desktop -> use the "
+                "computer_use tools.\n"
+                "RESET: if your own agent desktop gets cluttered or an app is stuck, call "
+                "desktop_reset to close every window on it and start fresh (it never touches "
+                "the user's real screen).\n"
+                "3) If they ask you to operate a computer or app but do NOT say whose "
+                "screen (e.g. just \"open spotify\"), you MUST call ask_user(\"Use your "
+                "real screen, or my own agent desktop?\", [\"My real screen\", \"Your own "
+                "agent desktop\"]) FIRST, then use the matching tool set. Never guess.\n")
+            : QStringLiteral(
+                "[Cindro computer-use — READ FIRST] This session has ONLY ONE computer-use "
+                "tool set (\"computer_use\"), and — unlike a co-work session — it is bound "
+                "DIRECTLY to the USER'S REAL screen (what they physically see); there is NO "
+                "isolated/private agent desktop provisioned here. A glowing \"Cindro is "
+                "using this computer\" banner appears while you act.\n"
+                "NEVER fake isolation: do NOT call workspace_create / switch_workspace (or "
+                "any virtual-desktop trick) to try to give yourself \"your own\" desktop — "
+                "on this session that only exists on the KDE/Sway HOST, so doing that yanks "
+                "the user's REAL screen over to a fresh empty virtual desktop, which is "
+                "confusing and destructive, not isolation.\n"
+                "If the user asks for \"your own\" / \"an agent\" / \"a private\" desktop, "
+                "you do not have one in this session — call ask_user to tell them plainly "
+                "and offer to proceed on their real screen instead (a true isolated desktop "
+                "needs a co-work session).\n"
+                "Before ANY real-screen action the user did not explicitly ask for here, "
+                "call ask_user first. Never guess.\n");
+        // Codex review (PR #130): the SHOWING YOUR WORK clause below unconditionally told
+        // the model desktop_screenshot captures "your agent screen" and the peek panel
+        // "mirrors your desktop" — true for an isolated m_agentDesktops session, but for
+        // the no-isolation autoGlobalEngine fallback that tool actually captures the
+        // user's REAL screen, contradicting the coworkClause warning above and risking a
+        // real-screen capture sent as if it were the agent's own. Branch this clause too.
+        const QString showingWorkClause = m_agentDesktops.has(sessionId)
+            ? QStringLiteral(
+                "SHOWING YOUR WORK (agent desktop): when the user asks to SEE / SHOW / "
+                "\"send me a screenshot of\" / \"what does it look like\" what you're doing on "
+                "your own agent desktop, CALL desktop_screenshot to capture your agent screen, "
+                "then send_file with that screenshot path so it lands in their chat (visible on "
+                "BOTH desktop and phone). They can also watch you LIVE — the in-chat agent peek "
+                "panel and the Computer page mirror your desktop in real time — so feel free to "
+                "say \"watch live on the right\" too. Take + send a fresh screenshot whenever it "
+                "helps them follow along.\n")
+            : QStringLiteral(
+                "SHOWING YOUR WORK: this session has NO isolated agent desktop (see above) — "
+                "desktop_screenshot here captures the user's REAL screen, not a private one. If "
+                "asked to show/screenshot \"your desktop\", call ask_user first (per the rule "
+                "above) rather than silently sending a capture of their real screen.\n");
+        guide = coworkClause + showingWorkClause + QStringLiteral(
             "VISUALS: whenever the user asks you to SHOW / DRAW / DISPLAY / VISUALIZE "
             "something (a chart, a list, a diagram, a card, \"show me a duck\"), you "
             "MUST CALL the render_widget tool with a JSON spec — it pops the widget on "
@@ -3737,14 +3909,6 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "Download button. NEVER upload to Google Drive, never paste a local file path, "
             "and never return a markdown image link like ![x](/home/...): none of those "
             "work on their phone. Always use send_file.\n"
-            "SHOWING YOUR WORK (agent desktop): when the user asks to SEE / SHOW / "
-            "\"send me a screenshot of\" / \"what does it look like\" what you're doing on "
-            "your own agent desktop, CALL desktop_screenshot to capture your agent screen, "
-            "then send_file with that screenshot path so it lands in their chat (visible on "
-            "BOTH desktop and phone). They can also watch you LIVE — the in-chat agent peek "
-            "panel and the Computer page mirror your desktop in real time — so feel free to "
-            "say \"watch live on the right\" too. Take + send a fresh screenshot whenever it "
-            "helps them follow along.\n"
             "MEMORY: when the user states a durable fact or preference (their name, how "
             "they like things done, project details, decisions), CALL remember to save "
             "it — and edit_memory / forget to keep it current. Use recall / list_memories "
@@ -3921,6 +4085,7 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     m_agentDesktops.releaseSession(sessionId);   // drop the desktop + its reservation
     m_autoComputerSessions.remove(sessionId);
     m_autoGlobalEngineSessions.remove(sessionId);
+    m_selfPlanModeSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
@@ -3962,6 +4127,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_agentDesktops.releaseSession(sessionId);
     m_autoComputerSessions.remove(sessionId);
     m_autoGlobalEngineSessions.remove(sessionId);
+    m_selfPlanModeSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_coworkGuided.remove(sessionId);
     m_policyGuided.remove(sessionId);
@@ -4270,6 +4436,40 @@ Response ControlServer::handleSessionCancel(const Request &req)
     if (!cancelSession(sessionId, &err))
         return Response::failure(req.id, QStringLiteral("no_session"), err);
     return Response::success(req.id);
+}
+
+Response ControlServer::handlePlanEnter(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    if (sessionId.isEmpty())
+        return Response::failure(req.id, QStringLiteral("bad_request"),
+                                 QStringLiteral("session_id required"));
+    m_selfPlanModeSessions.insert(sessionId);
+    return Response::success(req.id);
+}
+
+Response ControlServer::handlePlanExit(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    m_selfPlanModeSessions.remove(sessionId); // no-op if never set (e.g. global-mode session)
+    return Response::success(req.id);
+}
+
+Response ControlServer::handlePlanStatus(const Request &req)
+{
+    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
+    QJsonObject r;
+    if (m_settings.agentMode() == QStringLiteral("plan")) {
+        r.insert(QStringLiteral("restricted"), true);
+        r.insert(QStringLiteral("source"), QStringLiteral("settings"));
+    } else if (!sessionId.isEmpty() && m_selfPlanModeSessions.contains(sessionId)) {
+        r.insert(QStringLiteral("restricted"), true);
+        r.insert(QStringLiteral("source"), QStringLiteral("self"));
+    } else {
+        r.insert(QStringLiteral("restricted"), false);
+        r.insert(QStringLiteral("source"), QString());
+    }
+    return Response::success(req.id, r);
 }
 
 Response ControlServer::handleSessionDelete(const Request &req)
@@ -6322,6 +6522,68 @@ void ControlServer::seedPhoneSkill()
                     body, QStringLiteral("builtin"));
 }
 
+void ControlServer::seedPlanningSkill()
+{
+    // Builtin "planning" methodology. Versioned like internal_docs/phone so an
+    // install picks up updates, but never clobbers a user's own edits to a
+    // same-named skill.
+    const QString kMarker = QStringLiteral("[planning skill v1]");
+    if (auto existing = m_skills.get(QStringLiteral("planning"))) {
+        QFile f(existing->path);
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            const QString cur = QString::fromUtf8(f.readAll());
+            f.close();
+            if (cur.contains(kMarker))
+                return; // already current
+            if (existing->fm.group != QStringLiteral("builtin"))
+                return; // user-owned skill named "planning" — leave it alone
+        }
+        m_skills.remove(QStringLiteral("planning")); // stale builtin -> refresh
+    }
+    const QString body = QStringLiteral(
+        "[planning skill v1] Use this whenever you're in PLAN mode (Settings-driven "
+        "or self-initiated via enter_plan_mode) or otherwise asked to plan before "
+        "acting.\n\n"
+        "# Planning — research first, present a real plan, wait for the decision\n\n"
+        "## Research before you write anything\n"
+        "Read before you propose. Use your read-only tools to actually understand "
+        "the task — the code, the docs, prior art in this codebase — before "
+        "drafting a plan. A plan built on assumptions gets rejected; one built on "
+        "what you actually found gets approved.\n\n"
+        "## Fan out with subagents for genuinely separable work\n"
+        "Use agent_start to dispatch independent research threads in parallel "
+        "(e.g. \"how does X work\" and \"what does Y depend on\" at the same time) "
+        "instead of doing everything serially. agent_wait / agent_result collect "
+        "what they found; agent_send can steer an already-dispatched subagent with "
+        "a follow-up once its current turn finishes. Don't dispatch a subagent for "
+        "something you could answer yourself in one or two tool calls — that only "
+        "adds latency.\n\n"
+        "## What a good plan contains\n"
+        "- **Goal** — what problem this solves and why.\n"
+        "- **Approach** — the path you chose and, briefly, what you ruled out.\n"
+        "- **Steps** — concrete, file-by-file where it matters. Vague steps produce "
+        "vague execution.\n"
+        "- **Risks / open questions** — anything uncertain, unverified, or that "
+        "could go wrong.\n"
+        "- **A todo list** — call todo_write with the steps so the checklist card "
+        "matches the plan doc.\n\n"
+        "## Always finish with present_plan — never just narrate a plan in chat\n"
+        "Call present_plan(title, markdown, todos) to submit the finished plan. It "
+        "blocks for the user's decision:\n"
+        "- **Approve & Build** — you're switched to BUILD mode (or your "
+        "self-initiated restriction is lifted) automatically. Execute immediately, "
+        "don't ask again.\n"
+        "- **Request Changes** — their feedback comes back as `note`. Incorporate "
+        "it and call present_plan again. Do NOT start executing on a rejected "
+        "plan.\n\n"
+        "Write/execute tools are hard-blocked while planning — you cannot skip this "
+        "and start editing files or running commands before the plan is approved.\n");
+    m_skills.create(QStringLiteral("planning"),
+                    QStringLiteral("Plan Mode methodology — research first, fan out via "
+                                   "subagents, present a real plan with present_plan."),
+                    body, QStringLiteral("builtin"));
+}
+
 Response ControlServer::handleSkillsList(const Request &req)
 {
     QJsonArray arr;
@@ -6572,6 +6834,13 @@ Response ControlServer::handleAgentsDispatch(const Request &req, bool remote)
         /*agentPromptOverride=*/sysPrompt);
     if (sid.isEmpty())
         return Response::failure(req.id, QStringLiteral("dispatch_failed"), err);
+    // A self-initiated PLAN restriction (enter_plan_mode) must propagate to a
+    // dispatched subagent — otherwise a plan-restricted session could delegate
+    // the actual writing to an unrestricted child, defeating the read-only
+    // guarantee. The GLOBAL Settings-driven restriction needs no such
+    // propagation: agent_mode is global, so the child is already covered.
+    if (!parent.isEmpty() && m_selfPlanModeSessions.contains(parent))
+        m_selfPlanModeSessions.insert(sid);
     // Every subagent MUST end with a summary so the parent can act on its result.
     const QString taskWithSummary = task +
         QStringLiteral("\n\n[IMPORTANT] When you finish, end your final reply with a "
@@ -8909,38 +9178,64 @@ QString ControlServer::operatorResolveEffect(const QString &tool, const QJsonObj
     }
 
     const QJsonArray rules = policy.value(QStringLiteral("rules")).toArray();
-    for (const QJsonValue &rv : rules) {
-        const QJsonObject rule = rv.toObject();
-        const QString effect = rule.value(QStringLiteral("effect")).toString();
-        if (effect != QStringLiteral("allow") && effect != QStringLiteral("ask") &&
-            effect != QStringLiteral("deny"))
-            continue;
-        const QJsonObject match = rule.value(QStringLiteral("match")).toObject();
-        bool ok = true;
-        for (auto k = match.begin(); k != match.end(); ++k) {
-            const QString key = k.key();
-            if (key == QStringLiteral("tool")) {
-                if (k.value().toString() != tool) { ok = false; break; }
-            } else if (key == QStringLiteral("verb")) {
-                if (k.value().toString() != verb) { ok = false; break; }
-            } else if (key == QStringLiteral("method")) {
-                if (k.value().toString().toUpper() != method) { ok = false; break; }
-            } else if (key == QStringLiteral("path")) {
-                if (k.value().toString() != path) { ok = false; break; }
-            } else if (key == QStringLiteral("vmid")) {
-                if (!vmidCandidates.contains(k.value().toInt())) { ok = false; break; }
-            } else {
-                ok = false; break; // unknown match key never matches
+    const QString rawDef = policy.value(QStringLiteral("default_risky")).toString();
+    const QString safeDef = (rawDef == QStringLiteral("allow") || rawDef == QStringLiteral("ask") ||
+                             rawDef == QStringLiteral("deny"))
+                                ? rawDef : QStringLiteral("ask"); // safe default (missing/blank policy)
+
+    // Resolve the effect for a SINGLE candidate vmid (or none). Pulled out of the
+    // old single-pass loop so each touched vmid can be evaluated independently —
+    // see the Codex review note below.
+    auto resolveForVmid = [&](bool has, int v) -> QString {
+        for (const QJsonValue &rv : rules) {
+            const QJsonObject rule = rv.toObject();
+            const QString effect = rule.value(QStringLiteral("effect")).toString();
+            if (effect != QStringLiteral("allow") && effect != QStringLiteral("ask") &&
+                effect != QStringLiteral("deny"))
+                continue;
+            const QJsonObject match = rule.value(QStringLiteral("match")).toObject();
+            bool ok = true;
+            for (auto k = match.begin(); k != match.end(); ++k) {
+                const QString key = k.key();
+                if (key == QStringLiteral("tool")) {
+                    if (k.value().toString() != tool) { ok = false; break; }
+                } else if (key == QStringLiteral("verb")) {
+                    if (k.value().toString() != verb) { ok = false; break; }
+                } else if (key == QStringLiteral("method")) {
+                    if (k.value().toString().toUpper() != method) { ok = false; break; }
+                } else if (key == QStringLiteral("path")) {
+                    if (k.value().toString() != path) { ok = false; break; }
+                } else if (key == QStringLiteral("vmid")) {
+                    if (!has || k.value().toInt() != v) { ok = false; break; }
+                } else {
+                    ok = false; break; // unknown match key never matches
+                }
             }
+            if (ok)
+                return effect;
         }
-        if (ok)
-            return effect;
+        return safeDef;
+    };
+
+    if (vmidCandidates.isEmpty())
+        return resolveForVmid(false, 0);
+
+    // Codex review (PR #130): the old single pass matched a vmid-scoped rule if
+    // the vmid appeared ANYWHERE in the combined candidate set, so an allow rule
+    // for VM 106 authorized the WHOLE call for e.g. clone {source:100, newid:106}
+    // even though source VM 100 had no rule of its own and should have fallen
+    // through to "ask". Resolve each touched vmid independently and combine
+    // conservatively: deny beats ask beats allow, so an unauthorized VM anywhere
+    // in the call can never be waved through by another VM's rule.
+    bool anyAsk = false;
+    for (int cand : vmidCandidates) {
+        const QString eff = resolveForVmid(true, cand);
+        if (eff == QStringLiteral("deny"))
+            return QStringLiteral("deny");
+        if (eff == QStringLiteral("ask"))
+            anyAsk = true;
     }
-    const QString def = policy.value(QStringLiteral("default_risky")).toString();
-    if (def == QStringLiteral("allow") || def == QStringLiteral("ask") ||
-        def == QStringLiteral("deny"))
-        return def;
-    return QStringLiteral("ask"); // safe default (missing/blank policy)
+    return anyAsk ? QStringLiteral("ask") : QStringLiteral("allow");
 }
 
 void ControlServer::operatorAppendAllowRule(const QJsonObject &match)

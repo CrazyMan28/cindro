@@ -299,8 +299,33 @@ def register(mcp: FastMCP) -> list[str]:
     @mcp.tool()
     async def proxmox_dashboard_layout_set(tiles: list) -> dict[str, Any]:
         """Replace the Home widget grid (the SAME grid the user drags/resizes) —
-        add/move/remove tiles. `tiles` is the full tile list. Local only, not a
-        Proxmox change, so it runs free."""
+        add/move/remove tiles. `tiles` is the FULL tile list. Local only, not a
+        Proxmox change, so it runs free.
+
+        Each tile is an object:
+            {"id": "cpu1", "type": <type>, "title": "CPU",
+             "grid": {"x": 0, "y": 0, "w": 3, "h": 3},
+             "node": "pve",        # optional — scopes node/storage tiles
+             "content": {...}}      # optional — only note/gauge use it
+
+        The board is 12 columns wide; grid.x/y are the top-left cell (0-based),
+        grid.w/h the span in cells. Use the `grid` object — NOT flat
+        col/row/width/height.
+
+        `type` MUST be one of these renderers (anything else shows a placeholder):
+            cpu_usage       — live CPU ring gauge for a node
+            vm_status       — running/stopped VMs + containers
+            node_stats      — a node's cpu/mem/load/uptime
+            storage         — per-storage usage bars
+            cluster_status  — nodes online, guests running, health
+            recent_backups  — latest backup archives
+            tasks_board     — the Tasks Kanban counts + open items
+            note            — freeform text (content: "" or {"text": "..."})
+            gauge           — a custom ring (content: {value, max, label})
+
+        A good starter board: cluster_status (4x3), vm_status (5x4),
+        storage (4x3), node_stats (4x3), recent_backups (4x4), tasks_board (4x4).
+        """
         return operator_store.save_layout({"tiles": tiles})
 
     @mcp.tool()
