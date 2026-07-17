@@ -3164,15 +3164,45 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
         }
     } else if (autoComputer) {
         // Auto-spawned chat ("let Cindro use a computer" on, no explicit
-        // co-work request): never pay AgentDesktop::ensure()'s up-to-45s
-        // synchronous provisioning cost just to answer a chat message — that
-        // used to block the daemon's single Qt main thread for every plain
-        // chat's first turn, and hangs even longer when the isolated desktop
-        // (Windows Sandbox) fails to boot at all. Skip the isolated nested
-        // desktop entirely for this path; makeBrain() falls back to the
-        // always-on global :8794 engine for any session id in
-        // m_autoGlobalEngineSessions, with zero added latency.
-        m_autoGlobalEngineSessions.insert(row.id);
+        // co-work request): provision a REAL isolated nested desktop, exactly
+        // like an explicit coworker+agent session — this used to be skipped
+        // (falling back straight to the GLOBAL :8794 engine, mislabeled under
+        // the same "computer_use" tool name an isolated desktop uses) to avoid
+        // AgentDesktop::ensure()'s up-to-45s synchronous provisioning cost on
+        // every plain chat's first turn. That shortcut broke isolation: the
+        // model believed "computer_use" was its own private desktop and, when
+        // asked for "an agent desktop", drove the user's REAL screen instead
+        // (jarvis: "asks for an agent desktop, it just moves my KDE screen to
+        // a new virtual desktop"). Correctness over latency — the cost is the
+        // SAME one an explicit co-work session already pays and accepts, and
+        // is a one-time hit per session (the nested compositor + engine then
+        // idle-teardown/re-provision on the SAME reserved port+bearer via
+        // m_autoComputerSessions — see sweepIdleDesktops() + the BATTERY
+        // re-provision check in sendToSession()).
+        QString deskErr;
+        const AgentDesktopInfo desk = m_agentDesktops.ensure(row.id, &deskErr);
+        if (desk.up) {
+            agentOverrides = agentMcpOverridesFor(desk);
+            m_autoComputerSessions.insert(row.id);
+        } else if (!AgentDesktop::nestedDesktopSupported()) {
+            // Stock Windows without the v2 sandbox opt-in: isolation was never
+            // available on this platform at all — this is the documented v1
+            // take-over default (see makeBrain()'s v1TakeoverFallback), not a
+            // failure. Fall back to the global engine; the no-isolation branch
+            // of the co-work guide (sendToSession) tells the model this
+            // session's "computer_use" tools are actually the real screen, so
+            // it asks before acting instead of assuming isolation.
+            m_autoGlobalEngineSessions.insert(row.id);
+        } else {
+            // A REAL provisioning failure on a platform that CAN isolate
+            // (crashed process, port conflict, ...): the chat still works, it
+            // just can't use the computer this turn. Do NOT silently fall back
+            // to the global real-screen engine under the "computer_use" name —
+            // that reintroduces the exact isolation-mislabeling bug above.
+            qWarning("jarvisd: auto agent desktop failed for %s (%s); session "
+                     "continues without computer-use",
+                     qPrintable(row.id), qPrintable(deskErr));
+        }
     }
 
     // Remember the RESOLVED workdir for this session (diff.* runs git here).
