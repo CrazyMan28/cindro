@@ -970,7 +970,13 @@ Item {
                     font.pixelSize: 13
                     font.family: Theme.fontSans
                     lineHeight: 1.4
-                    textFormat: Text.PlainText
+                    // A plan's `q` is present_plan's own "# {title}\n\n{markdown}" --
+                    // render it as real Markdown (headers/bold/lists) rather than
+                    // literal '#'/'**' characters. A generic ask_user question is
+                    // free-form model text that was never meant as Markdown source
+                    // (e.g. a literal '*' in it isn't an emphasis marker), so it
+                    // stays plain to avoid misrendering.
+                    textFormat: qRoot.isPlanDecision ? Text.MarkdownText : Text.PlainText
                 }
                 // Entered once "Request Changes" is tapped on a plan card: replaces
                 // the plan text with a focused prompt for what to change, instead of
