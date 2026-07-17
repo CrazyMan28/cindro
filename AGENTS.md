@@ -1301,6 +1301,21 @@ the daemon's event loop, so other sessions/clients are not frozen — only this 
 is delayed. Chosen over the previous shortcut because the shortcut silently broke isolation; the cost
 is a one-time hit per session, not per turn (idle-teardown reuses the same reserved port+bearer).
 
+**Codex review follow-ups on PR #130 (same day):**
+- The co-work guide's "SHOWING YOUR WORK" clause was still unconditional — it told the model
+  `desktop_screenshot` captures "your agent screen" and the peek panel "mirrors your desktop" even
+  on the no-isolation `autoGlobalEngine` fallback, where that tool actually captures the user's REAL
+  screen. Contradicted the `coworkClause` warning right above it. Split into a
+  `showingWorkClause`, branched the same way as `coworkClause`.
+- `sandbox_busy:` (Windows Sandbox single-instance guard reporting transient contention, not a real
+  failure) was falling into the generic "real provisioning failure" `else` branch in the new
+  `autoComputer` path, landing the session in NEITHER `m_autoComputerSessions` nor
+  `m_autoGlobalEngineSessions` — so the BATTERY re-provision check in `sendToSession()` (which only
+  looks at `m_autoComputerSessions`) never retried it, permanently starving that session of
+  computer-use even after the sandbox freed up. Added a `transientBusy` branch (mirroring the
+  existing check in `explicitAgent`) that tracks it in `m_autoComputerSessions` instead, so the next
+  turn's `ensure()` retries automatically.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

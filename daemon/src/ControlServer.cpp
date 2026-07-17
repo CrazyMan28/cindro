@@ -3181,6 +3181,10 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
         // re-provision check in sendToSession()).
         QString deskErr;
         const AgentDesktopInfo desk = m_agentDesktops.ensure(row.id, &deskErr);
+        // "sandbox_busy:" (windows/shell/AgentDesktop.cpp) is TRANSIENT contention
+        // — another sandbox still up/releasing — not a real provisioning failure;
+        // see the identical check in the explicitAgent branch above.
+        const bool transientBusy = deskErr.startsWith(QStringLiteral("sandbox_busy:"));
         if (desk.up) {
             agentOverrides = agentMcpOverridesFor(desk);
             m_autoComputerSessions.insert(row.id);
@@ -3193,6 +3197,18 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
             // session's "computer_use" tools are actually the real screen, so
             // it asks before acting instead of assuming isolation.
             m_autoGlobalEngineSessions.insert(row.id);
+        } else if (transientBusy) {
+            // Codex review (PR #130): treating transient sandbox contention as a
+            // permanent failure stranded the session in NEITHER set, so the
+            // BATTERY re-provision check in sendToSession() (which only looks at
+            // m_autoComputerSessions) never retried it — every such session
+            // permanently lacked computer-use even once the sandbox freed up.
+            // Track it here instead so the next turn's ensure() retries
+            // automatically (a no-op once up); do NOT fall back to the global
+            // real-screen engine for what is just contention, not unavailability.
+            qWarning("jarvisd: auto agent desktop transiently busy for %s (%s); "
+                     "will retry on next turn", qPrintable(row.id), qPrintable(deskErr));
+            m_autoComputerSessions.insert(row.id);
         } else {
             // A REAL provisioning failure on a platform that CAN isolate
             // (crashed process, port conflict, ...): the chat still works, it
@@ -3787,7 +3803,28 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
                 "needs a co-work session).\n"
                 "Before ANY real-screen action the user did not explicitly ask for here, "
                 "call ask_user first. Never guess.\n");
-        guide = coworkClause + QStringLiteral(
+        // Codex review (PR #130): the SHOWING YOUR WORK clause below unconditionally told
+        // the model desktop_screenshot captures "your agent screen" and the peek panel
+        // "mirrors your desktop" — true for an isolated m_agentDesktops session, but for
+        // the no-isolation autoGlobalEngine fallback that tool actually captures the
+        // user's REAL screen, contradicting the coworkClause warning above and risking a
+        // real-screen capture sent as if it were the agent's own. Branch this clause too.
+        const QString showingWorkClause = m_agentDesktops.has(sessionId)
+            ? QStringLiteral(
+                "SHOWING YOUR WORK (agent desktop): when the user asks to SEE / SHOW / "
+                "\"send me a screenshot of\" / \"what does it look like\" what you're doing on "
+                "your own agent desktop, CALL desktop_screenshot to capture your agent screen, "
+                "then send_file with that screenshot path so it lands in their chat (visible on "
+                "BOTH desktop and phone). They can also watch you LIVE — the in-chat agent peek "
+                "panel and the Computer page mirror your desktop in real time — so feel free to "
+                "say \"watch live on the right\" too. Take + send a fresh screenshot whenever it "
+                "helps them follow along.\n")
+            : QStringLiteral(
+                "SHOWING YOUR WORK: this session has NO isolated agent desktop (see above) — "
+                "desktop_screenshot here captures the user's REAL screen, not a private one. If "
+                "asked to show/screenshot \"your desktop\", call ask_user first (per the rule "
+                "above) rather than silently sending a capture of their real screen.\n");
+        guide = coworkClause + showingWorkClause + QStringLiteral(
             "VISUALS: whenever the user asks you to SHOW / DRAW / DISPLAY / VISUALIZE "
             "something (a chart, a list, a diagram, a card, \"show me a duck\"), you "
             "MUST CALL the render_widget tool with a JSON spec — it pops the widget on "
@@ -3800,14 +3837,6 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "Download button. NEVER upload to Google Drive, never paste a local file path, "
             "and never return a markdown image link like ![x](/home/...): none of those "
             "work on their phone. Always use send_file.\n"
-            "SHOWING YOUR WORK (agent desktop): when the user asks to SEE / SHOW / "
-            "\"send me a screenshot of\" / \"what does it look like\" what you're doing on "
-            "your own agent desktop, CALL desktop_screenshot to capture your agent screen, "
-            "then send_file with that screenshot path so it lands in their chat (visible on "
-            "BOTH desktop and phone). They can also watch you LIVE — the in-chat agent peek "
-            "panel and the Computer page mirror your desktop in real time — so feel free to "
-            "say \"watch live on the right\" too. Take + send a fresh screenshot whenever it "
-            "helps them follow along.\n"
             "MEMORY: when the user states a durable fact or preference (their name, how "
             "they like things done, project details, decisions), CALL remember to save "
             "it — and edit_memory / forget to keep it current. Use recall / list_memories "
