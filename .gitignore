@@ -78,3 +78,8 @@ cli/.venv/
 
 # subagent-driven-development scratch (progress ledger, task briefs/reports)
 /.superpowers/
+
+# --- Website (Laravel): vendor/, node_modules/, .env, storage/*.key, etc. are
+# already covered by website/.gitignore (a nested gitignore Laravel scaffolds
+# by default). Only the local dev sqlite file needs an entry here.
+website/database/*.sqlite

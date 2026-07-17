@@ -19,6 +19,7 @@ on:
   # it to the GitHub Release. Day-to-day pushes to dev/qa/main trigger nothing.
   pull_request:
     branches: [main]
+    paths-ignore: ['website/**']
   push:
     tags: ["v*"]
   workflow_dispatch:

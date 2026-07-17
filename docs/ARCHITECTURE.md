@@ -24,6 +24,7 @@ bridge. It runs in two profiles — **coder** and **co-worker** — over a
 | plugins         | `plugins/`     | Plugin SDK + signed catalog  | Extensibility surface (later waves). |
 | kde-applet      | `kde-applet/`  | Plasma applet/tray           | Toggles the sidebar on KDE. |
 | packaging       | `packaging/`   | systemd user units + configs | `jarvisd.service`, Sway keybind snippet, mako config, `install.sh`. |
+| website         | `website/`     | Laravel 13 (PHP)             | Marketing/billing site — intentionally a separate stack, not part of the C++/Contract A/B/C system above. Touches the product only via the documented `/api/license/verify` JSON contract (see `website/README.md`). |
 
 The C++ trio is driven by a single top-level CMake superbuild (`CMakeLists.txt`
 -> `core`, `daemon`, `desktop`). `scripts/verify.sh` configures, builds, and
