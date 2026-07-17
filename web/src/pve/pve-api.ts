@@ -79,16 +79,21 @@ function clearAuthCookie(): void {
 // set PVEAuthCookie itself. Without this, every /api2 request after login sends
 // no cookie and pveproxy answers 401, so the whole dashboard reads
 // "not authenticated". Value is encodeURIComponent'd (pveproxy url-decodes on
-// read). `secure` only when actually served over HTTPS: dashboard_server.py
-// falls back to plain HTTP when no TLS cert/key is configured, and browsers
-// silently refuse to store/send a `Secure` cookie over a non-HTTPS origin
-// (except localhost) — unconditionally marking it Secure would make login
-// appear to succeed while every subsequent /api2 request stays unauthenticated.
+// read); Secure because the dashboard is TLS-only.
+//
+// Codex review (PR #130): this used to make `secure` conditional on
+// location.protocol so login wouldn't silently look broken when
+// dashboard_server.py's no-TLS-cert HTTP fallback was in play — but that meant
+// the root-equivalent PVEAuthCookie was deliberately sent WITHOUT Secure
+// whenever serving over plain HTTP, i.e. in cleartext across the LAN. Fail
+// closed instead: mark it Secure unconditionally. Over the HTTP fallback the
+// browser will refuse to store/send the cookie at all, so login just stays
+// "not authenticated" (annoying) rather than leaking the ticket (dangerous).
+// The HTTP fallback is a no-cert-configured edge case, not the supported path.
 function setAuthCookie(ticket: string): void {
   try {
-    const secure = location.protocol === "https:" ? "; secure" : ""
     document.cookie =
-      `PVEAuthCookie=${encodeURIComponent(ticket)}; path=/; samesite=Lax${secure}`
+      `PVEAuthCookie=${encodeURIComponent(ticket)}; path=/; secure; samesite=Lax`
   } catch {
     /* ignore (non-browser env) */
   }
