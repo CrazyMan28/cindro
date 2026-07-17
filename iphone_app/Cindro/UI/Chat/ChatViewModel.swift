@@ -95,12 +95,14 @@ final class ChatViewModel: ObservableObject {
         switch cmd {
         case "clear":
             draft = ""
+            pendingImages = []          // clearing the composer must drop staged images too
             return true
         case "dispatch":
             let sub = rest.split(separator: " ", maxSplits: 1).map(String.init)
             guard let agent = sub.first, !agent.isEmpty else { return false }
             let task = sub.count > 1 ? sub[1] : ""
             draft = ""
+            pendingImages = []          // don't silently ship a staged image with the next turn
             do { _ = try await repo.agentDispatch(agent: agent, task: task, parentSessionId: sessionId) }
             catch { errorText = error.localizedDescription }
             return true

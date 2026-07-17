@@ -106,3 +106,21 @@ def test_guarded_write_surfaces_command_error(monkeypatch):
     r = ops.guarded_write("proxmox_vm_power", {"vmid": 999, "verb": "start"},
                           "create", "/nodes/pve/qemu/999/status/start")
     assert r["ok"] is False and "999" in r["error"]
+
+
+def test_guarded_write_error_redacts_argv(monkeypatch):
+    # The operator transcript keeps the actionable stderr + exit code but must
+    # NOT echo the full argv (absolute host paths / node names leak topology).
+    monkeypatch.setattr(operator_store, "load_policy",
+                        lambda path=None: {"default_risky": "allow", "rules": []})
+
+    def boom(cmd, timeout=20.0):
+        raise proxmox_ops.CommandError(cmd, 1, "config lock timeout")
+
+    monkeypatch.setattr(proxmox_ops, "run", boom)
+    r = ops.guarded_write("proxmox_vm_config_set", {"vmid": 106}, "set",
+                          "/nodes/pve/qemu/106/config", {"cores": 8})
+    assert r["ok"] is False
+    assert "config lock timeout" in r["error"]        # stderr kept
+    assert "/nodes/pve/qemu/106" not in r["error"]    # host path NOT leaked
+    assert "pvesh" not in r["error"]                  # argv NOT leaked

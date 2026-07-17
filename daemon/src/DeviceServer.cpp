@@ -22,6 +22,7 @@
 #include <QNetworkInterface>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QRandomGenerator>
 #include <QStandardPaths>
 #include <QTimer>
@@ -147,16 +148,40 @@ void DeviceServer::startWidgetWatch()
 void DeviceServer::readWidgetTail()
 {
     QFile f(widgetsPath());
-    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+    // Open WITHOUT QIODevice::Text: m_widgetOffset is a RAW byte position (seeded
+    // from f.size(), compared to f.size(), fed to f.seek()), so the bytes we
+    // consume must be counted in raw file bytes too. Text mode strips '\r' on
+    // read, which would make complete.size() below undercount vs. the on-disk
+    // length and drift the offset on CRLF content. The per-line trimmed() already
+    // discards any stray '\r', so dropping Text changes nothing on '\n'-only
+    // content and only makes the arithmetic exact.
+    if (!f.open(QIODevice::ReadOnly))
         return;
-    if (f.size() < m_widgetOffset)   // truncated/rotated -> restart
-        m_widgetOffset = 0;
+    // Rotation/truncation: the bus file shrank out from under us (log rotation or
+    // a fresh engine run). Our old byte offset no longer maps onto the new file,
+    // and re-reading from 0 would REPLAY every line still in the file as a fresh
+    // widget.render to the phone (double-render). Resync to the CURRENT EOF —
+    // matching startWidgetWatch()'s "start from the END so old widgets don't
+    // replay" — and pick up genuinely new frames on the next poll instead.
+    if (f.size() < m_widgetOffset) {
+        m_widgetOffset = f.size();
+        return;
+    }
     if (!f.seek(m_widgetOffset))
         return;
     const QByteArray chunk = f.readAll();
-    m_widgetOffset = f.pos();
+    // Consume only up to the LAST newline. A trailing partial line is a frame
+    // still mid-write by the engine; advancing past it would parse the half
+    // record (JSON error -> dropped) AND then read its completion as a fresh line
+    // starting mid-JSON (also dropped), silently losing the whole record. Leaving
+    // the offset before it lets the next poll re-read it once complete.
+    const qsizetype lastNl = chunk.lastIndexOf('\n');
+    if (lastNl < 0)
+        return; // no complete line yet — wait for more
+    const QByteArray complete = chunk.left(lastNl + 1);
+    m_widgetOffset += complete.size();
 
-    for (const QByteArray &lineRaw : chunk.split('\n')) {
+    for (const QByteArray &lineRaw : complete.split('\n')) {
         const QByteArray line = lineRaw.trimmed();
         if (line.isEmpty())
             continue;
@@ -634,6 +659,22 @@ QJsonObject DeviceServer::capabilityMap()
 
 void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &req)
 {
+    // USE-AFTER-FREE guard (mirrors ControlServer::handleRequest). Several methods
+    // below spin a NESTED QEventLoop that reentrantly pumps this tailnet socket's
+    // events — phone.mcp -> handlePhoneMcp, phone.http, phone.policy.test,
+    // model.list, voice.stt/tts/preview_clone, all via
+    // m_control->dispatchConfigMethod(req, /*remote=*/true). If the phone's WS
+    // drops during that loop, onSocketDisconnected() runs m_conns.remove(client) +
+    // client->deleteLater(), and the same nested loop reaps the deferred delete —
+    // FREEING `client` (and invalidating the `Conn &c` reference held by our
+    // caller onTextMessage) before we return here to send. Track the socket via a
+    // QPointer so the final sendResponse() sees nullptr (and no-ops) instead of
+    // writing to a dangling QWebSocket. NOTE: every branch below reads `c` only
+    // BEFORE its (possibly loop-spinning) dispatch call — the sole post-dispatch
+    // statement is the guarded send, which never touches `c`. Keep it that way: do
+    // not add any use of `c` after a dispatch without re-validating clientGuard
+    // and re-looking-up m_conns.find(client) first.
+    QPointer<QWebSocket> clientGuard(client);
     const QString &m = req.method;
     Response resp;
 
@@ -656,12 +697,22 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
     } else if (m == QStringLiteral("session.search")) {
         resp = devSessionSearch(req);
     } else if (m == QStringLiteral("session.set_goals")) {
-        // Same semantics as the control channel (jarvis#76 item 9).
+        // Same semantics as the control channel (jarvis#76 item 9). Distinguish
+        // the three failure causes SessionStore::setGoals() otherwise collapses
+        // into one false: empty id (bad_request), no such session (no_session),
+        // and an actual store write error (store_error) — the last is a server
+        // fault the phone should surface differently from "that session is gone".
         const QString sid = req.params.value(QStringLiteral("session_id")).toString();
         const QString goals = req.params.value(QStringLiteral("goals")).toString();
-        if (sid.isEmpty() || !m_control->store().setGoals(sid, goals)) {
+        if (sid.isEmpty()) {
+            resp = Response::failure(req.id, QStringLiteral("bad_request"),
+                                     QStringLiteral("session_id is required"));
+        } else if (!m_control->store().get(sid)) {
             resp = Response::failure(req.id, QStringLiteral("no_session"),
                                      QStringLiteral("unknown session: ") + sid);
+        } else if (!m_control->store().setGoals(sid, goals)) {
+            resp = Response::failure(req.id, QStringLiteral("store_error"),
+                                     m_control->store().lastError());
         } else {
             m_control->store().setContinuationCount(sid, 0);
             QJsonObject r;
@@ -798,7 +849,9 @@ void DeviceServer::dispatchAuthed(QWebSocket *client, Conn &c, const Request &re
         resp = Response::failure(req.id, QStringLiteral("unknown_method"),
                                  QStringLiteral("unknown method: ") + m);
     }
-    sendResponse(client, resp);
+    // clientGuard is nullptr if a nested-event-loop handler above let this
+    // socket's disconnect free it; sendResponse() no-ops on nullptr.
+    sendResponse(clientGuard, resp);
 }
 
 Response DeviceServer::devSessionList(const Request &req)

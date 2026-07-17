@@ -14,7 +14,13 @@ enum Biometric {
         var error: NSError?
         // `.deviceOwnerAuthentication` = biometrics with automatic passcode fallback.
         guard ctx.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
-            return true    // no biometric/passcode configured → fail open
+            // Fail OPEN only when there is genuinely no secure lock enrolled
+            // (`.passcodeNotSet`) — the anti-brick case. Any other reason (MDM policy,
+            // hardware restriction, biometry lockout) fails CLOSED rather than bypassing.
+            if let laError = error as? LAError, laError.code == .passcodeNotSet {
+                return true
+            }
+            return false
         }
         return await withCheckedContinuation { cont in
             ctx.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { ok, _ in

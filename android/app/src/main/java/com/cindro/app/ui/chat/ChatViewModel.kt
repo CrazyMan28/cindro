@@ -84,6 +84,11 @@ class ChatViewModel(
     /** Read-back only applies to live events, never to the history replay on open. */
     @Volatile private var historyReplayed = false
 
+    /** Completes once [loadHistory] has folded the transcript. [subscribe] awaits this
+     *  before folding any LIVE event, so a live event that races in during the history
+     *  fetch can't be applied out of order and scramble the transcript. */
+    private val historyReady = kotlinx.coroutines.CompletableDeferred<Unit>()
+
     /** This session's brain/model (for the vision gate below); loaded once, best-effort. */
     @Volatile private var sessionBrain: String? = null
     @Volatile private var sessionModel: String? = null
@@ -154,12 +159,21 @@ class ChatViewModel(
                 .onSuccess { events -> events.forEach(::fold) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
             historyReplayed = true
+            // Signal in BOTH outcomes so a failed history load can't wedge the live
+            // stream forever.
+            historyReady.complete(Unit)
         }
     }
 
     private fun subscribe() {
         viewModelScope.launch {
-            repo.eventsFor(_uiState.value.sessionId).collect(::fold)
+            // Subscribe immediately (so no live event is missed), but hold folding until
+            // history is applied — the collector suspends on await() while the flow
+            // buffers, then folds buffered events in order after the transcript loads.
+            repo.eventsFor(_uiState.value.sessionId).collect { ev ->
+                if (!historyReady.isCompleted) historyReady.await()
+                fold(ev)
+            }
         }
         // Files Cindro sends (jarvis_send_file -> file.offer) land in THIS chat when
         // they target this session (or carry no session id). Shown only when the model

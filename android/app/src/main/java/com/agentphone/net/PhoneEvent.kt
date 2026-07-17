@@ -27,7 +27,10 @@ data class PhoneEvent(
 
 object PhoneEventParser {
     fun parse(json: String): PhoneEvent {
-        val raw = JSONObject(json)
+        // A malformed frame must NOT throw out of the WebSocket onMessage callback and
+        // crash the always-on foreground service — treat unparseable JSON as an empty
+        // (untyped) event so the `when (event.type)` dispatch simply falls through.
+        val raw = runCatching { JSONObject(json) }.getOrNull() ?: return PhoneEvent(type = "")
         val call = raw.optJSONObject("call")
         return PhoneEvent(
             type = raw.optString("type"),

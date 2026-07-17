@@ -155,6 +155,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun endActiveCall() {
         val id = _phone.value.activeCallId ?: return
         client.end(id, _settings.value.extension)
+        // Clear local call state immediately on hang-up rather than waiting for the
+        // server's echo — otherwise the UI stays "in call" if the echo is dropped
+        // (matches reject()).
+        _phone.update { CallStateReducer.reduce(it, PhoneAction.CallEnded(id)) }
         app.stopService(Intent(app, CallForegroundService::class.java))
     }
 
@@ -868,7 +872,20 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             "call_state", "call_timeout" -> {
                 val callState = event.state ?: event.type.removePrefix("call_")
                 _phone.update { CallStateReducer.reduce(it, PhoneAction.CallState(event.callId, callState)) }
-                if (callState == "timeout" || callState == "ended" || callState == "rejected" || callState == "failed") {
+                val activeId = _phone.value.activeCallId
+                if ((callState == "timeout" || callState == "ended" || callState == "rejected" || callState == "failed") &&
+                    (event.callId == null || event.callId == activeId)
+                ) {
+                    // A terminal call_state/call_timeout ends the call just like an
+                    // explicit call_end — clear activeCallId, stop TTS, and tear down
+                    // the call foreground service (CallState alone leaves them pinned).
+                    // Gated to the active call: this codebase supports overlapping/multi-
+                    // socket calls, so a STALE terminal event for a non-active call must
+                    // not tear down a different live call (only fire when it targets the
+                    // active call, or carries no id).
+                    _phone.update { CallStateReducer.reduce(it, PhoneAction.CallEnded(event.callId)) }
+                    event.callId?.let { audio.clearTtsForCall(it) }
+                    app.stopService(Intent(app, CallForegroundService::class.java))
                     OutgoingCallBridge.publishState(OutgoingCallBridge.State.Ended(event.callId, callState))
                     outgoingCallShown = false
                 }

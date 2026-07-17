@@ -60,10 +60,14 @@ class AudioRecorder {
     /** Stop recording and return the captured audio as a complete WAV byte array. */
     fun stopToWav(): ByteArray {
         recording = false
+        // Stop the recorder FIRST so a blocked rec.read() returns and the capture thread
+        // exits its loop, THEN join, THEN release. Releasing while read() is still in
+        // flight on the other thread races and crashes (setting `recording=false` alone
+        // does not unblock an in-progress read).
+        record?.runCatching { stop() }
         thread?.join(500)
         thread = null
-        record?.runCatching { stop() }
-        record?.release()
+        record?.runCatching { release() }
         record = null
         val raw = synchronized(pcm) { pcm.toByteArray() }
         return wrapWav(raw)
@@ -71,10 +75,10 @@ class AudioRecorder {
 
     fun cancel() {
         recording = false
+        record?.runCatching { stop() }
         thread?.join(200)
         thread = null
-        record?.runCatching { stop() }
-        record?.release()
+        record?.runCatching { release() }
         record = null
         synchronized(pcm) { pcm.reset() }
     }

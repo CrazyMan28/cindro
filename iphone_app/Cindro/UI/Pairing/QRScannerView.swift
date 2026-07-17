@@ -16,6 +16,10 @@ struct QRScannerView: UIViewControllerRepresentable {
     final class ScannerController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
         var onScan: ((String) -> Void)?
         private let session = AVCaptureSession()
+        /// Serial queue for start/stop — `AVCaptureSession.startRunning()`/`stopRunning()`
+        /// block, so per Apple's guidance they must never run on the main thread (Apple's
+        /// recommended session-queue pattern).
+        private let sessionQueue = DispatchQueue(label: "com.cindro.app.qrscanner.session")
         private var preview: AVCaptureVideoPreviewLayer?
         private var handled = false
 
@@ -27,12 +31,12 @@ struct QRScannerView: UIViewControllerRepresentable {
 
         override func viewWillAppear(_ animated: Bool) {
             super.viewWillAppear(animated)
-            if !session.isRunning { DispatchQueue.global(qos: .userInitiated).async { self.session.startRunning() } }
+            sessionQueue.async { if !self.session.isRunning { self.session.startRunning() } }
         }
 
         override func viewWillDisappear(_ animated: Bool) {
             super.viewWillDisappear(animated)
-            if session.isRunning { session.stopRunning() }
+            sessionQueue.async { if self.session.isRunning { self.session.stopRunning() } }
         }
 
         override func viewDidLayoutSubviews() {
@@ -66,7 +70,7 @@ struct QRScannerView: UIViewControllerRepresentable {
                   let obj = objects.first as? AVMetadataMachineReadableCodeObject,
                   let value = obj.stringValue else { return }
             handled = true
-            session.stopRunning()
+            sessionQueue.async { self.session.stopRunning() }   // don't block the main thread
             onScan?(value)
         }
     }

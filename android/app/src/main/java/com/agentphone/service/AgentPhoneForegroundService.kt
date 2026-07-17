@@ -680,6 +680,11 @@ class AgentPhoneForegroundService : Service() {
             dispatchCallAction(context, ACTION_REJECT_CALL, info)
         }
 
+        /** Hang up an ANSWERED call (call_end), as opposed to rejecting a ringing one. */
+        fun dispatchEnd(context: Context, info: IncomingCallInfo) {
+            dispatchCallAction(context, ACTION_END_CALL, info)
+        }
+
         fun dispatchScreeningTakeOver(context: Context, callId: String) {
             dispatchScreeningAction(context, ACTION_SCREENING_TAKE_OVER, callId)
         }
