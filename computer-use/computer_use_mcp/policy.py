@@ -529,9 +529,16 @@ _PLAN_SAFE_TOOLS = frozenset({
     # model, video_configure writes persistent settings and can wipe the
     # cached-frame store (clear_sessions=true), and video_watch downloads
     # remote videos, populates caches, and can invoke cloud transcription.
-    # Only the read-only inspection tools belong in a Plan-Mode allowlist
-    # (allowlisted tools skip _plan_status() entirely).
-    "video_info", "video_analyze", "video_detail",
+    # Follow-up (PR #130): video_analyze and video_detail were ALSO wrongly
+    # here — both call resolve_source(), which downloads a not-yet-cached
+    # YouTube URL; video_analyze(transcription=true) can additionally invoke
+    # cloud transcription and save an analysis manifest, and video_detail
+    # extracts and caches frames to disk. Only video_info is genuinely
+    # side-effect-free (it explicitly probes YouTube URLs WITHOUT
+    # downloading — see its docstring). Allowlisted tools skip
+    # _plan_status() entirely, so anything with a real side effect belongs
+    # outside this set, gated like video_watch instead.
+    "video_info",
 })
 
 

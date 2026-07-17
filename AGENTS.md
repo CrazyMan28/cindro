@@ -1634,6 +1634,86 @@ an unrelated native-module resolution issue with the `rolldown` bundler on this 
 None of the 13 touch any file changed this round. All 6 modified GitHub Actions workflow files
 parsed clean with PyYAML.
 
+## New subsystems (2026-07-17, sixth round) — sixth Codex review round on PR #130
+
+A sixth review pass found 5 more findings: two in `ControlServer.cpp`'s auto-desktop/Plan-Mode
+tracking (both in-memory-only-state gaps of the same shape rounds 3-5 already fixed elsewhere),
+one Plan-Mode/session-cancel interaction, one more `SyncLicenseFromStripeWebhook.php` gap, and one
+in `website/`'s license verification (unenforced per-seat licensing). Plus one leftover
+`_PLAN_SAFE_TOOLS` overbreadth Codex flagged alongside them.
+
+- **`ControlServer.cpp`/`.h` — auto-desktop tracking didn't survive session resume:**
+  `m_autoComputerSessions`/`m_autoGlobalEngineSessions`/`m_pendingComputerUseRebind` are in-memory
+  only, never persisted. Resuming a session (daemon restart, or reopening a chat whose brain was
+  never live) called `makeBrain()` with empty MCP overrides regardless of whether the session
+  originally had a nested desktop — computer-use silently vanished from every resumed
+  auto-computer/coworker chat until the user deleted and recreated it. Extracted the existing
+  `createSession()` auto-desktop logic into a new shared `provisionAutoComputerDesktop(row)`
+  helper (also collapsing what was a 4-way up/unsupported/transient/failure branch into 3, since
+  transient-contention and genuine failure now get identical retry+rebind treatment — a leftover
+  round-3 finding) and call it from `sendToSession()`'s resume path too, reconstructing the
+  original classification from the persisted `profile`/`brain`/`targetRef` fields (the one edge
+  case that can't be reconstructed exactly — an explicit `target="real"` take-over — resumes as a
+  plain non-computer-use session instead; judged rare and non-harmful, documented inline).
+- **`ControlServer.cpp`/`.h` — Plan Mode state changes didn't reach a live Claude brain:**
+  `ClaudeBrain`'s `--disallowedTools` (Write/Edit/NotebookEdit/Bash/Task) is baked in at
+  construction. `enter_plan_mode`/`exit_plan_mode`/`plan.approve` update the tracking sets
+  (`m_selfPlanModeSessions`/`m_planApprovedSessions`) but a live brain kept its ORIGINAL
+  permissions until the session was next fully rebuilt — a session that entered Plan Mode
+  mid-conversation could still have its live ClaudeBrain accept writes, and one that exited Plan
+  Mode stayed needlessly restricted. Added `m_pendingPlanModeRebind` (same "mark now, rebind on
+  next idle turn" pattern as `m_pendingComputerUseRebind`) via a new
+  `markPlanRebindIfClaudeLive(sessionId)`, called from all three Plan-Mode handlers; a new block
+  in `sendToSession()` tears down and rebuilds the brain the first time it's next found idle.
+  CodexBrain has no equivalent fix — its `--sandbox` is one whole-process setting that also gates
+  MCP tool auto-cancel, so tightening it on Plan entry would break computer-use; that gap stays
+  deliberately unfixed (see `core/tests/codex_buildargs_test.cpp`), same call as round 5.
+- **`ControlServer.cpp` — `cancelSession()` cleared Plan-Mode state on a mere turn interruption:**
+  it was clearing `m_selfPlanModeSessions`/`m_planApprovedSessions` for `sessionId`, but
+  `session.cancel` only interrupts the current turn — `enter_plan_mode`'s own contract says Plan
+  Mode "lasts until exit_plan_mode/present_plan", not until the next cancel. Canceling a turn while
+  self-initiated Plan Mode was active silently dropped out of Plan Mode. Removed those two lines
+  from `cancelSession()`; they remain correctly cleared in `deleteSession()` (which now also clears
+  the new `m_pendingPlanModeRebind`).
+- **`SyncLicenseFromStripeWebhook.php`, a third gap on top of rounds 4-5's fixes:** Stripe doesn't
+  guarantee webhook delivery order, so an out-of-order-delivered older event (e.g. a stale
+  `customer.subscription.updated` arriving after a newer `deleted`) could revert a license's status
+  backwards. Added a nullable `licenses.last_stripe_event_at` column (new migration) and an
+  `$isStale` check (event's own `created` timestamp vs. the license's stored one) short-circuiting
+  both the `subscription.deleted` path and the create/update path before writing anything. Also
+  folded in two smaller gaps found alongside it: `expires_at` wasn't cleared on an update/create
+  (a previously-expired license that later got a fresh subscription could still read as expired
+  until its next natural verify), and a resolvable-tier-but-existing-license event with an
+  unresolvable price ID silently skipped the status sync entirely instead of at least updating
+  `status` on the license Stripe already knows about.
+- **`LicenseVerifyController.php` (P2) — per-seat licensing was unenforceable:** `device_id` was
+  accepted in the request and documented in the docblock, but never recorded or checked, so a
+  single one-seat Business license returned `valid: true` for arbitrarily many devices. Added a new
+  `license_activations` table (migration + `LicenseActivation` model + `License::activations()`
+  HasMany) recording one row per `(license, device_id)` pair actually seen; a device already on
+  file is always allowed (and its `last_seen_at` refreshed), a genuinely new device beyond
+  `license->seats` is rejected with a new `seat_limit_exceeded` reason, and omitting `device_id`
+  (still nullable) skips enforcement entirely since there's no identity to track. Added four new
+  tests to `LicenseVerifyTest.php` covering: repeat calls from a known device, a new device beyond
+  the seat count, multiple devices up to the seat count, and the no-`device_id` bypass.
+- **`computer_use_mcp/policy.py` — `_PLAN_SAFE_TOOLS` still had two side-effecting entries:**
+  `video_analyze` and `video_detail` were left in the Plan-Mode allowlist from round 5's
+  `video_watch` fix, but both call `resolve_source()` (which can download a not-yet-cached YouTube
+  URL), and `video_analyze(transcription=true)` can additionally invoke cloud transcription and
+  write an analysis manifest, while `video_detail` extracts and caches frames to disk. Only
+  `video_info` is genuinely side-effect-free (its own docstring says it probes YouTube URLs WITHOUT
+  downloading). Removed both, leaving only `video_info`. `agent_send` was likewise removed
+  separately — it can direct an EXISTING child agent dispatched before the parent entered Plan Mode
+  (so the child never inherited the restriction) to perform writes the parent itself no longer can;
+  it must now be denied like any other write/execute tool. Updated `test_policy.py` to match both.
+
+**Verification:** ran the full website test suite (62 tests) — 49 passed, 13 failed, all 13 the
+same pre-existing `Vite manifest not found` gap from rounds 3-5 (confirmed none touch any file
+changed this round); the new `LicenseVerifyTest` seat-enforcement tests (8/8 in that file) pass in
+isolation too. `php -l` clean on all 7 touched/new PHP files. `computer-use`'s `policy.py`/
+`test_policy.py` parse clean (`ast.parse`). The C++ changes were reviewed manually line-by-line
+against the existing rebind pattern (compilation isn't available in this environment).
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

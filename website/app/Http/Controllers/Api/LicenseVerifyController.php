@@ -18,7 +18,10 @@ use Illuminate\Http\Request;
  *
  * Response — valid  (200): {valid: true, tier, status, expires_at, seats, features, checked_at}
  * Response — invalid (200, still — a clean "no/expired/revoked" answer is a normal
- *   cacheable result, not a transport error): {valid: false, reason: "not_found"|"expired"|"revoked"|"suspended"}
+ *   cacheable result, not a transport error): {valid: false, reason:
+ *   "not_found"|"expired"|"revoked"|"suspended"|"seat_limit_exceeded"}
+ *   ("seat_limit_exceeded": a NEW device_id beyond the license's `seats` count —
+ *   an already-recorded device is always allowed, see license_activations.)
  *
  * Only genuine network/5xx failures should read as "verification unavailable" on
  * the daemon side — that distinction is what lets a future offline fallback tell
@@ -50,6 +53,31 @@ class LicenseVerifyController extends Controller
 
         if ($reason !== null) {
             return response()->json(['valid' => false, 'reason' => $reason]);
+        }
+
+        // Codex review (PR #130): `device_id` was accepted but never recorded
+        // or enforced, so the same one-seat key returned valid:true for
+        // arbitrarily many devices — per-seat Business licensing was
+        // unenforceable. A device this license has already been verified
+        // from is always allowed (re-verifying doesn't cost a seat); a NEW
+        // device beyond `seats` is rejected instead of silently accepted. No
+        // device_id at all (the param is nullable) skips enforcement
+        // entirely — there's no identity to track.
+        if ($request->filled('device_id')) {
+            $deviceId = $request->string('device_id')->toString();
+            $activation = $license->activations()->where('device_id', $deviceId)->first();
+
+            if ($activation) {
+                $activation->forceFill(['last_seen_at' => now()])->save();
+            } elseif ($license->activations()->count() >= $license->seats) {
+                return response()->json(['valid' => false, 'reason' => 'seat_limit_exceeded']);
+            } else {
+                $license->activations()->create([
+                    'device_id' => $deviceId,
+                    'first_seen_at' => now(),
+                    'last_seen_at' => now(),
+                ]);
+            }
         }
 
         return response()->json([

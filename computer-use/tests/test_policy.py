@@ -366,8 +366,16 @@ def test_plan_mode_gate_denies_unsafe_allows_safe(tmp_path, monkeypatch):
 
     # present_plan / agent_start / todo_write / read tools stay callable.
     for safe_tool in ("present_plan", "agent_start", "todo_write", "enter_plan_mode",
-                       "exit_plan_mode", "agent_send"):
+                       "exit_plan_mode"):
         assert asyncio.run(call(safe_tool, {})) == "ran:" + safe_tool
+
+    # Codex review (PR #130): agent_send was removed from _PLAN_SAFE_TOOLS —
+    # it can direct an EXISTING child dispatched before the parent entered
+    # Plan mode (so the child never inherited the restriction) to perform the
+    # writes the parent itself can no longer perform. It must now be denied
+    # like any other write/execute tool, not silently allowed through.
+    with pytest.raises(PermissionError):
+        asyncio.run(call("agent_send", {}))
 
 
 def test_plan_mode_gate_noop_when_unrestricted(tmp_path, monkeypatch):
