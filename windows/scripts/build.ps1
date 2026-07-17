@@ -13,6 +13,13 @@
     4. Stage everything into windows\dist\payload\ and build the Inno Setup installer
        -> windows\dist\Cindro-Setup-<version>.exe.
 
+  The engine/outpost PyInstaller bundles, the Go cross-compiles, the phone-server npm
+  build and the portable-Node fetch have NO dependency on the C++ build (or each other)
+  and only write disjoint payload\ subtrees — they run as BACKGROUND JOBS overlapped
+  with the foreground C++/Qt/bun stages (the wall-clock win on the 4-core CI VM is the
+  whole former serial tail, ~10+ min). Start-Job (process isolation, not thread jobs):
+  the Go stage mutates $env:GOOS/GOARCH and must not poison cmake/windeployqt.
+
   Run from a "x64 Native Tools" / Developer PowerShell. Prereqs: Visual Studio 2022,
   CMake 3.24+, vcpkg (VCPKG_ROOT set), Qt 6.5+ (Qt6_DIR or in PATH), Python 3.12, Node 18+,
   Inno Setup 6 (iscc on PATH). This is the Windows build entry point — it never runs on Linux.
@@ -20,7 +27,11 @@
 param(
   [string]$Version = "0.1.0",
   [string]$Config  = "Release",
-  [string]$VcpkgRoot = $env:VCPKG_ROOT
+  [string]$VcpkgRoot = $env:VCPKG_ROOT,
+  # PR-validation builds pass -FastCompress: the installer only needs to EXIST
+  # (7-day artifact), so jarvis.iss compresses with zip instead of lzma2/max and
+  # saves minutes. Tag/release builds never set this — user downloads stay small.
+  [switch]$FastCompress
 )
 $ErrorActionPreference = "Stop"
 $repo   = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -32,13 +43,245 @@ $build  = Join-Path $win "build-win"
 $payload= Join-Path $win "dist\payload"
 Write-Host "==> Cindro Windows build  (repo=$repo  version=$Version)" -ForegroundColor Cyan
 
+# Early input validation — BEFORE any background job is launched, so a
+# misconfigured runner fails instantly instead of leaving orphaned jobs.
+if (-not $VcpkgRoot) { throw "Set VCPKG_ROOT (vcpkg provides libsodium/libqrencode for Windows)." }
+$toolchain = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
+if (-not (Test-Path $toolchain)) { throw "vcpkg toolchain file not found: $toolchain" }
+
+# 0. Stage prep -----------------------------------------------------------------
+# payload + build dirs exist up front (the background stages write into them).
+# On incremental CI workspaces (windows-build.yml checks out with clean:false on
+# PRs) a previous run's payload AND its Cindro-Setup-<oldver>.exe survive — the
+# old installer would match the workflow's upload/release glob alongside the new
+# one, so both get removed here.
+if (Test-Path $payload) { Remove-Item -Recurse -Force $payload }
+New-Item -ItemType Directory -Force -Path $payload | Out-Null
+New-Item -ItemType Directory -Force -Path $build   | Out-Null
+Get-ChildItem (Join-Path $win "dist") -Filter "Cindro-Setup-*.exe" -ErrorAction SilentlyContinue |
+  Remove-Item -Force
+
+# 0b. Background stages ----------------------------------------------------------
+Write-Host "==> launching background stages: engine, outpost-mcp, outpost-agent(go), phone-server, node-runtime" -ForegroundColor Cyan
+
+# 3. Python engine (PyInstaller one-folder) — FATAL on failure, same as its old
+# serial form: a payload without the engine is not shippable.
+$engineJob = Start-Job -Name "engine" -ArgumentList @("$repo","$win","$build","$payload") -ScriptBlock {
+  param($repo,$win,$build,$payload)
+  $ErrorActionPreference = "Stop"
+  $ProgressPreference = "SilentlyContinue"
+  Write-Host "==> bundling computer-use engine"
+  $venv = Join-Path $win "engine\.venv-win"
+  $venvPy = Join-Path $venv "Scripts\python.exe"
+  if (-not (Test-Path $venv)) { python -m venv $venv }
+  & $venvPy -m pip install --upgrade pip pyinstaller
+  if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed" }
+  # --no-deps: install the engine PACKAGE only — its pyproject.toml deps include the
+  # Linux-only evdev/dbus-fast/pywayland which can't build on Windows. The actual
+  # cross-platform runtime deps (+ pywin32/mss) come from requirements-windows.txt.
+  & $venvPy -m pip install -e (Join-Path $repo "computer-use") --no-deps
+  if ($LASTEXITCODE -ne 0) { throw "pip install engine (--no-deps) failed" }
+  & $venvPy -m pip install -r (Join-Path $win "engine\requirements-windows.txt")
+  if ($LASTEXITCODE -ne 0) { throw "pip install windows requirements failed" }
+  # Fail FAST if a video-understanding wheel is broken for this Python — a bad
+  # ctranslate2/av wheel would otherwise only surface after the (slow) freeze.
+  & $venvPy -c "import faster_whisper, ctranslate2, av, yt_dlp, huggingface_hub, onnxruntime"
+  if ($LASTEXITCODE -ne 0) { throw "video deps import probe failed (faster-whisper/ctranslate2/av/yt-dlp/onnxruntime)" }
+  # --collect-submodules computer_use_mcp guarantees EVERY tool module ships
+  # (tools_desktop/browser/widgets/todo/bg/phone/jarvis_ops/video); --collect-all mss/PIL
+  # + the win32 hidden-imports cover the Windows backend's lazy imports.
+  # Video understanding needs the heavy --collect-all trio: ctranslate2 and av ship
+  # compiled .pyd/.dll payloads the default import scanner misses, and faster_whisper
+  # carries data assets — same class of silent-drop as the jsonschema gotcha
+  # (AGENTS.md "collect-data"): the frozen exe imports fine at build time and dies at
+  # runtime without them. huggingface_hub/tokenizers dist-info feeds importlib.metadata
+  # version probes inside faster_whisper.
+  & (Join-Path $venv "Scripts\pyinstaller.exe") --noconfirm --name jarvis-engine `
+    --distpath (Join-Path $payload "engine") --workpath (Join-Path $build "pyi") `
+    --collect-submodules computer_use_mcp --collect-all mss --collect-all PIL `
+    --collect-data jsonschema_specifications --collect-data jsonschema `
+    --copy-metadata mcp `
+    --collect-all faster_whisper --collect-all ctranslate2 --collect-all av `
+    --collect-all onnxruntime `
+    --collect-data huggingface_hub --copy-metadata huggingface_hub `
+    --copy-metadata tokenizers `
+    --collect-submodules yt_dlp --collect-data yt_dlp `
+    --hidden-import win32api --hidden-import win32gui --hidden-import win32con `
+    --hidden-import win32process --hidden-import pywintypes `
+    --paths (Join-Path $win "engine") (Join-Path $win "engine\server_windows.py")
+  if ($LASTEXITCODE -ne 0) { throw "PyInstaller (engine) failed" }
+
+  # PyInstaller's one-folder mode ALWAYS nests its output under a --name subdirectory
+  # (--distpath payload\engine --name jarvis-engine -> payload\engine\jarvis-engine\
+  # jarvis-engine.exe), but AgentDesktop.cpp's enginePayloadDir() and bootstrap.ps1 both
+  # expect a FLAT layout (C:\engine\jarvis-engine.exe, mirroring the isolation/ dir's own
+  # flat convention) -- confirmed on a real Win11 Pro box: with the nested layout,
+  # enginePayloadDir()'s existence check for the flat path fails, @ENGINEDIR@ falls back
+  # to a bogus dev-mode guess, the sandbox's C:\engine MappedFolder maps nothing useful,
+  # bootstrap.ps1 never runs, and the reverse tunnel never dials out (health check times
+  # out with no explanation). Flatten the PyInstaller output up one level to match.
+  $engineNested = Join-Path $payload "engine\jarvis-engine"
+  if (Test-Path $engineNested) {
+    Get-ChildItem -Path $engineNested -Force | Move-Item -Destination (Join-Path $payload "engine") -Force
+    Remove-Item $engineNested -Force -Recurse
+    Write-Host "    flattened PyInstaller output: engine\jarvis-engine\* -> engine\"
+  }
+  if (-not (Test-Path (Join-Path $payload "engine\jarvis-engine.exe"))) {
+    throw "engine\jarvis-engine.exe missing after flattening -- PyInstaller output layout changed?"
+  }
+}
+
+# 3c. outpost-agent binaries (Go, cross-compiled for every target) -------------
+# outpost-agent/build.sh does this on Linux/macOS, but it's a bash script and
+# this runner has no git-bash on PATH (see windows-build.yml) — reimplemented
+# natively here. Self-heals a missing Go toolchain (mirrors build.ps1's Qt
+# self-heal) by pulling the current stable Windows zip from go.dev's release
+# JSON. Non-fatal: without these, pairing 404s with agent_binary_unavailable but
+# everything else still builds. Runs as a separate PROCESS so its GOOS/GOARCH
+# env mutations can't leak into the foreground cmake/windeployqt.
+$goJob = Start-Job -Name "outpost-agent-go" -ArgumentList @("$repo","$build") -ScriptBlock {
+  param($repo,$build)
+  $ProgressPreference = "SilentlyContinue"
+  Write-Host "==> staging outpost-agent binaries (Go, cross-compiled)"
+  try {
+    $goCmd = Get-Command go -ErrorAction SilentlyContinue
+    if (-not $goCmd) {
+      Write-Host "    go not found on PATH — self-heal: fetching a portable Go toolchain…"
+      $goRoot = "C:\go-portable"
+      $goExe = Join-Path $goRoot "go\bin\go.exe"
+      if (-not (Test-Path $goExe)) {
+        $release = Invoke-RestMethod -Uri "https://go.dev/dl/?mode=json"
+        $file = $release[0].files | Where-Object { $_.os -eq "windows" -and $_.arch -eq "amd64" -and $_.kind -eq "archive" } | Select-Object -First 1
+        if (-not $file) { throw "could not resolve a windows-amd64 Go archive from go.dev" }
+        $goZip = Join-Path $build $file.filename
+        Invoke-WebRequest -Uri "https://go.dev/dl/$($file.filename)" -OutFile $goZip
+        New-Item -ItemType Directory -Force -Path $goRoot | Out-Null
+        Expand-Archive -Force $goZip $goRoot
+      }
+      if (Test-Path $goExe) {
+        $env:Path = "$goRoot\go\bin;$env:Path"
+        $goCmd = Get-Command go -ErrorAction SilentlyContinue
+      }
+    }
+    if ($goCmd) {
+      $agentBinDir = Join-Path $repo "outpost-mcp\agent-bin"
+      New-Item -ItemType Directory -Force -Path $agentBinDir | Out-Null
+      Push-Location (Join-Path $repo "outpost-agent")
+      try {
+        $env:CGO_ENABLED = "0"
+        foreach ($target in @(
+          @{goos="linux";   goarch="amd64"; ext=""},
+          @{goos="linux";   goarch="arm64"; ext=""},
+          @{goos="darwin";  goarch="amd64"; ext=""},
+          @{goos="darwin";  goarch="arm64"; ext=""},
+          @{goos="windows"; goarch="amd64"; ext=".exe"},
+          @{goos="windows"; goarch="386";   ext=".exe"}
+        )) {
+          $env:GOOS = $target.goos; $env:GOARCH = $target.goarch
+          $out = Join-Path $agentBinDir "outpost-agent-$($target.goos)-$($target.goarch)$($target.ext)"
+          & go build -trimpath -ldflags="-s -w" -o $out .
+          if ($LASTEXITCODE -ne 0) { throw "go build failed for $($target.goos)/$($target.goarch)" }
+        }
+        Remove-Item Env:\GOOS, Env:\GOARCH, Env:\CGO_ENABLED -ErrorAction SilentlyContinue
+        Write-Host "    outpost-agent binaries built into $agentBinDir"
+      } finally { Pop-Location }
+    } else {
+      Write-Warning "Go toolchain unavailable (self-heal failed) — outpost-agent binaries NOT built; pairing will 404 until the server builds one on demand or the runner is re-provisioned."
+    }
+  } catch {
+    Write-Warning "outpost-agent build skipped ($_). Pairing will 404 until agent-bin/ is populated."
+  }
+}
+
+# 3d. outpost-mcp (PyInstaller one-folder) --------------------------------------
+# Resilient, not a hard build requirement — a broken pyinstaller/mcp wheel on
+# this runner must not block jarvisd/cindro-sidebar/engine. Without this stage
+# the Outpost UI panel fails every call with outpost_unreachable (nothing ever
+# listens on :8798 on a fresh Windows install — see docs/OUTPOST.md).
+# (agent-bin staging happens in the foreground AFTER this and the go job join.)
+$outpostJob = Start-Job -Name "outpost-mcp" -ArgumentList @("$repo","$win","$build","$payload") -ScriptBlock {
+  param($repo,$win,$build,$payload)
+  $ProgressPreference = "SilentlyContinue"
+  Write-Host "==> bundling outpost-mcp"
+  try {
+    $outpostVenv = Join-Path $win "outpost\.venv-win"
+    $outpostVenvPy = Join-Path $outpostVenv "Scripts\python.exe"
+    if (-not (Test-Path $outpostVenv)) { python -m venv $outpostVenv }
+    & $outpostVenvPy -m pip install --upgrade pip pyinstaller
+    if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed" }
+    & $outpostVenvPy -m pip install (Join-Path $repo "outpost-mcp")
+    if ($LASTEXITCODE -ne 0) { throw "pip install outpost-mcp failed" }
+    # NOT --collect-all mcp: it pulls in the optional mcp.cli submodule, which
+    # imports `typer` (not a dependency here — outpost-mcp only uses
+    # mcp.server.fastmcp / mcp.server.transport_security) and hard-fails the
+    # freeze. --copy-metadata mcp alone is the same choice the engine bundling
+    # above already makes, and is enough for mcp's importlib.metadata lookups.
+    & (Join-Path $outpostVenv "Scripts\pyinstaller.exe") --noconfirm --name outpost-mcp `
+      --distpath (Join-Path $payload "outpost") --workpath (Join-Path $build "pyi-outpost") `
+      --collect-all uvicorn --collect-all fastapi --collect-all starlette `
+      --collect-submodules mcp.server --copy-metadata mcp `
+      (Join-Path $win "outpost\run_outpost_mcp.py")
+    if ($LASTEXITCODE -ne 0) { throw "PyInstaller (outpost-mcp) failed" }
+    Write-Host "    outpost-mcp bundled."
+  } catch {
+    Write-Warning "outpost-mcp bundling skipped ($_). The installer ships without Outpost; it can be added later."
+  }
+}
+
+# 4. Node phone server (OPTIONAL) ----------------------------------------------
+# Resilient: better-sqlite3 native builds can be finicky on CI. If it fails the
+# installer still ships every other feature; the phone subsystem can be added later.
+$phoneJob = Start-Job -Name "phone-server" -ArgumentList @("$repo","$payload") -ScriptBlock {
+  param($repo,$payload)
+  $ProgressPreference = "SilentlyContinue"
+  Write-Host "==> staging phone server (optional)"
+  try {
+    Push-Location (Join-Path $repo "phone\server")
+    npm ci --omit=dev
+    if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+    npm run build
+    if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
+    Pop-Location
+    Copy-Item -Recurse (Join-Path $repo "phone\server\dist")         (Join-Path $payload "phone-server\dist")
+    Copy-Item -Recurse (Join-Path $repo "phone\server\node_modules") (Join-Path $payload "phone-server\node_modules")
+    Write-Host "    phone server bundled."
+  } catch {
+    Pop-Location -ErrorAction SilentlyContinue
+    Write-Warning "phone server bundling skipped ($_). The installer ships without the phone subsystem; it can be added later."
+  }
+}
+
+# Portable Node RUNTIME so the phone server runs with NOTHING installed by the
+# user. FATAL like its old serial form (jarvisd launches the phone server via
+# {app}\node\node.exe). The zip is cached in C:\ci-cache — OUTSIDE the repo —
+# so even clean:true tag builds never re-download it.
+$nodeJob = Start-Job -Name "node-runtime" -ArgumentList @("$build","$payload") -ScriptBlock {
+  param($build,$payload)
+  $ErrorActionPreference = "Stop"
+  $ProgressPreference = "SilentlyContinue"
+  Write-Host "==> bundling a portable Node runtime (no Node install required)"
+  $nodeVer = "v20.18.1"
+  $nodeDir = Join-Path $payload "node"
+  New-Item -ItemType Directory -Force -Path $nodeDir | Out-Null
+  $cacheDir = "C:\ci-cache"
+  New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+  $nodeZip = Join-Path $cacheDir "node-$nodeVer-win-x64.zip"
+  if (-not (Test-Path $nodeZip)) {
+    Invoke-WebRequest "https://nodejs.org/dist/$nodeVer/node-$nodeVer-win-x64.zip" -OutFile $nodeZip
+  }
+  Expand-Archive -Force $nodeZip (Join-Path $build "node-extract")
+  Copy-Item (Join-Path $build "node-extract\node-$nodeVer-win-x64\node.exe") $nodeDir
+  # (jarvisd launches the phone server via {app}\node\node.exe — see the Windows
+  #  shell wiring; never assume a system `node` on PATH.)
+}
+
+$bgJobs = @($engineJob, $goJob, $outpostJob, $phoneJob, $nodeJob)
+try {
+
 # 1. C++ daemon + Windows shell ------------------------------------------------
 # Configure the SELF-CONTAINED windows/ project (NOT the repo root) — it references
 # the shared ../core, ../daemon, ../desktop sources read-only and compiles the
 # windows/shell/ copies for the POSIX-only ones. The Linux dirs are never touched.
-if (-not $VcpkgRoot) { throw "Set VCPKG_ROOT (vcpkg provides libsodium/libqrencode for Windows)." }
-$toolchain = Join-Path $VcpkgRoot "scripts\buildsystems\vcpkg.cmake"
-if (-not (Test-Path $toolchain)) { throw "vcpkg toolchain file not found: $toolchain" }
 
 # Locate Qt6 robustly and pass it to CMake explicitly. Relying on the runner's
 # machine CMAKE_PREFIX_PATH alone is fragile — after a winvm reboot that env var
@@ -131,9 +374,8 @@ if ($LASTEXITCODE -ne 0) { throw "cmake configure failed (exit $LASTEXITCODE)" }
 cmake --build $build --config $Config
 if ($LASTEXITCODE -ne 0) { throw "cmake build failed (exit $LASTEXITCODE)" }
 
-# 2. Stage payload -------------------------------------------------------------
-if (Test-Path $payload) { Remove-Item -Recurse -Force $payload }
-New-Item -ItemType Directory -Force -Path $payload | Out-Null
+# 2. Stage the C++ exes ---------------------------------------------------------
+# (payload was created in stage prep above — the background jobs write into it.)
 # Find the exes wherever the generator put them (build root for Ninja, <Config>\
 # for the multi-config VS generator).
 $jarvisdExe = (Get-ChildItem -Path $build -Recurse -Filter "jarvisd.exe"       | Select-Object -First 1).FullName
@@ -359,77 +601,33 @@ if (-not (Test-Path (Join-Path $payload "libsodium.dll"))) {
   throw "libsodium.dll missing from the payload — jarvisd would fail at launch. Aborting."
 }
 
-# Portable Node RUNTIME so the phone server runs with NOTHING installed by the user.
-Write-Host "==> bundling a portable Node runtime (no Node install required)" -ForegroundColor Cyan
-$nodeVer = "v20.18.1"
-$nodeDir = Join-Path $payload "node"
-New-Item -ItemType Directory -Force -Path $nodeDir | Out-Null
-$nodeZip = Join-Path $build "node-$nodeVer-win-x64.zip"
-if (-not (Test-Path $nodeZip)) {
-  Invoke-WebRequest "https://nodejs.org/dist/$nodeVer/node-$nodeVer-win-x64.zip" -OutFile $nodeZip
+# --- Join the background stages -------------------------------------------------
+# engine + node-runtime keep their old serial fatality (a payload without either
+# is not shippable); go/outpost/phone carry their own try/catch and only reach a
+# Failed state on a genuine crash — still non-fatal, exactly as before.
+#
+# IMPORTANT: a job's NATIVE stderr (pip/npm/pyinstaller progress + warnings, e.g.
+# pip's benign "ERROR: pip's dependency resolver…" notice) is marshalled back as
+# PowerShell ERROR RECORDS — receiving with -ErrorAction Stop turned that noise
+# into a hard failure (broke the first CI run of this parallel flow). Failure is
+# ONLY the job reaching the Failed state, i.e. an explicit `throw` inside the
+# stage (every native call there is exit-code-checked) — same contract as the
+# old serial script, where stderr printed freely and $LASTEXITCODE decided.
+$prevEAP = $ErrorActionPreference
+foreach ($j in $bgJobs) {
+  Wait-Job $j | Out-Null
+  Write-Host "==> [stage:$($j.Name)] ------------------------------------------------" -ForegroundColor Cyan
+  $ErrorActionPreference = "Continue"
+  Receive-Job $j 2>&1 | ForEach-Object { Write-Host "$_" }
+  $ErrorActionPreference = $prevEAP
+  if ($j.State -eq "Failed") {
+    $reason = try { $j.ChildJobs[0].JobStateInfo.Reason.Message } catch { "unknown" }
+    $fatal = $j.Name -in @("engine", "node-runtime")
+    if ($fatal) { throw "background stage '$($j.Name)' failed: $reason" }
+    Write-Warning "background stage '$($j.Name)' failed ($reason)"
+  }
 }
-Expand-Archive -Force $nodeZip (Join-Path $build "node-extract")
-Copy-Item (Join-Path $build "node-extract\node-$nodeVer-win-x64\node.exe") $nodeDir
-# (jarvisd launches the phone server via {app}\node\node.exe — see the Windows
-#  shell wiring; never assume a system `node` on PATH.)
-
-# 3. Python engine (PyInstaller one-folder) ------------------------------------
-Write-Host "==> bundling computer-use engine" -ForegroundColor Cyan
-$venv = Join-Path $win "engine\.venv-win"
-$venvPy = Join-Path $venv "Scripts\python.exe"
-if (-not (Test-Path $venv)) { python -m venv $venv }
-& $venvPy -m pip install --upgrade pip pyinstaller
-if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed" }
-# --no-deps: install the engine PACKAGE only — its pyproject.toml deps include the
-# Linux-only evdev/dbus-fast/pywayland which can't build on Windows. The actual
-# cross-platform runtime deps (+ pywin32/mss) come from requirements-windows.txt.
-& $venvPy -m pip install -e (Join-Path $repo "computer-use") --no-deps
-if ($LASTEXITCODE -ne 0) { throw "pip install engine (--no-deps) failed" }
-& $venvPy -m pip install -r (Join-Path $win "engine\requirements-windows.txt")
-if ($LASTEXITCODE -ne 0) { throw "pip install windows requirements failed" }
-# Fail FAST if a video-understanding wheel is broken for this Python — a bad
-# ctranslate2/av wheel would otherwise only surface after the (slow) freeze.
-& $venvPy -c "import faster_whisper, ctranslate2, av, yt_dlp, huggingface_hub, onnxruntime"
-if ($LASTEXITCODE -ne 0) { throw "video deps import probe failed (faster-whisper/ctranslate2/av/yt-dlp/onnxruntime)" }
-# --collect-submodules computer_use_mcp guarantees EVERY tool module ships
-# (tools_desktop/browser/widgets/todo/bg/phone/jarvis_ops/video); --collect-all mss/PIL
-# + the win32 hidden-imports cover the Windows backend's lazy imports.
-# Video understanding needs the heavy --collect-all trio: ctranslate2 and av ship
-# compiled .pyd/.dll payloads the default import scanner misses, and faster_whisper
-# carries data assets — same class of silent-drop as the jsonschema gotcha
-# (AGENTS.md "collect-data"): the frozen exe imports fine at build time and dies at
-# runtime without them. huggingface_hub/tokenizers dist-info feeds importlib.metadata
-# version probes inside faster_whisper.
-& (Join-Path $venv "Scripts\pyinstaller.exe") --noconfirm --name jarvis-engine `
-  --distpath (Join-Path $payload "engine") --workpath (Join-Path $build "pyi") `
-  --collect-submodules computer_use_mcp --collect-all mss --collect-all PIL `
-  --collect-data jsonschema_specifications --collect-data jsonschema `
-  --copy-metadata mcp `
-  --collect-all faster_whisper --collect-all ctranslate2 --collect-all av `
-  --collect-all onnxruntime `
-  --collect-data huggingface_hub --copy-metadata huggingface_hub `
-  --copy-metadata tokenizers `
-  --collect-submodules yt_dlp --collect-data yt_dlp `
-  --hidden-import win32api --hidden-import win32gui --hidden-import win32con `
-  --hidden-import win32process --hidden-import pywintypes `
-  --paths (Join-Path $win "engine") (Join-Path $win "engine\server_windows.py")
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller (engine) failed" }
-
-# PyInstaller's one-folder mode ALWAYS nests its output under a --name subdirectory
-# (--distpath payload\engine --name jarvis-engine -> payload\engine\jarvis-engine\
-# jarvis-engine.exe), but AgentDesktop.cpp's enginePayloadDir() and bootstrap.ps1 both
-# expect a FLAT layout (C:\engine\jarvis-engine.exe, mirroring the isolation/ dir's own
-# flat convention) -- confirmed on a real Win11 Pro box: with the nested layout,
-# enginePayloadDir()'s existence check for the flat path fails, @ENGINEDIR@ falls back
-# to a bogus dev-mode guess, the sandbox's C:\engine MappedFolder maps nothing useful,
-# bootstrap.ps1 never runs, and the reverse tunnel never dials out (health check times
-# out with no explanation). Flatten the PyInstaller output up one level to match.
-$engineNested = Join-Path $payload "engine\jarvis-engine"
-if (Test-Path $engineNested) {
-  Get-ChildItem -Path $engineNested -Force | Move-Item -Destination (Join-Path $payload "engine") -Force
-  Remove-Item $engineNested -Force -Recurse
-  Write-Host "    flattened PyInstaller output: engine\jarvis-engine\* -> engine\" -ForegroundColor Green
-}
+# Belt-and-braces: the engine exe check the serial flow used to make inline.
 if (-not (Test-Path (Join-Path $payload "engine\jarvis-engine.exe"))) {
   throw "engine\jarvis-engine.exe missing after flattening -- PyInstaller output layout changed?"
 }
@@ -441,6 +639,7 @@ if (-not (Test-Path (Join-Path $payload "engine\jarvis-engine.exe"))) {
 #   {app}\engine    : jarvis-relay.exe + bootstrap.ps1 land NEXT TO jarvis-engine.exe
 #                     so the read-only MappedFolder exposes them at C:\engine inside
 #                     the sandbox (bootstrap runs the relay + engine in there).
+# (Runs AFTER the engine job joined: payload\engine must exist and be final.)
 Write-Host "==> staging Windows v2 isolation assets" -ForegroundColor Cyan
 $isoSrc = Join-Path $win "isolation"
 $isoDst = Join-Path $payload "isolation"
@@ -476,126 +675,32 @@ if ($relayExe) {
   Write-Warning "jarvis-relay.exe not found under $build -- the sandbox reverse tunnel will be unavailable."
 }
 
-# 3c. outpost-agent binaries (Go, cross-compiled for every target) -------------
-# outpost-agent/build.sh does this on Linux/macOS, but it's a bash script and
-# this runner has no git-bash on PATH (see windows-build.yml) — reimplemented
-# natively here. Self-heals a missing Go toolchain (mirrors the Qt self-heal
-# above) by pulling the current stable Windows zip from go.dev's release JSON,
-# so a runner that hasn't been re-provisioned with setup-runner-buildtools.ps1
-# yet still produces working binaries. Non-fatal like the phone server below:
-# without these, pairing 404s with agent_binary_unavailable but everything else
-# still builds — a broken Go toolchain must not block the whole installer.
-Write-Host "==> staging outpost-agent binaries (Go, cross-compiled)" -ForegroundColor Cyan
-try {
-  $goCmd = Get-Command go -ErrorAction SilentlyContinue
-  if (-not $goCmd) {
-    Write-Host "    go not found on PATH — self-heal: fetching a portable Go toolchain…" -ForegroundColor Yellow
-    $goRoot = "C:\go-portable"
-    $goExe = Join-Path $goRoot "go\bin\go.exe"
-    if (-not (Test-Path $goExe)) {
-      $release = Invoke-RestMethod -Uri "https://go.dev/dl/?mode=json"
-      $file = $release[0].files | Where-Object { $_.os -eq "windows" -and $_.arch -eq "amd64" -and $_.kind -eq "archive" } | Select-Object -First 1
-      if (-not $file) { throw "could not resolve a windows-amd64 Go archive from go.dev" }
-      $goZip = Join-Path $build $file.filename
-      Invoke-WebRequest -Uri "https://go.dev/dl/$($file.filename)" -OutFile $goZip
-      New-Item -ItemType Directory -Force -Path $goRoot | Out-Null
-      Expand-Archive -Force $goZip $goRoot
-    }
-    if (Test-Path $goExe) {
-      $env:Path = "$goRoot\go\bin;$env:Path"
-      $goCmd = Get-Command go -ErrorAction SilentlyContinue
-    }
-  }
-  if ($goCmd) {
-    $agentBinDir = Join-Path $repo "outpost-mcp\agent-bin"
-    New-Item -ItemType Directory -Force -Path $agentBinDir | Out-Null
-    Push-Location (Join-Path $repo "outpost-agent")
-    try {
-      $env:CGO_ENABLED = "0"
-      foreach ($target in @(
-        @{goos="linux";   goarch="amd64"; ext=""},
-        @{goos="linux";   goarch="arm64"; ext=""},
-        @{goos="darwin";  goarch="amd64"; ext=""},
-        @{goos="darwin";  goarch="arm64"; ext=""},
-        @{goos="windows"; goarch="amd64"; ext=".exe"},
-        @{goos="windows"; goarch="386";   ext=".exe"}
-      )) {
-        $env:GOOS = $target.goos; $env:GOARCH = $target.goarch
-        $out = Join-Path $agentBinDir "outpost-agent-$($target.goos)-$($target.goarch)$($target.ext)"
-        & go build -trimpath -ldflags="-s -w" -o $out .
-        if ($LASTEXITCODE -ne 0) { throw "go build failed for $($target.goos)/$($target.goarch)" }
-      }
-      Remove-Item Env:\GOOS, Env:\GOARCH, Env:\CGO_ENABLED -ErrorAction SilentlyContinue
-      Write-Host "    outpost-agent binaries built into $agentBinDir" -ForegroundColor Green
-    } finally { Pop-Location }
-  } else {
-    Write-Warning "Go toolchain unavailable (self-heal failed) — outpost-agent binaries NOT built; pairing will 404 until the server builds one on demand or the runner is re-provisioned."
-  }
-} catch {
-  Write-Warning "outpost-agent build skipped ($_). Pairing will 404 until agent-bin/ is populated."
-}
-
-# 3d. outpost-mcp (PyInstaller one-folder) --------------------------------------
-# Same rationale as the phone server below: resilient, not a hard build
-# requirement — a broken pyinstaller/mcp wheel on this runner must not block
-# jarvisd/cindro-sidebar/engine, which already work today. Without this stage
-# the Outpost UI panel fails every call with outpost_unreachable (nothing ever
-# listens on :8798 on a fresh Windows install — see docs/OUTPOST.md).
-Write-Host "==> bundling outpost-mcp" -ForegroundColor Cyan
-try {
-  $outpostVenv = Join-Path $win "outpost\.venv-win"
-  $outpostVenvPy = Join-Path $outpostVenv "Scripts\python.exe"
-  if (-not (Test-Path $outpostVenv)) { python -m venv $outpostVenv }
-  & $outpostVenvPy -m pip install --upgrade pip pyinstaller
-  if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller failed" }
-  & $outpostVenvPy -m pip install (Join-Path $repo "outpost-mcp")
-  if ($LASTEXITCODE -ne 0) { throw "pip install outpost-mcp failed" }
-  # NOT --collect-all mcp: it pulls in the optional mcp.cli submodule, which
-  # imports `typer` (not a dependency here — outpost-mcp only uses
-  # mcp.server.fastmcp / mcp.server.transport_security) and hard-fails the
-  # freeze. --copy-metadata mcp alone is the same choice the engine bundling
-  # above already makes, and is enough for mcp's importlib.metadata lookups.
-  & (Join-Path $outpostVenv "Scripts\pyinstaller.exe") --noconfirm --name outpost-mcp `
-    --distpath (Join-Path $payload "outpost") --workpath (Join-Path $build "pyi-outpost") `
-    --collect-all uvicorn --collect-all fastapi --collect-all starlette `
-    --collect-submodules mcp.server --copy-metadata mcp `
-    (Join-Path $win "outpost\run_outpost_mcp.py")
-  if ($LASTEXITCODE -ne 0) { throw "PyInstaller (outpost-mcp) failed" }
-  # agent-bin staged NEXT TO the one-folder bundle (not inside it) — the
-  # launcher points OUTPOST_AGENT_BIN_DIR there explicitly, so exact nesting
-  # doesn't matter, but keeping it outside avoids PyInstaller re-signing/
-  # touching it on a rebuild.
-  $outpostAgentBinSrc = Join-Path $repo "outpost-mcp\agent-bin"
-  $outpostAgentBinDst = Join-Path $payload "outpost\agent-bin"
-  if (Test-Path $outpostAgentBinSrc) {
-    New-Item -ItemType Directory -Force -Path $outpostAgentBinDst | Out-Null
-    Copy-Item (Join-Path $outpostAgentBinSrc "*") $outpostAgentBinDst -Force -ErrorAction SilentlyContinue
-  }
-  Write-Host "    outpost-mcp bundled." -ForegroundColor Green
-} catch {
-  Write-Warning "outpost-mcp bundling skipped ($_). The installer ships without Outpost; it can be added later."
-}
-
-# 4. Node phone server (OPTIONAL) ----------------------------------------------
-# Resilient: better-sqlite3 native builds can be finicky on CI. If it fails the
-# installer still ships every other feature; the phone subsystem can be added later.
-Write-Host "==> staging phone server (optional)" -ForegroundColor Cyan
-try {
-  Push-Location (Join-Path $repo "phone\server")
-  npm ci --omit=dev
-  if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
-  npm run build
-  if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
-  Pop-Location
-  Copy-Item -Recurse (Join-Path $repo "phone\server\dist")         (Join-Path $payload "phone-server\dist")
-  Copy-Item -Recurse (Join-Path $repo "phone\server\node_modules") (Join-Path $payload "phone-server\node_modules")
-  Write-Host "    phone server bundled." -ForegroundColor Green
-} catch {
-  Pop-Location -ErrorAction SilentlyContinue
-  Write-Warning "phone server bundling skipped ($_). The installer ships without the phone subsystem; it can be added later."
+# agent-bin staged NEXT TO the outpost one-folder bundle (not inside it) — the
+# launcher points OUTPOST_AGENT_BIN_DIR there explicitly, so exact nesting
+# doesn't matter, but keeping it outside avoids PyInstaller re-signing/touching
+# it on a rebuild. Runs AFTER both the go + outpost-mcp jobs joined; matching
+# the old serial semantics, it's only staged when outpost-mcp itself bundled.
+$outpostAgentBinSrc = Join-Path $repo "outpost-mcp\agent-bin"
+$outpostAgentBinDst = Join-Path $payload "outpost\agent-bin"
+if ((Test-Path $outpostAgentBinSrc) -and (Test-Path (Join-Path $payload "outpost"))) {
+  New-Item -ItemType Directory -Force -Path $outpostAgentBinDst | Out-Null
+  Copy-Item (Join-Path $outpostAgentBinSrc "*") $outpostAgentBinDst -Force -ErrorAction SilentlyContinue
 }
 
 # 5. Installer -----------------------------------------------------------------
 Write-Host "==> building installer" -ForegroundColor Cyan
-iscc /DMyAppVersion=$Version (Join-Path $win "installer\jarvis.iss")
+$isccArgs = @("/DMyAppVersion=$Version")
+if ($FastCompress) {
+  Write-Host "    fast compression (PR validation build): zip instead of lzma2/max" -ForegroundColor Yellow
+  $isccArgs += "/DFastCompress"
+}
+iscc @isccArgs (Join-Path $win "installer\jarvis.iss")
+if ($LASTEXITCODE -ne 0) { throw "iscc failed (exit $LASTEXITCODE)" }
 Write-Host "==> done: windows\dist\Cindro-Setup-$Version.exe" -ForegroundColor Green
+
+} finally {
+  # On an early foreground failure (cmake, windeployqt, …) don't leave the
+  # background pyinstaller/npm/go processes running as orphans on the runner.
+  $bgJobs | Where-Object { $_.State -eq "Running" } | Stop-Job -PassThru -ErrorAction SilentlyContinue | Out-Null
+  $bgJobs | Remove-Job -Force -ErrorAction SilentlyContinue
+}
