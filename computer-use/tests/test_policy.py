@@ -10,6 +10,24 @@ import pytest
 from computer_use_mcp import policy
 
 
+@pytest.fixture(autouse=True)
+def _default_plan_mode_unrestricted(monkeypatch):
+    """This file is about the trust-policy/phone/cmd-scan gates, not PLAN mode
+    — default _plan_status() to unrestricted (via a fake daemon_client) so
+    every pre-existing test here stays decoupled from a real daemon. The
+    PLAN-MODE-specific tests below re-monkeypatch daemon_client.call/
+    current_session_id themselves, which simply overrides this default for
+    the remainder of that test."""
+    from computer_use_mcp import daemon_client
+
+    policy._PLAN_CACHE.clear()
+    monkeypatch.setattr(daemon_client, "current_session_id", lambda default="": "autouse-session")
+    monkeypatch.setattr(daemon_client, "call",
+                         lambda method, params=None, timeout=15.0: {"restricted": False, "source": ""})
+    yield
+    policy._PLAN_CACHE.clear()
+
+
 def write_rules(tmp_path, monkeypatch, rules, default="allow"):
     f = tmp_path / "trust_policies.json"
     f.write_text(json.dumps({"version": 1, "default": default, "rules": rules}))
@@ -226,6 +244,175 @@ def test_cmd_scanner_gates_free_form_commands(tmp_path, monkeypatch):
 # evaluate() does — it does not change policy.py's matching logic (fnmatchcase
 # stays the source of truth) — and skips (does not fail) if the fixture
 # doesn't exist yet.
+# --- PLAN MODE gate (_plan_mode_gate) ---------------------------------------
+
+
+def _reset_plan_cache():
+    policy._PLAN_CACHE.clear()
+
+
+def test_plan_status_session_scoped_and_cached(monkeypatch):
+    from computer_use_mcp import daemon_client
+
+    _reset_plan_cache()
+    calls = []
+
+    def fake_current_session_id(default=""):
+        return "sess-a"
+
+    def fake_call(method, params=None, timeout=15.0):
+        calls.append((method, params))
+        return {"restricted": True, "source": "settings"}
+
+    monkeypatch.setattr(daemon_client, "current_session_id", fake_current_session_id)
+    monkeypatch.setattr(daemon_client, "call", fake_call)
+
+    assert policy._plan_status() == (True, "settings")
+    assert policy._plan_status() == (True, "settings")
+    assert len(calls) == 1, "second call within TTL must hit the cache, not the daemon"
+
+    # A different session id gets its own cache entry (shared global engine —
+    # must not leak session A's status onto session B).
+    monkeypatch.setattr(daemon_client, "current_session_id", lambda default="": "sess-b")
+    monkeypatch.setattr(daemon_client, "call",
+                         lambda method, params=None, timeout=15.0:
+                         calls.append((method, params)) or {"restricted": False, "source": ""})
+    assert policy._plan_status() == (False, "")
+    assert len(calls) == 2, "a different session must NOT reuse session A's cache entry"
+
+
+def test_plan_status_fails_closed(monkeypatch):
+    from computer_use_mcp import daemon_client
+
+    _reset_plan_cache()
+    monkeypatch.setattr(daemon_client, "current_session_id", lambda default="": "sess-x")
+
+    def boom(method, params=None, timeout=15.0):
+        raise RuntimeError("daemon unreachable")
+
+    monkeypatch.setattr(daemon_client, "call", boom)
+    # Deliberate deviation from this module's usual fail-OPEN convention: PLAN
+    # mode is a safety guarantee, so an unreachable daemon must NOT silently
+    # grant full write access.
+    assert policy._plan_status() == (True, "unreachable")
+
+
+def test_bust_plan_cache_forces_refetch(monkeypatch):
+    from computer_use_mcp import daemon_client
+
+    _reset_plan_cache()
+    monkeypatch.setattr(daemon_client, "current_session_id", lambda default="": "sess-c")
+    calls = []
+    monkeypatch.setattr(daemon_client, "call",
+                         lambda method, params=None, timeout=15.0:
+                         calls.append(1) or {"restricted": True, "source": "self"})
+
+    assert policy._plan_status() == (True, "self")
+    assert policy._plan_status() == (True, "self")
+    assert len(calls) == 1  # still cached
+
+    policy.bust_plan_cache("sess-c")
+    assert policy._plan_status() == (True, "self")
+    assert len(calls) == 2  # cache was busted -> re-fetched
+
+
+def test_plan_mode_gate_denies_unsafe_allows_safe(tmp_path, monkeypatch):
+    import asyncio
+
+    from computer_use_mcp import daemon_client
+
+    _reset_plan_cache()
+    write_rules(tmp_path, monkeypatch, [])  # trust gate: allow all
+    monkeypatch.setattr(daemon_client, "current_session_id", lambda default="": "sess-plan")
+    monkeypatch.setattr(daemon_client, "call",
+                         lambda method, params=None, timeout=15.0:
+                         {"restricted": True, "source": "settings"})
+
+    class Mgr:
+        async def call_tool(self, name, arguments, *a, **kw):
+            return "ran:" + name
+
+    class Fake:
+        _tool_manager = Mgr()
+
+    fake = Fake()
+    policy.install(fake)
+    call = fake._tool_manager.call_tool
+
+    # A write/execute tool is hard-denied while restricted, with NO ask-bus
+    # escalation (unlike trust-policy "ask" rules).
+    with pytest.raises(PermissionError) as e:
+        asyncio.run(call("mouse_click", {}))
+    assert "PLAN mode is active" in str(e.value)
+
+    # present_plan / agent_start / todo_write / read tools stay callable.
+    for safe_tool in ("present_plan", "agent_start", "todo_write", "enter_plan_mode",
+                       "exit_plan_mode", "agent_send"):
+        assert asyncio.run(call(safe_tool, {})) == "ran:" + safe_tool
+
+
+def test_plan_mode_gate_noop_when_unrestricted(tmp_path, monkeypatch):
+    import asyncio
+
+    from computer_use_mcp import daemon_client
+
+    _reset_plan_cache()
+    write_rules(tmp_path, monkeypatch, [])  # isolate from this machine's real trust policy
+    monkeypatch.setattr(daemon_client, "current_session_id", lambda default="": "sess-free")
+    monkeypatch.setattr(daemon_client, "call",
+                         lambda method, params=None, timeout=15.0:
+                         {"restricted": False, "source": ""})
+
+    class Mgr:
+        async def call_tool(self, name, arguments, *a, **kw):
+            return "ran:" + name
+
+    class Fake:
+        _tool_manager = Mgr()
+
+    fake = Fake()
+    policy.install(fake)
+    assert asyncio.run(fake._tool_manager.call_tool("mouse_click", {})) == "ran:mouse_click"
+
+
+def test_plan_mode_gate_runs_before_trust_policy(tmp_path, monkeypatch):
+    """The plan gate must be wired FIRST, ahead of the trust-policy gate's own
+    'ask' escalation — not merely "also denies" (an 'allow' rule can't tell
+    the two orderings apart, since _plan_mode_gate raises unconditionally
+    either way). Use an 'ask' trust rule and prove ask_bus is NEVER consulted:
+    if the trust gate ran first, it would call ask_bus.ask() before the plan
+    gate ever got a chance to raise its own denial."""
+    import asyncio
+
+    from computer_use_mcp import ask_bus, daemon_client
+
+    _reset_plan_cache()
+    write_rules(tmp_path, monkeypatch, [
+        {"id": "ask-first", "tool": "mouse_click", "app": "*", "action": "ask"}])
+    monkeypatch.setattr(daemon_client, "current_session_id", lambda default="": "sess-priority")
+    monkeypatch.setattr(daemon_client, "call",
+                         lambda method, params=None, timeout=15.0:
+                         {"restricted": True, "source": "self"})
+
+    def _boom(*a, **k):
+        raise AssertionError("ask_bus.ask called -- trust-policy gate ran before the plan gate")
+
+    monkeypatch.setattr(ask_bus, "ask", _boom)
+
+    class Mgr:
+        async def call_tool(self, name, arguments, *a, **kw):
+            return "ran:" + name
+
+    class Fake:
+        _tool_manager = Mgr()
+
+    fake = Fake()
+    policy.install(fake)
+    with pytest.raises(PermissionError) as e:
+        asyncio.run(fake._tool_manager.call_tool("mouse_click", {}))
+    assert "PLAN mode is active" in str(e.value)
+
+
 def _trust_policy_fixture_path() -> Path:
     # computer-use/tests/test_policy.py -> repo root is two parents up.
     repo_root = Path(__file__).resolve().parents[2]

@@ -288,6 +288,12 @@ private:
     // their work finishes. Also drives the wake_notify phone behavior.
     Response handleSessionWake(const Request &req);
     Response handleSessionCancel(const Request &req);
+    // plan.enter/plan.exit/plan.status — Plan Mode's self-initiated (ephemeral,
+    // per-session) entry path, engine-facing only (see m_selfPlanModeSessions).
+    // Distinct from the global, Settings-driven agent_mode == "plan".
+    Response handlePlanEnter(const Request &req);
+    Response handlePlanExit(const Request &req);
+    Response handlePlanStatus(const Request &req);
     Response handleSessionDelete(const Request &req);
     Response handleSessionList(const Request &req);
     Response handleSessionHistory(const Request &req);
@@ -703,6 +709,9 @@ private:
     // appended to the co-work preamble right after permissionPolicyClause().
     // Empty for the balanced "coworker" default (the guide already covers it).
     QString modePolicyClause() const;
+    // Always-present clause advertising the self-initiated Plan Mode entry path
+    // (enter_plan_mode/exit_plan_mode), independent of the current agent_mode.
+    QString planToolsClause() const;
 
     // Render the base system block (memory) injected into ApiBrain's system
     // prompt at session.create time.
@@ -845,6 +854,9 @@ private:
     // Seed the built-in "phone" skill — the playbook for calling/texting the user
     // and answering when they call/text in. Re-seeds on a version marker bump.
     void seedPhoneSkill();
+    // Seed the built-in "planning" skill — Plan Mode methodology (research-first,
+    // subagent fan-out, present_plan). Re-seeds on a version marker bump.
+    void seedPlanningSkill();
     // Seed the native phone subsystem's MCP endpoint (call_user / notify_user /
     // twilio_* etc.) into the brain's registry from ~/.config/jarvis/phone.env, if
     // present. Idempotent; no-op when the phone isn't set up.
@@ -965,6 +977,12 @@ private:
     // screen here, instead of silently believing (and faking) it has an isolated
     // agent desktop.
     QSet<QString> m_autoGlobalEngineSessions;
+    // sessionIds the MODEL put into PLAN mode itself via enter_plan_mode (Plan
+    // Mode, ephemeral/self-initiated path) — distinct from the global, persisted
+    // Settings agent_mode. In-memory only; cleared on session cancel/delete and
+    // by exit_plan_mode/present_plan's Approve & Build. See plan.enter/plan.exit/
+    // plan.status and computer_use_mcp/policy.py's _plan_mode_gate.
+    QSet<QString> m_selfPlanModeSessions;
     // sessionId -> last turn time (ms). Drives the idle-teardown sweep below.
     QHash<QString, qint64> m_deskLastActive;
     // Idle-teardown sweep: tears an AUTO desktop down when its session hasn't been

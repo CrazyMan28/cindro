@@ -35,6 +35,15 @@ public:
         // Permission mode: coder/coworker run with default gated permissions; the
         // daemon never passes bypassPermissions.
         QString permissionMode; // "" => CLI default
+        // Tool names to remove from the model's toolset entirely (--disallowedTools).
+        // Used for PLAN mode: native Write/Edit/Bash/NotebookEdit/Task are removed
+        // so the MCP-side plan-mode gate (computer_use_mcp/policy.py) is the only
+        // enforcement needed for MCP tools, while these native tools — invisible to
+        // that gate — are blocked here instead. NOT the same mechanism as
+        // `--permission-mode plan`, which was tried and rejected: it blanket-denies
+        // EVERY MCP tool call with no allowlist override, which would also break
+        // present_plan/agent_start/todo_write.
+        QStringList disallowedTools; // empty => nothing removed
         // CLAUDE_CONFIG_DIR for the spawned `claude` process — pins which OAuth
         // account the brain runs as. DEFAULTS to the Pro account dir (~/.claude)
         // so the brain never accidentally inherits the user's Max account

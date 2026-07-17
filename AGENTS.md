@@ -1301,6 +1301,99 @@ the daemon's event loop, so other sessions/clients are not frozen — only this 
 is delayed. Chosen over the previous shortcut because the shortcut silently broke isolation; the cost
 is a one-time hit per session, not per turn (idle-teardown reuses the same reserved port+bearer).
 
+**Codex review follow-ups on PR #130 (same day):**
+- The co-work guide's "SHOWING YOUR WORK" clause was still unconditional — it told the model
+  `desktop_screenshot` captures "your agent screen" and the peek panel "mirrors your desktop" even
+  on the no-isolation `autoGlobalEngine` fallback, where that tool actually captures the user's REAL
+  screen. Contradicted the `coworkClause` warning right above it. Split into a
+  `showingWorkClause`, branched the same way as `coworkClause`.
+- `sandbox_busy:` (Windows Sandbox single-instance guard reporting transient contention, not a real
+  failure) was falling into the generic "real provisioning failure" `else` branch in the new
+  `autoComputer` path, landing the session in NEITHER `m_autoComputerSessions` nor
+  `m_autoGlobalEngineSessions` — so the BATTERY re-provision check in `sendToSession()` (which only
+  looks at `m_autoComputerSessions`) never retried it, permanently starving that session of
+  computer-use even after the sandbox freed up. Added a `transientBusy` branch (mirroring the
+  existing check in `explicitAgent`) that tracks it in `m_autoComputerSessions` instead, so the next
+  turn's `ensure()` retries automatically.
+
+## New subsystems (2026-07-16) — Plan Mode: real enforcement + subagent steering
+
+Cindro's `plan` `agent_mode` used to be 100% prompt text (`ControlServer::modePolicyClause()`
+telling the model to research read-only and ask before executing) — nothing actually stopped a
+write tool call. Now it's enforced at the tool layer, has a second self-initiated entry path the
+model can use on its own judgment (mirroring how Claude Code's own plan mode works), and a
+dispatched subagent can be steered with a follow-up message instead of only fire-and-`agent_wait`.
+
+**The real enforcement lives in ONE place**, not per-brain: `computer_use_mcp/policy.py`'s
+`_plan_mode_gate`, wired first in `gated_call_tool` — the same choke point every brain's MCP tool
+call already passes through. It calls a new Contract A `plan.status{session_id}` (session-scoped,
+~2s TTL cache — the shared global `:8794` engine serves multiple concurrent sessions, so this must
+NOT be a process-global cache) and hard-denies anything off a small allowlist (`_PLAN_SAFE_TOOLS`).
+**Deliberately fails CLOSED** on an unreachable daemon — the one place in `policy.py` that departs
+from the file's usual fail-open philosophy, because PLAN mode's whole contract is a safety
+guarantee, not a convenience default.
+
+**Two brain-specific gaps, found empirically, not guessed:**
+- **CodexBrain**: `driveMcp` (set whenever computer-use is injected — true for any session that
+  also needs `present_plan`/`agent_start`) unconditionally forces `--sandbox danger-full-access` in
+  the ctor, overriding whatever `makeBrain()` sets for PLAN mode. So Codex sessions get PLAN
+  enforcement for MCP tools only — Codex's **native** shell/apply_patch tools are NOT hard-blocked.
+  Documented, not fixed — `core/tests/codex_buildargs_test.cpp` asserts this is intentional.
+- **ClaudeBrain**: `--permission-mode plan` (Claude Code's own real plan mode) was tried FIRST and
+  **live-tested against a real throwaway MCP server, then rejected** — it blanket-denies every MCP
+  tool call with no allowlist override (`--allowedTools` does NOT help), which would also break
+  `present_plan`/`agent_start`/`todo_write` (themselves MCP tools). The verified working mechanism:
+  `--permission-mode bypassPermissions` (so MCP tools — gated separately by `policy.py` — still run
+  headless) + a new `--disallowedTools Write,Edit,NotebookEdit,Bash,Task` to remove Claude's native
+  mutating tools, which are invisible to the MCP-side gate. `Task` is included so subagent dispatch
+  is forced through Cindro's own gated `agent_start`.
+
+**Dual entry, one exit tool:** the existing global `agent_mode == "plan"` (Settings-driven) still
+requires `present_plan`'s "Approve & Build" to exit. A NEW `enter_plan_mode(reason)` tool lets the
+model go read-only on its own judgment, for just that session (`ControlServer::m_selfPlanModeSessions`,
+in-memory, never persisted) — `exit_plan_mode(summary)` leaves it with no user approval needed.
+`present_plan`'s approve action is one code path for both: it unconditionally clears the
+self-initiated flag AND, only if the global setting was actually `"plan"`, flips it to `"build"`.
+
+**`agent_send(session_id, message)`** (`tools_jarvis_ops.py`) steers an already-`agent_start`-ed
+subagent. Turned out to need zero new C++: `agent_start` already spins up a real daemon session
+(`agents.dispatch` → `createSession()` + `sendToSession()`), and `sendToSession()` already queues a
+turn if the target is busy — so `agent_send` is a thin wrapper over the same `session.send` path
+`agent_stop` already reuses via `session.cancel`. It does **not** interrupt a subagent mid-task
+(codex/claude run one non-interruptible process per turn) — the message is delivered as the
+subagent's next turn, not injected into its current one. True mid-tool-call interrupt (only
+architecturally possible for ApiBrain today, which owns its tool loop directly) is a follow-up.
+
+**Follow-ups explicitly NOT in this change:** true mid-task subagent interrupt; `outpost_exec`/
+`outpost_screenshot` gate coverage (referenced in existing skill text but not found in any
+`computer_use_mcp/tools_*.py` — needs its own investigation); phone-tool read-only allowlist beyond
+`notify_user`; a shared-fixture mechanism to keep the C++ `--disallowedTools` list and Python
+`_PLAN_SAFE_TOOLS` in sync automatically instead of by hand.
+
+**Post-review fixes (2026-07-17, `/code-review high`):** `makeBrain()`'s `planMode` originally only
+checked the global Settings value, never `m_selfPlanModeSessions` — self-initiated plan mode
+(`enter_plan_mode`) got zero brain-level `Options` defense-in-depth (ClaudeBrain's
+`--disallowedTools` never applied). Fixed to check both. Relatedly, `handleAgentsDispatch` didn't
+propagate a self-initiated restriction to a dispatched subagent, letting a plan-restricted session
+delegate the actual writing to an unrestricted child — fixed by inserting the child into
+`m_selfPlanModeSessions` when the parent is restricted that way. **Known residual caveat** (shared
+with the pre-existing Settings-driven path, not new to this fix): brain `Options` are baked in at
+construction time and reused for every turn's subprocess respawn, so calling `enter_plan_mode()`
+mid-conversation restricts tools *immediately* via the `policy.py` MCP gate, but this
+defense-in-depth layer only picks it up the next time the Brain object itself is (re)constructed
+(new session, or a respawn after daemon restart/idle-teardown) — this is why the MCP gate, not the
+brain `Options`, is documented as the real source of truth.
+
+**Two other findings from the review, deliberately left as documented limitations, not fixed:**
+`policy._plan_status()`'s cache is keyed by `daemon_client.current_session_id()`, which resolves to
+an ambiguous empty string when 0 or 2+ sessions are `running` on the shared global `:8794` engine —
+the same pre-existing, already-accepted limitation the todo/widget bus's session-scoping comment
+documents ("a time-based cache could attribute session B's todo to session A"), not a new class of
+bug. And `present_plan`'s "Approve & Build" path can return `decision:"approve"` even if the
+underlying `plan.exit`/`settings.set` calls silently failed (network hiccup) — it fails *safe*, not
+open: the model's very next write attempt gets denied again by the (unrelated, still-live)
+`policy.py` gate, so the worst outcome is one confusing turn, not an actual restriction bypass.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.
