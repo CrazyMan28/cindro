@@ -2947,9 +2947,9 @@ QString ControlServer::modePolicyClause() const
             "agent_wait/agent_status/agent_result/agent_stop/agent_send) remain "
             "available — fan out research freely. When the plan is ready, call "
             "present_plan(title, markdown, todos) and wait for the user's decision "
-            "(approve switches you to BUILD mode automatically; request-changes "
-            "gives you feedback to incorporate). The user can also change modes "
-            "directly in Settings.");
+            "(approve unblocks THIS session immediately — execute right away, no "
+            "need to ask again; request-changes gives you feedback to "
+            "incorporate). The user can also change modes directly in Settings.");
     }
     if (mode == QStringLiteral("build")) {
         return QStringLiteral(
@@ -3036,7 +3036,7 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
                                      const QString &title, QString *err,
                                      const QString &target, const QString &parentSessionId,
                                      const QString &agent, const QString &agentPromptOverride,
-                                     const QString &scheduleTargetRef)
+                                     const QString &scheduleTargetRef, bool inheritSelfPlanMode)
 {
     // Custom-agent (subagent) resolution: when this session runs AS an agent,
     // a DEFINED agent supplies its brain/model/profile + system prompt; but an
@@ -3064,6 +3064,12 @@ QString ControlServer::createSession(const QString &profile, const QString &brai
 
     SessionRow row;
     row.id = genSessionId();
+    // Mark self-plan-mode BEFORE makeBrain() runs below (createSession() calls
+    // it internally) so a plan-restricted parent's child is born with the
+    // right Brain Options (e.g. ClaudeBrain's --disallowedTools) already
+    // baked in, not just gated live by the MCP-side policy.py gate.
+    if (inheritSelfPlanMode)
+        m_selfPlanModeSessions.insert(row.id);
     row.parentSessionId = parentSessionId;
     row.agent = agentName;
     row.profile = effProfile.isEmpty() ? QStringLiteral("coder") : effProfile;
@@ -3365,6 +3371,16 @@ void ControlServer::wakeParentForSubagent(const QString &childSid)
 {
     // One-shot: only the FIRST trigger (final OR turnFinished) wakes the parent.
     if (!m_subagentPendingWake.contains(childSid))
+        return;
+    // DEFER if a turn is already queued for this child (agent_send steered it
+    // while it was busy — see sendToSession's m_pendingTurns.insert). Without
+    // this, THIS turn's Final event would consume the one-shot wake before the
+    // queued turn even starts, so the queued turn's own completion would later
+    // find m_subagentPendingWake already empty and silently never notify the
+    // parent (Codex review, PR #132). The queued turn's own Final event will
+    // retry this call once it eventually finishes, by which time it will have
+    // been dequeued (drained in the post-turn cleanup right after this event).
+    if (m_pendingTurns.contains(childSid))
         return;
     const QString parentSid = m_subagentPendingWake.take(childSid);
     const bool parentOk = m_store.get(parentSid).has_value();
@@ -4086,6 +4102,7 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     m_autoComputerSessions.remove(sessionId);
     m_autoGlobalEngineSessions.remove(sessionId);
     m_selfPlanModeSessions.remove(sessionId);
+    m_planApprovedSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_toolLoop.remove(sessionId);
     m_lastToolCall.remove(sessionId);
@@ -4128,6 +4145,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_autoComputerSessions.remove(sessionId);
     m_autoGlobalEngineSessions.remove(sessionId);
     m_selfPlanModeSessions.remove(sessionId);
+    m_planApprovedSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);
     m_coworkGuided.remove(sessionId);
     m_policyGuided.remove(sessionId);
@@ -4435,6 +4453,15 @@ Response ControlServer::handlePlanExit(const Request &req)
 {
     const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
     m_selfPlanModeSessions.remove(sessionId); // no-op if never set (e.g. global-mode session)
+    // present_plan's "Approve & Build" passes approved:true — grant a durable,
+    // SESSION-SCOPED override so THIS session stays unblocked regardless of the
+    // global Settings agent_mode from here on, WITHOUT touching that global
+    // setting (which is shared by every session — flipping it would silently
+    // unblock any OTHER concurrently-running plan-restricted session whose own
+    // plan was never shown to the user; Codex review, PR #132). A plain
+    // exit_plan_mode() call (self-initiated, no approval) does NOT set this.
+    if (req.params.value(QStringLiteral("approved")).toBool() && !sessionId.isEmpty())
+        m_planApprovedSessions.insert(sessionId);
     return Response::success(req.id);
 }
 
@@ -4442,7 +4469,10 @@ Response ControlServer::handlePlanStatus(const Request &req)
 {
     const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
     QJsonObject r;
-    if (m_settings.agentMode() == QStringLiteral("plan")) {
+    if (!sessionId.isEmpty() && m_planApprovedSessions.contains(sessionId)) {
+        r.insert(QStringLiteral("restricted"), false);
+        r.insert(QStringLiteral("source"), QString());
+    } else if (m_settings.agentMode() == QStringLiteral("plan")) {
         r.insert(QStringLiteral("restricted"), true);
         r.insert(QStringLiteral("source"), QStringLiteral("settings"));
     } else if (!sessionId.isEmpty() && m_selfPlanModeSessions.contains(sessionId)) {
@@ -6808,22 +6838,25 @@ Response ControlServer::handleAgentsDispatch(const Request &req, bool remote)
     // Spawn a CHILD session that runs AS the agent. A stored def supplies brain/
     // model/profile + system prompt; an unknown name + inline brain/model/
     // system_prompt makes an ad-hoc subagent. parent_session_id links it for the tree.
+    // A self-initiated PLAN restriction (enter_plan_mode) must propagate to a
+    // dispatched subagent — otherwise a plan-restricted session could delegate
+    // the actual writing to an unrestricted child, defeating the read-only
+    // guarantee. The GLOBAL Settings-driven restriction needs no such
+    // propagation: agent_mode is global, so the child is already covered.
+    // MUST be computed and passed INTO createSession() (not applied after it
+    // returns) — createSession() calls makeBrain() internally, so applying
+    // this after the fact is too late to affect the child's Brain Options.
+    const bool inheritSelfPlanMode = !parent.isEmpty() && m_selfPlanModeSessions.contains(parent);
     QString err;
     const QString sid = createSession(
         /*profile=*/QString(), /*brain=*/brain, /*model=*/model,
         /*cwd=*/p.value(QStringLiteral("cwd")).toString(),
         /*title=*/label, &err, /*target=*/QString(),
         /*parentSessionId=*/parent, /*agent=*/label,
-        /*agentPromptOverride=*/sysPrompt);
+        /*agentPromptOverride=*/sysPrompt, /*scheduleTargetRef=*/QString(),
+        inheritSelfPlanMode);
     if (sid.isEmpty())
         return Response::failure(req.id, QStringLiteral("dispatch_failed"), err);
-    // A self-initiated PLAN restriction (enter_plan_mode) must propagate to a
-    // dispatched subagent — otherwise a plan-restricted session could delegate
-    // the actual writing to an unrestricted child, defeating the read-only
-    // guarantee. The GLOBAL Settings-driven restriction needs no such
-    // propagation: agent_mode is global, so the child is already covered.
-    if (!parent.isEmpty() && m_selfPlanModeSessions.contains(parent))
-        m_selfPlanModeSessions.insert(sid);
     // Every subagent MUST end with a summary so the parent can act on its result.
     const QString taskWithSummary = task +
         QStringLiteral("\n\n[IMPORTANT] When you finish, end your final reply with a "

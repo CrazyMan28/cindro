@@ -178,6 +178,11 @@ public:
     // ScheduleRow::targetRef (e.g. "proxmox-<hostname>") — stored on the
     // session and read by makeBrain() to route the api brain at that agent's
     // own MCP endpoint. Empty for every other caller.
+    // `inheritSelfPlanMode`: true when the caller (handleAgentsDispatch) already
+    // knows this NEW child must be born self-plan-mode-restricted (its parent
+    // is). Must be applied BEFORE makeBrain() runs inside this function (not
+    // after createSession() returns, which is too late — the child's Brain
+    // Options would already be baked without the PLAN-mode restriction).
     QString createSession(const QString &profile, const QString &brain,
                           const QString &model, const QString &cwd,
                           const QString &title, QString *err,
@@ -185,7 +190,8 @@ public:
                           const QString &parentSessionId = QString(),
                           const QString &agent = QString(),
                           const QString &agentPromptOverride = QString(),
-                          const QString &scheduleTargetRef = QString());
+                          const QString &scheduleTargetRef = QString(),
+                          bool inheritSelfPlanMode = false);
 
     // target="real" take-over: after a biometric approval the agent drives the
     // user's ACTIVE real session via the global :8794 engine. requestTakeOver
@@ -983,6 +989,17 @@ private:
     // by exit_plan_mode/present_plan's Approve & Build. See plan.enter/plan.exit/
     // plan.status and computer_use_mcp/policy.py's _plan_mode_gate.
     QSet<QString> m_selfPlanModeSessions;
+    // sessionIds individually granted "Approve & Build" via present_plan
+    // (plan.exit{approved:true}) — checked FIRST in handlePlanStatus, ahead of
+    // BOTH the global Settings agent_mode and the self-initiated flag above.
+    // Exists because the global agent_mode is shared across every session: if
+    // approving session A's plan flipped that GLOBAL setting to "build" (the
+    // old behavior), a concurrently-running session B — whose own plan was
+    // never shown to the user — would ALSO become instantly unrestricted on
+    // its next tool call (Codex review, PR #132). Approval is scoped to the
+    // approving session only; it does NOT touch the global setting. In-memory
+    // only; cleared on session cancel/delete.
+    QSet<QString> m_planApprovedSessions;
     // sessionId -> last turn time (ms). Drives the idle-teardown sweep below.
     QHash<QString, qint64> m_deskLastActive;
     // Idle-teardown sweep: tears an AUTO desktop down when its session hasn't been

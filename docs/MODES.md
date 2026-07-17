@@ -26,7 +26,10 @@ Surfaced as a HUD chip on every surface and selectable in Settings.
 ## Two ways into PLAN mode
 
 1. **Settings-driven (global)** — the user sets `agent_mode = plan`. Exiting back to BUILD
-   is **mandatory-gated**: only `present_plan`'s "Approve & Build" answer can lift it.
+   is **mandatory-gated**: only `present_plan`'s "Approve & Build" answer can lift it, and
+   it lifts the restriction for the *approving session only* — it does not touch the
+   global `agent_mode` setting, so a different, concurrently-running session that's also
+   plan-restricted stays restricted until its own plan is separately approved.
 2. **Self-initiated (ephemeral, per-session)** — the model calls `enter_plan_mode(reason)`
    on its own judgment at any time, in any mode (mirrors how Claude Code's own plan mode
    works — the model decides to go read-only, the user doesn't have to pre-toggle
@@ -36,8 +39,12 @@ Surfaced as a HUD chip on every surface and selectable in Settings.
    to. Tracked server-side in `ControlServer::m_selfPlanModeSessions` (in-memory only).
 
 Both paths are checked by the same `plan.status{session_id}` Contract A method
-(`{restricted, source: "settings"|"self"}`) — see `handlePlanEnter`/`handlePlanExit`/
-`handlePlanStatus` in `daemon/src/ControlServer.cpp`.
+(`{restricted, source: "settings"|"self"|""}`) — see `handlePlanEnter`/`handlePlanExit`/
+`handlePlanStatus` in `daemon/src/ControlServer.cpp`. A third, per-session
+`m_planApprovedSessions` set (granted by `plan.exit{session_id, approved:true}`, which
+only `present_plan`'s Approve & Build path sets) is checked FIRST and always wins,
+regardless of the current global/self state — this is what makes approval session-scoped
+instead of leaking across concurrently-running plan-restricted sessions.
 
 ## How PLAN is enforced
 
@@ -78,11 +85,15 @@ tools; each CLI's own native file/shell tools need brain-specific handling too
 `present_plan(title, markdown, todos)` (`computer_use_mcp/tools_plan.py`) publishes the
 plan and blocks (via the existing `ask_bus`, the same mechanism trust-policy/phone/
 command-scan "ask" already use — no new UI plumbing) for the user's **Approve & Build**
-or **Request Changes**. Approve clears whichever PLAN entry is active (self-initiated
-flag and/or, only if it was the global setting, flips `agent_mode` to `build`) and busts
-the gate's cache so the very next tool call in the same turn is already unblocked.
-Request Changes returns the user's feedback as `note` for the model to incorporate
-before calling `present_plan` again.
+or **Request Changes**. Approve calls `plan.exit{approved:true}`, which clears the
+self-initiated flag (if set) AND grants the session-scoped approved-override — it
+deliberately does **not** flip the global `agent_mode` setting, so approving one
+session's plan can never silently unblock a different, concurrently-running
+plan-restricted session whose own plan was never shown to the user (a real bug an
+earlier version of this had — Codex review, PR #132). Then busts the gate's cache so the
+very next tool call in the same turn is already unblocked. Request Changes returns the
+user's feedback as `note` for the model to incorporate before calling `present_plan`
+again.
 
 ## Steering a dispatched subagent — `agent_send`
 
