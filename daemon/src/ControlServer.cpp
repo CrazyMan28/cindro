@@ -9160,38 +9160,64 @@ QString ControlServer::operatorResolveEffect(const QString &tool, const QJsonObj
     }
 
     const QJsonArray rules = policy.value(QStringLiteral("rules")).toArray();
-    for (const QJsonValue &rv : rules) {
-        const QJsonObject rule = rv.toObject();
-        const QString effect = rule.value(QStringLiteral("effect")).toString();
-        if (effect != QStringLiteral("allow") && effect != QStringLiteral("ask") &&
-            effect != QStringLiteral("deny"))
-            continue;
-        const QJsonObject match = rule.value(QStringLiteral("match")).toObject();
-        bool ok = true;
-        for (auto k = match.begin(); k != match.end(); ++k) {
-            const QString key = k.key();
-            if (key == QStringLiteral("tool")) {
-                if (k.value().toString() != tool) { ok = false; break; }
-            } else if (key == QStringLiteral("verb")) {
-                if (k.value().toString() != verb) { ok = false; break; }
-            } else if (key == QStringLiteral("method")) {
-                if (k.value().toString().toUpper() != method) { ok = false; break; }
-            } else if (key == QStringLiteral("path")) {
-                if (k.value().toString() != path) { ok = false; break; }
-            } else if (key == QStringLiteral("vmid")) {
-                if (!vmidCandidates.contains(k.value().toInt())) { ok = false; break; }
-            } else {
-                ok = false; break; // unknown match key never matches
+    const QString rawDef = policy.value(QStringLiteral("default_risky")).toString();
+    const QString safeDef = (rawDef == QStringLiteral("allow") || rawDef == QStringLiteral("ask") ||
+                             rawDef == QStringLiteral("deny"))
+                                ? rawDef : QStringLiteral("ask"); // safe default (missing/blank policy)
+
+    // Resolve the effect for a SINGLE candidate vmid (or none). Pulled out of the
+    // old single-pass loop so each touched vmid can be evaluated independently —
+    // see the Codex review note below.
+    auto resolveForVmid = [&](bool has, int v) -> QString {
+        for (const QJsonValue &rv : rules) {
+            const QJsonObject rule = rv.toObject();
+            const QString effect = rule.value(QStringLiteral("effect")).toString();
+            if (effect != QStringLiteral("allow") && effect != QStringLiteral("ask") &&
+                effect != QStringLiteral("deny"))
+                continue;
+            const QJsonObject match = rule.value(QStringLiteral("match")).toObject();
+            bool ok = true;
+            for (auto k = match.begin(); k != match.end(); ++k) {
+                const QString key = k.key();
+                if (key == QStringLiteral("tool")) {
+                    if (k.value().toString() != tool) { ok = false; break; }
+                } else if (key == QStringLiteral("verb")) {
+                    if (k.value().toString() != verb) { ok = false; break; }
+                } else if (key == QStringLiteral("method")) {
+                    if (k.value().toString().toUpper() != method) { ok = false; break; }
+                } else if (key == QStringLiteral("path")) {
+                    if (k.value().toString() != path) { ok = false; break; }
+                } else if (key == QStringLiteral("vmid")) {
+                    if (!has || k.value().toInt() != v) { ok = false; break; }
+                } else {
+                    ok = false; break; // unknown match key never matches
+                }
             }
+            if (ok)
+                return effect;
         }
-        if (ok)
-            return effect;
+        return safeDef;
+    };
+
+    if (vmidCandidates.isEmpty())
+        return resolveForVmid(false, 0);
+
+    // Codex review (PR #130): the old single pass matched a vmid-scoped rule if
+    // the vmid appeared ANYWHERE in the combined candidate set, so an allow rule
+    // for VM 106 authorized the WHOLE call for e.g. clone {source:100, newid:106}
+    // even though source VM 100 had no rule of its own and should have fallen
+    // through to "ask". Resolve each touched vmid independently and combine
+    // conservatively: deny beats ask beats allow, so an unauthorized VM anywhere
+    // in the call can never be waved through by another VM's rule.
+    bool anyAsk = false;
+    for (int cand : vmidCandidates) {
+        const QString eff = resolveForVmid(true, cand);
+        if (eff == QStringLiteral("deny"))
+            return QStringLiteral("deny");
+        if (eff == QStringLiteral("ask"))
+            anyAsk = true;
     }
-    const QString def = policy.value(QStringLiteral("default_risky")).toString();
-    if (def == QStringLiteral("allow") || def == QStringLiteral("ask") ||
-        def == QStringLiteral("deny"))
-        return def;
-    return QStringLiteral("ask"); // safe default (missing/blank policy)
+    return anyAsk ? QStringLiteral("ask") : QStringLiteral("allow");
 }
 
 void ControlServer::operatorAppendAllowRule(const QJsonObject &match)
