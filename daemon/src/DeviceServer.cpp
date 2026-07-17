@@ -157,15 +157,17 @@ void DeviceServer::readWidgetTail()
     // content and only makes the arithmetic exact.
     if (!f.open(QIODevice::ReadOnly))
         return;
-    // Rotation/truncation: the bus file shrank out from under us (log rotation or
-    // a fresh engine run). Our old byte offset no longer maps onto the new file,
-    // and re-reading from 0 would REPLAY every line still in the file as a fresh
-    // widget.render to the phone (double-render). Resync to the CURRENT EOF —
-    // matching startWidgetWatch()'s "start from the END so old widgets don't
-    // replay" — and pick up genuinely new frames on the next poll instead.
+    // Rotation/truncation: the bus file shrank out from under us. widgets_bus's
+    // truncate-and-keep-tail rewrites the file to its last ~2 MiB and THEN appends
+    // the record that triggered the rotation, so the fresh tail holds both records
+    // we already pushed AND genuinely-new ones. Jumping to EOF would drop the new
+    // ones; re-reading from 0 would replay the old ones as duplicate renders. So
+    // re-read from the start but DEDUP by each record's `ts`: skip anything at or
+    // before the newest ts we've already pushed (m_lastWidgetTs), emit the rest.
+    bool rotated = false;
     if (f.size() < m_widgetOffset) {
-        m_widgetOffset = f.size();
-        return;
+        m_widgetOffset = 0;
+        rotated = true;
     }
     if (!f.seek(m_widgetOffset))
         return;
@@ -191,6 +193,13 @@ void DeviceServer::readWidgetTail()
             continue;
         const QJsonObject o = d.object();
 
+        // On a rotation pass the retained tail re-presents records we already
+        // pushed; skip anything at or before the newest ts we've sent so they
+        // don't double-render on the phone. (Normal in-order tailing never skips.)
+        const qint64 ts = o.value(QStringLiteral("ts")).toVariant().toLongLong();
+        if (rotated && ts <= m_lastWidgetTs)
+            continue;
+
         // Build the Contract C frame: remove/clear ops, else a render.
         const QString op = o.value(QStringLiteral("op")).toString();
         QJsonObject data;
@@ -212,6 +221,11 @@ void DeviceServer::readWidgetTail()
             data.insert(QStringLiteral("target"), o.value(QStringLiteral("target")).toString());
             data.insert(QStringLiteral("session_id"), sessionId);
         }
+
+        // Committed to processing this record for broadcast: advance the
+        // rotation-dedup cursor (independent of the per-conn delivery filter below).
+        if (ts > m_lastWidgetTs)
+            m_lastWidgetTs = ts;
 
         QJsonObject frame;
         frame.insert(QStringLiteral("v"), 1);
