@@ -91,10 +91,17 @@ class SyncLicenseFromStripeWebhook
         };
 
         $license = License::where('stripe_subscription_id', $stripeSubscriptionId)->first()
-            // A user who registered already has a trial (or manually-issued)
-            // license with no stripe_subscription_id — upgrade that one in
-            // place instead of leaving it active alongside a second row.
-            ?? $user->licenses()->whereNull('stripe_subscription_id')->where('status', 'active')->first();
+            // A user who registered already has a TRIAL license with no
+            // stripe_subscription_id — upgrade that one in place instead of
+            // leaving it active alongside a second row. Codex review (PR
+            // #130): this used to match ANY active no-subscription license,
+            // including a manually-issued one (e.g. a Filament-created
+            // lifetime enterprise grant) — buying and later canceling an
+            // unrelated Starter subscription would overwrite and eventually
+            // expire that manual license. Scoped to tier=trial, the only kind
+            // Stripe is ever meant to upgrade in place.
+            ?? $user->licenses()->whereNull('stripe_subscription_id')
+                ->where('status', 'active')->where('tier', 'trial')->first();
 
         if ($license) {
             $license->update([
@@ -116,6 +123,13 @@ class SyncLicenseFromStripeWebhook
             ]), 0, fn (\Throwable $e) => $e instanceof QueryException);
         }
 
-        $user->grantFoundingMemberStatusIfSlotAvailable();
+        // Codex review (PR #130): this used to run for EVERY recognized event,
+        // including incomplete/past_due/unpaid/paused ones mapped to
+        // "suspended" above — an abandoned or failed checkout consumed a
+        // founding-member slot, excluding a later paying customer. Only grant
+        // it once the subscription is actually active.
+        if ($status === 'active') {
+            $user->grantFoundingMemberStatusIfSlotAvailable();
+        }
     }
 }

@@ -158,6 +158,46 @@ class SyncLicenseFromStripeWebhookTest extends TestCase
         $this->assertTrue($license->isCurrentlyValid());
     }
 
+    public function test_does_not_overwrite_a_manually_issued_non_trial_license(): void
+    {
+        // Codex review (PR #130): the upgrade-in-place fallback used to match
+        // ANY active no-subscription license, including a manually issued one
+        // (e.g. a Filament-created lifetime enterprise grant) — buying an
+        // unrelated subscription would overwrite and eventually expire it.
+        $user = User::factory()->create(['stripe_id' => 'cus_10']);
+        $manualLicense = $user->licenses()->create([
+            'key' => 'CIND-MANUAL-0000-0001',
+            'tier' => 'enterprise',
+            'status' => 'active',
+            'issued_at' => now(),
+        ]);
+
+        (new SyncLicenseFromStripeWebhook)->handle(new WebhookHandled(
+            $this->subscriptionCreatedPayload('cus_10', 'sub_10')
+        ));
+
+        $this->assertSame(2, $user->licenses()->count());
+        $manualLicense->refresh();
+        $this->assertSame('enterprise', $manualLicense->tier);
+        $this->assertNull($manualLicense->stripe_subscription_id);
+        $newLicense = License::where('stripe_subscription_id', 'sub_10')->firstOrFail();
+        $this->assertSame('pro', $newLicense->tier);
+    }
+
+    public function test_does_not_grant_founding_member_status_for_a_non_active_subscription(): void
+    {
+        // Codex review (PR #130): this used to run for every recognized event,
+        // so an abandoned/failed checkout (mapped to "suspended") consumed a
+        // founding-member slot, excluding a later paying customer.
+        $user = User::factory()->create(['stripe_id' => 'cus_11']);
+
+        (new SyncLicenseFromStripeWebhook)->handle(new WebhookHandled(
+            $this->subscriptionCreatedPayload('cus_11', 'sub_11', 'price_pro_test', 'past_due')
+        ));
+
+        $this->assertFalse($user->fresh()->is_founding_member);
+    }
+
     public function test_stops_granting_founding_member_status_once_cap_is_reached(): void
     {
         User::factory()->count(2)->create(['is_founding_member' => true]);
