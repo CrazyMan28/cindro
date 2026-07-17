@@ -578,8 +578,9 @@ derived from the other). Load-bearing truths:
 - **The `.xcodeproj` is GENERATED, never committed** (`project.yml` → `xcodegen generate`), the same
   discipline as the Android app being pure-Gradle: a hand-edited pbxproj drifts. CI runs
   `xcodegen generate` before every `xcodebuild`.
-- **`ios-build.yml` runs on GitHub-hosted `macos-latest`** — the ONE sanctioned exception to the
-  "100% self-hosted / zero GitHub-hosted minutes" rule below, because iOS needs Xcode on macOS and
+- **`ios-build.yml` runs on GitHub-hosted `macos-latest`** — one of two sanctioned exceptions to
+  the "100% self-hosted / zero GitHub-hosted minutes" rule below (the other being `website-ci.yml`,
+  a separate lightweight PHP/Node stack for `website/`), because iOS needs Xcode on macOS and
   the Proxmox fleet is Windows + Linux only. The owner opted into the Actions minutes. It rides the
   SAME `v*` tag `auto-release.yml` already creates, so merge-to-main attaches an **unsigned** `.ipa`
   next to the `.exe`/`.apk`/AppImage with no tagger change. Signed TestFlight/App Store builds need
@@ -603,14 +604,19 @@ work on dev  →  push  →  test  →  promote dev → qa  →  test  →  PR q
 
 Do day-to-day work on **`dev`**. When it's good, fast-forward/merge into **`qa`** and
 test. When qa passes, open a **PR into `main`** and merge it. Never commit directly to
-`main` (the branch protection will reject it).
+`main` (the branch protection will reject it). `website/` follows the exact same flow —
+it just has its own lightweight `website-ci.yml` gate instead of the platform build
+workflows, and a website-only merge is deliberately excluded (`paths-ignore`) from
+triggering `auto-release.yml`'s version bump (see below).
 
 ## GitHub / CI / releases (how Issac runs this repo)
 
-- **CI is 100% self-hosted — ZERO GitHub-hosted minutes.** Windows builds run on
-  `win-runner-1` (the winvm / Proxmox VM 106 box); Linux CI/release/auto-release run on the
-  six `pve-ubuntu-runner-*` (VM 104). **Never** switch a workflow to `windows-latest` /
-  `ubuntu-latest` — all four workflow files use `runs-on: [self-hosted, …]`. The Windows
+- **CI is 100% self-hosted for the product build workflows — ZERO GitHub-hosted minutes.**
+  Windows builds run on `win-runner-1` (the winvm / Proxmox VM 106 box); Linux CI/release/
+  auto-release run on the six `pve-ubuntu-runner-*` (VM 104). **Never** switch one of these
+  four workflow files to `windows-latest` / `ubuntu-latest` — they use `runs-on: [self-hosted, …]`.
+  (`ios-build.yml` and `website-ci.yml` are the two sanctioned GitHub-hosted exceptions — see
+  above and the `website/` subsystem entry below.) The Windows
   runner is **prebuilt** (git, vcpkg + libsodium/libqrencode, Inno Setup, VS Build Tools,
   PowerShell 7, Python, Qt, Ninja, CMake, Node) via `windows/scripts/setup-runner-*.ps1`, so
   the workflow does **no per-run tool downloads** (mirrors the Linux prebuilt CI image). After
@@ -1300,6 +1306,38 @@ provisioning cost on an auto-spawned chat's first turn that an explicit co-work 
 the daemon's event loop, so other sessions/clients are not frozen — only this one request's response
 is delayed. Chosen over the previous shortcut because the shortcut silently broke isolation; the cost
 is a one-time hit per session, not per turn (idle-teardown reuses the same reserved port+bearer).
+
+## New subsystems (2026-07-17) — `website/` marketing/billing site scaffold
+
+Built the Laravel site sell.md's "Laravel plan" section specs: Breeze (Blade auth) + Cashier
+(Stripe) + Filament (admin) + Tailwind, styled dark/"hacker meets macOS" (terminal-window chrome,
+monospace accents). Self-contained under `website/` — own `composer.json`/`package.json`, zero
+CMake integration, same as `web/`/`android/`/`computer-use/`. See `website/README.md` for setup,
+the `/api/license/verify` contract, and the full "known limitations" list. Load-bearing points:
+
+- **Not Laravel 11.** sell.md specified Laravel 11, but every Laravel 11.x release recent enough
+  to still be installable had unpatched security advisories by build time (Composer's audit-block
+  refused them). Used the current stable major (Laravel 13) instead — same stack, not an EOL
+  version. Re-check this if you ever touch `website/composer.json`'s framework constraint.
+- **`License` (not Cashier's `Subscription`) is the source of truth `/api/license/verify` reads.**
+  A `SyncLicenseFromStripeWebhook` listener (on Cashier's `WebhookHandled` event) projects Stripe
+  subscription state into the local `licenses` table on `customer.subscription.*` events — this is
+  the one piece of real business logic tying billing to licensing. Manually-issued licenses (via
+  Filament's "Issue Manual License" action) simply have `stripe_subscription_id = null`.
+- **No `core/` changes.** `/api/license/verify`'s JSON contract is designed for a future `core/`
+  `LicenseStore` (mirroring `SettingsStore`'s shape) to consume, but that class doesn't exist yet —
+  sell.md lists its design as an explicit open question. Don't assume it's wired up.
+- **Everything Stripe/GitHub-token-dependent is code-complete but placeholder-only.** No real
+  Stripe test keys or `GITHUB_TOKEN` were available at build time — checkout/webhooks are only
+  tested via `Http::fake()`/mocked events, and `/download` only exercises its no-token fallback
+  path. See `website/README.md`'s "Known limitations" for the full list (also: the product repo
+  being **private** means even a real `GITHUB_TOKEN` doesn't make GitHub's release *asset* URLs
+  anonymously downloadable — flagged as a `// TODO` in `GitHubReleaseService`, not solved).
+- **CI**: new `website-ci.yml` (GitHub-hosted `ubuntu-latest` — see the CI section above) runs
+  `composer install` + `npm run build` + `php artisan test`, gated to `paths: ['website/**']`. All
+  six workflows (`auto-release.yml` + the five product build workflows) got
+  `paths-ignore: ['website/**']` added so a website-only PR/merge doesn't bump a product version or
+  burn self-hosted/GitHub-hosted runner time on unrelated platform builds.
 
 ## Conventions
 

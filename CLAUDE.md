@@ -29,6 +29,7 @@ extension, terminal client, and web dashboard, all driven by one daemon:
 | `web/` | TypeScript/SolidJS (Bun) | Browser dashboard mirroring the desktop's page set, talking straight to the daemon's control WebSocket. |
 | `windows/` | — | The Windows edition. Changes here must NEVER touch `core/`/`daemon/`/`desktop/`/`computer-use/` (see `AGENTS.md`). |
 | `packaging/` | — | systemd units, `install.sh` (local, no-sudo install/rebuild), release packaging. |
+| `website/` | PHP (Laravel 13) | Marketing/billing site — Breeze auth, Cashier/Stripe, Filament admin, `/api/license/verify`. Self-contained, no CMake integration. See `website/README.md`. |
 
 **A feature usually spans 3+ of these** (e.g. daemon RPC → desktop QML → CLI/TUI → web). Wire the
 daemon/core first, then the surfaces, keeping the protocol identical across them.
@@ -75,6 +76,16 @@ cd android
 ./gradlew assembleDebug
 ```
 Bump `versionCode`/`versionName` on every shippable change, then build + push to the phone.
+
+### Website (`website/`) — Laravel + Breeze + Cashier + Filament
+```bash
+cd website
+composer install
+npm install
+php artisan migrate:fresh --seed   # local sqlite, seeds a demo admin + one user per tier
+php artisan serve                  # + `npm run dev` for the Vite dev server
+php artisan test                   # in-memory sqlite, no setup needed
+```
 
 ## Verification philosophy
 
