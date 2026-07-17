@@ -135,6 +135,13 @@ function sanitizeForStore(it: ChatItem): ChatItem {
       // approval could never be answered. Persist it fail-closed (not
       // authorized) rather than as a live button that silently does nothing.
       return it.resolved ? it : { ...it, resolved: "deny" }
+    case "user":
+    case "error":
+      // Cap these too: an operator pasting a large log into the composer would
+      // otherwise store an uncapped `user` item, and a few of those can blow the
+      // localStorage quota — every later write then throws (silently), wedging
+      // persistence so reloads restore a stale transcript.
+      return { ...it, text: capStr(it.text) }
     default:
       return it
   }
@@ -365,8 +372,23 @@ export class ChatController {
     this.modelsLoaded = true
     const cfg = await resolveOperatorConfig()
     this.hostDefaultModel[1](cfg.model)
-    // Always keep the current selection listed, even if the live catalog didn't
-    // return it (a custom id, or a provider that's momentarily unreachable).
+    // Drop a persisted override whose provider key has since been removed — the
+    // usable catalog loaded but no longer lists it — so we don't open a session
+    // on a model with no key (the turn would just fail); fall back to the host
+    // default. Guard on a NON-EMPTY catalog so a transient settings-fetch failure
+    // (empty list) doesn't wipe a still-valid pick.
+    const override = this.modelOverride[0]()
+    if (override && cfg.models.length > 0 && !cfg.models.includes(override)) {
+      this.modelOverride[1]("")
+      try {
+        localStorage.removeItem(modelStoreKey())
+      } catch {
+        /* best-effort */
+      }
+    }
+    // Keep the (now-validated) current selection listed even if the catalog
+    // didn't return it — e.g. the host default the admin set, or an offline
+    // provider — so the header never shows a model that's missing from its menu.
     const list = [...cfg.models]
     const sel = this.modelOverride[0]() || cfg.model
     if (sel && !list.includes(sel)) list.unshift(sel)
@@ -459,18 +481,15 @@ export class ChatController {
     if (existing) return existing
     if (this.creating) return this.creating
     this.creating = (async () => {
-      // Honor the model the operator picked in the chat header, else the
-      // brain/model the admin chose on AI Settings — on a host with only an
-      // OpenAI key or a local Ollama model, a hard-coded mistral would just fail.
-      // Reuse the default the picker already fetched (loadModels) when present so
-      // opening a conversation doesn't re-hit /_jarvis/settings for the same data.
+      // Resolve the catalog first (idempotent, single fetch): this populates the
+      // host default AND drops a persisted override whose provider key was
+      // removed, so we never open a session on a model with no usable key.
+      await this.loadModels()
+      // Then honor the operator's (validated) pick, else the admin's default,
+      // else Mistral — a host with only an OpenAI key or a local Ollama model
+      // shouldn't be forced onto a hard-coded mistral.
       const brain = "api"
-      let model = this.modelOverride[0]() || this.hostDefaultModel[0]()
-      if (!model) {
-        const cfg = await resolveOperatorConfig()
-        model = cfg.model
-        this.hostDefaultModel[1](cfg.model)
-      }
+      const model = this.selectedModel()
       const res = await this.client.call(
         "session.create",
         {
