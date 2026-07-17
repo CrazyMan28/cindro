@@ -297,6 +297,25 @@ def test_plan_status_fails_closed(monkeypatch):
     assert policy._plan_status() == (True, "unreachable")
 
 
+def test_plan_status_fails_closed_on_ambiguous_session(monkeypatch):
+    # Codex review (PR #130): an empty current_session_id() (0 or 2+ sessions
+    # running on the shared global engine) must not query plan.status with ""
+    # — some other session's cached state (or lack of it) could read back as
+    # unrestricted and get cached under the empty key for this call too.
+    from computer_use_mcp import daemon_client
+
+    _reset_plan_cache()
+    monkeypatch.setattr(daemon_client, "current_session_id", lambda default="": "")
+
+    calls = []
+    monkeypatch.setattr(daemon_client, "call",
+                         lambda method, params=None, timeout=15.0:
+                         calls.append((method, params)) or {"restricted": False, "source": ""})
+
+    assert policy._plan_status() == (True, "ambiguous_session")
+    assert not calls, "must fail closed WITHOUT querying plan.status for an ambiguous session"
+
+
 def test_bust_plan_cache_forces_refetch(monkeypatch):
     from computer_use_mcp import daemon_client
 

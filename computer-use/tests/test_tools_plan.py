@@ -56,6 +56,28 @@ def test_present_plan_approve_grants_session_scoped_override(tools, monkeypatch)
     assert busted == ["sess-1"]
 
 
+def test_present_plan_approve_calls_plan_approve_for_self_initiated_too(tools, monkeypatch):
+    # A self-initiated (enter_plan_mode) session approving its own plan also
+    # calls plan.approve — the RPC is per-session and harmless regardless of
+    # whether the global setting was ever "plan".
+    calls = []
+
+    def fake_call(method, params=None, timeout=15.0):
+        calls.append((method, params))
+        return {}
+
+    monkeypatch.setattr(daemon_client, "call", fake_call)
+    monkeypatch.setattr(ask_bus, "ask",
+                         lambda q, opts, timeout=180.0: {"answer": "Approve & Build",
+                                                          "answered": True, "timed_out": False})
+    monkeypatch.setattr(policy, "bust_plan_cache", lambda sid="": None)
+
+    result = json.loads(tools["present_plan"]("Title", "body"))
+    assert result["decision"] == "approve"
+    assert ("plan.exit", {"session_id": "sess-1"}) in calls
+    assert ("plan.approve", {"session_id": "sess-1"}) in calls
+
+
 def test_present_plan_writes_todos_when_given(tools, monkeypatch):
     written = []
     monkeypatch.setattr(tools_plan, "write_todos", lambda items: written.append(items))

@@ -502,9 +502,19 @@ _PLAN_SAFE_TOOLS = frozenset({
     # eval/cdp/tab_new/tab_close/tab_activate
     "browser_status", "browser_tabs", "browser_snapshot", "browser_screenshot",
     "browser_console",
-    # Subagent research fan-out — planning is explicitly allowed to delegate
-    "agent_create", "agent_list", "agent_get", "agent_start", "agent_wait",
-    "agent_status", "agent_result", "agent_stop", "agent_send",
+    # Subagent research fan-out — planning is explicitly allowed to delegate,
+    # but ONLY via paths that reliably propagate the restriction to the child
+    # (agent_start/agent_committee/agent_moa all route through
+    # ControlServer::handleAgentsDispatch, which inserts the new child into
+    # m_selfPlanModeSessions when the parent is self-plan-restricted) or that
+    # are genuinely read-only. Codex review (PR #130): agent_create and
+    # agent_send were WRONGLY here — agent_create persists/overwrites a reusable
+    # agent definition (a write), and agent_send can direct an EXISTING child
+    # that was dispatched BEFORE the parent entered self-initiated Plan mode
+    # (so it never inherited the restriction) to perform the writes the parent
+    # itself is now forbidden to perform.
+    "agent_list", "agent_get", "agent_start", "agent_wait",
+    "agent_status", "agent_result", "agent_stop",
     "agent_committee", "agent_moa",
     # Read-only self-management
     "list_skills", "get_skill", "skill_load", "list_schedules", "queue_list",

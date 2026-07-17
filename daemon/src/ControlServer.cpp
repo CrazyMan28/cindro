@@ -4139,14 +4139,26 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
     // Canceling a turn ends any real-session take-over (overlay hides).
     if (m_takeOverActive.contains(sessionId))
         setTakeOverActive(sessionId, false);
-    // For a coworker+agent session, cancel is the session's "release" signal
-    // (Contract A has no separate session.close): tear down the nested desktop +
-    // its bound engine so we don't leak a compositor/engine per session. A fresh
-    // desktop is spun up if the session is recreated.
-    m_agentDesktops.releaseSession(sessionId);   // drop the desktop + its reservation
-    m_autoComputerSessions.remove(sessionId);
-    m_autoGlobalEngineSessions.remove(sessionId);
-    m_pendingComputerUseRebind.remove(sessionId);
+    // Codex review (PR #130): an AUTO-computer session's brain has its MCP
+    // config (the desktop's port+bearer) baked in at construction. A routine
+    // session.cancel (interrupt THIS turn, not "end this chat") used to
+    // unconditionally releaseSession() (tears down AND drops the port/bearer
+    // reservation) and stop tracking it in m_autoComputerSessions — so
+    // sendToSession()'s BATTERY re-provision check never fired again, and the
+    // very next "stop"/rephrase permanently orphaned computer-use for the rest
+    // of the chat. Keep the lighter teardown() (keeps the reservation) and
+    // KEEP tracking it here instead, same as an idle-teardown.
+    if (m_autoComputerSessions.contains(sessionId)) {
+        m_agentDesktops.teardown(sessionId);
+    } else {
+        // For a coworker+agent session, cancel IS the session's "release" signal
+        // (Contract A has no separate session.close): tear down the nested desktop +
+        // its bound engine so we don't leak a compositor/engine per session. A fresh
+        // desktop is spun up if the session is recreated.
+        m_agentDesktops.releaseSession(sessionId);   // drop the desktop + its reservation
+        m_autoGlobalEngineSessions.remove(sessionId);
+        m_pendingComputerUseRebind.remove(sessionId);
+    }
     m_selfPlanModeSessions.remove(sessionId);
     m_planApprovedSessions.remove(sessionId);
     m_deskLastActive.remove(sessionId);

@@ -2,7 +2,7 @@
 
 namespace App\Models;
 
-// use Illuminate\Contracts\Auth\MustVerifyEmail;
+use Illuminate\Contracts\Auth\MustVerifyEmail;
 use Database\Factories\UserFactory;
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Panel;
@@ -20,7 +20,14 @@ use Laravel\Cashier\Billable;
     'is_founding_member', 'founding_member_number', 'is_admin',
 ])]
 #[Hidden(['password', 'remember_token'])]
-class User extends Authenticatable implements FilamentUser
+// Codex review (PR #130): this was commented out — the `verified` middleware
+// (routes/web.php's /dashboard route) and Breeze's verify-email routes
+// (routes/auth.php) were already fully wired, but with no MustVerifyEmail
+// implementation the middleware treats every authenticated user as verified
+// and Registered's SendEmailVerificationNotification listener never fires,
+// so an arbitrary unverified address could reach the dashboard and obtain a
+// trial license.
+class User extends Authenticatable implements FilamentUser, MustVerifyEmail
 {
     /** @use HasFactory<UserFactory> */
     use Billable, HasFactory, Notifiable;

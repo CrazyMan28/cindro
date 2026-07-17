@@ -71,6 +71,25 @@ class SyncLicenseFromStripeWebhook
 
         $seats = $subscription['items']['data'][0]['quantity'] ?? 1;
 
+        // Codex review (PR #130): this used to unconditionally set status to
+        // "active" for BOTH created and updated events, so a subscription
+        // Stripe reports as incomplete/past_due/unpaid/paused kept granting a
+        // valid paid-tier license until a later deletion event happened to
+        // arrive. Derive it from Stripe's own subscription status instead.
+        // The `status` column is a DB-level enum (active|suspended|revoked|
+        // expired — see the licenses migration), so Stripe's own status
+        // strings (which don't match that set) must be MAPPED, not passed
+        // through verbatim, or the update/insert itself would fail.
+        $status = match ($subscription['status'] ?? null) {
+            'active', 'trialing' => 'active',
+            'canceled', 'incomplete_expired' => 'expired',
+            // past_due/unpaid (payment failing), incomplete (first payment
+            // not yet confirmed), paused (intentionally on hold) — none of
+            // these are a hard "it's over" like a full cancellation, but none
+            // should grant access either.
+            default => 'suspended',
+        };
+
         $license = License::where('stripe_subscription_id', $stripeSubscriptionId)->first()
             // A user who registered already has a trial (or manually-issued)
             // license with no stripe_subscription_id — upgrade that one in
@@ -81,7 +100,7 @@ class SyncLicenseFromStripeWebhook
             $license->update([
                 'stripe_subscription_id' => $stripeSubscriptionId,
                 'tier' => $tier,
-                'status' => 'active',
+                'status' => $status,
                 'seats' => $seats,
             ]);
         } else {
@@ -90,7 +109,7 @@ class SyncLicenseFromStripeWebhook
                 'key' => LicenseKeyGenerator::generate(),
                 'stripe_subscription_id' => $stripeSubscriptionId,
                 'tier' => $tier,
-                'status' => 'active',
+                'status' => $status,
                 'seats' => $seats,
                 'issued_at' => now(),
                 'expires_at' => null,

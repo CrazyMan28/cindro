@@ -23,7 +23,7 @@ class SyncLicenseFromStripeWebhookTest extends TestCase
         ]);
     }
 
-    private function subscriptionCreatedPayload(string $customerId, string $subscriptionId, ?string $priceId = 'price_pro_test'): array
+    private function subscriptionCreatedPayload(string $customerId, string $subscriptionId, ?string $priceId = 'price_pro_test', string $status = 'active'): array
     {
         return [
             'type' => 'customer.subscription.created',
@@ -31,6 +31,7 @@ class SyncLicenseFromStripeWebhookTest extends TestCase
                 'object' => [
                     'id' => $subscriptionId,
                     'customer' => $customerId,
+                    'status' => $status,
                     'items' => ['data' => [['price' => ['id' => $priceId]]]],
                 ],
             ],
@@ -112,6 +113,49 @@ class SyncLicenseFromStripeWebhookTest extends TestCase
         ]));
 
         $this->assertSame('expired', License::where('stripe_subscription_id', 'sub_5')->firstOrFail()->status);
+    }
+
+    public function test_does_not_grant_an_active_license_for_a_non_active_subscription_status(): void
+    {
+        // Codex review (PR #130): created/updated events used to unconditionally
+        // set status="active" regardless of Stripe's own subscription status —
+        // an incomplete/past_due/unpaid/paused subscription (failed or unfinished
+        // payment) kept granting a valid paid-tier license.
+        $user = User::factory()->create(['stripe_id' => 'cus_7']);
+
+        (new SyncLicenseFromStripeWebhook)->handle(new WebhookHandled(
+            $this->subscriptionCreatedPayload('cus_7', 'sub_7', 'price_pro_test', 'past_due')
+        ));
+
+        $license = License::where('stripe_subscription_id', 'sub_7')->firstOrFail();
+        $this->assertSame('suspended', $license->status);
+        $this->assertFalse($license->isCurrentlyValid());
+    }
+
+    public function test_marks_license_expired_for_a_canceled_subscription_status(): void
+    {
+        $user = User::factory()->create(['stripe_id' => 'cus_9']);
+
+        (new SyncLicenseFromStripeWebhook)->handle(new WebhookHandled(
+            $this->subscriptionCreatedPayload('cus_9', 'sub_9', 'price_pro_test', 'canceled')
+        ));
+
+        $license = License::where('stripe_subscription_id', 'sub_9')->firstOrFail();
+        $this->assertSame('expired', $license->status);
+        $this->assertFalse($license->isCurrentlyValid());
+    }
+
+    public function test_treats_trialing_subscription_status_as_active(): void
+    {
+        $user = User::factory()->create(['stripe_id' => 'cus_8']);
+
+        (new SyncLicenseFromStripeWebhook)->handle(new WebhookHandled(
+            $this->subscriptionCreatedPayload('cus_8', 'sub_8', 'price_pro_test', 'trialing')
+        ));
+
+        $license = License::where('stripe_subscription_id', 'sub_8')->firstOrFail();
+        $this->assertSame('active', $license->status);
+        $this->assertTrue($license->isCurrentlyValid());
     }
 
     public function test_stops_granting_founding_member_status_once_cap_is_reached(): void

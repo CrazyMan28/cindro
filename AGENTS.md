@@ -1493,6 +1493,96 @@ across all of it, not just the original agent-desktop fix. Fixed:
     (unnamespaced) key if no cookie was present yet. Deferred to a new
     `loadForAuthenticatedUser()`, called only once `checkAuth()` succeeds or a fresh login completes.
 
+## New subsystems (2026-07-17, night) — fourth Codex review round on PR #130
+
+A fourth review pass (triggered by the third round's push) found 14 more findings spanning the
+agent-desktop/Plan-Mode/dashboard-proxy work above AND the unrelated `website/` Laravel site that
+also happened to be sitting on this PR. Fixed 13; one left as a documented, deliberate limitation
+(explained below, not skipped by oversight).
+
+**My own follow-ups:**
+- `chat.tsx`'s reconnect self-heal fix (round 3) had added `setBusy(false)` right after the
+  `session.send` RPC resolved — but that RPC only confirms the daemon ACCEPTED the turn, not that
+  the brain finished. Re-enabled the composer mid-turn, letting a rapid follow-up get silently
+  coalesced into the still-active turn. Removed; the event pump already clears `busy` on
+  `final`/`error`.
+- `cancelSession()`: an AUTO-computer session's brain has its MCP config (port+bearer) baked in at
+  construction. A routine `session.cancel` (interrupt THIS turn — a very ordinary "stop, let me
+  rephrase") used to unconditionally `releaseSession()` (drops the port/bearer reservation too) and
+  stop tracking the session in `m_autoComputerSessions`, so `sendToSession()`'s BATTERY
+  re-provision check never fired again — the very next cancel permanently orphaned computer-use for
+  the rest of that chat. Auto-computer sessions now get the lighter `teardown()` (keeps the
+  reservation) and stay tracked, same as an idle-teardown; an explicit coworker+agent session keeps
+  the existing full-release behavior (cancel really is its close signal there).
+- `AgentDesktop::ensure()`'s up-to-45-60s synchronous provisioning (the deliberate
+  correctness-over-latency trade-off from earlier today) exceeds the Chrome extension's generic 30s
+  RPC safety timeout (`extension/sidepanel.js`) for `session.create` specifically, when "let Cindro
+  use a computer" is on and the extension's `profile:"coder"` session qualifies for `autoComputer`.
+  Rather than touch the sensitive cross-platform `AgentDesktop` timeout (would need a build/test
+  loop this environment can't run), gave `session.create` its own 65s timeout client-side — a
+  1-line, zero-risk JS change that closes the actual mismatch without reopening the isolation
+  decision.
+- `vm-create.tsx`: reopening the still-mounted modal while a PREVIOUS `submit()` coroutine was still
+  running (e.g. closed during a long task poll, allowed since round 3) reset `creating`/`created`
+  and presented a fresh, submittable form — a second `submit()` could then run CONCURRENTLY with the
+  first, both mutating the same shared signals. Added a plain (non-reactive) `submitInFlight` guard:
+  the reopen effect skips the reset while one is in flight, so the modal just reopens showing that
+  same in-progress state.
+
+**Plan Mode, two more gaps:**
+- `makeBrain()`'s `planMode` precedence didn't account for `m_planApprovedSessions` (round 3's
+  per-session approval) in the OTHER direction: once approved, `handlePlanStatus` always returned
+  unrestricted before even checking `m_selfPlanModeSessions` — so if the model later called
+  `enter_plan_mode` for a NEW risky task in the same (already-approved) session, the self-restriction
+  was recorded but `plan.status` still reported "approved" and the MCP gate let writes through.
+  Reordered: an active self-initiated restriction now wins over a prior approval.
+- `agent_create`/`agent_send` were wrongly in `_PLAN_SAFE_TOOLS` — `agent_create` persists/overwrites
+  a reusable agent definition (a write), and `agent_send` can direct an EXISTING child dispatched
+  BEFORE the parent entered self-initiated Plan mode (so the child never inherited the restriction)
+  to perform the writes the parent itself can no longer perform. `agent_start`/`agent_committee`/
+  `agent_moa` stay — all three route through `handleAgentsDispatch`, which already propagates the
+  restriction to new children.
+
+**Left as a documented, deliberate limitation, NOT fixed this round:** Codex re-flagged that a
+Plan-mode Codex session with computer-use injected gets `driveMcp=true`, and `CodexBrain`'s ctor
+unconditionally overrides `sandboxMode` back to `danger-full-access` whenever `driveMcp` is set —
+so Codex's NATIVE shell/`apply_patch` tools are NOT actually blocked in Plan Mode for a
+computer-use-enabled session, only MCP tool calls are (via `policy.py`'s gate). This is not an
+oversight: `core/tests/codex_buildargs_test.cpp` has an EXISTING assertion (`"plan mode + drive:
+sandboxMode=read-only is still overridden to danger-full-access (native codex tools are NOT
+hard-blocked here)"`) proving the original Plan Mode author already investigated this and
+deliberately left it — because `--sandbox` is a single, whole-process setting: loosening it to
+`danger-full-access` is what stops codex auto-cancelling MCP tool calls headless (proven live-tested
+per the ClaudeBrain comparison above), and there's no evident way to keep MCP calls working while
+blocking codex's OWN native tools without either (a) redesigning codex's sandboxing in a way this
+environment can't build/test against a real `codex` CLI, or (b) disabling computer-use entirely for
+Plan-mode Codex sessions, which would ALSO break the genuinely-safe MCP tools Plan Mode explicitly
+wants available (`desktop_screenshot`, `present_plan`, `todo_write`, etc., all in
+`_PLAN_SAFE_TOOLS`). Shipping an unverified change to a security-critical sandbox mechanism felt
+like the wrong call versus leaving the existing, deliberate, tested trade-off in place.
+
+**`website/` findings (unrelated feature, same PR):** Stripe webhook sync unconditionally set
+license status to "active" for both created/updated events regardless of Stripe's own subscription
+status (`past_due`/`unpaid`/`incomplete`/`paused` kept granting a valid license) — now mapped via
+Stripe's status (note: the `status` column is a DB-level enum `active|suspended|revoked|expired`, so
+Stripe's raw status strings had to be MAPPED, not passed through verbatim — caught this the hard way
+via the actual Laravel test suite, see below). `User` had `MustVerifyEmail` commented out despite the
+`verified` middleware and Breeze's verify-email routes already being fully wired — every unverified
+address could reach the dashboard. Account deletion left every license (`user_id` is `nullOnDelete`)
+still "active" forever with an orphaned row and no way for a later Stripe webhook to fix it (looks
+the user up by `stripe_id`, now gone) — now cancels live Cashier subscriptions and marks licenses
+`revoked` before the user row disappears. `PricingCatalog::booleanFeatureFlags()` flagged EVERY
+string-valued pricing cell as `true`, including explicit exclusions like Starter's cloned_voice "not
+included" — so `/api/license/verify` told a Starter client features were available that the pricing
+table explicitly excludes; now only strings NOT starting with "not included" flag true.
+
+**Verification note:** PHP/Composer/`php artisan test` turned out to be available on this box —
+actually ran the full website test suite (not just `php -l` syntax checks) for the first time this
+session, which is how the enum-mismatch in the Stripe status mapping got caught before shipping (the
+DB would have rejected the raw Stripe status string on the first webhook). 15/15 targeted tests
+passed after the fix. Two unrelated pre-existing failures (`Vite manifest not found` — no frontend
+build in this environment) are environmental, not regressions.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

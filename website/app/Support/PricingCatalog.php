@@ -88,8 +88,19 @@ class PricingCatalog
                 continue;
             }
 
+            // Codex review (PR #130): every string value used to flag `true`
+            // unconditionally, including explicit exclusions like Starter's
+            // cloned_voice "not included" and hosted_pairing_relay "not
+            // included — self-configure tailnet/port-forward" — so
+            // /api/license/verify told a Starter client those features WERE
+            // available, contradicting the pricing table it's meant to
+            // mirror. Every "not included" string in this catalog uses that
+            // exact prefix; any OTHER string describes an available feature
+            // with a caveat/limit (e.g. trial's "preview (5 generations)").
             $value = $row[$tier] ?? false;
-            $flags[$row['key']] = is_string($value) ? true : (bool) $value;
+            $flags[$row['key']] = is_string($value)
+                ? ! str_starts_with($value, 'not included')
+                : (bool) $value;
         }
 
         return $flags;
