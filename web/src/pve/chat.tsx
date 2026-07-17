@@ -79,6 +79,33 @@ const PERSIST_FIELD_CAP = 8000
 // single-sourced so the picker label and the session it opens never disagree.
 const DEFAULT_OPERATOR_MODEL = "mistral-large-latest"
 
+// The transcript can carry sensitive infra details (tool args/outputs, approval
+// summaries), so it MUST NOT bleed across Proxmox accounts on a shared admin
+// browser. Namespace every persisted key by the authenticated operator's userid,
+// read straight from the PVEAuthCookie ("PVE:<userid>:<ts>::<sig>") — the same
+// identity pveproxy signs and dashboard_server.py trusts — so a different admin
+// signing in reads their own (empty) key, never the previous operator's.
+function currentOperatorId(): string {
+  try {
+    const m = typeof document !== "undefined" ? document.cookie.match(/(?:^|;\s*)PVEAuthCookie=([^;]+)/) : null
+    if (!m) return ""
+    const parts = decodeURIComponent(m[1]).split(":")
+    return parts.length > 1 ? parts[1] : ""
+  } catch {
+    return ""
+  }
+}
+
+function chatStoreKey(): string {
+  const id = currentOperatorId()
+  return id ? `${CHAT_STORE_KEY}:${id}` : CHAT_STORE_KEY
+}
+
+function modelStoreKey(): string {
+  const id = currentOperatorId()
+  return id ? `${MODEL_STORE_KEY}:${id}` : MODEL_STORE_KEY
+}
+
 function capStr(s: string): string {
   return s.length > PERSIST_FIELD_CAP ? `${s.slice(0, PERSIST_FIELD_CAP)}…` : s
 }
@@ -119,7 +146,7 @@ function isStoredItem(x: unknown): x is ChatItem {
 
 function readStoredTranscript(): ChatItem[] {
   try {
-    const raw = localStorage.getItem(CHAT_STORE_KEY)
+    const raw = localStorage.getItem(chatStoreKey())
     if (!raw) return []
     const arr: unknown = JSON.parse(raw)
     return Array.isArray(arr) ? arr.filter(isStoredItem) : []
@@ -130,7 +157,7 @@ function readStoredTranscript(): ChatItem[] {
 
 function readStoredModel(): string {
   try {
-    return localStorage.getItem(MODEL_STORE_KEY) || ""
+    return localStorage.getItem(modelStoreKey()) || ""
   } catch {
     return ""
   }
@@ -174,6 +201,30 @@ function isOperatorCapableModel(model: string): boolean {
   return !!model && !/^(claude|anthropic)/i.test(model)
 }
 
+// The api model catalog is a static cross-provider floor (every provider's ids
+// appear regardless of which keys exist), so listing it verbatim lets an
+// operator pick e.g. gpt-5.5 on a Mistral-only host — makeBrain then can't find
+// the OpenAI key and the whole operator conversation fails. Map an id to its
+// provider (mirrors settings.tsx's PROVIDERS) so the picker can hide models
+// whose key isn't set. Unknown prefixes are kept (better to show a maybe-usable
+// model than to hide a valid one); Ollama tags (contain ":") are local, no key.
+function providerOfModel(model: string): string {
+  const m = model.toLowerCase()
+  if (m.includes(":")) return "ollama"
+  if (/^(gpt|o1|o3|o4|chatgpt|text-|davinci)/.test(m)) return "openai"
+  if (/^(mistral|codestral|magistral|ministral|pixtral|devstral|open-mistral|open-mixtral)/.test(m)) return "mistral"
+  if (/^grok/.test(m)) return "xai"
+  if (/^gemini/.test(m)) return "gemini"
+  if (/^deepseek/.test(m)) return "deepseek"
+  return ""
+}
+
+function isModelUsable(model: string, apiKeysSet: Record<string, boolean>): boolean {
+  const p = providerOfModel(model)
+  if (!p || p === "ollama") return true // local, or provider we can't attribute — keep
+  return apiKeysSet[p] === true
+}
+
 // The operator session's brain/model come from the admin's AI Settings
 // (settings.get default_brain / default_model), surfaced by the dashboard's
 // /_jarvis/settings bridge, so a host configured for OpenAI / Ollama / etc.
@@ -188,9 +239,10 @@ async function resolveOperatorConfig(): Promise<{ brain: string; model: string; 
     if (!r.ok) return fallback
     const j = (await r.json()) as Record<string, unknown>
     const s = ((j?.settings as Record<string, unknown>) ?? {}) as Record<string, unknown>
+    const apiKeysSet = (s.api_keys_set as Record<string, boolean>) ?? {}
     const rawModels = (j?.models as { models?: unknown })?.models
     const models = (Array.isArray(rawModels) ? (rawModels as unknown[]) : []).filter(
-      (m): m is string => typeof m === "string" && isOperatorCapableModel(m),
+      (m): m is string => typeof m === "string" && isOperatorCapableModel(m) && isModelUsable(m, apiKeysSet),
     )
     let model = fallback.model
     if (s.default_brain === "api" && typeof s.default_model === "string" && isOperatorCapableModel(s.default_model)) {
@@ -332,7 +384,7 @@ export class ChatController {
     if (!model || this.busy() || model === this.selectedModel()) return
     this.modelOverride[1](model)
     try {
-      localStorage.setItem(MODEL_STORE_KEY, model)
+      localStorage.setItem(modelStoreKey(), model)
     } catch {
       /* best-effort */
     }
@@ -342,6 +394,24 @@ export class ChatController {
   /** Wipe the transcript and start a brand-new conversation. */
   newConversation(): void {
     if (this.busy()) return // never clear out from under an in-flight turn
+    this.clearTranscript()
+  }
+
+  /** Purge persisted + in-memory history unconditionally — call at the auth
+   * boundary (logout / account switch) so a shared admin browser doesn't carry
+   * one operator's transcript, tool outputs, or approval summaries into the
+   * next operator's session. */
+  forgetHistory(): void {
+    this.clearTranscript()
+    try {
+      localStorage.removeItem(modelStoreKey())
+    } catch {
+      /* best-effort */
+    }
+    this.modelOverride[1]("")
+  }
+
+  private clearTranscript(): void {
     this.setItems((items) => {
       items.splice(0, items.length)
     })
@@ -353,7 +423,7 @@ export class ChatController {
       this.persistTimer = undefined
     }
     try {
-      localStorage.removeItem(CHAT_STORE_KEY)
+      localStorage.removeItem(chatStoreKey())
     } catch {
       /* best-effort */
     }
@@ -371,7 +441,7 @@ export class ChatController {
       this.persistTimer = undefined
       try {
         const slice = this.items.slice(-MAX_PERSISTED_ITEMS).map(sanitizeForStore)
-        localStorage.setItem(CHAT_STORE_KEY, JSON.stringify(slice))
+        localStorage.setItem(chatStoreKey(), JSON.stringify(slice))
       } catch {
         /* quota exceeded / storage unavailable — history is best-effort */
       }
