@@ -524,6 +524,11 @@ Item {
             // plan haunting a fresh chat was part of the jarvis#72 leak).
             chatModel.clear()
             panel.todoSpec = ""
+            // Clear the plan's OWNING session too, matching startNewChat()'s explicit
+            // double-clear — otherwise todoSpecSession lingers pointing at the old
+            // chat, and any future path that repopulates todoSpec without re-stamping
+            // the owner would resurrect the old plan under the new session.
+            panel.todoSpecSession = ""
             panel.thinking = false
             panel.thinkingRowId = ""
             panel.busy = false

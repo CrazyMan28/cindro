@@ -29,6 +29,16 @@ Item {
         function onWidgetRendered(w) {
             if (!w || w.spec === undefined)
                 return
+            // The live plan/checklist (id "__todo__:<session>") is session-private
+            // and owned by the chat PLAN panel — never float it here. (Non-plan
+            // widgets are deliberately NOT session-scoped in this layer: it floats
+            // over BOTH the chat and the independent voice session, and QML can't
+            // see the voice session id, so a chat-session guard here would wrongly
+            // drop live voice widgets — cf. the C++ router's
+            // m_sessionId||m_voiceSessionId check in Bridge.cpp.)
+            var wid0 = (w.id !== undefined) ? ("" + w.id) : ""
+            if (wid0.indexOf("__todo__") === 0)
+                return
             var wid = (w.id !== undefined && ("" + w.id).length > 0)
                       ? ("" + w.id) : ("w" + layer.cascade)
             var title = (w.title !== undefined) ? ("" + w.title) : ""

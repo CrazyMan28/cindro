@@ -312,7 +312,13 @@ class ChatController {
   }
 
   async openSession(sessionId: string, title = ""): Promise<void> {
-    this.pumpGen++ // kill any pump parked on the old session's queue
+    // Bump pumpGen to kill any pump parked on the old session's queue AND capture
+    // it as a re-entrancy token: if the user switches session / opens New Chat
+    // while our subscribe+history round-trips are in flight, a newer openSession/
+    // newSession bumps pumpGen (or changes sessionId), and we must NOT dump THIS
+    // session's history into the view that now belongs to a different chat — that
+    // was the "another session's plan/history shows up after a fast switch" leak.
+    const gen = ++this.pumpGen
     this.setSessionId(sessionId)
     this.setPendingApproval(null)
     this.setBusy(false)
@@ -327,18 +333,23 @@ class ChatController {
     // daemon emits while session.history is still in flight (e.g. a subagent
     // actively running) queues up instead of being silently dropped.
     await this.client.subscribe(sessionId)
+    if (gen !== this.pumpGen || this.sessionId() !== sessionId) return
     try {
       const hist = await this.client.call(
         "session.history",
         { session_id: sessionId, limit: 40 },
         20000,
       )
+      // A newer switch superseded us while history was in flight — drop it.
+      if (gen !== this.pumpGen || this.sessionId() !== sessionId) return
       for (const raw of (hist.events ?? []) as Array<Record<string, unknown>>) {
         this.applyEvent((raw.ev ?? raw) as Record<string, unknown>, true)
       }
     } catch (e) {
+      if (gen !== this.pumpGen || this.sessionId() !== sessionId) return
       this.notice(`history unavailable: ${String(e)}`, "warn")
     }
+    if (gen !== this.pumpGen || this.sessionId() !== sessionId) return
     this.startPump(sessionId)
   }
 

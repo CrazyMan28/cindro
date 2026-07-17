@@ -41,6 +41,36 @@ const BUS_TYPES: Array<{ value: "scsi" | "virtio" | "sata" | "ide"; label: strin
 
 const NET_MODELS = ["virtio", "e1000", "vmxnet3", "rtl8139"]
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isUpid(v: unknown): v is string {
+  return typeof v === "string" && v.startsWith("UPID:")
+}
+
+// Poll a Proxmox background task to completion (mirrors backups.tsx's helper) —
+// create and status/start both queue an async task and return its UPID
+// immediately, so callers must await this before trusting the call "finished".
+async function pollTask(node: string, upid: string): Promise<{ ok: boolean; error?: string }> {
+  const deadline = Date.now() + 600000
+  while (Date.now() < deadline) {
+    const r = await pve.get<{ status?: string; exitstatus?: string }>(
+      `/nodes/${encodeURIComponent(node)}/tasks/${encodeURIComponent(upid)}/status`,
+    )
+    if (!r.ok) return { ok: false, error: r.error }
+    if (r.data.status === "stopped") {
+      const exit = r.data.exitstatus ?? ""
+      const up = exit.toUpperCase()
+      return up.startsWith("OK") || up.startsWith("WARNING")
+        ? { ok: true }
+        : { ok: false, error: exit || "task failed" }
+    }
+    await sleep(1200)
+  }
+  return { ok: false, error: "timed out waiting for the task to finish" }
+}
+
 const STEPS = [
   { key: "basics", label: "Basics" },
   { key: "os", label: "OS & Media" },
@@ -312,9 +342,32 @@ export const VmCreateModal: Component<{
       setCreating(false)
       return
     }
+    // Create queues an async task (UPID) — the VM doesn't exist yet when this
+    // resolves, so starting it right away can race a still-running create.
+    if (isUpid(r.data)) {
+      const created = await pollTask(n, r.data)
+      if (!created.ok) {
+        setCreateErr(created.error ?? "VM creation task failed")
+        setCreating(false)
+        return
+      }
+    }
 
     if (startAfterCreate()) {
-      await pve.create(`/nodes/${encodeURIComponent(n)}/qemu/${id}/status/start`, {})
+      const r2 = await pve.create(`/nodes/${encodeURIComponent(n)}/qemu/${id}/status/start`, {})
+      if (!r2.ok) {
+        setCreateErr(`VM created, but failed to start: ${r2.error}`)
+        setCreating(false)
+        return
+      }
+      if (isUpid(r2.data)) {
+        const started = await pollTask(n, r2.data)
+        if (!started.ok) {
+          setCreateErr(`VM created, but failed to start: ${started.error}`)
+          setCreating(false)
+          return
+        }
+      }
     }
 
     setCreating(false)

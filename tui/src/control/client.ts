@@ -345,11 +345,14 @@ export class ControlClient {
    * session.create so no other chat's events can leak in.
    */
   async subscribe(sessionId: string): Promise<AsyncQueue<Record<string, unknown>>> {
-    let q = this.queues.get(sessionId)
-    if (!q) {
-      q = new AsyncQueue()
-      this.queues.set(sessionId, q)
-    }
+    // ALWAYS hand back a FRESH queue. A queue left over from a previous
+    // subscription to this same id still holds its old buffered events (e.g. an
+    // earlier todo_write plan). Reusing it drained that stale history into the
+    // freshly-cleared transcript on reopen — a plan from an earlier context
+    // rendering in the "new" view (the cross-session leak). A fresh queue drops
+    // the stale buffer; the daemon replays what matters via session.history.
+    const q = new AsyncQueue<Record<string, unknown>>()
+    this.queues.set(sessionId, q)
     this.subscribed.add(sessionId)
     await this.sendSubscribe()
     return q
