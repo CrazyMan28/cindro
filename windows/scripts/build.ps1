@@ -605,17 +605,27 @@ if (-not (Test-Path (Join-Path $payload "libsodium.dll"))) {
 # engine + node-runtime keep their old serial fatality (a payload without either
 # is not shippable); go/outpost/phone carry their own try/catch and only reach a
 # Failed state on a genuine crash — still non-fatal, exactly as before.
+#
+# IMPORTANT: a job's NATIVE stderr (pip/npm/pyinstaller progress + warnings, e.g.
+# pip's benign "ERROR: pip's dependency resolver…" notice) is marshalled back as
+# PowerShell ERROR RECORDS — receiving with -ErrorAction Stop turned that noise
+# into a hard failure (broke the first CI run of this parallel flow). Failure is
+# ONLY the job reaching the Failed state, i.e. an explicit `throw` inside the
+# stage (every native call there is exit-code-checked) — same contract as the
+# old serial script, where stderr printed freely and $LASTEXITCODE decided.
+$prevEAP = $ErrorActionPreference
 foreach ($j in $bgJobs) {
   Wait-Job $j | Out-Null
   Write-Host "==> [stage:$($j.Name)] ------------------------------------------------" -ForegroundColor Cyan
-  $fatal = $j.Name -in @("engine", "node-runtime")
-  try {
-    Receive-Job $j -ErrorAction Stop
-  } catch {
-    if ($fatal) { throw "background stage '$($j.Name)' failed: $_" }
-    Write-Warning "background stage '$($j.Name)' failed ($_)"
+  $ErrorActionPreference = "Continue"
+  Receive-Job $j 2>&1 | ForEach-Object { Write-Host "$_" }
+  $ErrorActionPreference = $prevEAP
+  if ($j.State -eq "Failed") {
+    $reason = try { $j.ChildJobs[0].JobStateInfo.Reason.Message } catch { "unknown" }
+    $fatal = $j.Name -in @("engine", "node-runtime")
+    if ($fatal) { throw "background stage '$($j.Name)' failed: $reason" }
+    Write-Warning "background stage '$($j.Name)' failed ($reason)"
   }
-  if ($j.State -eq "Failed" -and $fatal) { throw "background stage '$($j.Name)' failed" }
 }
 # Belt-and-braces: the engine exe check the serial flow used to make inline.
 if (-not (Test-Path (Join-Path $payload "engine\jarvis-engine.exe"))) {
