@@ -1632,6 +1632,50 @@ when both win-runners built concurrently; ~10 of those min were the engine PyIns
   main fires linux-ci + linux-release + android + website simultaneously — 4 concurrent jobs
   each assuming `nproc` parallelism on 6 shared vCPUs (plus everything else on a 24-thread
   2010-era host). Fewer slots or more vCPUs is the lever if linux jobs feel slow.
+## New subsystems (2026-07-17, later still) — fifth Codex review round on PR #130
+
+A fifth review pass (triggered by the fourth round's push) found 6 more findings: one in my own
+`tools_plan.py` fix, three more in the `website/` billing logic (compounding on round 4's fixes),
+and a CI path-filter gap affecting six workflow files.
+
+- **`tools_plan.py`**: `present_plan` resolved `sid = daemon_client.current_session_id()` AFTER the
+  blocking `ask_bus.ask()` call (which can wait up to a day). On the shared global engine,
+  `current_session_id()` only resolves reliably while this is the SOLE running session — by the time
+  a slow approval came back, another session could easily be running too, resolving empty and
+  silently failing both `plan.exit` and `plan.approve` (swallowed) while `present_plan` still
+  reported `"decision": "approve"`. Moved the resolve to before the blocking wait.
+- **`SyncLicenseFromStripeWebhook.php`, two more gaps on top of round 4's status-mapping fix:**
+  - The "upgrade an existing no-subscription license in place" fallback matched ANY active license
+    with no `stripe_subscription_id` — including a manually issued one (e.g. a Filament-granted
+    lifetime enterprise license). Buying an unrelated Starter subscription and later canceling it
+    would overwrite and eventually expire that manual grant. Scoped the fallback to `tier=trial`,
+    the only kind Stripe webhooks are ever meant to upgrade in place.
+  - `grantFoundingMemberStatusIfSlotAvailable()` ran for every recognized event, including the
+    `incomplete`/`past_due`/`unpaid`/`paused` ones round 4 mapped to `"suspended"` — an abandoned or
+    failed checkout consumed a founding-member slot, excluding a later paying customer. Gated it on
+    `$status === 'active'`.
+- **`DashboardController.php`**: picked the "primary" license solely by `latest('issued_at')`, so a
+  user holding multiple licenses (explicitly allowed by the admin resources) could have downloads
+  denied and an invalid license displayed while an OLDER, still-valid license sat unused —
+  `/api/license/verify` would have accepted that valid key. Now prefers a currently-valid license
+  (newest among valid ones), falling back to the newest overall only when none are valid.
+- **`CheckoutController.php`**: `subscribe()` always started a brand-new Stripe Checkout session,
+  even for a user who already has an active `default` subscription — the pricing page stays
+  reachable and the subscriptions table doesn't enforce one row per user/type, so a repeat visit (or
+  picking a different tier) could complete a second concurrent subscription and double-bill them.
+  Already-subscribed users are now redirected to the billing portal instead.
+- **CI**: `paths-ignore: ['website/**']` (on six workflows: the five product-build gates' PR
+  triggers + `auto-release.yml`'s push trigger) didn't cover `.github/workflows/website-ci.yml`
+  itself, which lives outside `website/`. A PR that only edited the website's own CI config still
+  ran every product build AND (on merge to main) bumped/tagged a product release for a change that
+  belongs solely to the non-versioned site. Added that workflow file to all six `paths-ignore` lists.
+
+**Verification:** ran the FULL website test suite this round (not just the targeted files) —
+45/58 passed; all 13 failures are the identical pre-existing `Vite manifest not found` error (no
+frontend build in this environment — confirmed by trying `npm install && npm run build`, which hit
+an unrelated native-module resolution issue with the `rolldown` bundler on this Windows box).
+None of the 13 touch any file changed this round. All 6 modified GitHub Actions workflow files
+parsed clean with PyYAML.
 
 ## Conventions
 

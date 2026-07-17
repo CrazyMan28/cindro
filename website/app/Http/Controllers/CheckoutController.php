@@ -19,6 +19,19 @@ class CheckoutController extends Controller
         abort_unless($config && ($config['stripe_price'] ?? null), 404);
 
         $user = $request->user();
+
+        // Codex review (PR #130): this always started a brand-new Stripe
+        // Checkout session even when the user already has an active "default"
+        // subscription — the pricing page stays reachable and the
+        // subscriptions table doesn't enforce one row per user/type, so a
+        // repeat visit (or picking a different tier) could complete a SECOND
+        // concurrent subscription and double-bill them. Send an
+        // already-subscribed user to the billing portal (swap/cancel there)
+        // instead of starting another checkout.
+        if ($user->subscribed('default')) {
+            return redirect()->route('billing-portal');
+        }
+
         $seats = (int) $request->integer('seats', $config['min_seats'] ?? 1);
 
         if ($config['per_seat'] ?? false) {
