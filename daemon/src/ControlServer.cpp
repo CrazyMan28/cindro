@@ -3687,8 +3687,22 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
     // model's own private nested desktop (default, watched on the Computer page);
     // "real" = the user's REAL screen (glowing banner shows). If the user doesn't
     // say whose screen, the model MUST ask_user first.
+    //
+    // ALSO fires for the auto-spawned-chat fallback (m_autoGlobalEngineSessions):
+    // that path skips AgentDesktop::ensure() for latency (see createSession()) and
+    // binds the SAME "computer_use" tool name straight to the GLOBAL engine — i.e.
+    // the user's REAL screen, with no isolated desktop at all. Without this guide
+    // the model never learns that, and when asked for "your own" / "an agent"
+    // desktop it had nothing isolated to offer — it improvised by calling
+    // workspace_create/switch_workspace against the real KDE session, which visibly
+    // yanks the user's screen to a fresh empty virtual desktop (reported bug: "ask
+    // for an agent desktop, it just moves my KDE screen to a new virtual desktop
+    // instead of spinning up its own invisible sway thing"). The no-isolation
+    // branch below tells the model the truth so it asks instead of faking it.
     QString guide;
-    if (!isSubagent && m_agentDesktops.has(sessionId) && !m_coworkGuided.contains(sessionId)) {
+    const bool autoGlobalEngine = m_autoGlobalEngineSessions.contains(sessionId);
+    if (!isSubagent && (m_agentDesktops.has(sessionId) || autoGlobalEngine) &&
+        !m_coworkGuided.contains(sessionId)) {
         m_coworkGuided.insert(sessionId);
         // MSVC's classic preprocessor chokes on a bare #ifdef mid-argument-list
         // inside a macro call ("C2121: '#': invalid character") — hoist the
@@ -3702,29 +3716,48 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
 #define JARVIS_LIVE_CPU_CMD_EXAMPLE \
     "\"top -bn1 | awk '/Cpu/{print 100-$8}'\", "
 #endif
-        guide = QStringLiteral(
-            "[Cindro co-work — READ FIRST] You have TWO separate computer-use tool "
-            "sets, plus ask_user, schedule_task, remember/recall/forget, create_skill.\n"
-            "  * The \"real_screen\" tools operate the USER'S REAL screen + windows "
-            "(what they physically see). A glowing \"Cindro is using this computer\" "
-            "banner appears while you act there.\n"
-            "  * The \"computer_use\" tools operate YOUR OWN private agent desktop (a "
-            "separate screen the user watches on the Computer page). This is the DEFAULT.\n"
-            "Pick the tool set by which SCREEN to use — do NOT pass a `which` "
-            "argument (each set already targets the right screen; valid `which` "
-            "values are only active/kde/agent, never \"real\").\n"
-            "RULES:\n"
-            "1) User explicitly says THEIR screen/computer/monitor -> use the "
-            "real_screen tools.\n"
-            "2) User says YOUR OWN / a new / the agent desktop -> use the "
-            "computer_use tools.\n"
-            "RESET: if your own agent desktop gets cluttered or an app is stuck, call "
-            "desktop_reset to close every window on it and start fresh (it never touches "
-            "the user's real screen).\n"
-            "3) If they ask you to operate a computer or app but do NOT say whose "
-            "screen (e.g. just \"open spotify\"), you MUST call ask_user(\"Use your "
-            "real screen, or my own agent desktop?\", [\"My real screen\", \"Your own "
-            "agent desktop\"]) FIRST, then use the matching tool set. Never guess.\n"
+        const QString coworkClause = m_agentDesktops.has(sessionId)
+            ? QStringLiteral(
+                "[Cindro co-work — READ FIRST] You have TWO separate computer-use tool "
+                "sets, plus ask_user, schedule_task, remember/recall/forget, create_skill.\n"
+                "  * The \"real_screen\" tools operate the USER'S REAL screen + windows "
+                "(what they physically see). A glowing \"Cindro is using this computer\" "
+                "banner appears while you act there.\n"
+                "  * The \"computer_use\" tools operate YOUR OWN private agent desktop (a "
+                "separate screen the user watches on the Computer page). This is the DEFAULT.\n"
+                "Pick the tool set by which SCREEN to use — do NOT pass a `which` "
+                "argument (each set already targets the right screen; valid `which` "
+                "values are only active/kde/agent, never \"real\").\n"
+                "RULES:\n"
+                "1) User explicitly says THEIR screen/computer/monitor -> use the "
+                "real_screen tools.\n"
+                "2) User says YOUR OWN / a new / the agent desktop -> use the "
+                "computer_use tools.\n"
+                "RESET: if your own agent desktop gets cluttered or an app is stuck, call "
+                "desktop_reset to close every window on it and start fresh (it never touches "
+                "the user's real screen).\n"
+                "3) If they ask you to operate a computer or app but do NOT say whose "
+                "screen (e.g. just \"open spotify\"), you MUST call ask_user(\"Use your "
+                "real screen, or my own agent desktop?\", [\"My real screen\", \"Your own "
+                "agent desktop\"]) FIRST, then use the matching tool set. Never guess.\n")
+            : QStringLiteral(
+                "[Cindro computer-use — READ FIRST] This session has ONLY ONE computer-use "
+                "tool set (\"computer_use\"), and — unlike a co-work session — it is bound "
+                "DIRECTLY to the USER'S REAL screen (what they physically see); there is NO "
+                "isolated/private agent desktop provisioned here. A glowing \"Cindro is "
+                "using this computer\" banner appears while you act.\n"
+                "NEVER fake isolation: do NOT call workspace_create / switch_workspace (or "
+                "any virtual-desktop trick) to try to give yourself \"your own\" desktop — "
+                "on this session that only exists on the KDE/Sway HOST, so doing that yanks "
+                "the user's REAL screen over to a fresh empty virtual desktop, which is "
+                "confusing and destructive, not isolation.\n"
+                "If the user asks for \"your own\" / \"an agent\" / \"a private\" desktop, "
+                "you do not have one in this session — call ask_user to tell them plainly "
+                "and offer to proceed on their real screen instead (a true isolated desktop "
+                "needs a co-work session).\n"
+                "Before ANY real-screen action the user did not explicitly ask for here, "
+                "call ask_user first. Never guess.\n");
+        guide = coworkClause + QStringLiteral(
             "VISUALS: whenever the user asks you to SHOW / DRAW / DISPLAY / VISUALIZE "
             "something (a chart, a list, a diagram, a card, \"show me a duck\"), you "
             "MUST CALL the render_widget tool with a JSON spec — it pops the widget on "
