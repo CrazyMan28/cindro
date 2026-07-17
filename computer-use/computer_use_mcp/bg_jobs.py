@@ -100,21 +100,69 @@ def _write_meta(jid: str, meta: dict) -> None:
         raise
 
 
+class _JobLock:
+    """Portable (Windows + Linux) mutex for one job's job.json read-modify-write
+    cycle, built on the atomicity of exclusive file creation (O_CREAT|O_EXCL)
+    rather than fcntl/msvcrt, since only one of those is available per platform.
+
+    A plain check-then-write (read state, decide, write) has the same size
+    race no matter how tightly the two are written next to each other: a
+    runner republishing "running" right after Popen() and a concurrent
+    stop() writing "stopped" can still interleave their own read and write,
+    and the runner's write clobbers the stop back to "running" (this was
+    test_concurrent_stop_all's CI flake). Real mutual exclusion removes the
+    interleaving instead of just narrowing it.
+    """
+
+    def __init__(self, jid: str, timeout: float = 5.0):
+        self._path = _job_dir(jid) / "job.lock"
+        self._timeout = timeout
+        self._fd = None
+
+    def __enter__(self) -> "_JobLock":
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = _now() + self._timeout
+        while True:
+            try:
+                self._fd = os.open(str(self._path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                return self
+            except FileExistsError:
+                if _now() >= deadline:
+                    # Holder died mid-critical-section (killed runner, OOM) —
+                    # steal the lock rather than deadlock this job forever.
+                    try:
+                        os.unlink(self._path)
+                    except OSError:
+                        pass
+                time.sleep(0.005)
+
+    def __exit__(self, *exc_info) -> None:
+        if self._fd is not None:
+            os.close(self._fd)
+        try:
+            os.unlink(self._path)
+        except OSError:
+            pass
+
+
+def _job_lock(jid: str) -> _JobLock:
+    return _JobLock(jid)
+
+
 def _write_meta_unless_stopped(jid: str, meta: dict) -> bool:
     """Persist meta UNLESS a concurrent stop() already marked the job stopped.
 
-    Re-reads the on-disk state immediately before the atomic write so a user
-    stop() is never clobbered back to done/expired/ok, and keeps 'stopped'
-    sticky. There's no portable cross-process file lock across Linux+Windows
-    here, so this isn't fully atomic — but collapsing the runners' repeated
-    check-then-write into one shared helper shrinks the race to a single
-    read->os.replace gap. Returns False (writing nothing) when already stopped,
-    so the caller should break out of its loop.
+    Holds _job_lock so the "is it stopped?" read and the write happen as one
+    critical section — a concurrent stop() either completes fully before this
+    read (we see "stopped" and skip) or fully after this write (and simply
+    overwrites us), never interleaved with it. Returns False (writing nothing)
+    when already stopped, so the caller should break out of its loop.
     """
-    if _read_meta(jid).get("state") == "stopped":
-        return False
-    _write_meta(jid, meta)
-    return True
+    with _job_lock(jid):
+        if _read_meta(jid).get("state") == "stopped":
+            return False
+        _write_meta(jid, meta)
+        return True
 
 
 def _alive(pid) -> bool:
@@ -263,16 +311,18 @@ def logs(jid: str, lines: int = 80) -> dict:
 
 
 def stop(jid: str) -> dict:
-    m = _read_meta(jid)
-    if not m:
-        return {"error": f"unknown job {jid}"}
-    # Persist "stopped" BEFORE signalling: the runner finalizes the moment
-    # wait() returns, and if it re-read the meta in the window between our
-    # kill and our write it would record the SIGTERM death as "failed" —
-    # clobbering the stop (a rare but real CI flake).
-    m["state"] = "stopped"
-    m["ended_at"] = _now()
-    _write_meta(jid, m)
+    # Hold the same _job_lock that _write_meta_unless_stopped uses: this
+    # read-modify-write must land as one unit, or a runner's own "publish
+    # running"/"publish done" write can slot into the gap between our read
+    # and our write and clobber "stopped" straight back to "running"/"failed"
+    # (test_concurrent_stop_all's CI flake).
+    with _job_lock(jid):
+        m = _read_meta(jid)
+        if not m:
+            return {"error": f"unknown job {jid}"}
+        m["state"] = "stopped"
+        m["ended_at"] = _now()
+        _write_meta(jid, m)
     for key in ("pid", "runner_pid"):
         pid = m.get(key)
         if pid and _alive(pid):
@@ -322,13 +372,15 @@ def _run_job(jid: str) -> None:
                                 stdout=log, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, start_new_session=True)
         m["pid"] = proc.pid
+        m["state"] = "running"
         # A stop() may have raced us between our initial read and Popen
         # returning — it couldn't signal a pid it didn't know yet (this
         # process's own start_new_session means the runner's pgid doesn't
-        # reach it either). Re-check before publishing "running": if we've
-        # already been stopped, kill what we just started ourselves and
+        # reach it either). _write_meta_unless_stopped holds the job lock so
+        # this publish and a concurrent stop()'s write can't interleave: if
+        # we've already been stopped, kill what we just started ourselves and
         # leave the "stopped" state alone instead of clobbering it.
-        if _read_meta(jid).get("state") == "stopped":
+        if not _write_meta_unless_stopped(jid, m):
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             except Exception:
@@ -339,8 +391,6 @@ def _run_job(jid: str) -> None:
             proc.wait()
             log.close()
             return
-        m["state"] = "running"
-        _write_meta(jid, m)
         rc = proc.wait()
     except Exception as exc:  # noqa: BLE001
         log.write(f"\n[bg_jobs] runner error: {exc}\n")
@@ -351,13 +401,11 @@ def _run_job(jid: str) -> None:
     m["exit_code"] = rc
     m["state"] = "done" if rc == 0 else "failed"
     m["ended_at"] = _now()
-    # Last-instant re-check: a concurrent stop() may have written "stopped"
-    # after our read above — a user stop must never be downgraded to "failed".
-    latest = _read_meta(jid)
-    if latest.get("state") == "stopped":
+    # _write_meta_unless_stopped re-checks under the job lock right before
+    # writing — a concurrent stop() must never be downgraded back to "failed".
+    if not _write_meta_unless_stopped(jid, m):
         log.close()
         return
-    _write_meta(jid, m)
     log.close()
     if m.get("notify_on_done") and m.get("session_id"):
         tail = _tail(_log_path(jid).read_text(errors="replace"), 40)
