@@ -146,7 +146,14 @@ if ! pgrep -x jarvisd >/dev/null 2>&1; then
   LD_LIBRARY_PATH="$L${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$HERE/usr/bin/jarvisd" >/dev/null 2>&1 &
   sleep 1
 fi
-# the UI (foreground).
+# the UI (foreground). Belt-and-suspenders: if the wayland-egl client-buffer plugin
+# didn't make it into this build (build-appimage.sh bundles it explicitly + fails the
+# build if missing, but don't trust every past/future build), Qt Quick's GPU (RHI)
+# path has no way to get a context and qFatal()-aborts the instant a window opens.
+# Fall back to the software renderer instead of hard-crashing — slower, still usable.
+if [ ! -e "$HERE/usr/plugins/wayland-graphics-integration-client/libqt-plugin-wayland-egl.so" ]; then
+  export QT_QUICK_BACKEND=software
+fi
 exec env LD_LIBRARY_PATH="$L${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$HERE/usr/bin/cindro-sidebar" "$@"
 EOF
 chmod +x "$APPDIR/AppRun"
@@ -202,6 +209,28 @@ say "Running linuxdeploy (bundling Qt + LayerShellQt + deps)..."
   --executable "$APPDIR/usr/bin/jarvisd" \
   --executable "$APPDIR/usr/bin/cindro-sidebar" \
   --desktop-file "$APPDIR/cindro.desktop" --icon-file "$APPDIR/cindro.svg"
+
+# linuxdeploy-plugin-qt silently DROPS wayland-graphics-integration-client from
+# $EXTRA_QT_PLUGINS (confirmed: the other two requested wayland dirs — shell-integration,
+# decoration-client — get bundled, this one never does, on both linuxdeploy-plugin-qt
+# "continuous" as of 2026-07). Without it Qt has zero wayland client-buffer integrations,
+# so QRhiGles2 can't get a context and cindro-sidebar qFatal()-aborts on startup with
+# "Failed to create RHI" the instant it opens a window — the --selftest gate above missed
+# this because QT_QPA_PLATFORM=offscreen never touches this plugin at all. Bundle it
+# ourselves straight from $QTPLUGDIR and fail loudly if it's still missing (VM-verified:
+# copying this one file is the whole fix — real GPU rendering, no software-render fallback
+# needed).
+if [ -d "$QTPLUGDIR/wayland-graphics-integration-client" ] && \
+   [ ! -e "$APPDIR/usr/plugins/wayland-graphics-integration-client/libqt-plugin-wayland-egl.so" ]; then
+  say "linuxdeploy-plugin-qt dropped wayland-graphics-integration-client — bundling it manually"
+  mkdir -p "$APPDIR/usr/plugins/wayland-graphics-integration-client"
+  cp "$QTPLUGDIR/wayland-graphics-integration-client/"*.so "$APPDIR/usr/plugins/wayland-graphics-integration-client/"
+fi
+if [ -d "$QTPLUGDIR/wayland-graphics-integration-client" ] && \
+   [ ! -e "$APPDIR/usr/plugins/wayland-graphics-integration-client/libqt-plugin-wayland-egl.so" ]; then
+  echo "!! wayland-graphics-integration-client STILL missing from the AppDir — this ships a build that hard-crashes on every real (non-offscreen) launch. Failing the build." >&2
+  exit 1
+fi
 
 # Prune host-provided libs. linuxdeploy-plugin-qt over-bundles Qt's transitive deps,
 # including libs that MUST come from the host: client libs that talk to a running host

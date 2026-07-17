@@ -76,27 +76,38 @@ def guarded_write(tool: str, ctx: dict, verb: str, path: str,
     # the same way — keeping the backstop in lock-step with the daemon gate.
     full_ctx = dict(ctx)
     full_ctx.setdefault("path", path)
+    # Every vmid this call could touch — a deny rule blocks it if it names ANY of
+    # them, not just the first one found. Clone is the case that matters: POST
+    # /nodes/x/qemu/100/clone {newid:106} names 100 (source, via path) AND 106
+    # (destination, via params) — a VM-scoped deny on either must apply.
+    vmid_candidates = set()
+    if "vmid" in full_ctx:
+        try:
+            vmid_candidates.add(int(full_ctx["vmid"]))
+        except (TypeError, ValueError):
+            pass
     # Derive the target VM/CT id from the path (proxmox_api has no vmid arg) so
     # VM-scoped rules apply to the generic passthrough here too.
-    if "vmid" not in full_ctx:
-        m = re.search(r"/(?:qemu|lxc)/(\d+)", path)
-        if m:
-            full_ctx["vmid"] = int(m.group(1))
-        else:
-            # Many mutating calls carry the target in the BODY, not the path
-            # (create {vmid}, vzdump {vmid}, clone {newid}) — include it so a
-            # VM-scoped deny rule can't be bypassed through the passthrough.
-            for k in ("vmid", "newid"):
-                if isinstance(params, dict) and params.get(k) is not None:
-                    try:
-                        full_ctx["vmid"] = int(params[k])
-                    except (TypeError, ValueError):
-                        pass
-                    break
-    if operator_store.resolve_effect(tool, full_ctx) == "deny":
-        return {"status": "denied",
-                "reason": "blocked by a permission-policy deny rule",
-                "tool": tool}
+    m = re.search(r"/(?:qemu|lxc)/(\d+)", path)
+    if m:
+        vmid_candidates.add(int(m.group(1)))
+    # Many mutating calls carry a (possibly DIFFERENT) target in the BODY — create
+    # {vmid}, vzdump {vmid}, and clone's {newid} names the DESTINATION while the
+    # path names the SOURCE — so check params too, not just as a path fallback.
+    for k in ("vmid", "newid"):
+        if isinstance(params, dict) and params.get(k) is not None:
+            try:
+                vmid_candidates.add(int(params[k]))
+            except (TypeError, ValueError):
+                pass
+    for candidate in vmid_candidates or {None}:
+        candidate_ctx = dict(full_ctx)
+        if candidate is not None:
+            candidate_ctx["vmid"] = candidate
+        if operator_store.resolve_effect(tool, candidate_ctx) == "deny":
+            return {"status": "denied",
+                    "reason": "blocked by a permission-policy deny rule",
+                    "tool": tool}
     try:
         return {"ok": True, "result": run_pvesh(verb, path, params)}
     except proxmox_ops.CommandError as exc:

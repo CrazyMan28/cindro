@@ -8458,10 +8458,22 @@ Response ControlServer::handleOutpostInstallWorkload(const Request &req)
             "print(a[0].get(\"url\", \"\") if a else \"\")'); "
             "[ -n \"$URL\" ]; "
             "curl -fsSL ${AUTH:+-H \"$AUTH\"} -H 'Accept: application/octet-stream' -L "
-            "  \"$URL\" -o Jarvis.AppImage; "
-            "chmod +x Jarvis.AppImage; "
-            "rm -rf squashfs-root; "
-            "./Jarvis.AppImage --appimage-extract >/dev/null"), 300.0))
+            "  \"$URL\" -o Jarvis.AppImage.new; "
+            "chmod +x Jarvis.AppImage.new; "
+            // --appimage-extract always writes to ./squashfs-root relative to CWD (not
+            // configurable), so extract into an isolated stage/ dir first — that way a
+            // corrupt download or failed extraction (caught by `set -e` / the test -x
+            // below) never touches the live squashfs-root/Jarvis.AppImage at all. Only
+            // once the new build is verified do the two renames (atomic on the same fs)
+            // swap it in, so there is never a window where neither runtime is present.
+            "rm -rf stage; mkdir stage; "
+            "( cd stage && ../Jarvis.AppImage.new --appimage-extract >/dev/null ); "
+            "test -x stage/squashfs-root/usr/bin/jarvisd; "
+            "rm -rf squashfs-root.old; "
+            "if [ -d squashfs-root ]; then mv squashfs-root squashfs-root.old; fi; "
+            "mv stage/squashfs-root squashfs-root; "
+            "rm -rf stage squashfs-root.old; "
+            "mv Jarvis.AppImage.new Jarvis.AppImage"), 300.0))
         return *fail;
 
     // 3. systemd units (embedded verbatim from proxmox-mcp/packaging/*.service
@@ -8776,31 +8788,38 @@ QString ControlServer::operatorResolveEffect(const QString &tool, const QJsonObj
     const QString path = args.value(QStringLiteral("path")).toString();
     bool hasVmid = args.contains(QStringLiteral("vmid"));
     int vmid = args.value(QStringLiteral("vmid")).toInt();
+    // Every vmid this call could possibly touch — a deny rule matches if it names
+    // ANY of them, not just the first one found. This matters for e.g. clone:
+    // POST /nodes/x/qemu/100/clone {newid:106} names 100 (source, via path) AND
+    // 106 (destination, via params) — a VM-scoped deny on either must block it.
+    QSet<int> vmidCandidates;
+    if (hasVmid)
+        vmidCandidates.insert(vmid);
     // For the generic passthrough there's no vmid arg, but a VM-scoped rule
     // ({"vmid":106}) must still block e.g. proxmox_api DELETE /nodes/x/qemu/106.
     // Derive the target id from the API path so those rules apply here too.
-    if (!hasVmid && tool == QStringLiteral("proxmox_api")) {
+    if (tool == QStringLiteral("proxmox_api")) {
         if (!path.isEmpty()) {
             static const QRegularExpression kVmidInPath(QStringLiteral("/(?:qemu|lxc)/(\\d+)"));
             const QRegularExpressionMatch mo = kVmidInPath.match(path);
             if (mo.hasMatch()) {
-                hasVmid = true;
-                vmid = mo.captured(1).toInt();
+                const int pathVmid = mo.captured(1).toInt();
+                if (!hasVmid) {
+                    hasVmid = true;
+                    vmid = pathVmid; // used for matchOut's persisted-rule scope below
+                }
+                vmidCandidates.insert(pathVmid);
             }
         }
-        // Many mutating calls carry the target in the BODY, not the path —
-        // POST /nodes/<n>/qemu {vmid}, POST /nodes/<n>/vzdump {vmid}, clone
-        // {newid} — so a VM-scoped deny ({"vmid":106}) would be bypassed via the
-        // generic escape hatch unless we also look at params.
-        if (!hasVmid) {
-            const QJsonObject p = args.value(QStringLiteral("params")).toObject();
-            for (const QString &k : {QStringLiteral("vmid"), QStringLiteral("newid")}) {
-                if (p.contains(k)) {
-                    hasVmid = true;
-                    vmid = p.value(k).toInt();
-                    break;
-                }
-            }
+        // Many mutating calls carry a (possibly DIFFERENT) target in the BODY —
+        // POST /nodes/<n>/qemu {vmid}, POST /nodes/<n>/vzdump {vmid}, and clone's
+        // {newid} names the DESTINATION while the path names the SOURCE — so a
+        // VM-scoped deny on either id must still apply. Always check params, not
+        // just as a fallback when the path had none.
+        const QJsonObject p = args.value(QStringLiteral("params")).toObject();
+        for (const QString &k : {QStringLiteral("vmid"), QStringLiteral("newid")}) {
+            if (p.contains(k))
+                vmidCandidates.insert(p.value(k).toInt());
         }
     }
 
@@ -8843,7 +8862,7 @@ QString ControlServer::operatorResolveEffect(const QString &tool, const QJsonObj
             } else if (key == QStringLiteral("path")) {
                 if (k.value().toString() != path) { ok = false; break; }
             } else if (key == QStringLiteral("vmid")) {
-                if (!hasVmid || k.value().toInt() != vmid) { ok = false; break; }
+                if (!vmidCandidates.contains(k.value().toInt())) { ok = false; break; }
             } else {
                 ok = false; break; // unknown match key never matches
             }
@@ -9214,8 +9233,19 @@ Response ControlServer::handleOutpostInstallDashboard(const Request &req)
             "print(a[0].get(\"url\", \"\") if a else \"\")'); "
             "[ -n \"$URL\" ]; "
             "curl -fsSL ${AUTH:+-H \"$AUTH\"} -H 'Accept: application/octet-stream' -L "
-            "  \"$URL\" -o Jarvis.AppImage; chmod +x Jarvis.AppImage; "
-            "rm -rf squashfs-root; ./Jarvis.AppImage --appimage-extract >/dev/null"), 300.0))
+            "  \"$URL\" -o Jarvis.AppImage.new; chmod +x Jarvis.AppImage.new; "
+            // Stage + validate before touching the LIVE runtime — see the identical
+            // fetch+extract step in the workload installer above for why (a corrupt
+            // download or failed extraction must never leave this host's runtime
+            // absent/partial; the two renames below are atomic on the same fs).
+            "rm -rf stage; mkdir stage; "
+            "( cd stage && ../Jarvis.AppImage.new --appimage-extract >/dev/null ); "
+            "test -x stage/squashfs-root/usr/bin/jarvisd; "
+            "rm -rf squashfs-root.old; "
+            "if [ -d squashfs-root ]; then mv squashfs-root squashfs-root.old; fi; "
+            "mv stage/squashfs-root squashfs-root; "
+            "rm -rf stage squashfs-root.old; "
+            "mv Jarvis.AppImage.new Jarvis.AppImage"), 300.0))
         return *fail;
 
     // 2. Generate the operator + dashboard tokens and seed the policy/layout/
@@ -9332,12 +9362,16 @@ Response ControlServer::handleOutpostInstallDashboard(const Request &req)
                                  QStringLiteral("failed writing dashboard systemd units to %1")
                                      .arg(machine));
 
-    // 6. Enable + start both, and RESTART jarvisd-proxmox-agent so it picks up
-    //    the refreshed AppImage (the new proxmoxop.* verbs + operator routing).
-    if (auto fail = runStep(QStringLiteral("enable+start dashboard services"), QStringLiteral(
-            "systemctl daemon-reload && systemctl enable --now "
+    // 6. Enable both, and RESTART all three — `enable --now` only starts a unit
+    //    that ISN'T already running; on a reinstall proxmox-operator-mcp/
+    //    proxmox-dashboard are typically already active, so without an explicit
+    //    restart they'd keep serving their OLD code (this step's whole point on
+    //    a reinstall is to pick up the refreshed AppImage/package).
+    if (auto fail = runStep(QStringLiteral("enable+restart dashboard services"), QStringLiteral(
+            "systemctl daemon-reload && systemctl enable "
             "proxmox-operator-mcp.service proxmox-dashboard.service && "
-            "systemctl restart jarvisd-proxmox-agent.service"), 30.0))
+            "systemctl restart proxmox-operator-mcp.service "
+            "proxmox-dashboard.service jarvisd-proxmox-agent.service"), 30.0))
         return *fail;
 
     // Read back the dashboard token so the caller can surface it.

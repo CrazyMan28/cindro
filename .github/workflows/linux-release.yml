@@ -90,6 +90,19 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN=1 QT_QPA_PLATFORM=offscreen ./dist/Cindro-*.AppImage --selftest
           echo "AppImage selftest OK"
 
+      # Gate: wayland-graphics-integration-client (wayland-egl) must actually be inside the
+      # squashfs, not just requested. --selftest above is offscreen-only and NEVER exercises
+      # this plugin, so it can't catch its absence — a prior release shipped without it and
+      # cindro-sidebar qFatal()-aborted on every real (non-offscreen) launch. build-appimage.sh
+      # bundles it manually + self-checks, but assert it here too so a future script edit that
+      # drops that check still reds this job instead of silently shipping a broken build.
+      - name: Assert wayland-egl plugin is bundled
+        run: |
+          APPIMAGE_EXTRACT_AND_RUN=1 ./dist/Cindro-*.AppImage --appimage-extract >/dev/null
+          test -e squashfs-root/usr/plugins/wayland-graphics-integration-client/libqt-plugin-wayland-egl.so
+          echo "wayland-egl plugin present OK"
+          rm -rf squashfs-root
+
       - name: Upload AppImage artifact
         # The AppImage is already built + selftested above; a transient GitHub
         # artifact-storage-quota hit must not red the whole PR. Short retention
