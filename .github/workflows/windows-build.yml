@@ -47,6 +47,16 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # PR builds KEEP the previous run's gitignored state (windows/build-win/,
+          # windows/engine/.venv-win, node zip, …): the default clean:true runs
+          # `git clean -ffdx`, measured spending up to 8 min just DELETING the previous
+          # build on the IO-contended runner disk, then forcing a full from-scratch
+          # rebuild + venv/pip reinstall every run. With it off, ninja/pip resume
+          # incrementally; build.ps1 removes the stale payload + old installers itself.
+          # Tag (release) builds still fully clean so shipped artifacts come from a
+          # pristine tree.
+          clean: ${{ github.event_name != 'pull_request' }}
 
       # PowerShell (not bash): the self-hosted Windows runner has no git-bash on
       # PATH for Actions' `shell: bash`, and the Windows/WSL bash stub errors out.
@@ -116,9 +126,11 @@ jobs:
           $inno | Out-File -FilePath $env:GITHUB_PATH -Append
 
       # One-shot: build the daemon + shell, bundle engine + node, make the installer.
+      # PR builds pass -FastCompress (zip installer, exists-only validation, saves
+      # minutes of LZMA); tag builds keep lzma2/max for what users actually download.
       - name: Build Cindro (Windows)
         shell: pwsh
-        run: .\windows\scripts\build.ps1 -Version ${{ steps.ver.outputs.version }} -VcpkgRoot $env:VCPKG_ROOT
+        run: .\windows\scripts\build.ps1 -Version ${{ steps.ver.outputs.version }} -VcpkgRoot $env:VCPKG_ROOT -FastCompress:$${{ github.event_name == 'pull_request' }}
 
       - name: Upload installer artifact
         # Installer is already built above; a transient GitHub artifact-storage

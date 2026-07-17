@@ -32,8 +32,16 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\dist
 OutputBaseFilename=Cindro-Setup-{#MyAppVersion}
+; PR-validation builds define FastCompress (build.ps1 -FastCompress): the artifact
+; only needs to EXIST for validation, so trade size for minutes of 4-core LZMA
+; time. Tag/release builds never define it — what users download stays small.
+#ifdef FastCompress
+Compression=zip
+SolidCompression=no
+#else
 Compression=lzma2
 SolidCompression=yes
+#endif
 ; Cindro emblem icon on the installer itself + Add/Remove Programs
 ; (the app/shortcut/taskbar icon comes from the exe's embedded RC icon —
 ; windows/jarvis.rc — which didn't exist before, hence the iconless app).
