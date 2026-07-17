@@ -1258,6 +1258,11 @@ The Cindro Proxmox dashboard's operator chat (`web/src/pve/chat.tsx`) and Home w
   `cindro.pve.dock.width.v1`, clamped 300–760px). The `.cx-dock.collapsed` width uses `!important` so
   the inline width doesn't fight the 46px collapsed rule; the resize grip is `display:none` while
   collapsed (expand via the toggle first).
+- **`.cx-chat-scroll` is a flex COLUMN, so pin its rows with `.cx-chat-scroll > * { flex-shrink: 0 }`.**
+  Without it, once the transcript overflows, flexbox shrinks the children to fit instead of scrolling;
+  text bubbles resist (their text sets a min height) but the approval card (`overflow:hidden`) gets
+  squished and its Authorize/Always/Deny buttons are clipped away — invisible AND unclickable. That
+  looked like "the approval buttons aren't there" but they were being flex-squished off the card.
 
 ## New subsystems (2026-07-16) — auto-spawned chats now get a REAL isolated agent desktop again
 
