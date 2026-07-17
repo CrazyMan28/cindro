@@ -578,9 +578,9 @@ derived from the other). Load-bearing truths:
 - **The `.xcodeproj` is GENERATED, never committed** (`project.yml` → `xcodegen generate`), the same
   discipline as the Android app being pure-Gradle: a hand-edited pbxproj drifts. CI runs
   `xcodegen generate` before every `xcodebuild`.
-- **`ios-build.yml` runs on GitHub-hosted `macos-latest`** — one of two sanctioned exceptions to
-  the "100% self-hosted / zero GitHub-hosted minutes" rule below (the other being `website-ci.yml`,
-  a separate lightweight PHP/Node stack for `website/`), because iOS needs Xcode on macOS and
+- **`ios-build.yml` runs on GitHub-hosted `macos-latest`** — the one sanctioned exception to the
+  "100% self-hosted / zero GitHub-hosted minutes" rule below (`website-ci.yml`/`android-build.yml`
+  moved to the self-hosted fleet too — see that section), because iOS needs Xcode on macOS and
   the Proxmox fleet is Windows + Linux only. The owner opted into the Actions minutes. It rides the
   SAME `v*` tag `auto-release.yml` already creates, so merge-to-main attaches an **unsigned** `.ipa`
   next to the `.exe`/`.apk`/AppImage with no tagger change. Signed TestFlight/App Store builds need
@@ -613,10 +613,16 @@ triggering `auto-release.yml`'s version bump (see below).
 
 - **CI is 100% self-hosted for the product build workflows — ZERO GitHub-hosted minutes.**
   Windows builds run on `win-runner-1` (the winvm / Proxmox VM 106 box); Linux CI/release/
-  auto-release run on the six `pve-ubuntu-runner-*` (VM 104). **Never** switch one of these
-  four workflow files to `windows-latest` / `ubuntu-latest` — they use `runs-on: [self-hosted, …]`.
-  (`ios-build.yml` and `website-ci.yml` are the two sanctioned GitHub-hosted exceptions — see
-  above and the `website/` subsystem entry below.) The Windows
+  auto-release/website-ci/android-build all run on the six `pve-ubuntu-runner-*` (VM 104, raw
+  Ubuntu host — only linux-ci/linux-release additionally run inside the baked `jarvis-ci`
+  container via `container:`, since website-ci/android-build's toolchains (PHP/Node/JDK/Android
+  SDK) come from their own setup actions instead). **Never** switch one of these six workflow
+  files to `windows-latest` / `ubuntu-latest` — they use `runs-on: [self-hosted, …]`.
+  (`ios-build.yml` is the one sanctioned GitHub-hosted exception — see above; `website-ci.yml`/
+  `android-build.yml` moved off `ubuntu-latest` once GitHub-hosted minutes ran out, so what were
+  GitHub-hosted-only tools now get provisioned per-run: `android-actions/setup-android` for the
+  Android SDK, `shivammathur/setup-php` + `actions/setup-node` for PHP/Node — same as before, just
+  running on the self-hosted fleet instead.) The Windows
   runner is **prebuilt** (git, vcpkg + libsodium/libqrencode, Inno Setup, VS Build Tools,
   PowerShell 7, Python, Qt, Ninja, CMake, Node) via `windows/scripts/setup-runner-*.ps1`, so
   the workflow does **no per-run tool downloads** (mirrors the Linux prebuilt CI image). After
@@ -1435,7 +1441,7 @@ the `/api/license/verify` contract, and the full "known limitations" list. Load-
   path. See `website/README.md`'s "Known limitations" for the full list (also: the product repo
   being **private** means even a real `GITHUB_TOKEN` doesn't make GitHub's release *asset* URLs
   anonymously downloadable — flagged as a `// TODO` in `GitHubReleaseService`, not solved).
-- **CI**: new `website-ci.yml` (GitHub-hosted `ubuntu-latest` — see the CI section above) runs
+- **CI**: `website-ci.yml` (self-hosted `pve-ubuntu-runner-*` — see the CI section above) runs
   `composer install` + `npm run build` + `php artisan test`, gated to `paths: ['website/**']`. All
   six workflows (`auto-release.yml` + the five product build workflows) got
   `paths-ignore: ['website/**']` added so a website-only PR/merge doesn't bump a product version or
