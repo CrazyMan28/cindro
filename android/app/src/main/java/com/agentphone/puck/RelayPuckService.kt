@@ -189,6 +189,10 @@ class RelayPuckService : Service() {
         closeHeadsetClientProxy()
         callActive = false
         scoConnected = false
+        // Tearing down while a call was active would otherwise leave the AudioManager
+        // pinned in MODE_IN_COMMUNICATION with SCO up (onScoDown normally clears it) —
+        // restore normal audio routing here too.
+        exitCommunicationMode()
         status("Relay puck stopped")
     }
 

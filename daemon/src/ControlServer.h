@@ -898,7 +898,10 @@ private:
     // Sessions that have already received the one-time policy preamble
     // (permission_level + agent_mode + trust-policy clauses). Fires on turn 1 of
     // EVERY non-subagent session, independent of whether an agent desktop exists
-    // — the co-work screen-targeting guide (m_coworkGuided) stays gated on one.
+    // — the co-work screen-targeting guide (m_coworkGuided) stays gated on either
+    // a real nested desktop OR the auto-global-engine fallback (m_autoGlobalEngineSessions):
+    // a session with NEITHER has no computer-use tools at all, so there's nothing
+    // to guide.
     QSet<QString> m_policyGuided;
     // Per-session custom-agent system prompt (set when a session runs AS an agent)
     // and the set of sessions that have already had it injected (turn 1 only).
@@ -956,7 +959,11 @@ private:
     // sessionIds marked at createSession() time for the auto-computer-use
     // global-engine fallback (see createSession()'s autoComputer branch) —
     // skipped the isolated nested desktop entirely, so makeBrain() must inject
-    // the global :8794 engine instead of leaving computer-use tools empty.
+    // the global :8794 engine instead of leaving computer-use tools empty. Also
+    // used to gate the no-isolation variant of the co-work guide (m_coworkGuided)
+    // so the model is told its "computer_use" tools are actually the user's REAL
+    // screen here, instead of silently believing (and faking) it has an isolated
+    // agent desktop.
     QSet<QString> m_autoGlobalEngineSessions;
     // sessionId -> last turn time (ms). Drives the idle-teardown sweep below.
     QHash<QString, qint64> m_deskLastActive;
@@ -986,6 +993,10 @@ private:
     QSet<QWebSocket *> m_widgetClients;
     QTimer *m_widgetTimer = nullptr;
     qint64 m_widgetOffset = 0;
+    // Newest widget-record `ts` we've already broadcast. Used ONLY on bus
+    // rotation to dedup the retained tail (which mixes already-sent records with
+    // genuinely-new ones) without either double-rendering or dropping frames.
+    qint64 m_lastWidgetTs = 0;
     void startWidgetWatch();
     void readWidgetTail();
     QString widgetsBusPath() const;

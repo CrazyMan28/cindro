@@ -87,6 +87,29 @@ def settings() -> dict:
     return merged
 
 
+def _write_secret_file(path: Path, content: str) -> None:
+    """Write a token file that is 0600 from the instant it exists — never even
+    briefly world-readable. A plain `write_text()` creates the file with the
+    default-umask perms and only tightens them on the *following* `os.chmod`,
+    leaving a TOCTOU window in which another local user could read the token.
+
+    O_CREAT's 0600 mode applies ONLY to a freshly created file; if `path`
+    already exists at looser perms (e.g. 0644), O_TRUNC keeps those perms while
+    the secret bytes are written, and a post-write `os.chmod` would tighten
+    them only AFTER the secret was already on disk world-readable. So `fchmod`
+    the descriptor to 0600 BEFORE writing anything — that closes the window in
+    both the fresh-create and pre-existing cases. O_TRUNC preserves
+    write_text's overwrite-in-place semantics."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", closefd=False) as f:
+            f.write(content)
+    finally:
+        os.close(fd)
+
+
 def get_bearer_token() -> str:
     """This server's inbound bearer (the pve-local jarvisd authenticates with
     it). Env override wins (tests); else read the installer-written file;
@@ -100,10 +123,8 @@ def get_bearer_token() -> str:
             return existing
     except OSError:
         pass
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     token = secrets.token_urlsafe(32)
-    MCP_TOKEN_FILE.write_text(token)
-    os.chmod(MCP_TOKEN_FILE, 0o600)
+    _write_secret_file(MCP_TOKEN_FILE, token)
     return token
 
 
@@ -140,10 +161,8 @@ def operator_get_bearer_token() -> str:
             return existing
     except OSError:
         pass
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     token = secrets.token_urlsafe(32)
-    OPERATOR_MCP_TOKEN_FILE.write_text(token)
-    os.chmod(OPERATOR_MCP_TOKEN_FILE, 0o600)
+    _write_secret_file(OPERATOR_MCP_TOKEN_FILE, token)
     return token
 
 

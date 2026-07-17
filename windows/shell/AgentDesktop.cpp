@@ -65,6 +65,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QHostAddress>
 #include <QJsonObject>
 #include <QList>
 #include <QProcess>
@@ -198,12 +199,15 @@ QString isolationDir()
 }
 
 // XML-escapes a string for safe insertion into the rendered .wsb's element text
-// content. @BEARER@/@SESSION@/@ENGINEDIR@/@HOSTIP@ are opaque host-generated (or
-// operator env-var) strings, not attacker-controlled in the threat model, but
-// escaping them is cheap insurance against a stray '&'/'<' (e.g. a Windows path,
-// or an operator-set JARVIS_HOST_IP) corrupting the XML -- see the REPORT 3 fix in
-// ensure() for why a malformed rendered .wsb reproduces the exact "boots, no
-// LogonCommand, no error" symptom this issue is about.
+// content. This is ONLY about XML well-formedness (a stray '&'/'<' from e.g. a
+// Windows path corrupting the document -- see the REPORT 3 fix in ensure() for
+// why a malformed rendered .wsb reproduces the exact "boots, no LogonCommand, no
+// error" symptom). It is NOT the defense against command injection into the
+// LogonCommand: XML-escaping an '&' to "&amp;" is decoded back to a literal '&'
+// by the sandbox's XML parser before cmd.exe sees it. The values that flow into
+// that command line (@SESSION@, and the operator's JARVIS_HOST_IP -> @HOSTIP@) are
+// instead strictly validated at the ensure() boundary -- isSafeSessionId() /
+// isValidHostIp() -- so they can never carry a cmd.exe metacharacter here.
 QString xmlEscape(const QString &s)
 {
     // toHtmlEscaped() covers &/</>/" in one correct pass (no double-escape
@@ -255,6 +259,62 @@ QString sessionTempDir(const QString &sessionId)
 {
     return QDir(agentTempRoot())
         .absoluteFilePath(QStringLiteral("sess-") + sessionId);
+}
+
+// --- strict input validation at the ensure()/teardown() boundary ------------
+// Two downstream sinks trust the session id / host IP to be free of dangerous
+// characters, and neither is safe on its own:
+//   * the rendered .wsb's LogonCommand builds a `cmd.exe /c powershell ...` line
+//     by substituting @SESSION@ and @HOSTIP@. xmlEscape() below makes those
+//     XML-well-formed but does NOT neutralize cmd.exe metacharacters -- an '&'
+//     escaped to "&amp;" is decoded back to a literal '&' by the sandbox's XML
+//     parser BEFORE cmd.exe ever sees it, so escaping is the wrong layer for
+//     command-injection defense.
+//   * sessionTempDir() composes an on-disk path from the id and teardown()
+//     removeRecursively()'s it. absoluteFilePath() does not reject ".."/absolute
+//     components, so a traversal id would escape agentTempRoot() on delete.
+// The only robust fix is to require the raw values to be well-formed in the FIRST
+// place, at the boundary, before either sink is reached. The session-id generator
+// (genSessionId(), daemon side) only ever emits `sess_<hex>`; accept exactly that
+// shape -- non-empty, [A-Za-z0-9_-] only -- which by construction excludes every
+// shell metacharacter, path separator, "..", and whitespace.
+bool isSafeSessionId(const QString &s)
+{
+    if (s.isEmpty())
+        return false;
+    for (const QChar ch : s) {
+        const ushort u = ch.unicode();
+        const bool ok = (u >= '0' && u <= '9') || (u >= 'A' && u <= 'Z') ||
+                        (u >= 'a' && u <= 'z') || u == '_' || u == '-';
+        if (!ok)
+            return false;
+    }
+    return true;
+}
+
+// Operator-set JARVIS_HOST_IP reaches the LogonCommand via @HOSTIP@; require a
+// bare IPv4/IPv6 literal. QHostAddress::setAddress() rejects a hostname or a value
+// with a port, but it does NOT charset-validate an IPv6 zone/scope suffix -- e.g.
+// setAddress("fe80::1%x&whatever") returns true with the scope id stored verbatim.
+// Since ensure() substitutes the RAW env string into @HOSTIP@, a '%'-scope value
+// could smuggle a literal '&' back into the sandbox LogonCommand. Belt and braces:
+// also require every character to be a bare IPv4/IPv6 glyph ([0-9A-Fa-f], '.', ':'),
+// which excludes '%', whitespace, and every shell/XML metacharacter.
+// (Empty means "auto" -- bootstrap resolves the default gateway -- and is handled
+// by the caller, never passed here.)
+bool isValidHostIp(const QString &s)
+{
+    QHostAddress addr;
+    if (!addr.setAddress(s))
+        return false;
+    for (const QChar ch : s) {
+        const ushort u = ch.unicode();
+        const bool ok = (u >= '0' && u <= '9') || (u >= 'A' && u <= 'F') ||
+                        (u >= 'a' && u <= 'f') || u == '.' || u == ':';
+        if (!ok)
+            return false;
+    }
+    return true;
 }
 
 // --- host firewall for the reverse-tunnel rendezvous port (SANDBOX-BLOCKING) --
@@ -963,6 +1023,37 @@ AgentDesktopInfo AgentDesktop::ensure(const QString &sessionId, QString *err)
             *err = m_lastError;
         return {};
     }
+    // Boundary sanitization (see isSafeSessionId()/isValidHostIp()): the id feeds
+    // both the sandbox LogonCommand (@SESSION@) and an on-disk temp path we later
+    // removeRecursively(); xmlEscape() neutralizes neither cmd.exe metacharacters
+    // nor path traversal, so a client-controllable id reaching here must be
+    // rejected BEFORE any of that. genSessionId() already only emits `sess_<hex>`,
+    // so a well-behaved caller never trips this -- it's the layer that keeps a
+    // future looser id source from turning this into RCE / arbitrary-delete.
+    if (!isSafeSessionId(sessionId)) {
+        m_lastError = QStringLiteral(
+            "invalid session id (must be non-empty [A-Za-z0-9_-]); "
+            "refusing to provision");
+        if (err)
+            *err = m_lastError;
+        return {};
+    }
+    // Operator-controllable JARVIS_HOST_IP reaches the LogonCommand via @HOSTIP@;
+    // reject anything that isn't a bare IPv4/IPv6 literal before it can (empty =
+    // the default "auto"). Validated against the exact value substituted below.
+    {
+        const QString envHostIp = qEnvironmentVariable("JARVIS_HOST_IP");
+        if (!envHostIp.isEmpty() && !isValidHostIp(envHostIp)) {
+            m_lastError = QStringLiteral(
+                              "invalid JARVIS_HOST_IP '%1' (expected a bare "
+                              "IPv4/IPv6 address); unset it to auto-resolve the "
+                              "sandbox gateway")
+                              .arg(envHostIp);
+            if (err)
+                *err = m_lastError;
+            return {};
+        }
+    }
     if (auto it = m_desks.find(sessionId); it != m_desks.end() && it->second->info.up)
         return it->second->info;
 
@@ -1437,7 +1528,13 @@ void AgentDesktop::teardown(const QString &sessionId)
     auto it = m_desks.find(sessionId);
     if (it == m_desks.end()) {
         // Not tracked yet (ensure() failed mid-flight) -- still tidy the temp dir.
-        QDir(sessionTempDir(sessionId)).removeRecursively();
+        // Only ever our own sess-<id> dir, and only for a well-formed id: never
+        // follow a traversal id back out of agentTempRoot() on delete. ensure()
+        // already rejects such ids at the boundary, but teardown()/releaseSession()
+        // are reachable directly with a caller-supplied id, so re-check here (a
+        // tracked desk, below, uses the already-validated d.runtimeDir instead).
+        if (isSafeSessionId(sessionId))
+            QDir(sessionTempDir(sessionId)).removeRecursively();
         return;
     }
     Desk &d = *it->second;

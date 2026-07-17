@@ -22,12 +22,22 @@ Commands:
   kill                   stop jarvis* processes on the VM
 """
 from __future__ import annotations
-import base64, json, os, subprocess, sys, time
+import base64, json, os, re, subprocess, sys, time
 from pathlib import Path
 
 REPO = "https://github.com/CrazyMan28/jarvis"
 CFG = Path(os.path.expanduser("~/.config/jarvis/winlab.json"))
 ART = Path(os.path.expanduser("~/.config/jarvis/winlab"))  # local pulled artifacts
+
+
+def _safe(value: str, allowed: str, what: str) -> str:
+    """Reject values that could break out of the remote PowerShell we f-string
+    them into (command injection). Each of ref/ver/build_dir is validated against a
+    strict allowlist that excludes every shell metacharacter (quotes, $, backtick,
+    ;, &, |, newline, …) before it is interpolated."""
+    if not re.fullmatch(allowed, value):
+        sys.exit(f"winlab: refusing unsafe {what} {value!r} (allowed pattern: {allowed})")
+    return value
 
 
 def cfg() -> dict:
@@ -167,6 +177,9 @@ def cmd_pull(c, args):
 
 def cmd_release(c, args):
     ver = args[0] if args else ""
+    if ver:
+        # Interpolated straight into remote PowerShell below — allowlist first.
+        ver = _safe(ver, r"v?[0-9A-Za-z.+-]+", "version")
     tag = f"download/v{ver.lstrip('v')}" if ver else "latest/download"
     name = f"Cindro-Setup-{ver.lstrip('v')}.exe" if ver else None
     # If no version: query the latest release asset name on the VM.
@@ -222,8 +235,10 @@ def cmd_shoot_app(c, args):
 
 
 def cmd_build(c, args):
-    ref = args[0] if args else "main"
-    bd = c["build_dir"]
+    # ref + build_dir are f-string-interpolated into remote PowerShell (git
+    # checkout / path) — allowlist both before use to block command injection.
+    ref = _safe(args[0] if args else "main", r"[0-9A-Za-z._/-]+", "git ref")
+    bd = _safe(c["build_dir"], r"[0-9A-Za-z._:/\\ -]+", "build dir")
     print(f"==> sync {ref} + build on the VM ({bd})…")
     script = fr"""
 $ErrorActionPreference='Stop'
@@ -238,8 +253,8 @@ Write-Output "building $sha…"
 
 
 def cmd_ci(c, args):
-    ref = args[0] if args else "main"
-    bd = c["build_dir"]
+    ref = args[0] if args else "main"  # revalidated inside cmd_build() before use
+    bd = _safe(c["build_dir"], r"[0-9A-Za-z._:/\\ -]+", "build dir")  # interpolated below
     cmd_kill(c, [])
     cmd_build(c, [ref])
     # install whatever build.ps1 produced, then launch + shot

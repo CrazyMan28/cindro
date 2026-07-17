@@ -1219,6 +1219,36 @@ going forward — **the self-hosted Linux CI image still needs a manual rebuild+
 just exercises the plaintext-fallback path, not the real Secret Service one. `windows/CMakeLists.txt`
 links `Crypt32` unconditionally (always present, no vcpkg package needed).
 
+## New subsystems (2026-07-16) — auto-spawned "computer_use" fallback was mislabeled as isolated
+
+Bug report: asking Cindro for "an agent desktop" during an **auto-spawned** chat (the "let Cindro use
+a computer" toggle, no explicit co-work session) visibly switched the user's real KDE screen to a
+new, empty virtual desktop instead of quietly spinning up the nested headless-Sway agent desktop.
+
+Root cause: `ControlServer::createSession()`'s `autoComputer` branch deliberately skips
+`AgentDesktop::ensure()` (up to a ~45s synchronous nested-compositor + engine cold-start, unacceptable
+on every plain chat's first turn — see the `m_autoGlobalEngineSessions` comment in `ControlServer.h`)
+and instead injects the **GLOBAL** `:8794` engine under the **same** `computer_use` MCP tool name that
+an explicit coworker+agent session uses for its truly isolated nested engine. That global engine's
+`which="active"` default resolves to whatever the real host compositor is (KDE here) — it drives the
+user's REAL screen, not an isolated one. The one-time co-work preamble that explains the
+`real_screen` vs `computer_use` split (and the "ask before touching the real screen" rule) was gated
+on `m_agentDesktops.has(sessionId)`, which is **false** on this fallback path, so the model never
+learned any of this. Asked for "your own" / "an agent" desktop with only the mislabeled real-screen
+tools available, it improvised — calling `workspace_create`/`switch_workspace` (real KDE virtual
+desktops, `computer_use_mcp/workspaces.py`), which switches the user's actual visible desktop.
+
+Fix (`daemon/src/ControlServer.cpp`, `sendToSession`'s one-time co-work guide): the guide now also
+fires for `m_autoGlobalEngineSessions` sessions, with a distinct clause (`coworkClause`, branched on
+`m_agentDesktops.has(sessionId)`) that tells the model plainly: this session has no isolated desktop,
+`computer_use` here **is** the real screen, never fake isolation via workspace/virtual-desktop tools,
+and `ask_user` before any real-screen action the user didn't explicitly request. This is a
+prompt-level fix, not a tool-level block — the global engine is a single physical FastMCP server/process
+with no way to know which logical name (`computer_use` vs `real_screen`) the daemon registered it
+under, so there is no tool-side signal to gate on without a deeper (out of scope) architecture change.
+The latency trade-off that motivated skipping `AgentDesktop::ensure()` in the first place is
+unchanged — this only fixes what the model is told about the tools it actually has.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

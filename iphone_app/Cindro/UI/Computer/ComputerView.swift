@@ -60,12 +60,17 @@ final class ComputerViewModel: ObservableObject {
     private var repo: JarvisRepository?
     private var cancellable: AnyCancellable?
     private var size: (w: Int, h: Int) = (0, 0)
+    /// The session actually being mirrored, captured when the mirror starts. The Picker's
+    /// `selectedSession` stays live (it's still visible until the first frame arrives), so
+    /// stop / take-over / tap / the frame filter must key off THIS, not the live selection —
+    /// otherwise switching the Picker before the first frame targets the wrong session.
+    private var mirroredSession: String?
 
     func configure(_ repo: JarvisRepository) {
         guard self.repo == nil else { return }
         self.repo = repo
         cancellable = repo.client.frames.receive(on: RunLoop.main).sink { [weak self] mf in
-            guard let self, mf.sessionId == self.selectedSession else { return }
+            guard let self, mf.sessionId == self.mirroredSession else { return }
             self.frame = UIImage(data: mf.jpeg)
         }
     }
@@ -82,26 +87,28 @@ final class ComputerViewModel: ObservableObject {
         do {
             let dims = try await repo.mirrorStart(sid)
             size = (dims.width, dims.height)
+            mirroredSession = sid          // pin the target for stop / take-over / tap / frames
             mirroring = true
         } catch { errorText = error.localizedDescription }
     }
 
     func stop() async {
-        guard let repo, let sid = selectedSession else { return }
+        guard let repo, let sid = mirroredSession else { return }
         try? await repo.mirrorStop(sid)
         mirroring = false
+        mirroredSession = nil
         frame = nil
     }
 
     func takeOver() async {
-        guard let repo, let sid = selectedSession else { return }
+        guard let repo, let sid = mirroredSession else { return }
         guard await Biometric.authenticate(reason: "Take over the computer") else { return }
         try? await repo.takeOverRequest(sid)
     }
 
     /// Map a tap in the displayed image to remote screen coordinates and send a click.
     func tap(at point: CGPoint, in viewSize: CGSize) {
-        guard let repo, let sid = selectedSession, mirroring, size.w > 0, size.h > 0,
+        guard let repo, let sid = mirroredSession, mirroring, size.w > 0, size.h > 0,
               let img = frame else { return }
         // The image is scaledToFit; compute the letterboxed content rect.
         let scale = min(viewSize.width / img.size.width, viewSize.height / img.size.height)

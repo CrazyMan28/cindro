@@ -66,6 +66,7 @@ fun IncomingCallScreen(
     showTextFallback: Boolean,
     onAccept: () -> Unit,
     onReject: () -> Unit,
+    onEnd: () -> Unit,
     onSendText: (String) -> Unit,
     audioStart: () -> Boolean,
     audioStop: () -> Unit,
@@ -228,7 +229,10 @@ fun IncomingCallScreen(
                         size = 80.dp,
                         onClick = {
                             audioStop()
-                            onReject()
+                            // This call was ANSWERED — hanging up must send call_end,
+                            // not call_reject (reject is only for a not-yet-answered
+                            // incoming call, handled by the Decline button above).
+                            onEnd()
                         }
                     )
                 }

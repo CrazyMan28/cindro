@@ -204,7 +204,22 @@ int main(int argc, char **argv)
         QLocalSocket *conn = server->nextPendingConnection();
         if (!conn)
             return;
-        QObject::connect(conn, &QLocalSocket::readyRead, conn, [conn, windowController, bridge]() {
+        // Idle/read timeout. A peer that connects but never writes would otherwise
+        // linger forever parented to &app — nothing frees it, since cleanup only
+        // fires on `disconnected`. Arm a one-shot timer (parented to conn, so it
+        // dies with the socket) that closes + deletes any connection which hasn't
+        // sent anything in time; the readyRead handler below stops it once a
+        // message arrives. abort() emits disconnected -> deleteLater, and calling
+        // deleteLater() more than once is safe.
+        auto *idle = new QTimer(conn);
+        idle->setSingleShot(true);
+        QObject::connect(idle, &QTimer::timeout, conn, [conn]() {
+            conn->abort();
+            conn->deleteLater();
+        });
+        idle->start(3000);
+        QObject::connect(conn, &QLocalSocket::readyRead, conn, [conn, idle, windowController, bridge]() {
+            idle->stop();
             const QByteArray cmd = conn->readAll().trimmed();
             if (cmd == "toggle") {
                 if (windowController->mode() == QStringLiteral("hidden")) {

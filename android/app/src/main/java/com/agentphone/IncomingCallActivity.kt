@@ -61,6 +61,10 @@ class IncomingCallActivity : ComponentActivity() {
                         AgentPhoneForegroundService.dispatchReject(this, call)
                         finish()
                     },
+                    onEnd = {
+                        AgentPhoneForegroundService.dispatchEnd(this, call)
+                        finish()
+                    },
                     onSendText = { text ->
                         AgentPhoneForegroundService.dispatchTextFallback(this, call, text)
                     },

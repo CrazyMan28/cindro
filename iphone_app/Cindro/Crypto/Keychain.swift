@@ -11,6 +11,12 @@ import Security
 struct Keychain {
     let service: String
 
+    /// A Keychain access failure that is NOT a simple "item absent". Callers holding an
+    /// irreplaceable secret (the device seed) must distinguish this from a genuine
+    /// `errSecItemNotFound` so they never overwrite a still-present item they merely
+    /// failed to read (e.g. a locked keychain before first unlock).
+    enum KeychainError: Error { case unhandled(OSStatus) }
+
     init(service: String = "com.cindro.app.secret") {
         self.service = service
     }
@@ -23,6 +29,27 @@ struct Keychain {
         let status = SecItemCopyMatching(query as CFDictionary, &out)
         guard status == errSecSuccess, let data = out as? Data else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    /// Read a stored value, distinguishing "no such item" (returns `nil`) from a real
+    /// Keychain failure (throws [KeychainError]). Unlike [getString], an access error such
+    /// as `errSecInteractionNotAllowed` (keychain locked before first unlock) is surfaced
+    /// rather than collapsed to `nil`, so a read failure is never mistaken for absence.
+    func readString(_ key: String) throws -> String? {
+        var query = baseQuery(key)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &out)
+        switch status {
+        case errSecSuccess:
+            guard let data = out as? Data else { return nil }
+            return String(data: data, encoding: .utf8)
+        case errSecItemNotFound:
+            return nil
+        default:
+            throw KeychainError.unhandled(status)
+        }
     }
 
     @discardableResult

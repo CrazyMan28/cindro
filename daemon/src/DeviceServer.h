@@ -192,6 +192,10 @@ private:
     void readWidgetTail();
     QTimer *m_widgetTimer = nullptr;
     qint64 m_widgetOffset = 0;
+    // Newest widget-record `ts` already broadcast — used only to dedup the
+    // retained tail on bus rotation (see readWidgetTail), so a truncation neither
+    // double-renders old cards nor drops the freshly-appended ones.
+    qint64 m_lastWidgetTs = 0;
     // Per-(device|widget id) last push time (ms) for renders delivered ONLY because
     // the phone has the widget pinned to its home screen (not via a session sub).
     // Enforces a 60s floor so a 1s desktop-driven job can't blast a backgrounded
