@@ -16,7 +16,10 @@ struct HostPort {
         if let idx = trimmed.lastIndex(of: ":") {
             let host = String(trimmed[trimmed.startIndex..<idx])
             let portStr = String(trimmed[trimmed.index(after: idx)...])
-            guard !host.isEmpty, let port = Int(portStr), (1...65535).contains(port) else { return nil }
+            guard !host.isEmpty else { return nil }
+            // A trailing colon with no port ("host:") falls back to the default port.
+            if portStr.isEmpty { return HostPort(host: host, port: defaultPort) }
+            guard let port = Int(portStr), (1...65535).contains(port) else { return nil }
             return HostPort(host: host, port: port)
         }
         return HostPort(host: trimmed, port: defaultPort)

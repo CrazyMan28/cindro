@@ -23,6 +23,18 @@ class CommandError(RuntimeError):
         self.returncode = returncode
         self.stderr = stderr
 
+    @property
+    def redacted(self) -> str:
+        """A trimmed message safe to surface into an operator/chat transcript.
+        `str(self)` joins the FULL argv (absolute host paths, node names,
+        volids) and the raw stderr — infrastructure detail that shouldn't leak
+        to the operator. This keeps the exit code and stderr (the actionable
+        part) but drops the argv; the full form stays in `str(self)`/`.cmd` for
+        server-side logging."""
+        detail = (self.stderr or "").strip()
+        return f"command failed ({self.returncode}): {detail}" if detail \
+            else f"command failed ({self.returncode})"
+
 
 def run(cmd: list[str], timeout: float = 20.0) -> str:
     """Run a qm/pvesh command, return stdout. Raises CommandError on failure.
@@ -68,10 +80,19 @@ def qm_set(vmid: int, *, cores: int | None = None, memory_mb: int | None = None)
 # closes that gap. Matched case-insensitively against the whole argv (not
 # just argv[0]) so `sh -c "shutdown -r now"` / `cmd /c shutdown /r` are
 # caught too, not just a direct invocation.
+#
+# Beyond the obvious binaries, cover the non-obvious in-guest power paths that
+# never touch shutdown/reboot: the magic-SysRq trigger (`echo b >
+# /proc/sysrq-trigger`), an in-place kernel replacement (`kexec -e`), and the
+# D-Bus route to logind/systemd (`dbus-send`/`busctl ... login1 ... Reboot`).
+# (The login1 method names Reboot/PowerOff/Halt are already caught by their
+# substrings; denying the transports too covers Suspend/Hibernate and any
+# obfuscated member name.)
 _GUEST_EXEC_DENYLIST = (
     "shutdown", "reboot", "poweroff", "halt", "telinit", "systemctl",
     "init 0", "init 6", "pm-suspend", "pm-hibernate", "loginctl",
     "shutdown.exe", "wsl.exe",
+    "sysrq-trigger", "kexec", "dbus-send", "busctl",
 )
 
 

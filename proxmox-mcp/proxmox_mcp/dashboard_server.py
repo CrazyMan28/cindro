@@ -262,7 +262,16 @@ def _same_origin(origin: str, host: str) -> bool:
 async def _proxy_ws_to_pve(websocket: WebSocket, full_path: str) -> None:
     """Dumb-pipe a WS upgrade through to pveproxy. pveproxy re-validates the
     PVEAuthCookie (and any vncticket in the query string) on the upgrade
-    itself, so this proxy doesn't need its own auth check here."""
+    itself, so this proxy doesn't need its own auth check here.
+
+    Mirrors the traversal guard the HTTP side already carries (_serve_spa /
+    _proxy_http): reject any ".." segment or an absolute path before building
+    the upstream URL. PVE_WS_BASE is a fixed loopback target so there's no
+    off-host SSRF here, but a "../.." could still normalize the upstream path
+    off the console-asset tree — defense-in-depth parity with the HTTP proxy."""
+    if ".." in full_path or full_path.startswith("/"):
+        await websocket.close(code=1008)  # policy violation
+        return
     query = websocket.url.query
     upstream_url = f"{PVE_WS_BASE}/{full_path.lstrip('/')}" + (f"?{query}" if query else "")
     cookie_header = websocket.headers.get("cookie", "")
@@ -515,7 +524,20 @@ async def jarvis_ws(ws: WebSocket):
 async def jarvis_settings_get(request: Request):
     """{settings, models} — settings.get + model.list, straight from jarvisd,
     so the SPA can render/edit the AI provider configuration. Admin-only — the
-    AI provider keys are host-wide secrets."""
+    AI provider keys are host-wide secrets.
+
+    Same-origin-guarded like the POST below (parity): a cross-site page can ride
+    the ambient PVEAuthCookie to fetch this, and the body echoes the provider
+    config back — so reject a cross-origin Origin. Note the asymmetry with the
+    POST's unconditional `_same_origin`: a *same-origin* GET carries NO Origin
+    header (browsers only add it for cross-origin reads and for unsafe methods),
+    so the SPA's own `fetch(credentials:"include")` would be wrongly rejected if
+    we demanded one. We therefore block only a PRESENT, mismatched Origin — the
+    exact shape of the cross-site credentialed read we're defending against. The
+    POST can demand Origin outright because every state-changing request has one."""
+    origin = request.headers.get("origin", "")
+    if origin and not _same_origin(origin, request.headers.get("host", "")):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
     if not await _pve_admin(request.cookies.get(PVE_AUTH_COOKIE, "")):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     try:

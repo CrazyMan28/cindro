@@ -117,6 +117,16 @@ class MainActivity : FragmentActivity() {
      *  absent extras never clobber existing pending state). */
     private fun applyIntentExtras(intent: Intent?) {
         intent ?: return
+        // This is the exported LAUNCHER activity, so ANY co-installed app can start it
+        // with forged deep-link extras — e.g. a challenge id to force the cross-device
+        // Approve screen open. As best-effort defense-in-depth we drop extras when the
+        // referrer is a DIFFERENT package. This is NOT a security boundary: getReferrer()
+        // is documented as spoofable, and the real gate for the auth path is the biometric
+        // prompt + server-side challenge validation. It is intentionally lenient — many
+        // legitimate internal launches (notification / widget / service PendingIntents)
+        // report a null referrer, so a null referrer is TRUSTED; only a present-but-
+        // mismatched host is rejected (so we never silently drop a legitimate deep link).
+        if (!isTrustedDeepLinkSource()) return
         intent.getStringExtra(JarvisNotifier.EXTRA_SESSION_ID)
             ?.let { deepLinkSession.value = it }
         if (intent.getBooleanExtra(WakeService.EXTRA_WAKE, false)) deepLinkWake.value = true
@@ -124,5 +134,15 @@ class MainActivity : FragmentActivity() {
         // the challenge id; deep-link into the Approve screen.
         intent.getStringExtra(JarvisNotifier.EXTRA_CHALLENGE_ID)
             ?.let { deepLinkAuth.value = it }
+    }
+
+    /** Best-effort (NOT a security boundary — getReferrer() is spoofable) check that the
+     *  launch didn't come from a DIFFERENT co-installed app. A null referrer is treated as
+     *  trusted because legitimate internal launches (notification/widget/service
+     *  PendingIntents) routinely report no referrer; only a present-but-mismatched host
+     *  is rejected, so we never drop a legitimate internal deep link. */
+    private fun isTrustedDeepLinkSource(): Boolean {
+        val ref = referrer ?: return true
+        return ref.host == packageName
     }
 }

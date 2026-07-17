@@ -64,7 +64,17 @@ inline int kill(pid_t pid, int sig)
     if (!h)
         return -1; // no such process / no access (ESRCH analogue)
     int rc = 0;
-    if (sig != 0) {
+    if (sig == 0) {
+        // Existence probe. OpenProcess alone is NOT sufficient: a handle can still
+        // be opened for a process that has already EXITED but not yet been reaped
+        // (its kernel object lingers while any handle is held), and — worse — a
+        // reused PID could name a completely different, live process. Mirror POSIX
+        // ESRCH: report "alive" only if the process has not exited yet. A dead-but-
+        // unreaped or reused-then-gone PID reports not-alive.
+        DWORD code = 0;
+        if (!::GetExitCodeProcess(h, &code) || code != STILL_ACTIVE)
+            rc = -1;
+    } else {
         if (!::TerminateProcess(h, static_cast<UINT>(128 + sig)))
             rc = -1;
     }

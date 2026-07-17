@@ -112,12 +112,12 @@ data class MirrorFrame(
                     .parseString(String(bytes, 4, hlen, Charsets.UTF_8))
                     .asJsonObject
             }.getOrNull() ?: return null
-            if (header.get("t")?.asString != "mirror.frame") return null
+            if (header.get("t")?.takeIf { it.isJsonPrimitive }?.asString != "mirror.frame") return null
             val jpeg = bytes.copyOfRange(4 + hlen, bytes.size)
             if (jpeg.isEmpty()) return null
             return MirrorFrame(
-                sessionId = header.get("session_id")?.asString.orEmpty(),
-                ts = header.get("ts")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                sessionId = header.get("session_id")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty(),
+                ts = header.get("ts")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L,
                 jpeg = jpeg,
             )
         }
@@ -332,12 +332,13 @@ data class FileOffer(
 ) {
     companion object {
         fun from(o: JsonObject): FileOffer = FileOffer(
-            id = o.get("id")?.asString ?: o.get("file_id")?.asString.orEmpty(),
-            name = o.get("name")?.asString ?: "file",
-            mime = o.get("mime")?.takeIf { !it.isJsonNull }?.asString,
-            size = o.get("size")?.takeIf { !it.isJsonNull }?.asLong,
-            sessionId = o.get("session_id")?.takeIf { !it.isJsonNull }?.asString,
-            b64 = o.get("b64")?.takeIf { !it.isJsonNull }?.asString,
+            id = o.get("id")?.takeIf { it.isJsonPrimitive }?.asString
+                ?: o.get("file_id")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty(),
+            name = o.get("name")?.takeIf { it.isJsonPrimitive }?.asString ?: "file",
+            mime = o.get("mime")?.takeIf { it.isJsonPrimitive }?.asString,
+            size = o.get("size")?.takeIf { it.isJsonPrimitive }?.asLong,
+            sessionId = o.get("session_id")?.takeIf { it.isJsonPrimitive }?.asString,
+            b64 = o.get("b64")?.takeIf { it.isJsonPrimitive }?.asString,
         )
     }
 }
@@ -346,8 +347,8 @@ data class FileOffer(
 data class SessionOpened(val sessionId: String, val title: String?) {
     companion object {
         fun from(o: JsonObject): SessionOpened = SessionOpened(
-            sessionId = o.get("session_id")?.asString.orEmpty(),
-            title = o.get("title")?.takeIf { !it.isJsonNull }?.asString,
+            sessionId = o.get("session_id")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty(),
+            title = o.get("title")?.takeIf { it.isJsonPrimitive }?.asString,
         )
     }
 }
@@ -357,11 +358,12 @@ data class SessionOpened(val sessionId: String, val title: String?) {
 data class AuthChallenge(val challengeId: String, val origin: String) {
     companion object {
         fun from(o: JsonObject): AuthChallenge? {
-            if (o.get("event")?.asString != "auth.challenge") return null
-            val d = o.getAsJsonObject("data") ?: return null
-            val cid = d.get("challenge_id")?.asString.orEmpty()
+            if (o.get("event")?.takeIf { it.isJsonPrimitive }?.asString != "auth.challenge") return null
+            // A non-object `data` (null/string/array) must not ClassCastException here.
+            val d = o.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
+            val cid = d.get("challenge_id")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
             if (cid.isEmpty()) return null
-            return AuthChallenge(cid, d.get("origin")?.takeIf { !it.isJsonNull }?.asString ?: "desktop")
+            return AuthChallenge(cid, d.get("origin")?.takeIf { it.isJsonPrimitive }?.asString ?: "desktop")
         }
     }
 }

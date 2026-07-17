@@ -59,7 +59,9 @@ def read(path: str, params: dict | None = None) -> dict:
     try:
         return {"ok": True, "result": run_pvesh("get", path, params)}
     except proxmox_ops.CommandError as exc:
-        return {"ok": False, "error": str(exc)}
+        # .redacted (not str(exc)) — don't leak the full argv (absolute host
+        # paths / node names / volids) into the operator transcript.
+        return {"ok": False, "error": exc.redacted}
 
 
 def guarded_write(tool: str, ctx: dict, verb: str, path: str,
@@ -111,4 +113,6 @@ def guarded_write(tool: str, ctx: dict, verb: str, path: str,
     try:
         return {"ok": True, "result": run_pvesh(verb, path, params)}
     except proxmox_ops.CommandError as exc:
-        return {"ok": False, "error": str(exc)}
+        # .redacted (not str(exc)) — see read(): keep host paths/node names out
+        # of the operator transcript.
+        return {"ok": False, "error": exc.redacted}

@@ -81,8 +81,10 @@ class PushToTalkAudio(private val context: Context) {
     }
 
     fun exitCallAudio() {
-        // The call is over — make sure the mic is never left gated by a stale "agent speaking".
-        HalfDuplexGate.agentStoppedSpeaking()
+        // The call is over — make sure the mic is never left gated by a stale "agent
+        // speaking". Release only THIS instance's own hold (if any) so we don't steal
+        // a decrement from another instance still speaking on a different call.
+        lowerHalfDuplexGate()
         if (!inCallAudio) return
         val mgr = audioManager ?: return
         try { mgr.isSpeakerphoneOn = previousSpeakerOn } catch (_: Throwable) {}
@@ -495,7 +497,7 @@ class PushToTalkAudio(private val context: Context) {
             }
             mediaPlayer.prepare()
             // Half-duplex: tell the mic to hold off until this finishes (see HalfDuplexGate).
-            HalfDuplexGate.agentStartedSpeaking()
+            raiseHalfDuplexGate()
             mediaPlayer.start()
             Log.i(TAG, "tts playback started callId=${active.callId} messageId=${active.messageId ?: "none"} format=${active.audioFormat} mimeType=${active.mimeType}")
         } catch (error: Exception) {
@@ -540,9 +542,36 @@ class PushToTalkAudio(private val context: Context) {
         pcmTrack = null
     }
 
+    // [HalfDuplexGate] is a shared, cross-INSTANCE counter. This instance may hold at
+    // most ONE increment; track it so raise/lower are balanced. Without this, a
+    // releaseTtsPlayer() called BEFORE this instance raised the gate (e.g. line-1 of
+    // playTtsFile, teardown, clearTtsForCall) decremented ANOTHER instance's live
+    // playback to zero, briefly opening the mic and echoing the agent's own voice.
+    private val gateLock = Any()
+    private var agentSpeakingSignaled = false
+
+    private fun raiseHalfDuplexGate() {
+        synchronized(gateLock) {
+            if (!agentSpeakingSignaled) {
+                agentSpeakingSignaled = true
+                HalfDuplexGate.agentStartedSpeaking()
+            }
+        }
+    }
+
+    private fun lowerHalfDuplexGate() {
+        synchronized(gateLock) {
+            if (agentSpeakingSignaled) {
+                agentSpeakingSignaled = false
+                HalfDuplexGate.agentStoppedSpeaking()
+            }
+        }
+    }
+
     private fun releaseTtsPlayer() {
-        // Playback is ending (complete/error/replaced) — let the mic listen again.
-        HalfDuplexGate.agentStoppedSpeaking()
+        // Playback is ending (complete/error/replaced) — release ONLY this instance's
+        // own gate hold (if any), never another instance's live increment.
+        lowerHalfDuplexGate()
         ttsPlayer?.run {
             try {
                 stop()

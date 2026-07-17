@@ -57,7 +57,11 @@ final class AppState: ObservableObject {
             .sink { [weak self] in self?.openSessionId = $0.sessionId }
             .store(in: &cancellables)
 
-        if isPaired { repository.connect() }
+        // Skip auto-connect when the identity is ephemeral (the Keychain couldn't be read
+        // this launch): the daemon can't know this throwaway key, so connecting would only
+        // draw an auth-reject that force-unpairs us. The real seed survives for the next
+        // readable launch, which will connect normally.
+        if isPaired && !identity.isEphemeral { repository.connect() }
     }
 
     /// Called by the pairing flow once the daemon acks a successful pair.
@@ -82,6 +86,10 @@ final class AppState: ObservableObject {
     }
 
     private func handleAuthFailure() {
+        // An ephemeral identity (Keychain unreadable this launch) draws an expected reject
+        // for a key the daemon never saw — that must NOT wipe the still-valid stored
+        // pairing. Only a genuine reject of our real, persisted key means deregistration.
+        guard !identity.isEphemeral else { return }
         // The daemon no longer recognises this device's key — force re-pairing.
         pairingStore.clearPairing()
         isPaired = false
