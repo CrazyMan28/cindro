@@ -79,6 +79,27 @@ class ProfileTest extends TestCase
         $this->assertNull($user->fresh());
     }
 
+    public function test_deleting_account_revokes_its_licenses(): void
+    {
+        // Codex review (PR #130): licenses.user_id uses nullOnDelete, so a
+        // license used to survive account deletion still "active" (no fixed
+        // expiry) with an orphaned user_id — /api/license/verify kept
+        // validating it forever.
+        $user = User::factory()->create();
+        $license = $user->licenses()->create([
+            'key' => 'CIND-DEL-ACCT-0001',
+            'tier' => 'pro',
+            'status' => 'active',
+            'issued_at' => now(),
+        ]);
+
+        $this
+            ->actingAs($user)
+            ->delete('/profile', ['password' => 'password']);
+
+        $this->assertSame('revoked', $license->fresh()->status);
+    }
+
     public function test_correct_password_must_be_provided_to_delete_account(): void
     {
         $user = User::factory()->create();

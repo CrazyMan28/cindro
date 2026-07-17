@@ -22,7 +22,11 @@ on:
   # it to the GitHub Release. Day-to-day pushes to dev/qa/main trigger nothing.
   pull_request:
     branches: [main]
-    paths-ignore: ['website/**']
+    # Codex review (PR #130): a PR that only touches website-ci.yml (the
+    # website's own CI config) belongs solely to the non-versioned site, but
+    # wasn't covered by website/** — it still ran this product build. Ignore
+    # that workflow file too.
+    paths-ignore: ['website/**', '.github/workflows/website-ci.yml']
   push:
     tags: ["v*"]
   workflow_dispatch:
@@ -68,31 +72,32 @@ jobs:
         with:
           cmdline-tools-version: 12266719
 
-      # Caches the Gradle wrapper + dependencies across runs (official Gradle action).
+      # Gradle wrapper + dependency caching: on this SELF-HOSTED fleet ~/.gradle
+      # already persists on the runner VM's disk, so the action's GitHub-hosted
+      # remote cache is pure overhead (multi-hundred-MB restore/save round-trips
+      # over the WAN every run) — disable it and rely on the local caches.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           build-root-directory: android
+          cache-disabled: true
 
       # android/app/build.gradle.kts references libs/sherpa-onnx-1.13.2.aar
       # (on-device TTS) as a local file dependency, but the ~56MB AAR is
       # deliberately gitignored (android/app/libs/*.aar) — every dev machine
       # re-fetches it locally, and CI must do the same or assembleDebug fails
-      # at the very first build with "file not found". Cached by version so a
-      # re-run doesn't re-download.
-      - name: Cache sherpa-onnx AAR
-        id: sherpa-cache
-        uses: actions/cache@v4
-        with:
-          path: android/app/libs/sherpa-onnx-1.13.2.aar
-          key: sherpa-onnx-aar-1.13.2
-
-      - name: Fetch sherpa-onnx AAR
-        if: steps.sherpa-cache.outputs.cache-hit != 'true'
+      # at the very first build with "file not found". The runner VM's disk is
+      # PERSISTENT, so cache it in ~/ci-cache (shared by every runner instance
+      # on the VM) — restoring it through actions/cache@v4's remote cache
+      # service was measured at ~1m40s per run for this one 56MB file.
+      - name: Fetch sherpa-onnx AAR (persistent local cache)
         run: |
-          mkdir -p android/app/libs
-          curl -fsSL -o android/app/libs/sherpa-onnx-1.13.2.aar \
-            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-1.13.2.aar
+          mkdir -p android/app/libs "$HOME/ci-cache"
+          if [ ! -s "$HOME/ci-cache/sherpa-onnx-1.13.2.aar" ]; then
+            curl -fsSL -o "$HOME/ci-cache/sherpa-onnx-1.13.2.aar" \
+              https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-1.13.2.aar
+          fi
+          cp "$HOME/ci-cache/sherpa-onnx-1.13.2.aar" android/app/libs/
 
       - name: Derive version
         id: ver

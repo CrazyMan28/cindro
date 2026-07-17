@@ -271,7 +271,16 @@ function onAuthState(challengeId, state) {
 }
 
 // ----------------------------------------------------------------- RPC
-function rpc(method, params) {
+// Codex review (PR #130): session.create now synchronously provisions an
+// isolated agent desktop when "let Cindro use a computer" is on (see
+// AgentDesktop::ensure(), which the daemon's own comments document as taking
+// up to ~45-60s, longer on a cold first-run venv sync). The default 30s
+// safety timeout was shorter than that, so this call could time out CLIENT
+// SIDE while the daemon kept going server-side and created the session
+// anyway — the panel reports failure for a session that actually exists.
+// Give session.create its own longer timeout instead of shortening the
+// daemon's provisioning.
+function rpc(method, params, timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       reject(new Error("not connected to Cindro daemon"));
@@ -286,7 +295,7 @@ function rpc(method, params) {
         pending.delete(id);
         reject(new Error(`timeout: ${method}`));
       }
-    }, 30000);
+    }, timeoutMs);
   });
 }
 
@@ -335,22 +344,41 @@ function onFrame(raw) {
   // Widget bus (render_widget / todo plan / charts) over the control WS.
   if (msg.event === "widget.render" && msg.data) {
     // Scope to the current session. No active session yet -> drop it, so another
-    // chat's widgets (incl. its PLAN card) can't paint into a blank panel. A
-    // session-less/global widget (empty session_id) is allowed only once THIS
-    // panel has a session, matching the transcript gate above.
-    const wsid = msg.data.session_id || "";
+    // chat's widgets (incl. its PLAN card) can't paint into a blank panel.
     if (!sessionId) return;
-    if (wsid && wsid !== sessionId) return;
+    const wsid = msg.data.session_id || "";
     // The model's live plan/checklist (id "__todo__:<session>") goes to the
-    // dedicated PLAN panel above the transcript, NOT inline in chat — matches
-    // the desktop peek's PLAN card so todos don't scroll away or clutter chat.
-    if (String(msg.data.id || "").indexOf("__todo__") === 0) { renderPlan(msg.data); return; }
+    // dedicated PLAN panel above the transcript, NOT inline in chat.
+    if (String(msg.data.id || "").indexOf("__todo__") === 0) {
+      // A plan card is SESSION-PRIVATE. Its true owner is encoded in the id
+      // ("__todo__:<owner>"); the session_id field can be blank when the shared
+      // global engine can't disambiguate (2+ running) — the OLD gate below
+      // (`wsid && wsid !== sessionId`) let that blank fall straight through, so
+      // another chat's plan painted into this panel (the reported leak). Derive
+      // the owner from the id and require it to match this session. An empty or
+      // "default" owner is the ambiguous shared-engine LIVE plan, adopted into
+      // the current session like the desktop does.
+      const owner = wsid || String(msg.data.id || "").replace(/^__todo__:?/, "");
+      if (owner && owner !== "default" && owner !== sessionId) return;
+      renderPlan(msg.data);
+      return;
+    }
+    // A session-less/global widget (empty session_id) is allowed only once THIS
+    // panel has a session, matching the transcript gate above.
+    if (wsid && wsid !== sessionId) return;
     renderWidget(msg.data);
     return;
   }
   if (msg.event === "widget.remove" && msg.data) {
     const rid = String(msg.data.id || "");
-    if (rid.indexOf("__todo__") === 0) { dismissPlan(); return; }
+    if (rid.indexOf("__todo__") === 0) {
+      // Only dismiss OUR plan — a foreign session clearing its own plan card
+      // (id "__todo__:<owner>") must not wipe the plan we're showing. Same
+      // owner rule as the render gate above.
+      const owner = rid.replace(/^__todo__:?/, "");
+      if (!owner || owner === "default" || owner === sessionId) dismissPlan();
+      return;
+    }
     removeWidget(rid);
     return;
   }
@@ -1154,7 +1182,9 @@ async function ensureSession() {
   const model = els.model.value || "";   // "" = daemon default
   const params = { profile: "coder", brain };
   if (model) params.model = model;
-  const res = await rpc("session.create", params);
+  // 65s: comfortably above AgentDesktop::ensure()'s documented ~45-60s worst
+  // case (cold nested-compositor + engine venv-sync boot) — see the rpc() note.
+  const res = await rpc("session.create", params, 65000);
   sessionId = res.session_id;
   if (!sessionId) throw new Error("session.create returned no session_id");
   sessionPrimed = false;

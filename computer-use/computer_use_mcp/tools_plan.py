@@ -52,20 +52,37 @@ def register(mcp: FastMCP) -> None:
         present_plan/approval). If you want the global mode itself changed,
         tell the user to do that in Settings.
         On "revise": the user's feedback is in `note` — incorporate it and call
-        present_plan again when ready; do NOT start executing.
+        present_plan again when ready; do NOT start executing. There is NO
+        separate "edit plan" or "update plan" tool — present_plan IS how you
+        both publish a plan and receive revision feedback; do not search for
+        another tool. If `note` is empty or unhelpful (e.g. the user just
+        tapped "Request Changes" with no detail — the UI now nudges them to
+        type something, but they can still send nothing), do NOT re-call
+        present_plan blindly: ask a specific clarifying question about what to
+        change (ask_user, or just reply in chat) and wait for their next
+        message before revising.
         On "timeout": the user hasn't responded — try again later or keep
         researching; you are still in PLAN mode."""
         try:
             if todos:
                 write_todos(todos)
+            # Codex review (PR #130): this used to resolve `sid` AFTER the
+            # blocking ask_bus.ask() call returned. On the shared global engine,
+            # current_session_id() only resolves reliably while THIS is the
+            # sole running session — but the ask can block for up to a day, so
+            # by the time the user answers, another session may well be
+            # running too, making this resolve empty. plan.exit/plan.approve
+            # would then both silently fail (swallowed below) while
+            # present_plan still reported "approve", leaving writes blocked.
+            # Capture it BEFORE the blocking wait instead.
+            sid = daemon_client.current_session_id()
             res = ask_bus.ask(
                 f"# {title}\n\n{markdown}",
                 ["Approve & Build", "Request Changes"],
                 timeout=float(os.environ.get("JARVIS_PLAN_ASK_TIMEOUT", "86400")),
             )
-            sid = daemon_client.current_session_id()
             answer = str((res or {}).get("answer", "")).strip().lower()
-            if answer == "approve & build":
+            if ask_bus.is_affirmative(answer, "approve & build"):
                 try:
                     daemon_client.call("plan.exit", {"session_id": sid})
                 except Exception:

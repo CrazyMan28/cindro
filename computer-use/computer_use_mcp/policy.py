@@ -189,7 +189,7 @@ def gate(tool: str) -> None:
         answer = str((res or {}).get("answer", "")).strip().lower()
     except Exception:
         answer = ""
-    if answer == "allow":
+    if ask_bus.is_affirmative(answer):
         _log(tool, app, "ask", rule, True)
         return
     _log(tool, app, "ask", rule, False)
@@ -330,7 +330,7 @@ def _phone_gate(tool: str, arguments: Any) -> None:
         answer = str((res or {}).get("answer", "")).strip().lower()
     except Exception:
         answer = ""
-    if answer == "allow":
+    if ask_bus.is_affirmative(answer):
         _log(inner, "phone", "ask", {"id": "phone_policy"}, True)
         return
     _log(inner, "phone", "ask", {"id": "phone_policy"}, False)
@@ -406,7 +406,7 @@ def _scan_command(tool: str, arguments: Any) -> None:
             answer = str((res or {}).get("answer", "")).strip().lower()
         except Exception:
             answer = ""
-        if answer == "allow":
+        if ask_bus.is_affirmative(answer):
             _log_cmd(tool, cmd, hit, "allow", True)
             continue
         _log_cmd(tool, cmd, hit, "deny", False)
@@ -463,7 +463,7 @@ def _scan_tui_layout(tool: str, arguments: Any) -> None:
         answer = str((res or {}).get("answer", "")).strip().lower()
     except Exception:
         answer = ""
-    if answer == "allow":
+    if ask_bus.is_affirmative(answer):
         _approved_log_paths.add(path)
         return
     raise PermissionError(
@@ -502,9 +502,19 @@ _PLAN_SAFE_TOOLS = frozenset({
     # eval/cdp/tab_new/tab_close/tab_activate
     "browser_status", "browser_tabs", "browser_snapshot", "browser_screenshot",
     "browser_console",
-    # Subagent research fan-out — planning is explicitly allowed to delegate
-    "agent_create", "agent_list", "agent_get", "agent_start", "agent_wait",
-    "agent_status", "agent_result", "agent_stop", "agent_send",
+    # Subagent research fan-out — planning is explicitly allowed to delegate,
+    # but ONLY via paths that reliably propagate the restriction to the child
+    # (agent_start/agent_committee/agent_moa all route through
+    # ControlServer::handleAgentsDispatch, which inserts the new child into
+    # m_selfPlanModeSessions when the parent is self-plan-restricted) or that
+    # are genuinely read-only. Codex review (PR #130): agent_create and
+    # agent_send were WRONGLY here — agent_create persists/overwrites a reusable
+    # agent definition (a write), and agent_send can direct an EXISTING child
+    # that was dispatched BEFORE the parent entered self-initiated Plan mode
+    # (so it never inherited the restriction) to perform the writes the parent
+    # itself is now forbidden to perform.
+    "agent_list", "agent_get", "agent_start", "agent_wait",
+    "agent_status", "agent_result", "agent_stop",
     "agent_committee", "agent_moa",
     # Read-only self-management
     "list_skills", "get_skill", "skill_load", "list_schedules", "queue_list",
@@ -519,9 +529,16 @@ _PLAN_SAFE_TOOLS = frozenset({
     # model, video_configure writes persistent settings and can wipe the
     # cached-frame store (clear_sessions=true), and video_watch downloads
     # remote videos, populates caches, and can invoke cloud transcription.
-    # Only the read-only inspection tools belong in a Plan-Mode allowlist
-    # (allowlisted tools skip _plan_status() entirely).
-    "video_info", "video_analyze", "video_detail",
+    # Follow-up (PR #130): video_analyze and video_detail were ALSO wrongly
+    # here — both call resolve_source(), which downloads a not-yet-cached
+    # YouTube URL; video_analyze(transcription=true) can additionally invoke
+    # cloud transcription and save an analysis manifest, and video_detail
+    # extracts and caches frames to disk. Only video_info is genuinely
+    # side-effect-free (it explicitly probes YouTube URLs WITHOUT
+    # downloading — see its docstring). Allowlisted tools skip
+    # _plan_status() entirely, so anything with a real side effect belongs
+    # outside this set, gated like video_watch instead.
+    "video_info",
 })
 
 

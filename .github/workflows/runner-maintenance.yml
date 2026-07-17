@@ -1,0 +1,56 @@
+# Occasional provisioning for the SELF-HOSTED Linux runner VM (gh-runner-linux
+# on the Proxmox host). Manual-only (workflow_dispatch) — run it once after
+# changing what the fleet should have preinstalled.
+#
+# Why it exists: the runner VM has no SSH key authorized for the Proxmox host
+# and no qemu-guest-agent running, so the ONLY management path onto it is a CI
+# job. Two things get provisioned:
+#   - PHP 8.4 + extensions + composer: website-ci's shivammathur/setup-php
+#     apt-installs these EVERY run (~1 min + needrestart/apt fragility); with a
+#     matching php preinstalled the action becomes a fast no-op.
+#   - qemu-guest-agent: the VM's Proxmox config already sets agent:enabled=1
+#     but the agent was never installed in-guest, so `qm guest exec`/IP
+#     reporting never worked. Installing it restores host-side introspection.
+name: runner-maintenance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-maintenance
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 25
+    env:
+      # Same needrestart/debconf hardening as website-ci: without it, apt's
+      # interactive "restart services?" prompt hangs forever in a TTY-less job.
+      DEBIAN_FRONTEND: noninteractive
+      NEEDRESTART_MODE: a
+    steps:
+      - name: Show runner/VM identity + load
+        run: |
+          hostname; nproc; free -h; df -h /; uptime
+          echo '--- runner services on this VM ---'
+          systemctl list-units --type=service --no-legend | grep -i 'actions\.runner' || true
+          echo '--- tool caches ---'
+          du -sh "$HOME"/.gradle "$HOME"/ci-cache /opt/hostedtoolcache 2>/dev/null || true
+
+      - name: Pre-install PHP 8.4 + composer (website-ci) and qemu-guest-agent
+        run: |
+          set -x
+          # PHP 8.4 on Ubuntu 24.04 comes from Ondřej's PPA — the same source
+          # shivammathur/setup-php uses per-run on self-hosted Linux.
+          sudo add-apt-repository -y ppa:ondrej/php
+          sudo apt-get update -q
+          sudo apt-get install -y -q \
+            php8.4-cli php8.4-mbstring php8.4-sqlite3 php8.4-xml php8.4-curl \
+            php8.4-bcmath composer qemu-guest-agent
+          sudo systemctl enable --now qemu-guest-agent
+          php -v
+          composer --version
