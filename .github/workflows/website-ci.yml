@@ -1,9 +1,10 @@
 # CI for the website/ Laravel app (marketing/billing site) — a standard PHP/Node
 # stack, unrelated to the C++/Qt6 product this repo otherwise ships. Runs on
-# GITHUB-HOSTED ubuntu-latest, a deliberate exception to the "100% self-hosted"
-# policy the product's build workflows follow (see AGENTS.md) — same class of
-# exception as ios-build.yml's macos-latest: the self-hosted Proxmox fleet has
-# no reason to provision a PHP/Composer toolchain for one directory.
+# the self-hosted Proxmox Linux fleet (`pve-ubuntu-runner-*`, same as
+# linux-ci.yml/linux-release.yml) — moved off GitHub-hosted ubuntu-latest once
+# GitHub-hosted minutes ran out. shivammathur/setup-php + actions/setup-node
+# provision their own toolchains on demand, same as on a hosted runner, so no
+# extra baked-in image work was needed.
 #
 # Scoped to website/** via `paths:` so it never runs on product-only changes.
 name: website-ci
@@ -23,7 +24,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
     defaults:
       run:
         working-directory: website

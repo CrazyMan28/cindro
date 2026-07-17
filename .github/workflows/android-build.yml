@@ -1,9 +1,12 @@
 # Builds the Android app: assembleDebug + unit tests on every PR into main,
 # and attaches a debug-signed APK to the GitHub Release on a version tag —
 # same shape as windows-build.yml / linux-release.yml (PR validation + tag
-# release-attach in one workflow), but on GITHUB-HOSTED runners (ubuntu-latest)
-# since there's no self-hosted runner provisioned with the Android SDK, unlike
-# the Windows/Linux jobs which run on the Proxmox self-hosted fleet.
+# release-attach in one workflow). Runs on the self-hosted Proxmox Linux fleet
+# (`pve-ubuntu-runner-*`, same as linux-ci.yml/linux-release.yml) — moved off
+# GitHub-hosted ubuntu-latest once GitHub-hosted minutes ran out; the Android
+# SDK isn't baked into the fleet's image, so android-actions/setup-android
+# provisions cmdline-tools + the platform/build-tools this build needs on
+# every run (JDK/Gradle already work fine self-hosted via their own actions).
 #
 # NOTE: no release signing config exists yet in android/app/build.gradle.kts
 # (no signingConfigs block) — the attached APK is debug-signed (installable via
@@ -38,7 +41,7 @@ concurrency:
 jobs:
   build:
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
 
     steps:
       - uses: actions/checkout@v4
@@ -48,6 +51,15 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+
+      # GitHub-hosted ubuntu-latest images ship the Android SDK preinstalled;
+      # the self-hosted fleet's image (infra/ci-image/Dockerfile) is scoped to
+      # the C++/Qt6 product build and has none of it, so provision it here.
+      # Caches cmdline-tools/platform/build-tools across runs by API level.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 12266719
 
       # Caches the Gradle wrapper + dependencies across runs (official Gradle action).
       - name: Set up Gradle
