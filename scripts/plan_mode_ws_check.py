@@ -149,13 +149,17 @@ async def run() -> int:
 
         # --- 4. Session-scoped approval (Codex review, PR #132): approving one
         # session's plan must NOT flip the global setting and silently unblock a
-        # DIFFERENT, concurrently-running plan-restricted session. ---
+        # DIFFERENT, concurrently-running plan-restricted session. present_plan's
+        # "Approve & Build" calls plan.exit (clears any self-initiated flag) AND
+        # plan.approve (grants the session-scoped override) -- plan.exit alone no
+        # longer takes an `approved` param; that was the pre-reconciliation shape.
         await client.call("settings.set", {"patch": {"agent_mode": "plan"}})
         SID_C, SID_D = "test-sess-C", "test-sess-D"
-        await client.call("plan.exit", {"session_id": SID_C, "approved": True})
+        await client.call("plan.exit", {"session_id": SID_C})
+        await client.call("plan.approve", {"session_id": SID_C})
         status_c = await client.call("plan.status", {"session_id": SID_C})
         ok &= check(status_c.get("restricted") is False,
-                    f"plan.exit(C, approved=true) -> C unblocked (got {status_c})")
+                    f"plan.exit+plan.approve(C) -> C unblocked (got {status_c})")
 
         status_d = await client.call("plan.status", {"session_id": SID_D})
         ok &= check(status_d.get("restricted") is True and status_d.get("source") == "settings",
