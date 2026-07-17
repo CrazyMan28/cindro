@@ -75,6 +75,9 @@ const CHAT_STORE_KEY = "cindro.pve.chat.transcript.v1"
 const MODEL_STORE_KEY = "cindro.pve.chat.model.v1"
 const MAX_PERSISTED_ITEMS = 150
 const PERSIST_FIELD_CAP = 8000
+// The recommended CLI-less default when nothing operator-capable is configured;
+// single-sourced so the picker label and the session it opens never disagree.
+const DEFAULT_OPERATOR_MODEL = "mistral-large-latest"
 
 function capStr(s: string): string {
   return s.length > PERSIST_FIELD_CAP ? `${s.slice(0, PERSIST_FIELD_CAP)}…` : s
@@ -100,6 +103,11 @@ function sanitizeForStore(it: ChatItem): ChatItem {
             output: it.output ? capStr(it.output) : "(interrupted — the page was closed mid-call)",
           }
         : { ...it, expanded: false, args: capStr(it.args), output: capStr(it.output) }
+    case "approval":
+      // A reloaded page can't resume the daemon session, so a still-pending
+      // approval could never be answered. Persist it fail-closed (not
+      // authorized) rather than as a live button that silently does nothing.
+      return it.resolved ? it : { ...it, resolved: "deny" }
     default:
       return it
   }
@@ -174,7 +182,7 @@ function isOperatorCapableModel(model: string): boolean {
 // mistral-large-latest (the recommended CLI-less default) when nothing usable
 // is configured.
 async function resolveOperatorConfig(): Promise<{ brain: string; model: string; models: string[] }> {
-  const fallback = { brain: "api", model: "mistral-large-latest", models: [] as string[] }
+  const fallback = { brain: "api", model: DEFAULT_OPERATOR_MODEL, models: [] as string[] }
   try {
     const r = await fetch("/_jarvis/settings", { credentials: "include" })
     if (!r.ok) return fallback
@@ -295,7 +303,7 @@ export class ChatController {
   /** The model the next session will use: the operator's explicit pick, else the
    * host default from AI Settings, else Mistral. */
   selectedModel(): string {
-    return this.modelOverride[0]() || this.hostDefaultModel[0]() || "mistral-large-latest"
+    return this.modelOverride[0]() || this.hostDefaultModel[0]() || DEFAULT_OPERATOR_MODEL
   }
 
   /** Fetch the operator-capable model catalog + host default for the picker.
@@ -317,7 +325,11 @@ export class ChatController {
    * session.create, so this abandons the current daemon session (a fresh one
    * opens on the next send) while KEEPING the visible transcript. */
   setModel(model: string): void {
-    if (!model || model === this.selectedModel()) return
+    // Refuse mid-turn: resetSession would blank the sid an in-flight
+    // ensureSession/turn still depends on (a race that strands the switch and
+    // leaves a running tool card spinning). The picker button is disabled while
+    // busy; this guards the already-open-menu case.
+    if (!model || this.busy() || model === this.selectedModel()) return
     this.modelOverride[1](model)
     try {
       localStorage.setItem(MODEL_STORE_KEY, model)
@@ -325,16 +337,21 @@ export class ChatController {
       /* best-effort */
     }
     this.resetSession()
-    this.setBusy(false)
   }
 
   /** Wipe the transcript and start a brand-new conversation. */
   newConversation(): void {
+    if (this.busy()) return // never clear out from under an in-flight turn
     this.setItems((items) => {
       items.splice(0, items.length)
     })
     this.resetSession()
-    this.setBusy(false)
+    // The splice above scheduled a debounced write; cancel it so removeItem
+    // actually clears the key instead of being overwritten with "[]" 400ms later.
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer)
+      this.persistTimer = undefined
+    }
     try {
       localStorage.removeItem(CHAT_STORE_KEY)
     } catch {
@@ -375,10 +392,15 @@ export class ChatController {
       // Honor the model the operator picked in the chat header, else the
       // brain/model the admin chose on AI Settings — on a host with only an
       // OpenAI key or a local Ollama model, a hard-coded mistral would just fail.
-      const override = this.modelOverride[0]()
-      const { brain, model } = override
-        ? { brain: "api", model: override }
-        : await resolveOperatorConfig()
+      // Reuse the default the picker already fetched (loadModels) when present so
+      // opening a conversation doesn't re-hit /_jarvis/settings for the same data.
+      const brain = "api"
+      let model = this.modelOverride[0]() || this.hostDefaultModel[0]()
+      if (!model) {
+        const cfg = await resolveOperatorConfig()
+        model = cfg.model
+        this.hostDefaultModel[1](cfg.model)
+      }
       const res = await this.client.call(
         "session.create",
         {
@@ -762,8 +784,14 @@ const ModelPicker: Component<{ controller: ChatController }> = (props) => {
         type="button"
         class="cx-model-btn"
         classList={{ open: open() }}
-        title={`Model: ${selected()} — click to switch`}
+        disabled={props.controller.busy()}
+        title={
+          props.controller.busy()
+            ? `Model: ${selected()} — finish the current turn to switch`
+            : `Model: ${selected()} — click to switch`
+        }
         onClick={() => {
+          if (props.controller.busy()) return
           void props.controller.loadModels()
           setOpen((v) => !v)
         }}
@@ -886,6 +914,7 @@ export const ChatPanel: Component<{ controller: ChatController; compact?: boolea
             class="cx-chat-new"
             title="New conversation"
             aria-label="New conversation"
+            disabled={props.controller.busy()}
             onClick={() => props.controller.newConversation()}
           >
             ⟲

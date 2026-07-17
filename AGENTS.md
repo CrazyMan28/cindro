@@ -1219,6 +1219,40 @@ going forward — **the self-hosted Linux CI image still needs a manual rebuild+
 just exercises the plaintext-fallback path, not the real Secret Service one. `windows/CMakeLists.txt`
 links `Crypt32` unconditionally (always present, no vcpkg package needed).
 
+## New subsystems (2026-07-16) — Proxmox dashboard operator chat + Home board gotchas
+
+The Cindro Proxmox dashboard's operator chat (`web/src/pve/chat.tsx`) and Home widget grid
+(`web/src/pve/widgets/`) got a round of fixes. The hard-won bits:
+
+- **Chat history is client-side, not a resumed session.** `ChatController` persists the transcript
+  (+ the picked model) to `localStorage` (`cindro.pve.chat.transcript.v1` / `.model.v1`) and rehydrates
+  on construct. It is **display continuity only** — the dashboard WS-proxy (`dashboard_server.py`)
+  scopes `session.send`/`session.subscribe` to sessions the *current* socket created (`allowed_sessions`),
+  so a daemon session **cannot** be resumed across a browser reload. On reload the transcript is shown
+  read-only and the next message opens a fresh session. `sanitizeForStore` freezes items for replay:
+  assistant `live:false`, thinking `endedAt` set, a still-`running` tool card → `failed`, and an
+  unresolved `approval` → `deny` (fail-closed — a reloaded page can't answer it).
+- **The in-chat model picker only lists operator-capable models.** The operator MCP routing wires tools
+  **only** for a non-Anthropic `api` brain, so the picker (and the session default) filter out
+  `claude*`/`anthropic*` ids — a Claude model would open a chat with zero Proxmox tools. Switching model
+  starts a fresh session on the next turn (model is fixed at `session.create`), keeping the transcript.
+  Picker/new-conversation are disabled while `busy()` — switching mid-turn would blank the sid an
+  in-flight `ensureSession` still depends on (a race that strands the switch + spins a tool card forever).
+- **Tile shape had TWO bugs, not one.** The operator model emitted (a) descriptive `type` names
+  (`cluster_status`/`vm_list`/`tasks_board`/…) that no renderer matched → "unsupported tile", AND
+  (b) a flat `col/row/width/height` grid instead of `grid:{x,y,w,h}` → tiles collapsed to defaults.
+  Fixed on both sides: `tiles.tsx` gained `cluster_status`/`recent_backups`/`tasks_board` renderers +
+  a `TILE_ALIASES` map + `canonicalTileType`; `WidgetGrid.normalizeTile` accepts the flat grid; and
+  server-side `operator_store.normalize_tiles` (called by `save_layout`) rewrites model-authored layouts
+  into the canonical shape. **The alias/type tables are mirrored in TS (`tiles.tsx`) and Python
+  (`operator_store.py`) — change both.** The `proxmox_dashboard_layout_set` docstring now enumerates the
+  exact catalog so the model picks valid types. The `tasks_board` tile is the only one that needs the
+  daemon client (reads `proxmoxop.tasks_list`); the rest read `pve-api` (direct REST).
+- **The docked chat rail is drag-resizable** (`App.tsx` `onDockResizeDown`, width in
+  `cindro.pve.dock.width.v1`, clamped 300–760px). The `.cx-dock.collapsed` width uses `!important` so
+  the inline width doesn't fight the 46px collapsed rule; the resize grip is `display:none` while
+  collapsed (expand via the toggle first).
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

@@ -204,6 +204,8 @@ body {
   transition: color var(--dur-fast) ease, background var(--dur-fast) ease, transform var(--dur-fast) ease;
 }
 .cx-chat-new:hover { color: var(--accent-bright); background: var(--nav-active); transform: rotate(-90deg); }
+.cx-chat-new:disabled, .cx-model-btn:disabled { opacity: 0.4; cursor: default; }
+.cx-chat-new:disabled:hover { color: var(--text-faint); background: transparent; transform: none; }
 
 /* in-chat model picker — a custom (non-native) dark dropdown */
 .cx-model-picker { position: relative; min-width: 0; }

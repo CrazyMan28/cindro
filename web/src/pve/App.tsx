@@ -266,7 +266,6 @@ export const App: Component = () => {
   const onDockResizeDown = (e: PointerEvent) => {
     if (e.button !== 0) return
     e.preventDefault()
-    if (dockCollapsed()) setDockCollapsed(false)
     const el = e.currentTarget as HTMLElement
     const startX = e.clientX
     const startW = dockWidth()

@@ -522,9 +522,14 @@ function ClusterStatusTile(props: { tile: Tile }) {
     null,
     6000,
   )
-  const healthy = () => {
+  // Only claim "healthy" once we actually have a reading with nodes — an
+  // unreachable cluster (no data / zero nodes) must NOT show reassuring green.
+  const health = (): { label: string; color: string } => {
     const d = data()
-    return !d || d.nodesTotal === 0 || d.nodesOnline === d.nodesTotal
+    if (!d || d.nodesTotal === 0) return { label: "—", color: "var(--text-faint)" }
+    return d.nodesOnline === d.nodesTotal
+      ? { label: "healthy", color: "var(--success)" }
+      : { label: "degraded", color: "var(--danger)" }
   }
   return (
     <TileFrame title={props.tile.title || "Cluster"} live>
@@ -542,9 +547,7 @@ function ClusterStatusTile(props: { tile: Tile }) {
       </div>
       <div class="cx-stat-row">
         <span class="cx-stat-k">Health</span>
-        <span class="cx-stat-v" style={{ color: healthy() ? "var(--success)" : "var(--danger)" }}>
-          {healthy() ? "healthy" : "degraded"}
-        </span>
+        <span class="cx-stat-v" style={{ color: health().color }}>{health().label}</span>
       </div>
     </TileFrame>
   )

@@ -158,6 +158,13 @@ def _grid_num(v: object, default: int) -> int:
     return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else default
 
 
+def _pick(primary: object, fallback: object) -> object:
+    """Nullish-coalesce, matching the JS `??` in WidgetGrid.tsx's normalizeTile:
+    a present-but-null grid field still falls back to the flat col/row/... value
+    (dict.get(key, fallback) would instead return the null and diverge)."""
+    return primary if primary is not None else fallback
+
+
 def normalize_tiles(tiles: object) -> list:
     """Coerce a model-authored tile list into the exact {id,type,title?,node?,
     vmid?,grid:{x,y,w,h},content?} shape the dashboard renders. Resolves type
@@ -173,10 +180,10 @@ def normalize_tiles(tiles: object) -> list:
         if not isinstance(raw, dict):
             continue
         g = raw.get("grid") if isinstance(raw.get("grid"), dict) else {}
-        w = max(1, min(12, _grid_num(g.get("w", raw.get("width")), 3)))
-        x = max(0, min(12 - w, _grid_num(g.get("x", raw.get("col")), 0)))
-        y = max(0, _grid_num(g.get("y", raw.get("row")), i * 3))
-        h = max(1, _grid_num(g.get("h", raw.get("height")), 3))
+        w = max(1, min(12, _grid_num(_pick(g.get("w"), raw.get("width")), 3)))
+        x = max(0, min(12 - w, _grid_num(_pick(g.get("x"), raw.get("col")), 0)))
+        y = max(0, _grid_num(_pick(g.get("y"), raw.get("row")), i * 3))
+        h = max(1, _grid_num(_pick(g.get("h"), raw.get("height")), 3))
         tile: dict = {
             "id": str(raw.get("id") or f"t{secrets.token_hex(4)}"),
             "type": canonical_tile_type(raw.get("type") or "note"),
