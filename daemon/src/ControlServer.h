@@ -300,6 +300,13 @@ private:
     Response handlePlanEnter(const Request &req);
     Response handlePlanExit(const Request &req);
     Response handlePlanStatus(const Request &req);
+    // plan.approve — present_plan's "Approve & Build" decision, per-session.
+    // Codex review (PR #130): present_plan used to flip the GLOBAL Settings
+    // agent_mode from "plan" to "build" on approval, which unrestricted EVERY
+    // session under global Plan Mode, not just the one whose plan was actually
+    // approved. This exempts just that session (m_planApprovedSessions) without
+    // touching the global setting or any other session.
+    Response handlePlanApprove(const Request &req);
     Response handleSessionDelete(const Request &req);
     Response handleSessionList(const Request &req);
     Response handleSessionHistory(const Request &req);
@@ -983,22 +990,27 @@ private:
     // screen here, instead of silently believing (and faking) it has an isolated
     // agent desktop.
     QSet<QString> m_autoGlobalEngineSessions;
+    // sessionIds whose brain was constructed WITHOUT computer-use overrides
+    // because AgentDesktop::ensure() hit transient contention (Windows
+    // "sandbox_busy:") at createSession() time — codex/claude bake their MCP
+    // config at spawn, so simply re-provisioning the desktop later (the BATTERY
+    // check below) isn't enough; sendToSession() rebinds (tears down + rebuilds)
+    // the brain the first time it finds the desktop actually up for one of
+    // these, then drops it from this set. See createSession()'s autoComputer
+    // transientBusy branch.
+    QSet<QString> m_pendingComputerUseRebind;
     // sessionIds the MODEL put into PLAN mode itself via enter_plan_mode (Plan
     // Mode, ephemeral/self-initiated path) — distinct from the global, persisted
     // Settings agent_mode. In-memory only; cleared on session cancel/delete and
     // by exit_plan_mode/present_plan's Approve & Build. See plan.enter/plan.exit/
     // plan.status and computer_use_mcp/policy.py's _plan_mode_gate.
     QSet<QString> m_selfPlanModeSessions;
-    // sessionIds individually granted "Approve & Build" via present_plan
-    // (plan.exit{approved:true}) — checked FIRST in handlePlanStatus, ahead of
-    // BOTH the global Settings agent_mode and the self-initiated flag above.
-    // Exists because the global agent_mode is shared across every session: if
-    // approving session A's plan flipped that GLOBAL setting to "build" (the
-    // old behavior), a concurrently-running session B — whose own plan was
-    // never shown to the user — would ALSO become instantly unrestricted on
-    // its next tool call (Codex review, PR #132). Approval is scoped to the
-    // approving session only; it does NOT touch the global setting. In-memory
-    // only; cleared on session cancel/delete.
+    // sessionIds present_plan's "Approve & Build" has approved OUT of the
+    // GLOBAL Settings-driven PLAN agent_mode (plan.approve) — per-session, so
+    // approving one session's plan never lifts the restriction for another
+    // session still under the same global setting. Checked FIRST in
+    // handlePlanStatus, ahead of the global setting. In-memory only; cleared
+    // on session cancel/delete.
     QSet<QString> m_planApprovedSessions;
     // sessionId -> last turn time (ms). Drives the idle-teardown sweep below.
     QHash<QString, qint64> m_deskLastActive;

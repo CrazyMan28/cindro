@@ -41,6 +41,36 @@ const BUS_TYPES: Array<{ value: "scsi" | "virtio" | "sata" | "ide"; label: strin
 
 const NET_MODELS = ["virtio", "e1000", "vmxnet3", "rtl8139"]
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isUpid(v: unknown): v is string {
+  return typeof v === "string" && v.startsWith("UPID:")
+}
+
+// Poll a Proxmox background task to completion (mirrors backups.tsx's helper) —
+// create and status/start both queue an async task and return its UPID
+// immediately, so callers must await this before trusting the call "finished".
+async function pollTask(node: string, upid: string): Promise<{ ok: boolean; error?: string }> {
+  const deadline = Date.now() + 600000
+  while (Date.now() < deadline) {
+    const r = await pve.get<{ status?: string; exitstatus?: string }>(
+      `/nodes/${encodeURIComponent(node)}/tasks/${encodeURIComponent(upid)}/status`,
+    )
+    if (!r.ok) return { ok: false, error: r.error }
+    if (r.data.status === "stopped") {
+      const exit = r.data.exitstatus ?? ""
+      const up = exit.toUpperCase()
+      return up.startsWith("OK") || up.startsWith("WARNING")
+        ? { ok: true }
+        : { ok: false, error: exit || "task failed" }
+    }
+    await sleep(1200)
+  }
+  return { ok: false, error: "timed out waiting for the task to finish" }
+}
+
 const STEPS = [
   { key: "basics", label: "Basics" },
   { key: "os", label: "OS & Media" },
@@ -105,6 +135,11 @@ export const VmCreateModal: Component<{
   const [startAfterCreate, setStartAfterCreate] = createSignal(true)
   const [creating, setCreating] = createSignal(false)
   const [createErr, setCreateErr] = createSignal("")
+  // Codex review (PR #130): the VM itself is fully created once the create-task
+  // poll succeeds, BEFORE the optional start step runs. Tracks that so a start
+  // failure doesn't leave submit() able to retry FULL creation with the same
+  // (now-existing) VMID — see submit() below.
+  const [created, setCreated] = createSignal(false)
   const [loadErr, setLoadErr] = createSignal("")
 
   const isoStorages = createMemo(() => storageList().filter((s) => (s.content ?? "").includes("iso")))
@@ -134,6 +169,11 @@ export const VmCreateModal: Component<{
     setFirewall(false)
     setStartAfterCreate(true)
     setCreating(false)
+    // Codex review (PR #130): reopening the still-mounted modal without
+    // resetting this left `created()` true from the PREVIOUS VM, so submit()'s
+    // `if (!created())` guard skipped the create call entirely and tried to
+    // start a VMID that was never actually created this time.
+    setCreated(false)
     setCreateErr("")
     setLoadErr("")
     setVmidAuto(true)
@@ -250,7 +290,14 @@ export const VmCreateModal: Component<{
   })
 
   function requestClose() {
-    if (creating()) return
+    // Codex review (PR #130): a create/start task poll can run up to 10 minutes
+    // (pollTask's deadline) and creation+start chains two of them, but the task
+    // itself already runs server-side in Proxmox — the modal doesn't need to
+    // stay mounted for it to keep going. Gating close on creating() trapped the
+    // user behind the modal for up to 20 minutes with no way out. submit()'s
+    // in-flight promise still finishes in the background and calls onCreated
+    // once it does, so the parent's VM list still refreshes even after an early
+    // close.
     setClosing(true)
     setTimeout(() => {
       setClosing(false)
@@ -278,47 +325,81 @@ export const VmCreateModal: Component<{
       return
     }
 
-    const diskKey = `${diskBus()}0`
-    const params: Record<string, unknown> = {
-      vmid: id,
-      name: name().trim(),
-      ostype: osType(),
-      sockets: sockets(),
-      cores: cores(),
-      cpu: cpuType(),
-      memory: memoryMb(),
-      agent: guestAgent() ? 1 : 0,
-      [diskKey]: `${diskStorage()}:${diskSizeGb()}`,
-    }
-    if (diskBus() === "scsi") params.scsihw = "virtio-scsi-pci"
-    if (ballooning()) params.balloon = Math.max(16, Math.floor(memoryMb() / 2))
+    // Codex review (PR #130): once the VM has actually been created, a retry
+    // (after e.g. a failed start below) must NEVER re-run the create call — the
+    // VMID now exists, so POST .../qemu would just fail with a confusing
+    // duplicate-ID error instead of retrying the thing that actually failed.
+    if (!created()) {
+      const diskKey = `${diskBus()}0`
+      const params: Record<string, unknown> = {
+        vmid: id,
+        name: name().trim(),
+        ostype: osType(),
+        sockets: sockets(),
+        cores: cores(),
+        cpu: cpuType(),
+        memory: memoryMb(),
+        agent: guestAgent() ? 1 : 0,
+        [diskKey]: `${diskStorage()}:${diskSizeGb()}`,
+      }
+      if (diskBus() === "scsi") params.scsihw = "virtio-scsi-pci"
+      if (ballooning()) params.balloon = Math.max(16, Math.floor(memoryMb() / 2))
 
-    let net = `${netModel()},bridge=${bridge().trim()}`
-    if (vlanTag().trim()) net += `,tag=${vlanTag().trim()}`
-    if (firewall()) net += ",firewall=1"
-    params.net0 = net
+      let net = `${netModel()},bridge=${bridge().trim()}`
+      if (vlanTag().trim()) net += `,tag=${vlanTag().trim()}`
+      if (firewall()) net += ",firewall=1"
+      params.net0 = net
 
-    const bootOrder = [diskKey]
-    if (useIso() && isoVolid()) {
-      params.ide2 = `${isoVolid()},media=cdrom`
-      bootOrder.push("ide2")
-    }
-    bootOrder.push("net0")
-    params.boot = `order=${bootOrder.join(";")}`
+      const bootOrder = [diskKey]
+      if (useIso() && isoVolid()) {
+        params.ide2 = `${isoVolid()},media=cdrom`
+        bootOrder.push("ide2")
+      }
+      bootOrder.push("net0")
+      params.boot = `order=${bootOrder.join(";")}`
 
-    const r = await pve.create(`/nodes/${encodeURIComponent(n)}/qemu`, params)
-    if (!r.ok) {
-      setCreateErr(r.error)
-      setCreating(false)
-      return
+      const r = await pve.create(`/nodes/${encodeURIComponent(n)}/qemu`, params)
+      if (!r.ok) {
+        setCreateErr(r.error)
+        setCreating(false)
+        return
+      }
+      // Create queues an async task (UPID) — the VM doesn't exist yet when this
+      // resolves, so starting it right away can race a still-running create.
+      if (isUpid(r.data)) {
+        const createdTask = await pollTask(n, r.data)
+        if (!createdTask.ok) {
+          setCreateErr(createdTask.error ?? "VM creation task failed")
+          setCreating(false)
+          return
+        }
+      }
+
+      // The VM now exists — record it and tell the parent immediately, BEFORE
+      // the optional start step, so its list refreshes even if start fails
+      // below, and a retry-click only retries start (see the guard above).
+      setCreated(true)
+      props.onCreated?.(id)
     }
 
     if (startAfterCreate()) {
-      await pve.create(`/nodes/${encodeURIComponent(n)}/qemu/${id}/status/start`, {})
+      const r2 = await pve.create(`/nodes/${encodeURIComponent(n)}/qemu/${id}/status/start`, {})
+      if (!r2.ok) {
+        setCreateErr(`VM created, but failed to start: ${r2.error}`)
+        setCreating(false)
+        return
+      }
+      if (isUpid(r2.data)) {
+        const started = await pollTask(n, r2.data)
+        if (!started.ok) {
+          setCreateErr(`VM created, but failed to start: ${started.error}`)
+          setCreating(false)
+          return
+        }
+      }
     }
 
     setCreating(false)
-    props.onCreated?.(id)
     requestClose()
   }
 
@@ -338,7 +419,7 @@ export const VmCreateModal: Component<{
                 {node() ? `Target node: ${node()}` : "Provision a new QEMU guest"}
               </div>
             </div>
-            <button type="button" class="cx-modal-close" disabled={creating()} onClick={requestClose} aria-label="Close">✕</button>
+            <button type="button" class="cx-modal-close" onClick={requestClose} aria-label="Close">✕</button>
           </div>
 
           <div class="cx-modal-body">
@@ -633,13 +714,13 @@ export const VmCreateModal: Component<{
               <button type="button" class="cx-btn cx-btn-ghost" disabled={creating()} onClick={back}>Back</button>
             </Show>
             <div class="cx-modal-foot-spacer" />
-            <button type="button" class="cx-btn cx-btn-ghost" disabled={creating()} onClick={requestClose}>Cancel</button>
+            <button type="button" class="cx-btn cx-btn-ghost" onClick={requestClose}>Cancel</button>
             <Show
               when={step() < STEPS.length - 1}
               fallback={
                 <button type="button" class="cx-btn cx-btn-primary" disabled={creating()} onClick={submit}>
                   <Show when={creating()}><span class="cx-spinner" /></Show>
-                  {creating() ? "Creating…" : "Create VM"}
+                  {creating() ? "Creating…" : created() ? "Retry start" : "Create VM"}
                 </button>
               }
             >

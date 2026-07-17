@@ -1,0 +1,27 @@
+@import url('https://fonts.bunny.net/css?family=jetbrains-mono:400,500,700|inter:400,500,600,700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    body {
+        @apply bg-term-bg text-gray-200;
+    }
+}
+
+@layer utilities {
+    .glass-panel {
+        @apply bg-white/5 backdrop-blur-md border border-white/10;
+    }
+}
+
+.blinking-cursor {
+    animation: term-blink 1.1s steps(1) infinite;
+}
+
+@keyframes term-blink {
+    50% {
+        opacity: 0;
+    }
+}

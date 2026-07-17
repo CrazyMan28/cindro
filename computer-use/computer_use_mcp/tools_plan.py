@@ -67,7 +67,17 @@ def register(mcp: FastMCP) -> None:
             answer = str((res or {}).get("answer", "")).strip().lower()
             if answer == "approve & build":
                 try:
-                    daemon_client.call("plan.exit", {"session_id": sid, "approved": True})
+                    daemon_client.call("plan.exit", {"session_id": sid})
+                except Exception:
+                    pass
+                try:
+                    # Codex review (PR #130): this used to flip the GLOBAL
+                    # Settings agent_mode from "plan" to "build" here, which
+                    # un-restricted EVERY session under global Plan Mode, not
+                    # just the one whose plan was actually approved. plan.approve
+                    # exempts only THIS session (per-session, in-memory) without
+                    # touching the global setting or any other session.
+                    daemon_client.call("plan.approve", {"session_id": sid})
                 except Exception:
                     pass
                 policy.bust_plan_cache(sid)

@@ -15,6 +15,7 @@ on:
   # and attaches the installer.
   pull_request:
     branches: [main]
+    paths-ignore: ['website/**']
   push:
     tags: ["v*"]
   workflow_dispatch:

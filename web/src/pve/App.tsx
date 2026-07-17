@@ -331,6 +331,11 @@ export const App: Component = () => {
     if (ok) {
       setAuthedUser(pve.currentUsername())
       setAuthed(true)
+      // Codex review (PR #130): the controller was constructed above BEFORE
+      // this resolved, so its transcript/model must be (re)loaded now that the
+      // authenticated identity (PVEAuthCookie) is actually known — never at
+      // construction time, which could read a stale cookie's history.
+      controller.loadForAuthenticatedUser()
       boot()
     }
     setBooting(false)
@@ -339,6 +344,7 @@ export const App: Component = () => {
   const onLogin = (user: string) => {
     setAuthedUser(user)
     setAuthed(true)
+    controller.loadForAuthenticatedUser()
     boot()
   }
 

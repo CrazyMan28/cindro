@@ -1,0 +1,52 @@
+# CI for the website/ Laravel app (marketing/billing site) — a standard PHP/Node
+# stack, unrelated to the C++/Qt6 product this repo otherwise ships. Runs on
+# GITHUB-HOSTED ubuntu-latest, a deliberate exception to the "100% self-hosted"
+# policy the product's build workflows follow (see AGENTS.md) — same class of
+# exception as ios-build.yml's macos-latest: the self-hosted Proxmox fleet has
+# no reason to provision a PHP/Composer toolchain for one directory.
+#
+# Scoped to website/** via `paths:` so it never runs on product-only changes.
+name: website-ci
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ['website/**', '.github/workflows/website-ci.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: website-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: website
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, pdo_sqlite, sqlite3, dom, curl, libxml, bcmath
+
+      - run: composer install --no-interaction --prefer-dist
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - run: npm ci
+      - run: npm run build
+
+      - run: cp .env.example .env
+      - run: php artisan key:generate
+
+      # Laravel's default phpunit.xml points DB_DATABASE at sqlite :memory:,
+      # so no separate migrate step is needed before the suite runs.
+      - run: php artisan test
