@@ -217,3 +217,15 @@ non-allow raises and the runner never spawns. Decisions are audited to the
 policy log (`kind:"cmd_scan"`). `JARVIS_CMD_SCAN=0` disables. Routine dev
 commands (`rm -rf /tmp/build`, `curl … | jq`, `git clean -fdx`) pass clean —
 if you add a new free-form-command tool, add it to `policy._CMD_TOOLS`.
+
+## Plan Mode gate
+
+`policy._plan_mode_gate`, wired FIRST in the `call_tool` wrapper (before the trust-policy/phone/
+cmd-scan gates above) — a categorical PLAN-mode denial must not be bypassable by an unrelated
+trust-policy "allow" rule. Calls a new Contract A `plan.status{session_id}` (session-scoped, ~2s
+TTL cache; **fails CLOSED** on an unreachable daemon, unlike every other gate on this page, since
+PLAN mode is a safety guarantee) and hard-denies any tool not on `policy._PLAN_SAFE_TOOLS` — no
+ask-bus escalation, just a denial telling the model to keep researching. See
+[MODES.md](MODES.md) for the full design (the two ways into PLAN mode, `present_plan`, and the
+brain-specific caveats for Codex/Claude). If you add a new read-only or subagent-research tool,
+add it to `policy._PLAN_SAFE_TOOLS` too, or it will be hard-blocked during planning.

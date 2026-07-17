@@ -22,7 +22,7 @@ import {
 import { createStore } from "solid-js/store"
 
 import type { CindroClient } from "../cindro-client"
-import { renderTile, TILE_KINDS, type Tile, type TileGridPos, type TileKind } from "./tiles"
+import { canonicalTileType, renderTile, TILE_KINDS, type Tile, type TileGridPos, type TileKind } from "./tiles"
 
 export type { Tile, TileGridPos, TileKind } from "./tiles"
 export { TILE_KINDS } from "./tiles"
@@ -61,22 +61,31 @@ function normalizeTile(raw: unknown, fallbackY: number): Tile {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>
   const g = (r.grid && typeof r.grid === "object" ? r.grid : {}) as Record<string, unknown>
   const n = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) ? v : d)
+  // Accept BOTH the canonical grid:{x,y,w,h} AND the flat col/row/width/height an
+  // older Cindro build emitted (those layouts are already on disk) — otherwise a
+  // previously-saved board collapses to a stack of default-sized tiles.
+  const gw = g.w ?? r.width
+  const gx = g.x ?? r.col
+  const gy = g.y ?? r.row
+  const gh = g.h ?? r.height
   // Clamp inside the COLS-wide grid, so an operator- or hand-written layout with
   // e.g. {x:15,w:6} doesn't push a tile off the visible board (CSS grid would
   // otherwise auto-add columns and hide it).
-  const w = Math.min(COLS, Math.max(1, n(g.w, 3)))
-  const x = Math.min(COLS - w, Math.max(0, n(g.x, 0)))
+  const w = Math.min(COLS, Math.max(1, n(gw, 3)))
+  const x = Math.min(COLS - w, Math.max(0, n(gx, 0)))
   return {
     id: typeof r.id === "string" && r.id ? r.id : genId(),
-    type: typeof r.type === "string" && r.type ? r.type : "note",
+    // Resolve legacy/aliased type names to a real renderer key so the stored
+    // layout becomes canonical after the next save (drag/resize).
+    type: canonicalTileType(typeof r.type === "string" && r.type ? r.type : "note"),
     title: typeof r.title === "string" ? r.title : undefined,
     node: typeof r.node === "string" ? r.node : undefined,
     vmid: typeof r.vmid === "number" ? r.vmid : undefined,
     grid: {
       x,
-      y: Math.max(0, n(g.y, fallbackY)),
+      y: Math.max(0, n(gy, fallbackY)),
       w,
-      h: Math.max(1, n(g.h, 3)),
+      h: Math.max(1, n(gh, 3)),
     },
     content: r.content,
   }
@@ -373,7 +382,7 @@ export const WidgetGrid: Component<{ client: CindroClient }> = (props) => {
                     interacting = v
                   }}
                 >
-                  {renderTile(tile, { onUpdateContent: updateContent })}
+                  {renderTile(tile, { onUpdateContent: updateContent, client: props.client })}
                 </TileWrap>
               )}
             </For>

@@ -128,6 +128,78 @@ def is_mutating_method(method: str) -> bool:
 
 _DEFAULT_LAYOUT = {"tiles": [], "updated": 0}
 
+# Canonical tile types the dashboard renders (web/src/pve/widgets/tiles.tsx's
+# TILE_KINDS) and the synonym map for the descriptive names the operator model
+# tends to invent (e.g. it asked for "vm_list"/"cluster_status"/"tasks_board").
+# Kept in lock-step with tiles.tsx's TILE_KINDS / TILE_ALIASES so a board written
+# from chat renders identically to one the user built by hand — change both.
+TILE_TYPES = frozenset({
+    "cpu_usage", "vm_status", "node_stats", "storage",
+    "cluster_status", "recent_backups", "tasks_board", "note", "gauge",
+})
+_TILE_ALIASES = {
+    "vm_list": "vm_status", "vms": "vm_status", "guests": "vm_status",
+    "guest_list": "vm_status",
+    "storage_overview": "storage", "storage_usage": "storage", "storages": "storage",
+    "node_resources": "node_stats", "node_status": "node_stats", "node": "node_stats",
+    "cpu": "cpu_usage", "cpu_load": "cpu_usage",
+    "cluster": "cluster_status", "quorum": "cluster_status",
+    "backups": "recent_backups", "recent_backup": "recent_backups",
+    "tasks": "tasks_board", "task_board": "tasks_board", "kanban": "tasks_board",
+}
+
+
+def canonical_tile_type(t: object) -> str:
+    s = str(t or "").strip()
+    return _TILE_ALIASES.get(s, s)
+
+
+def _grid_num(v: object, default: int) -> int:
+    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else default
+
+
+def _pick(primary: object, fallback: object) -> object:
+    """Nullish-coalesce, matching the JS `??` in WidgetGrid.tsx's normalizeTile:
+    a present-but-null grid field still falls back to the flat col/row/... value
+    (dict.get(key, fallback) would instead return the null and diverge)."""
+    return primary if primary is not None else fallback
+
+
+def normalize_tiles(tiles: object) -> list:
+    """Coerce a model-authored tile list into the exact {id,type,title?,node?,
+    vmid?,grid:{x,y,w,h},content?} shape the dashboard renders. Resolves type
+    aliases to canonical types AND accepts the flat col/row/width/height layout
+    older builds emitted, then clamps into the 12-wide board. Mirrors
+    web/src/pve/widgets/WidgetGrid.tsx's normalizeTile so a layout written from
+    chat looks identical to one the user built by hand — an unknown/aliased type
+    or a flat grid can no longer render as an 'unsupported tile'."""
+    out: list = []
+    if not isinstance(tiles, list):
+        return out
+    for i, raw in enumerate(tiles):
+        if not isinstance(raw, dict):
+            continue
+        g = raw.get("grid") if isinstance(raw.get("grid"), dict) else {}
+        w = max(1, min(12, _grid_num(_pick(g.get("w"), raw.get("width")), 3)))
+        x = max(0, min(12 - w, _grid_num(_pick(g.get("x"), raw.get("col")), 0)))
+        y = max(0, _grid_num(_pick(g.get("y"), raw.get("row")), i * 3))
+        h = max(1, _grid_num(_pick(g.get("h"), raw.get("height")), 3))
+        tile: dict = {
+            "id": str(raw.get("id") or f"t{secrets.token_hex(4)}"),
+            "type": canonical_tile_type(raw.get("type") or "note"),
+            "grid": {"x": x, "y": y, "w": w, "h": h},
+        }
+        if isinstance(raw.get("title"), str):
+            tile["title"] = raw["title"]
+        if isinstance(raw.get("node"), str):
+            tile["node"] = raw["node"]
+        if isinstance(raw.get("vmid"), int) and not isinstance(raw.get("vmid"), bool):
+            tile["vmid"] = raw["vmid"]
+        if "content" in raw:
+            tile["content"] = raw["content"]
+        out.append(tile)
+    return out
+
 
 def load_layout(path: Path | None = None) -> dict:
     p = Path(path or config.OPERATOR_LAYOUT_FILE)
@@ -143,7 +215,11 @@ def load_layout(path: Path | None = None) -> dict:
 
 def save_layout(layout: dict, path: Path | None = None) -> dict:
     p = Path(path or config.OPERATOR_LAYOUT_FILE)
-    out = {"tiles": list(layout.get("tiles", [])), "updated": int(time.time())}
+    # Normalize on write so a model-authored board is stored in the exact shape
+    # the dashboard renders (canonical types, real grid) — the user drags/resizes
+    # this same file, and other open tabs refetch it, so it must never carry an
+    # unsupported type or a flat/legacy grid.
+    out = {"tiles": normalize_tiles(layout.get("tiles", [])), "updated": int(time.time())}
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(out, indent=2))
     return out

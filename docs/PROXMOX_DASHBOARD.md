@@ -106,10 +106,39 @@ token.
 
 A separate Vite target (`web/vite.pve.config.ts`, `web/src/pve/`) that reuses the
 Cindro theme (`web/src/core/theme.css`) and the Contract A protocol, with a
-curated page set: **Home** (live status tiles; editable widget grid next),
-**VMs** (list + gated lifecycle), **Chat** (full operator conversation), **Tasks**
-(Kanban Jarvis can edit), **Permissions**, plus a docked **side-chat rail** on
-every page (one shared operator session). Build: `cd web && bun run build:pve`.
+curated page set: **Home** (a real drag/resize widget grid), **VMs** (list +
+gated lifecycle), **Chat** (full operator conversation), **Tasks** (Kanban Jarvis
+can edit), **Permissions**, plus a docked **side-chat rail** on every page (one
+shared operator session). Build: `cd web && bun run build:pve`.
+
+### Operator chat (`chat.tsx`)
+
+- **History persists client-side.** The transcript + chosen model are saved to
+  `localStorage` and rehydrated on load, so the chat survives reloads and page
+  navigation. It's display continuity only — the WS-proxy scopes send/subscribe
+  to sessions the current socket opened, so a daemon session can't be *resumed*
+  across a reload; the next message starts a fresh session. A **new-conversation**
+  button (⟲ in the header) clears it.
+- **In-chat model picker** (header dropdown) lists the operator-capable catalog
+  from `/_jarvis/settings` (non-Anthropic `api`-brain models only — the operator
+  MCP won't wire tools onto a Claude/Anthropic brain). Switching starts a fresh
+  session on the next turn (model is fixed at `session.create`) but keeps the
+  transcript. Both the picker and new-conversation are disabled mid-turn.
+- The docked **side rail is drag-resizable** from its left edge (width persisted,
+  clamped 300–760px), independent of the collapse toggle.
+
+### Home widget grid — the tile catalog
+
+`proxmox_dashboard_layout_set` (and the user's drag/resize) write a tile list of
+`{id, type, title?, node?, grid:{x,y,w,h}, content?}` on a 12-column board.
+Renderers (`web/src/pve/widgets/tiles.tsx`): `cpu_usage`, `vm_status`,
+`node_stats`, `storage`, `cluster_status`, `recent_backups`, `tasks_board`,
+`note`, `gauge`. Aliases for the descriptive names the model tends to invent
+(`vm_list`→`vm_status`, `storage_overview`→`storage`, …) and the flat
+`col/row/width/height` grid an older build emitted are both normalized —
+client-side in `WidgetGrid.normalizeTile` and server-side in
+`operator_store.normalize_tiles`. **Keep the alias/type tables in
+`tiles.tsx` (TS) and `operator_store.py` (Python) in lock-step.**
 
 ## Verification
 
