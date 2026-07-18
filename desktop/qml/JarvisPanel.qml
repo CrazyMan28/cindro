@@ -53,6 +53,20 @@ Item {
     property string todoSpecSession: ""
     readonly property bool hasPlan: panel.todoSpec.length > 0
                                     && panel.todoSpecSession === ("" + bridge.sessionId)
+    // The model's live PLAN DOCUMENT (present_plan's full "# title\n\nmarkdown"
+    // text) -- shown read-only, Markdown-rendered, in the peek panel BELOW the
+    // todo checklist so it's readable at full panel width with room to scroll,
+    // instead of squeezed into a chat bubble. The Approve & Build / Request
+    // Changes DECISION still only happens in the interactive chat card
+    // (ChatDelegate's questionComp) -- this is purely a nicer copy to read.
+    // Same session-scoping pattern as todoSpec/todoSpecSession above (guards
+    // against a stale plan from a previous chat bleeding into a freshly
+    // switched-to one).
+    property string planDocText: ""
+    property bool planDocOpen: true
+    property string planDocSession: ""
+    readonly property bool hasPlanDoc: panel.planDocText.length > 0
+                                       && panel.planDocSession === ("" + bridge.sessionId)
     // Live subagents (child sessions of THIS chat) — filled from the sub-agent tree.
     // Each: {id,title,agent,status}. Click one to open it + watch its tool calls.
     property var subagents: []
@@ -72,6 +86,7 @@ Item {
             peekOpen = true
     }
     onHasPlanChanged: if (hasPlan) autoOpenPeek()
+    onHasPlanDocChanged: if (hasPlanDoc) autoOpenPeek()
     onAgentDeskActiveChanged: if (agentDeskActive) autoOpenPeek()
     function refreshSubagents() { if (bridge.connected) bridge.loadSubAgentTree() }
     signal requestComputerPage()   // peek "Full" -> Computer page (AppShell wires it)
@@ -529,6 +544,13 @@ Item {
             // chat, and any future path that repopulates todoSpec without re-stamping
             // the owner would resurrect the old plan under the new session.
             panel.todoSpecSession = ""
+            // Code-review finding (PR #132): planDocText/planDocSession were
+            // added as a sibling to todoSpec/todoSpecSession but never wired
+            // into this same reset — reopening a session that once had a plan
+            // doc re-showed the stale doc (hasPlanDoc's session-match guard
+            // doesn't help since it's the SAME session id being reopened).
+            panel.planDocText = ""
+            panel.planDocSession = ""
             panel.thinking = false
             panel.thinkingRowId = ""
             panel.busy = false
@@ -587,17 +609,33 @@ Item {
             chatView.positionViewAtEnd()
         }
 
-        // The model called ask_user: show a tappable question card in the chat.
-        // The question + options are packed as a JSON envelope in `text`; the
-        // delegate parses it and answerQuestion() sends the choice back.
-        function onAgentQuestion(id, question, options) {
+        // The model called ask_user (or present_plan, which is ask_user under the
+        // hood): show a tappable question card in the chat. The question +
+        // options + kind are packed as a JSON envelope in `text`; the delegate
+        // parses it and answerQuestion() sends the choice back. `kind` is
+        // ask_bus.ask()'s caller-supplied tag ("plan" for present_plan, empty
+        // for a plain ask_user question) -- code review (PR #132): this used to
+        // be re-derived by string-matching the exact "Approve & Build"/
+        // "Request Changes" option labels independently in both this file and
+        // ChatDelegate.qml; a single explicit tag from the source of truth is
+        // more robust against a future relabeling.
+        function onAgentQuestion(id, question, options, kind) {
             chatModel.append({
                 "kind": "question", "role": "system",
-                "text": JSON.stringify({ "q": question, "options": options || [] }),
+                "text": JSON.stringify({ "q": question, "options": options || [],
+                                         "kind": kind || "" }),
                 "callId": "", "toolName": "", "approvalId": id, "risk": "", "ok": true,
                 "streaming": false
             })
             chatView.positionViewAtEnd()
+            // Mirror the plan text into the read-only peek-panel doc card (see
+            // planDocText above); the chat card above remains the ONLY place
+            // the Approve & Build / Request Changes decision is actually made.
+            if (kind === "plan") {
+                panel.planDocText = question
+                panel.planDocSession = "" + bridge.sessionId
+                panel.planDocOpen = true
+            }
         }
 
         // The model rendered a widget (render_widget). It now lands INLINE in the
@@ -1831,6 +1869,68 @@ Item {
                 }
             }
 
+            // ---- PLAN DOC card (present_plan's full markdown, read-only) —
+            // BELOW the checklist. Rendered as real Markdown at full panel width
+            // with its own scroll, instead of squeezed into a chat bubble. The
+            // Approve & Build / Request Changes decision only happens in the
+            // chat card (ChatDelegate) — this is purely a comfortable copy to
+            // read the whole plan.
+            Rectangle {
+                id: planDocCard
+                Layout.fillWidth: true
+                visible: panel.hasPlanDoc
+                implicitHeight: panel.planDocOpen ? (docCol.implicitHeight + 18) : 32
+                radius: Theme.radius
+                color: Theme.surface
+                border.width: 1; border.color: Theme.accentDim
+                clip: true
+                Behavior on implicitHeight { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                ColumnLayout {
+                    id: docCol
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                    anchors.margins: 9
+                    spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Text { text: "📝  PLAN DOC"; color: Theme.accentBright; font.family: Theme.fontDisplay
+                            font.pixelSize: 10; font.letterSpacing: 1.4; font.weight: Font.DemiBold }
+                        Item { Layout.fillWidth: true }
+                        // collapse / expand the doc (keeps the card header)
+                        Text { text: "▸"; color: Theme.textMuted; font.pixelSize: 13
+                            rotation: panel.planDocOpen ? 90 : 0
+                            Behavior on rotation { NumberAnimation { duration: 150 } }
+                            MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor
+                                onClicked: panel.planDocOpen = !panel.planDocOpen } }
+                        Text { text: "✕"; color: Theme.textMuted; font.pixelSize: 12; Layout.leftMargin: 8
+                            MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor
+                                onClicked: panel.planDocText = "" } }       // dismiss the doc
+                    }
+                    Flickable {
+                        Layout.fillWidth: true
+                        // Grows with the text up to a cap, then scrolls (drag/wheel) —
+                        // long plans don't push the subagents/desktop cards off-panel.
+                        Layout.preferredHeight: panel.planDocOpen ? Math.min(docText.implicitHeight, 380) : 0
+                        visible: panel.planDocOpen
+                        clip: true
+                        contentWidth: width
+                        contentHeight: docText.implicitHeight
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                        Text {
+                            id: docText
+                            width: parent.width
+                            text: panel.planDocText
+                            textFormat: Text.MarkdownText
+                            color: Theme.text
+                            wrapMode: Text.Wrap
+                            font.family: Theme.fontSans
+                            font.pixelSize: 12
+                            lineHeight: 1.4
+                        }
+                    }
+                }
+            }
+
             // ---- SUBAGENTS card (live child sessions) — click to watch one ----
             Rectangle {
                 Layout.fillWidth: true
@@ -2206,6 +2306,8 @@ Item {
         // plan haunts the new one (reported: "new chat had an old chat's plan").
         panel.todoSpec = ""
         panel.todoSpecSession = ""
+        panel.planDocText = ""
+        panel.planDocSession = ""
         panel.subagents = []
         panel.peekSnoozedSession = "__none__"
         panel.peekOpen = false

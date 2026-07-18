@@ -1762,6 +1762,148 @@ isolation too. `php -l` clean on all 7 touched/new PHP files. `computer-use`'s `
 `test_policy.py` parse clean (`ast.parse`). The C++ changes were reviewed manually line-by-line
 against the existing rebind pattern (compilation isn't available in this environment).
 
+## New subsystems (2026-07-17, seventh wave) — live-testing bug wave on Plan Mode
+
+Three bugs surfaced by actually running the rebuilt daemon/desktop and using it, not by review —
+found and fixed in parallel with (and independent of) the fourth-through-sixth Codex review rounds
+above, before this branch merged their work in:
+
+- **ClaudeBrain sessions "acted like plain Claude Code"** — denied having Cindro's phone/computer-use
+  tools, self-identified as "Claude Code" and even "Claude Code (Cindro)". Root cause: the co-work
+  guide + policy preamble (tool grants, permission policy, mode policy) were PREPENDED into the
+  first user-turn's text, same as every other brain — but Claude Sonnet 5 correctly recognizes an
+  unsigned "[Cindro co-work — READ FIRST]" block riding inside user-turn text as a plausible prompt
+  injection and refuses to adopt the persona or trust the tools it lists, even when those tools are
+  genuinely wired up and reachable. Fixed by giving `Brain` a new virtual `setSystemPromptAppend(text)`
+  (no-op default) and routing the preamble through it for ClaudeBrain specifically
+  (`ControlServer::sendToSession`), which wires to the real `claude` CLI's `--append-system-prompt`
+  flag (`ClaudeBrain::Options::systemPromptAppend`, accumulates across calls — the guide can fire on
+  a later turn than the policy preamble, e.g. once an agent desktop comes up). CodexBrain/ApiBrain
+  keep the legacy prepend-to-user-turn-text convention (ApiBrain already has a real system prompt
+  channel via its own `Options`; Codex has neither issue nor fix here). Also added `identityClause()`
+  — one explicit "You are {assistant_name}" sentence at the very front of the preamble, since
+  CLI-shelled brains have no equivalent of `ApiBrain`'s memory-block identity opener.
+- **"Request Changes" on a plan card gave the model nothing to act on** — tapping it submitted the
+  literal label as `present_plan`'s answer, so the model got back `note:"Request Changes"` with zero
+  actual feedback, and (per user reports) sometimes went hunting for a nonexistent "edit plan" tool
+  instead of just re-reading the existing plan. Fixed in two places: `ChatDelegate.qml`'s plan-decision
+  card now detects `present_plan`'s fixed two-option shape and opens "Request Changes" into a focused
+  "What should Cindro change?" text field instead of submitting immediately (Enter with nothing typed
+  still sends an explicit "no specific feedback given yet" note, never the bare label); and
+  `present_plan`/`enter_plan_mode`/`exit_plan_mode`'s docstrings plus `modePolicyClause()`/
+  `planToolsClause()` now say outright that there is no separate edit/update-plan tool and that empty
+  feedback should prompt a clarifying question, not a blind re-call.
+- **A session stuck in Plan Mode despite Build mode being selected in Settings** — traced to
+  `ask_bus`'s Allow/Deny-style gates doing an exact-string `answer == "allow"` match; anything else
+  (including some legitimate free-text affirmatives typed into the generic question card's custom
+  text field) fell through to the deny/timeout path. Added `ask_bus.is_affirmative(answer, yes_label)`
+  — exact match against the button's own label wins first, then a small literal whitelist of common
+  affirmatives, then a narrow `"yes "`/`"sure "`/etc. prefix match (deliberately not fuzzy/substring,
+  to keep fail-closed behavior for genuinely ambiguous replies) — and wired it into all four
+  `policy.py` gates (`gate()`, `_phone_gate()`, `_scan_command()`, `_scan_tui_layout()`) plus
+  `present_plan`'s own approve check. The specific stuck session also had an ambiguous
+  `current_session_id()` at the moment `plan.exit`/`plan.approve` were called (see the "resolve sid
+  BEFORE the blocking ask_bus.ask() call" comment in `tools_plan.py` — those calls can block up to a
+  day, by which point another session may well be running too) — needed manual DB clearing, not a
+  code fix; if a session is ever stuck the same way again, cancel/delete it rather than trying to
+  message it back to a working state.
+
+**Also, unrelated to the bugs above:** the user reset their local `trust_policies.json` `default`
+from `"ask"` to `"allow"` after the Allow/Deny fix — that's a local config change, not a repo one.
+
+**Reconciled with rounds 4-6 above on merge:** round 6 removed `agent_send` from `_PLAN_SAFE_TOOLS`
+(it can direct an existing child dispatched before the parent's Plan Mode restriction) — that stayed
+removed; nothing here re-adds it. Round 6's `m_pendingPlanModeRebind`/`markPlanRebindIfClaudeLive`
+(rebuilds a live ClaudeBrain's baked-in `--disallowedTools` when Plan Mode state changes mid-session)
+and this wave's `setSystemPromptAppend()`/`identityClause()` routing both touch `sendToSession()`'s
+brain-dispatch path but are independent — the rebind block tears down/reconstructs the `Brain*`
+object, after which the (also per-call) system-prompt routing still applies to whichever brain
+pointer is live by the time it runs. Verified by re-reading the merged `sendToSession()` top to
+bottom, not just trusting a clean auto-merge. **This verification turned out to be incomplete** — see
+the `/code-review high` wave below, which caught what it missed.
+
+## New subsystems (2026-07-17, eighth wave) — `/code-review high` on the full Plan Mode diff
+
+Ran a full multi-angle review (8 finder angles × independent 1-vote verification) against everything
+in this file's Plan Mode history vs. `main`, not just the latest commit. 7 of 9 surfaced findings were
+independently CONFIRMED by 2-3 finder angles each — a strong signal the review was worth doing, not a
+formality. Fixed:
+
+- **The single most severe finding: a plan-mode/computer-use brain rebind silently discarded the
+  ENTIRE system-prompt preamble forever, reintroducing the exact "acts like plain Claude Code" bug
+  the whole seventh-wave section above was written to fix.** Root cause the earlier verification note
+  above missed: `sendToSession()`'s two rebind blocks (`m_pendingComputerUseRebind`,
+  `m_pendingPlanModeRebind`) tear down and reconstruct the `Brain*` with a fresh, empty
+  `Options::systemPromptAppend` — correct so far — but `guide`/`policyPreamble` (the strings actually
+  passed to `setSystemPromptAppend()`) are gated by `m_policyGuided`/`m_coworkGuided`, ONE-TIME flags
+  set on turn 1 and never cleared except on session delete. Once ANY plan-mode transition
+  (`enter_plan_mode`/`exit_plan_mode`/`plan.approve`) triggers a rebind mid-session, both flags are
+  already set, so `guide + policyPreamble` stay empty strings on every subsequent turn and
+  `setSystemPromptAppend()` is never called again — the identity clause, permission/mode/plan-tools
+  policy text, and co-work guide vanish for the rest of that session, right at the moment Plan Mode
+  state changes, which is precisely when they matter most. Fixed by clearing both flags at the end of
+  each rebind block, forcing the preamble to recompute and redeliver to the new brain on the SAME turn
+  the rebind happens.
+- **`ask_bus.is_affirmative()`'s prefix-match tier silently approved a plan revision request.**
+  present_plan reuses `is_affirmative()` (built for simple Allow/Deny asks) to decide "Approve &
+  Build" vs. "Request Changes" against the user's free-typed revision NOTE. A perfectly natural
+  revision like "yeah but shorten the intro" or "ok change the deploy target" starts with an
+  affirmative word, so the old `answer.startswith(word + " ")` rule matched it as approval — silently
+  discarding the user's requested change and letting the model execute the un-revised plan. Fixed by
+  replacing the open-ended prefix match with a narrow trailing-punctuation strip (`"yes!"`/`"sure."`
+  still match a bare whitelisted word; a longer sentence's opening word no longer does). Added
+  `computer-use/tests/test_ask_bus.py` — no dedicated test file existed for this function at all
+  despite gating 5 call sites (4 policy.py gates + present_plan).
+- **`exit_plan_mode` still had a truthfulness gap even after the seventh wave's fix**: it always
+  returned `"ok": true` even when `still_restricted` was also true, handing the model a
+  self-contradictory response (top-level "success" alongside "you're still blocked") and trusting it
+  to correctly prioritize the nested field. `ok` now reflects reality directly (`not still_restricted`)
+  so there's no contradiction to misread. Also: the docstring claimed `restriction_source` "will be
+  settings" when `still_restricted` is true, but `policy._plan_status()` can also return `"self"`,
+  `"unreachable"`, or `"ambiguous_session"` — softened the docstring so the model doesn't wrongly tell
+  the user to check Settings when the real cause is a retryable transient failure. Also fixed a real
+  efficiency issue in the same function: `bust_plan_cache()` immediately followed by `_plan_status()`
+  guaranteed a cache miss (2 sequential blocking daemon round-trips instead of 1), and `_plan_status()`
+  separately re-resolved `current_session_id()` even though the caller already had it — gave
+  `_plan_status()` an optional `sid` param so a caller holding its own resolved sid skips that.
+- **The new PLAN DOC sidebar card (seventh wave) never cleared `planDocText`/`planDocSession` on
+  session switch or new chat**, unlike the sibling `todoSpec`/`todoSpecSession` it was modeled on which
+  explicitly does — reopening a session that once showed a plan doc re-displayed the stale text with
+  no cache invalidation. Fixed by adding the same clears in both `onSessionIdChanged()` and
+  `startNewChat()`.
+- **Plan-card detection was fragile, hardcoded string-matching duplicated across two QML files**:
+  both `ChatDelegate.qml`'s `isPlanDecision` and `JarvisPanel.qml`'s `onAgentQuestion` independently
+  checked the exact literal "Approve & Build"/"Request Changes" option strings to decide "is this a
+  plan card" — a future relabeling would silently break one or both. Threaded an explicit `kind`
+  through the whole pipeline instead: `ask_bus.ask(kind=...)` writes it into the question file,
+  `Bridge::scanQuestions()` reads it and the `agentQuestion` Qt signal gained a 4th `kind` parameter,
+  `present_plan` passes `kind="plan"`, and both QML files now check `parsed.kind === "plan"` instead of
+  literal option-label matching. `ask_user` (no `kind`) is unaffected — defaults to `""`.
+- **Left as a documented, low-risk tradeoff, NOT changed:** `ChatDelegate.qml`'s plan-card Markdown
+  rendering (`Text.MarkdownText`) can in theory misrender a literal underscore in unescaped
+  model-authored text (e.g. a file path like `my_file_name.py`) as emphasis. Investigated rather than
+  reflexively patched: CommonMark (which Qt's `md4c`-based Markdown importer implements) has a
+  deliberate "intraword emphasis" exception specifically so `foo_bar_baz`-style identifiers do NOT
+  render as emphasis in a spec-compliant parser — the same reason this doesn't visibly break on GitHub.
+  The theoretical mechanism is real; the practical risk for the common case (file paths, flags) is
+  much lower than it first appears. Not escaping preemptively avoids introducing a new bug (literal
+  backslashes showing up) to guard against a risk that's likely already mitigated upstream.
+- **Left as a documented architectural gap, NOT changed:** `ApiBrain` doesn't get the
+  `setSystemPromptAppend()` treatment — its system prompt is set once at construction
+  (`memorySystemBlock()`) and never updated per-turn, so the dynamic identity/mode preamble still gets
+  stale-prepended into user-turn text for ApiBrain sessions. Investigated whether this reproduces the
+  actual bug this wave fixes: it does NOT — the original bug was specifically that the `claude` CLI
+  establishes its OWN competing "Claude Code" identity that conflicts with an injected preamble;
+  `ApiBrain` talks to the raw model API under full system-role control with no competing persona to
+  distrust the text as injected. Real inconsistency, not a live recurrence of the bug — a
+  `setSystemPromptAppend()` override for `ApiBrain` (accumulating into its own `systemPrompt` field) is
+  a reasonable follow-up, not an urgent fix.
+
+**Verification:** 56/56 targeted Python tests pass (`test_policy.py`, `test_tools_plan.py`,
+`test_ask_bus.py` — new, `test_phone_policy_gate.py`). Full `cindro-sidebar`/`jarvisd` rebuild clean,
+including the `agentQuestion` Qt signal signature change (3 args → 4); offscreen `--selftest` renders
+OK. Live-verified against the actual running daemon, not just unit tests.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

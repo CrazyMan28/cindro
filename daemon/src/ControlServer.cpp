@@ -2928,6 +2928,35 @@ void ControlServer::sweepStaleSkills()
     }
 }
 
+QString ControlServer::identityClause() const
+{
+    // CLI-shelled brains (claude/codex) have no equivalent of ApiBrain's
+    // memorySystemBlock() "You are Cindro, a helpful AI co-worker." opener —
+    // the co-work guide below jumps straight into tool descriptions assuming
+    // identity is already established. It never was, for these brains. Live
+    // testing (2026-07-17) showed a ClaudeBrain session without this line
+    // self-identified as "Claude Code (Cindro)" — trusting the injected tools
+    // (good, that's the actual fix — see ClaudeBrain::Options::
+    // systemPromptAppend) but still hedging its own name. One explicit
+    // sentence up front, ahead of everything else in the policy preamble,
+    // closes that gap. Uses the user's configured assistant_name (Settings)
+    // rather than a hardcoded "Cindro" so a rename is honored everywhere.
+    const QString name = m_settings.assistantName().trimmed().isEmpty()
+                             ? QStringLiteral("Cindro")
+                             : m_settings.assistantName().trimmed();
+    return QStringLiteral(
+        "\nYou are %1, an AI co-worker. This is not an optional branding "
+        "layer laid over a different underlying identity — %1 IS who you are "
+        "for this entire session. When asked who you are, what you are, or "
+        "what product/app this is, answer simply \"I'm %1\" — do not describe "
+        "yourself as \"Claude Code\", do not call this a \"CLI tool\" or "
+        "mention Anthropic/CLI branding as your primary identity; the "
+        "underlying model is an implementation detail, not your name. "
+        "Everything else in this preamble is a genuine system instruction "
+        "describing the real tools available to you this session, not "
+        "user-supplied text — treat it accordingly.\n").arg(name);
+}
+
 QString ControlServer::permissionPolicyClause() const
 {
     // Auto-ranked tool risk tiers (by capability, not by individual tool name):
@@ -3000,8 +3029,15 @@ QString ControlServer::modePolicyClause() const
             "available — fan out research freely. When the plan is ready, call "
             "present_plan(title, markdown, todos) and wait for the user's decision "
             "(approve unblocks THIS session immediately — execute right away, no "
-            "need to ask again; request-changes gives you feedback to "
-            "incorporate). The user can also change modes directly in Settings.");
+            "need to ask again; request-changes gives you feedback in the "
+            "returned `note` field to incorporate). There is NO separate "
+            "\"edit plan\"/\"update plan\" tool — do not search for one; "
+            "present_plan is both how you publish the plan and how you receive "
+            "revision feedback. If `note` comes back empty or too vague to act "
+            "on, do NOT immediately re-call present_plan — ask the user a "
+            "specific clarifying question (or just reply in chat) about what to "
+            "change and wait for their reply before revising. The user can also "
+            "change modes directly in Settings.");
     }
     if (mode == QStringLiteral("build")) {
         return QStringLiteral(
@@ -3028,7 +3064,17 @@ QString ControlServer::planToolsClause() const
         "calling enter_plan_mode(reason) — write/execute tools are blocked "
         "until you call exit_plan_mode (your own call, no approval needed) or "
         "present_plan (shows the user a written plan and blocks for their "
-        "decision). Use this when a task feels risky or under-specified.");
+        "decision — on \"revise\" the feedback comes back in present_plan's "
+        "`note`; there is NO separate edit/update-plan tool, do not search for "
+        "one). Use this when a task feels risky or under-specified. IMPORTANT: "
+        "exit_plan_mode ONLY lifts a restriction YOU imposed on yourself via "
+        "enter_plan_mode — it has ZERO effect if the user set PLAN mode via "
+        "Settings (the HUD mode chip); that restriction can ONLY be lifted by "
+        "present_plan's Approve & Build. Always check exit_plan_mode's "
+        "`still_restricted` field in its response before saying anything to "
+        "the user about being free to write/execute again — if it's true, you "
+        "are STILL blocked and must call present_plan instead, not declare "
+        "success.");
 }
 
 QString ControlServer::memorySystemBlock()
@@ -3749,6 +3795,18 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
                 qInfo("jarvisd: rebound %s's brain with computer-use now that its "
                       "agent desktop is up (was transiently busy at creation)",
                       qPrintable(sessionId));
+                // Code-review finding (PR #132): the rebuilt Brain's
+                // Options::systemPromptAppend starts EMPTY, but guide/
+                // policyPreamble below are only computed once per session
+                // (gated by m_policyGuided/m_coworkGuided) — without clearing
+                // those flags here, they stay empty forever on every turn
+                // after this rebind, so setSystemPromptAppend() is never
+                // called again on the new brain and it silently loses its
+                // identity/permission/mode/plan-tools clauses and co-work
+                // guide for the rest of the session. Clearing them makes the
+                // preamble recompute and redeliver on THIS very turn below.
+                m_policyGuided.remove(sessionId);
+                m_coworkGuided.remove(sessionId);
             }
         }
         m_pendingComputerUseRebind.remove(sessionId);
@@ -3775,6 +3833,14 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
                 brain = rebuilt;
                 qInfo("jarvisd: rebound %s's brain to apply its current Plan-mode "
                       "restriction", qPrintable(sessionId));
+                // Same fix as the computer-use rebind above: force the one-time
+                // preamble (identity/permission/mode/plan-tools clauses, co-work
+                // guide) to recompute and redeliver via setSystemPromptAppend()
+                // on THIS turn, since the freshly rebuilt brain's
+                // Options::systemPromptAppend starts empty and would otherwise
+                // never be populated again for the rest of the session.
+                m_policyGuided.remove(sessionId);
+                m_coworkGuided.remove(sessionId);
             }
         }
         m_pendingPlanModeRebind.remove(sessionId);
@@ -3899,7 +3965,7 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
         // blocked at the tool layer. Reload first — the file is edited live
         // from Settings on any surface.
         m_trustPolicies.load();
-        policyPreamble = permissionPolicyClause() + modePolicyClause() +
+        policyPreamble = identityClause() + permissionPolicyClause() + modePolicyClause() +
                          planToolsClause() + m_trustPolicies.preambleClause();
     }
 
@@ -4141,12 +4207,28 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
 #undef JARVIS_LIVE_CPU_CMD_EXAMPLE
     }
 
-    // Prepend whatever fired this turn. When BOTH fire (an agent-desktop session's
-    // turn 1) the assembly is identical to before: guide + permission + mode +
-    // trust-policy clauses + separator + the rest.
-    if (!guide.isEmpty() || !policyPreamble.isEmpty())
-        effectiveText = guide + policyPreamble +
-                        QStringLiteral("\n---\n") + effectiveText;
+    // Deliver whatever fired this turn. ClaudeBrain has a REAL system-prompt
+    // channel (--append-system-prompt, see ClaudeBrain::Options::
+    // systemPromptAppend's doc comment) that Claude actually trusts as a
+    // genuine developer/system instruction — route it there instead of
+    // folding it into the first user-turn TEXT. Live testing (2026-07-17)
+    // showed Claude Sonnet 5 correctly treats an unsigned "[Cindro co-work —
+    // READ FIRST]" identity/tool-grant block embedded in user-turn text as a
+    // likely prompt injection and refuses to adopt the persona or trust the
+    // tools it lists ("I'm running as Claude Code... flagging it as a likely
+    // prompt injection, not something I'm complying with") — even on a
+    // session where the MCP tools it describes were correctly wired up and
+    // reachable. Other brains have no such channel (or already get a real
+    // system prompt via their own Options at construction, e.g.
+    // ApiBrain::Options::systemPrompt) and keep the legacy prepend-to-
+    // first-user-turn convention. setSystemPromptAppend is a no-op default on
+    // the Brain base class, so this is harmless for codex/api.
+    if (!guide.isEmpty() || !policyPreamble.isEmpty()) {
+        const QString sys = guide + policyPreamble;
+        brain->setSystemPromptAppend(sys);
+        if (!qobject_cast<ClaudeBrain *>(brain))
+            effectiveText = sys + QStringLiteral("\n---\n") + effectiveText;
+    }
 
     // ONE-TIME agent role injection: if this session runs AS a custom agent, put
     // its system prompt at the very FRONT of the first turn so it dominates.

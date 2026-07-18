@@ -52,7 +52,15 @@ def register(mcp: FastMCP) -> None:
         present_plan/approval). If you want the global mode itself changed,
         tell the user to do that in Settings.
         On "revise": the user's feedback is in `note` — incorporate it and call
-        present_plan again when ready; do NOT start executing.
+        present_plan again when ready; do NOT start executing. There is NO
+        separate "edit plan" or "update plan" tool — present_plan IS how you
+        both publish a plan and receive revision feedback; do not search for
+        another tool. If `note` is empty or unhelpful (e.g. the user just
+        tapped "Request Changes" with no detail — the UI now nudges them to
+        type something, but they can still send nothing), do NOT re-call
+        present_plan blindly: ask a specific clarifying question about what to
+        change (ask_user, or just reply in chat) and wait for their next
+        message before revising.
         On "timeout": the user hasn't responded — try again later or keep
         researching; you are still in PLAN mode."""
         try:
@@ -72,9 +80,10 @@ def register(mcp: FastMCP) -> None:
                 f"# {title}\n\n{markdown}",
                 ["Approve & Build", "Request Changes"],
                 timeout=float(os.environ.get("JARVIS_PLAN_ASK_TIMEOUT", "86400")),
+                kind="plan",
             )
             answer = str((res or {}).get("answer", "")).strip().lower()
-            if answer == "approve & build":
+            if ask_bus.is_affirmative(answer, "approve & build"):
                 try:
                     daemon_client.call("plan.exit", {"session_id": sid})
                 except Exception:
@@ -121,11 +130,30 @@ def register(mcp: FastMCP) -> None:
         enter_plan_mode, on your own judgment — no user approval needed. If the
         user put you in PLAN mode via Settings, this has NO effect on that (it can
         only be lifted by present_plan's Approve & Build) — it only clears a
-        restriction you imposed on yourself."""
+        restriction you imposed on yourself.
+
+        Returns JSON {"ok": bool, "still_restricted": bool, "restriction_source":
+        str}. `ok` reflects whether you are ACTUALLY free to write/execute now —
+        it is false whenever `still_restricted` is true, so do not read a bare
+        "ok": true/false without also checking `still_restricted`/
+        `restriction_source` for WHY. `restriction_source` is usually "settings"
+        (the user's Settings-driven PLAN mode — only present_plan's Approve &
+        Build lifts that) but can also be "self" (your own enter_plan_mode call
+        wasn't actually cleared — retry), "unreachable" or "ambiguous_session"
+        (a transient daemon/session-resolution hiccup — retry shortly). In ALL
+        of these cases: do NOT say you've exited plan mode or that tools are
+        free again — call present_plan if the restriction is Settings-driven,
+        or simply retry for a transient one."""
         try:
             sid = daemon_client.current_session_id()
             daemon_client.call("plan.exit", {"session_id": sid})
             policy.bust_plan_cache(sid)
-            return json.dumps({"ok": True, "summary": summary})
+            still_restricted, source = policy._plan_status(sid)
+            return json.dumps({
+                "ok": not still_restricted,
+                "summary": summary,
+                "still_restricted": still_restricted,
+                "restriction_source": source,
+            })
         except Exception as exc:  # noqa: BLE001
             return _err(exc)

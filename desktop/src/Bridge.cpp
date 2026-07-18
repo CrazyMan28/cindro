@@ -3201,11 +3201,12 @@ void Bridge::scanQuestions()
         const QJsonObject o = doc.object();
         const QString qid = o.value(QStringLiteral("id")).toString(id);
         const QString question = o.value(QStringLiteral("question")).toString();
+        const QString kind = o.value(QStringLiteral("kind")).toString();
         QStringList options;
         for (const QJsonValue &v : o.value(QStringLiteral("options")).toArray())
             options << v.toString();
         m_seenQuestions.insert(id);
-        emit agentQuestion(qid, question, options);
+        emit agentQuestion(qid, question, options, kind);
     }
     // Forget ids whose files are gone (answered/cleaned) so a recycled id re-fires.
     for (auto it = m_seenQuestions.begin(); it != m_seenQuestions.end();) {

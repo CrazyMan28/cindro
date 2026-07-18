@@ -36,8 +36,15 @@ def _qid() -> str:
 
 
 def ask(question: str, options: list[str] | None = None,
-        timeout: float = 180.0) -> dict:
+        timeout: float = 180.0, kind: str = "") -> dict:
     """Post a question for the user and BLOCK until they answer or `timeout`.
+
+    `kind` is an optional caller-supplied tag (e.g. "plan" for present_plan)
+    threaded through to the desktop's `agentQuestion` signal so the UI can
+    identify a special-purpose question WITHOUT string-matching its option
+    labels (code review, PR #132: two separate QML files used to each
+    independently hardcode a check for present_plan's exact
+    "Approve & Build"/"Request Changes" option strings).
 
     Returns {"answer": <str>, "answered": bool, "timed_out": bool}.
     """
@@ -53,7 +60,7 @@ def ask(question: str, options: list[str] | None = None,
         pass
     qfile.write_text(json.dumps({
         "id": qid, "question": str(question), "options": opts,
-        "ts": round(time.time(), 3),
+        "kind": str(kind), "ts": round(time.time(), 3),
     }))
 
     deadline = time.time() + max(5.0, float(timeout))
@@ -77,3 +84,55 @@ def ask(question: str, options: list[str] | None = None,
     if answer is None:
         return {"answer": "", "answered": False, "timed_out": True}
     return {"answer": str(answer), "answered": True, "timed_out": False}
+
+
+# Free-text answers a user could reasonably type as "yes" to an Allow/Deny-
+# style ask, beyond the exact button label. The Question card's buttons always
+# send the option label VERBATIM (so a tap is a guaranteed exact match), but
+# its custom-text box explicitly invites the user to type anything instead —
+# and every caller of ask() used to do a strict `answer == "allow"` that
+# silently treated "yes"/"sure"/"go ahead" as a DENIAL. Live-tested regression
+# (2026-07-17): a user answered a tool-permission ask with "yes", got blocked
+# anyway, retried, got blocked again — a confusing allow/deny loop with no
+# visible cause. Deliberately a small, literal whitelist (not fuzzy NLU) so a
+# genuinely ambiguous or off-topic reply still falls through to the safe
+# "not approved" default instead of guessing wrong in the permissive
+# direction.
+_AFFIRMATIVE_WORDS = {
+    "yes", "y", "yeah", "yea", "yep", "yup", "sure", "ok", "okay", "k",
+    "allow", "allow it", "approve", "approved", "confirm", "confirmed",
+    "go ahead", "do it", "please", "fine",
+}
+
+
+def is_affirmative(answer: str, yes_label: str = "allow") -> bool:
+    """True if `answer` should count as approving an Allow/Deny-style ask.
+
+    `yes_label` is the exact button label THIS ask used (e.g. "allow",
+    "approve & build") — matched verbatim first (case-insensitive) so a
+    button tap always works regardless of the whitelist below. Free text is
+    then checked against a small set of common affirmatives, allowing only
+    TRAILING punctuation ("yes!", "yes.", "sure,") around a bare whitelisted
+    word/phrase — never a prefix match against a longer sentence.
+
+    Code-review finding (PR #132, 2026-07-17): an earlier version matched
+    any string STARTING WITH an affirmative word + space (`"yes " in ...`),
+    which was fine for a simple Allow/Deny ask but present_plan reuses this
+    same function to decide "Approve & Build" vs "Request Changes" against
+    the user's free-typed REVISION note — and a perfectly natural revision
+    like "yeah but shorten the intro" or "ok change the deploy target" starts
+    with an affirmative word while being a clear rejection/edit request, not
+    an approval. That prefix rule silently approved the un-revised plan and
+    discarded the user's actual feedback. Trailing-punctuation-only matching
+    keeps "yes!"/"sure." working (the reason the looser rule existed) without
+    treating a longer sentence's OPENING word as the whole answer.
+    """
+    a = (answer or "").strip().lower()
+    if not a:
+        return False
+    if a == yes_label.strip().lower():
+        return True
+    if a in _AFFIRMATIVE_WORDS:
+        return True
+    stripped = a.rstrip(" .!?,;:")
+    return stripped != a and stripped in _AFFIRMATIVE_WORDS

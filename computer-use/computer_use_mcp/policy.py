@@ -189,7 +189,7 @@ def gate(tool: str) -> None:
         answer = str((res or {}).get("answer", "")).strip().lower()
     except Exception:
         answer = ""
-    if answer == "allow":
+    if ask_bus.is_affirmative(answer):
         _log(tool, app, "ask", rule, True)
         return
     _log(tool, app, "ask", rule, False)
@@ -330,7 +330,7 @@ def _phone_gate(tool: str, arguments: Any) -> None:
         answer = str((res or {}).get("answer", "")).strip().lower()
     except Exception:
         answer = ""
-    if answer == "allow":
+    if ask_bus.is_affirmative(answer):
         _log(inner, "phone", "ask", {"id": "phone_policy"}, True)
         return
     _log(inner, "phone", "ask", {"id": "phone_policy"}, False)
@@ -406,7 +406,7 @@ def _scan_command(tool: str, arguments: Any) -> None:
             answer = str((res or {}).get("answer", "")).strip().lower()
         except Exception:
             answer = ""
-        if answer == "allow":
+        if ask_bus.is_affirmative(answer):
             _log_cmd(tool, cmd, hit, "allow", True)
             continue
         _log_cmd(tool, cmd, hit, "deny", False)
@@ -463,7 +463,7 @@ def _scan_tui_layout(tool: str, arguments: Any) -> None:
         answer = str((res or {}).get("answer", "")).strip().lower()
     except Exception:
         answer = ""
-    if answer == "allow":
+    if ask_bus.is_affirmative(answer):
         _approved_log_paths.add(path)
         return
     raise PermissionError(
@@ -542,7 +542,7 @@ _PLAN_SAFE_TOOLS = frozenset({
 })
 
 
-def _plan_status() -> tuple[bool, str]:
+def _plan_status(sid: str | None = None) -> tuple[bool, str]:
     """-> (restricted, source in {"settings","self","approved","","unreachable",
     "ambiguous_session"}). Session-scoped, TTL-cached.
 
@@ -554,11 +554,18 @@ def _plan_status() -> tuple[bool, str]:
     (2+ concurrent sessions, no way to tell which is calling) this fails
     CLOSED ("ambiguous_session") rather than querying plan.status with an
     empty id, which would ask the wrong question and could leak another
-    session's status into this one's cache entry."""
-    try:
-        sid = daemon_client.current_session_id()
-    except Exception:
-        sid = ""
+    session's status into this one's cache entry.
+
+    Pass `sid` when the caller already resolved its own session id (e.g.
+    exit_plan_mode, right after a plan.exit call for that same sid) so this
+    doesn't pay for a second current_session_id() resolution — on the shared
+    global engine that can itself be a "session.list" round-trip (code
+    review, PR #132)."""
+    if sid is None:
+        try:
+            sid = daemon_client.current_session_id()
+        except Exception:
+            sid = ""
     if not sid:
         # Codex review (PR #130): an empty sid means the shared global engine
         # couldn't tell which of its concurrent sessions is calling (see

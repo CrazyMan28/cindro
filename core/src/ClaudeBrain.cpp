@@ -97,6 +97,21 @@ bool ClaudeBrain::isBusy() const
     return m_busy;
 }
 
+void ClaudeBrain::setSystemPromptAppend(const QString &text)
+{
+    if (text.isEmpty())
+        return;
+    // ACCUMULATE, never replace: the daemon may call this more than once per
+    // session (e.g. the permission/mode policy preamble on turn 1, then the
+    // co-work guide on a later turn once an agent desktop actually comes up —
+    // see ControlServer::sendToSession). Overwriting would silently drop
+    // whichever block fired first.
+    if (m_opts.systemPromptAppend.isEmpty())
+        m_opts.systemPromptAppend = text;
+    else
+        m_opts.systemPromptAppend += QStringLiteral("\n") + text;
+}
+
 QStringList ClaudeBrain::buildArgs(const QString &prompt, const QStringList &images) const
 {
     QStringList args;
@@ -150,6 +165,13 @@ QStringList ClaudeBrain::buildArgs(const QString &prompt, const QStringList &ima
         args << QStringLiteral("--permission-mode") << m_opts.permissionMode;
     if (!m_opts.disallowedTools.isEmpty())
         args << QStringLiteral("--disallowedTools") << m_opts.disallowedTools.join(QStringLiteral(","));
+    // See Options::systemPromptAppend's doc comment: this is the REAL
+    // system-prompt channel (as opposed to prepending into the user-turn
+    // prompt text below), which Claude actually trusts as a genuine
+    // developer/system instruction rather than flagging it as a likely
+    // prompt injection.
+    if (!m_opts.systemPromptAppend.isEmpty())
+        args << QStringLiteral("--append-system-prompt") << m_opts.systemPromptAppend;
     // The prompt is NOT passed as a positional arg — it is fed via stdin in send()
     // (quoting-safe on every platform; a Windows claude.cmd + cmd.exe would otherwise
     // mangle a multi-word command-line prompt, leaving claude with none). `prompt` is
