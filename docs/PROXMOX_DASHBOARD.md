@@ -65,6 +65,20 @@ Policy lives at `/etc/jarvis-proxmox-agent/operator_policy.json`:
 `operator_store.resolve_effect` (Python) and `ControlServer::operatorResolveEffect`
 (C++) mirror each other — keep them in lock-step.
 
+## Long-running actions — a client timeout is NOT a failure
+
+`vzdump`/backup, `migrate`, and a full `clone` run as a server-side **worker task**:
+the API returns a UPID and the task keeps going on its own. The `pvesh` **client**
+`proxmox_ops_operator.run_pvesh` shells out with a subprocess timeout, and killing
+that client on timeout does **not** stop the worker (a backup keeps progressing).
+So `guarded_write` treats a `subprocess.TimeoutExpired` as **detached, not failed**:
+it returns `{ok:true, status:"running", detached:true, upid, note:"…poll, don't
+re-run"}` — best-effort resolving the running task's UPID via the active-task list
+(`_running_task_upid`). Without this, the tool surfaced a bare "timed out" error and
+the model would "fix" it by **re-issuing the already-running backup**. If you add a
+new long-running operator tool, it inherits this automatically (it goes through
+`guarded_write`); the model is told to poll `proxmox_task_status` and never retry.
+
 ## Routing an interactive operator session
 
 A UI opens the operator with `session.create {agent:"proxmox-operator", brain:"api",
