@@ -108,6 +108,50 @@ def test_guarded_write_surfaces_command_error(monkeypatch):
     assert r["ok"] is False and "999" in r["error"]
 
 
+def test_guarded_write_timeout_detaches_with_upid(monkeypatch):
+    # A long op (vzdump) whose pvesh client outruns the timeout must NOT read as
+    # a failure — the worker keeps running, so report it running + hand back the
+    # UPID to poll, and never let the model "fix" it by re-issuing.
+    import subprocess
+
+    monkeypatch.setattr(operator_store, "load_policy",
+                        lambda path=None: {"default_risky": "allow", "rules": []})
+    monkeypatch.setattr(ops, "node", lambda: "pve")
+    upid = "UPID:pve:0001:0002:0003:vzdump:100:root@pam:"
+
+    def fake_run(cmd, timeout=20.0):
+        joined = " ".join(cmd)
+        if "/vzdump" in joined:                      # the backup create -> times out
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        if "/tasks" in joined:                       # the active-task lookup -> running vzdump on 100
+            return json.dumps([{"id": "100", "type": "vzdump", "upid": upid, "status": "running"}])
+        return "{}"
+
+    monkeypatch.setattr(proxmox_ops, "run", fake_run)
+    r = ops.guarded_write("proxmox_backup_create", {"vmid": 100}, "create",
+                          "/nodes/pve/vzdump", {"vmid": 100, "storage": "USB-Storage"})
+    assert r["ok"] is True and r["status"] == "running" and r["detached"] is True
+    assert r["upid"] == upid
+    assert "do not re-issue" in r["note"].lower()
+
+
+def test_running_task_upid_none_when_no_match(monkeypatch):
+    # No active task for the vmid -> empty UPID (the caller then falls back to
+    # proxmox_tasks_recent), and the lookup never raises even if it times out.
+    import subprocess
+
+    monkeypatch.setattr(ops, "node", lambda: "pve")
+    monkeypatch.setattr(proxmox_ops, "run",
+                        lambda cmd, timeout=20.0: json.dumps([{"id": "999", "endtime": 1, "upid": "x"}]))
+    assert ops._running_task_upid({100}) == ""
+
+    def boom(cmd, timeout=20.0):
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(proxmox_ops, "run", boom)
+    assert ops._running_task_upid({100}) == ""  # lookup failure -> "", not an exception
+
+
 def test_guarded_write_error_redacts_argv(monkeypatch):
     # The operator transcript keeps the actionable stderr + exit code but must
     # NOT echo the full argv (absolute host paths / node names leak topology).
