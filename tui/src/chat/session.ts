@@ -167,6 +167,10 @@ export class SessionController {
 
   dispose(): void {
     this.pumpGen++
+    // Release the daemon subscription for the session we were viewing — otherwise
+    // it keeps streaming this session's events to the client indefinitely.
+    const cur = this.sessionId()
+    if (cur) void this.client.unsubscribe(cur)
     this.offWidget?.()
     this.questionWatcher?.close()
   }
@@ -210,7 +214,14 @@ export class SessionController {
   }
 
   async openSession(sessionId: string, title = ""): Promise<void> {
-    this.pumpGen++ // kill any pump parked on the old session's queue
+    const prev = this.sessionId()
+    // Bump pumpGen to kill the old pump AND capture it as a re-entrancy token: if
+    // the user switches session again while session.history is in flight, a newer
+    // openSession/newSession bumps pumpGen (or changes sessionId) and we must NOT
+    // dump THIS session's history into the view that now belongs to another chat.
+    const gen = ++this.pumpGen
+    // Release the session we're leaving so the daemon stops streaming it to us.
+    if (prev && prev !== sessionId) void this.client.unsubscribe(prev)
     this.setSessionId(sessionId)
     this.setPendingApproval(null)
     this.setBusy(false)
@@ -224,19 +235,26 @@ export class SessionController {
         { session_id: sessionId, limit: 40 },
         20000,
       )
+      if (gen !== this.pumpGen || this.sessionId() !== sessionId) return
       for (const raw of (hist.events ?? []) as Array<Record<string, unknown>>) {
         this.applyEvent((raw.ev ?? raw) as Record<string, unknown>, true)
       }
     } catch (e) {
+      if (gen !== this.pumpGen || this.sessionId() !== sessionId) return
       this.notice(`history unavailable: ${String(e)}`, "warn")
     }
+    if (gen !== this.pumpGen || this.sessionId() !== sessionId) return
     await this.client.subscribe(sessionId)
+    if (gen !== this.pumpGen || this.sessionId() !== sessionId) return
     this.startPump(sessionId)
     this.watchQuestions()
   }
 
   async newSession(): Promise<void> {
+    const prev = this.sessionId()
     this.pumpGen++
+    // Release the session we're leaving (see openSession) before minting a new one.
+    if (prev) void this.client.unsubscribe(prev)
     this.setSessionId("")
     this.setPendingApproval(null)
     this.setBusy(false)

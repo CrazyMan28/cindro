@@ -1,9 +1,12 @@
 # Builds the Android app: assembleDebug + unit tests on every PR into main,
 # and attaches a debug-signed APK to the GitHub Release on a version tag —
 # same shape as windows-build.yml / linux-release.yml (PR validation + tag
-# release-attach in one workflow), but on GITHUB-HOSTED runners (ubuntu-latest)
-# since there's no self-hosted runner provisioned with the Android SDK, unlike
-# the Windows/Linux jobs which run on the Proxmox self-hosted fleet.
+# release-attach in one workflow). Runs on the self-hosted Proxmox Linux fleet
+# (`pve-ubuntu-runner-*`, same as linux-ci.yml/linux-release.yml) — moved off
+# GitHub-hosted ubuntu-latest once GitHub-hosted minutes ran out; the Android
+# SDK isn't baked into the fleet's image, so android-actions/setup-android
+# provisions cmdline-tools + the platform/build-tools this build needs on
+# every run (JDK/Gradle already work fine self-hosted via their own actions).
 #
 # NOTE: no release signing config exists yet in android/app/build.gradle.kts
 # (no signingConfigs block) — the attached APK is debug-signed (installable via
@@ -42,9 +45,16 @@ concurrency:
 jobs:
   build:
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
 
     steps:
+      # This runner's _work dir is shared with linux-ci.yml/linux-release.yml, which run inside
+      # a Docker container (as root) — files that container writes land root-owned on the host,
+      # which the unprivileged runner user then can't unlink, and actions/checkout@v4 fails
+      # outright instead of falling back to a fresh clone. Force-clear it first every run.
+      - name: Clear any root-owned files left by a container-based job on this runner
+        run: sudo rm -rf "$GITHUB_WORKSPACE" && mkdir -p "$GITHUB_WORKSPACE"
+
       - uses: actions/checkout@v4
 
       - name: Set up JDK 17
@@ -53,31 +63,41 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      # Caches the Gradle wrapper + dependencies across runs (official Gradle action).
+      # GitHub-hosted ubuntu-latest images ship the Android SDK preinstalled;
+      # the self-hosted fleet's image (infra/ci-image/Dockerfile) is scoped to
+      # the C++/Qt6 product build and has none of it, so provision it here.
+      # Caches cmdline-tools/platform/build-tools across runs by API level.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 12266719
+
+      # Gradle wrapper + dependency caching: on this SELF-HOSTED fleet ~/.gradle
+      # already persists on the runner VM's disk, so the action's GitHub-hosted
+      # remote cache is pure overhead (multi-hundred-MB restore/save round-trips
+      # over the WAN every run) — disable it and rely on the local caches.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           build-root-directory: android
+          cache-disabled: true
 
       # android/app/build.gradle.kts references libs/sherpa-onnx-1.13.2.aar
       # (on-device TTS) as a local file dependency, but the ~56MB AAR is
       # deliberately gitignored (android/app/libs/*.aar) — every dev machine
       # re-fetches it locally, and CI must do the same or assembleDebug fails
-      # at the very first build with "file not found". Cached by version so a
-      # re-run doesn't re-download.
-      - name: Cache sherpa-onnx AAR
-        id: sherpa-cache
-        uses: actions/cache@v4
-        with:
-          path: android/app/libs/sherpa-onnx-1.13.2.aar
-          key: sherpa-onnx-aar-1.13.2
-
-      - name: Fetch sherpa-onnx AAR
-        if: steps.sherpa-cache.outputs.cache-hit != 'true'
+      # at the very first build with "file not found". The runner VM's disk is
+      # PERSISTENT, so cache it in ~/ci-cache (shared by every runner instance
+      # on the VM) — restoring it through actions/cache@v4's remote cache
+      # service was measured at ~1m40s per run for this one 56MB file.
+      - name: Fetch sherpa-onnx AAR (persistent local cache)
         run: |
-          mkdir -p android/app/libs
-          curl -fsSL -o android/app/libs/sherpa-onnx-1.13.2.aar \
-            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-1.13.2.aar
+          mkdir -p android/app/libs "$HOME/ci-cache"
+          if [ ! -s "$HOME/ci-cache/sherpa-onnx-1.13.2.aar" ]; then
+            curl -fsSL -o "$HOME/ci-cache/sherpa-onnx-1.13.2.aar" \
+              https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-1.13.2.aar
+          fi
+          cp "$HOME/ci-cache/sherpa-onnx-1.13.2.aar" android/app/libs/
 
       - name: Derive version
         id: ver

@@ -142,6 +142,16 @@ async def _proxy_http(request: Request, full_path: str) -> Response:
     path = raw_path.decode("latin-1") if raw_path else request.url.path
     if not path.startswith("/"):
         path = "/" + path
+    # SSRF guard. The allowlist (_is_pve_asset) ran on the DECODED path param, but
+    # we forward this RAW one — and httpx collapses ".." segments before sending.
+    # So "/api2/../../../access/domains" passes the "startswith api2/" allowlist
+    # yet reaches pveproxy as "/access/domains", defeating _PVE_PROXY_PREFIXES.
+    # Reject any parent-dir segment on the DECODED view of the exact string we
+    # forward, so the allowlist and the upstream URL can't disagree. Legit volids
+    # ("local:backup/vzdump-…", encoded as %3A/%2F) contain no ".." segment.
+    from urllib.parse import unquote
+    if any(seg == ".." for seg in unquote(path).split("/")):
+        return JSONResponse({"error": "bad_path"}, status_code=400)
     url = f"{PVE_HTTP_BASE}{path}"
     if request.url.query:
         url += f"?{request.url.query}"

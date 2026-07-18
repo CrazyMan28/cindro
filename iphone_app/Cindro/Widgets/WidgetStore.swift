@@ -16,6 +16,12 @@ final class WidgetStore: ObservableObject {
     }
 
     private func apply(_ ev: WidgetEvent) {
+        // The model's live plan/checklist (id "__todo__:<session>") is
+        // SESSION-PRIVATE — it belongs to its owning chat, not this shared,
+        // session-neutral Canvas gallery. Storing it here surfaced another
+        // session's plan/task list on the Canvas (the reported cross-session
+        // leak), so keep todo cards out of this store entirely.
+        if ev.id.hasPrefix("__todo__") { return }
         switch ev.op {
         case "clear":  widgets.removeAll()
         case "remove": widgets.removeAll { $0.id == ev.id }
