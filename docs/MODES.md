@@ -125,6 +125,18 @@ live-testing fix). Matching order: exact match against the button's own label fi
 then a small literal whitelist, then a narrow `"yes "`/`"sure "`/etc. prefix match —
 deliberately not fuzzy/substring, so a genuinely ambiguous reply still fails closed.
 
+`exit_plan_mode` used to unconditionally return `{"ok": true}` even when the session was
+under Settings-driven PLAN mode, which it has **zero** power to lift (only `present_plan`'s
+Approve & Build can). Live-tested (2026-07-17): the daemon-side gate was never actually
+wrong — `plan.status` still correctly reported `restricted:true, source:"settings"` after
+`plan.exit` — but the model, seeing an unconditional `ok:true`, confidently told the user
+it had exited plan mode and could write/execute freely, when its very next write attempt
+would still be denied. Fixed by having `exit_plan_mode` call `policy._plan_status()` right
+after busting the cache and returning `still_restricted`/`restriction_source` in its JSON —
+the docstring and `planToolsClause()`'s system-prompt text both now instruct the model to
+check `still_restricted` before saying anything about being free to write again, and to
+call `present_plan` instead if it's still true.
+
 ## Steering a dispatched subagent — `agent_send`
 
 `agent_send(session_id, message)` sends a follow-up to a subagent already dispatched via

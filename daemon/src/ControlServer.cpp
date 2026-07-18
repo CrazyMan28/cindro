@@ -3066,7 +3066,15 @@ QString ControlServer::planToolsClause() const
         "present_plan (shows the user a written plan and blocks for their "
         "decision — on \"revise\" the feedback comes back in present_plan's "
         "`note`; there is NO separate edit/update-plan tool, do not search for "
-        "one). Use this when a task feels risky or under-specified.");
+        "one). Use this when a task feels risky or under-specified. IMPORTANT: "
+        "exit_plan_mode ONLY lifts a restriction YOU imposed on yourself via "
+        "enter_plan_mode — it has ZERO effect if the user set PLAN mode via "
+        "Settings (the HUD mode chip); that restriction can ONLY be lifted by "
+        "present_plan's Approve & Build. Always check exit_plan_mode's "
+        "`still_restricted` field in its response before saying anything to "
+        "the user about being free to write/execute again — if it's true, you "
+        "are STILL blocked and must call present_plan instead, not declare "
+        "success.");
 }
 
 QString ControlServer::memorySystemBlock()
