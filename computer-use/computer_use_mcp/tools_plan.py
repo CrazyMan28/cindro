@@ -129,11 +129,26 @@ def register(mcp: FastMCP) -> None:
         enter_plan_mode, on your own judgment — no user approval needed. If the
         user put you in PLAN mode via Settings, this has NO effect on that (it can
         only be lifted by present_plan's Approve & Build) — it only clears a
-        restriction you imposed on yourself."""
+        restriction you imposed on yourself.
+
+        Returns JSON {"ok": true, "still_restricted": bool, "restriction_source":
+        str}. ALWAYS check `still_restricted` before telling the user you can
+        write/execute again. If it's true (restriction_source will be
+        "settings"), the user's Settings-driven PLAN mode is STILL fully in
+        effect — this call did NOTHING to lift it, and your very next write
+        attempt will be denied. Do NOT say you've exited plan mode or that
+        tools are free again; call present_plan instead and wait for the
+        user's Approve & Build."""
         try:
             sid = daemon_client.current_session_id()
             daemon_client.call("plan.exit", {"session_id": sid})
             policy.bust_plan_cache(sid)
-            return json.dumps({"ok": True, "summary": summary})
+            still_restricted, source = policy._plan_status()
+            return json.dumps({
+                "ok": True,
+                "summary": summary,
+                "still_restricted": still_restricted,
+                "restriction_source": source,
+            })
         except Exception as exc:  # noqa: BLE001
             return _err(exc)
