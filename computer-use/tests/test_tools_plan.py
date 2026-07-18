@@ -41,7 +41,7 @@ def test_present_plan_approve_grants_session_scoped_override(tools, monkeypatch)
     monkeypatch.setattr(daemon_client, "call",
                          lambda method, params=None, timeout=15.0: calls.append((method, params)))
     monkeypatch.setattr(ask_bus, "ask",
-                         lambda q, opts, timeout=180.0: {"answer": "Approve & Build",
+                         lambda q, opts, timeout=180.0, kind="": {"answer": "Approve & Build",
                                                           "answered": True, "timed_out": False})
     busted = []
     monkeypatch.setattr(policy, "bust_plan_cache", lambda sid="": busted.append(sid))
@@ -68,7 +68,7 @@ def test_present_plan_approve_calls_plan_approve_for_self_initiated_too(tools, m
 
     monkeypatch.setattr(daemon_client, "call", fake_call)
     monkeypatch.setattr(ask_bus, "ask",
-                         lambda q, opts, timeout=180.0: {"answer": "Approve & Build",
+                         lambda q, opts, timeout=180.0, kind="": {"answer": "Approve & Build",
                                                           "answered": True, "timed_out": False})
     monkeypatch.setattr(policy, "bust_plan_cache", lambda sid="": None)
 
@@ -84,7 +84,7 @@ def test_present_plan_writes_todos_when_given(tools, monkeypatch):
     monkeypatch.setattr(daemon_client, "call", lambda method, params=None, timeout=15.0:
                          {"agent_mode": "coworker"})
     monkeypatch.setattr(ask_bus, "ask",
-                         lambda q, opts, timeout=180.0: {"answer": "Request Changes",
+                         lambda q, opts, timeout=180.0, kind="": {"answer": "Request Changes",
                                                           "answered": True, "timed_out": False})
     monkeypatch.setattr(policy, "bust_plan_cache", lambda sid="": None)
 
@@ -95,7 +95,7 @@ def test_present_plan_writes_todos_when_given(tools, monkeypatch):
 def test_present_plan_revise_returns_user_note(tools, monkeypatch):
     monkeypatch.setattr(daemon_client, "call", lambda method, params=None, timeout=15.0: {})
     monkeypatch.setattr(ask_bus, "ask",
-                         lambda q, opts, timeout=180.0: {"answer": "make it shorter",
+                         lambda q, opts, timeout=180.0, kind="": {"answer": "make it shorter",
                                                           "answered": True, "timed_out": False})
 
     result = json.loads(tools["present_plan"]("Title", "body"))
@@ -105,7 +105,7 @@ def test_present_plan_revise_returns_user_note(tools, monkeypatch):
 def test_present_plan_timeout(tools, monkeypatch):
     monkeypatch.setattr(daemon_client, "call", lambda method, params=None, timeout=15.0: {})
     monkeypatch.setattr(ask_bus, "ask",
-                         lambda q, opts, timeout=180.0: {"answer": "", "answered": False,
+                         lambda q, opts, timeout=180.0, kind="": {"answer": "", "answered": False,
                                                           "timed_out": True})
 
     result = json.loads(tools["present_plan"]("Title", "body"))
@@ -115,9 +115,10 @@ def test_present_plan_timeout(tools, monkeypatch):
 def test_present_plan_question_includes_title_and_markdown(tools, monkeypatch):
     seen = {}
 
-    def fake_ask(question, opts, timeout=180.0):
+    def fake_ask(question, opts, timeout=180.0, kind=""):
         seen["question"] = question
         seen["opts"] = opts
+        seen["kind"] = kind
         return {"answer": "Request Changes", "answered": True, "timed_out": False}
 
     monkeypatch.setattr(daemon_client, "call", lambda method, params=None, timeout=15.0: {})
@@ -127,6 +128,9 @@ def test_present_plan_question_includes_title_and_markdown(tools, monkeypatch):
     assert "My Plan" in seen["question"]
     assert "step one" in seen["question"]
     assert seen["opts"] == ["Approve & Build", "Request Changes"]
+    # Code review (PR #132): the UI now detects a plan card via this explicit
+    # tag instead of string-matching the option labels in two separate files.
+    assert seen["kind"] == "plan"
 
 
 def test_enter_plan_mode_calls_plan_enter_and_busts_cache(tools, monkeypatch):
@@ -148,11 +152,13 @@ def test_exit_plan_mode_calls_plan_exit_and_busts_cache(tools, monkeypatch):
                          lambda method, params=None, timeout=15.0: calls.append((method, params)))
     busted = []
     monkeypatch.setattr(policy, "bust_plan_cache", lambda sid="": busted.append(sid))
-    monkeypatch.setattr(policy, "_plan_status", lambda: (False, ""))
+    seen_sid = []
+    monkeypatch.setattr(policy, "_plan_status", lambda sid=None: (seen_sid.append(sid), (False, ""))[1])
 
     result = json.loads(tools["exit_plan_mode"]("done researching"))
     assert calls == [("plan.exit", {"session_id": "sess-1"})]
     assert busted == ["sess-1"]
+    assert seen_sid == ["sess-1"], "must pass its already-resolved sid, not re-derive one"
     assert result == {"ok": True, "summary": "done researching",
                        "still_restricted": False, "restriction_source": ""}
 
@@ -163,13 +169,16 @@ def test_exit_plan_mode_reports_still_restricted_under_settings_plan(tools, monk
     which it has NO power to lift -- the model would then wrongly tell the
     user it had exited plan mode and could write/execute freely, when the
     very next write attempt would still be denied by the gate. It must now
-    honestly report still_restricted=True/restriction_source="settings" so
-    the model knows to call present_plan instead of declaring success."""
+    report ok=False (not a bare unconditional true) plus
+    still_restricted=True/restriction_source="settings" so the model can't
+    misread a top-level "ok" as success and knows to call present_plan
+    instead of declaring victory."""
     monkeypatch.setattr(daemon_client, "call", lambda method, params=None, timeout=15.0: {})
     monkeypatch.setattr(policy, "bust_plan_cache", lambda sid="": None)
-    monkeypatch.setattr(policy, "_plan_status", lambda: (True, "settings"))
+    monkeypatch.setattr(policy, "_plan_status", lambda sid=None: (True, "settings"))
 
     result = json.loads(tools["exit_plan_mode"]("done researching"))
+    assert result["ok"] is False
     assert result["still_restricted"] is True
     assert result["restriction_source"] == "settings"
 
