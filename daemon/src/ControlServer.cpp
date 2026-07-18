@@ -11118,11 +11118,18 @@ void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrain
         // paired even when the parser omits name/args on the result event.
         m_lastToolCall.insert(sessionId, PendingToolCall{name, argsStr});
     } else if (ev.kind == NormalizedBrainEvent::Kind::ToolResult) {
-        // PostToolUse hook (observational).
+        // PostToolUse hook (observational). The matcher routes on tool name,
+        // same as PreToolUse (docs/HOOKS.md) — resolve it the same way
+        // observeToolLoop() does below: prefer the result event's own name,
+        // else fall back to the cached preceding ToolCall.
+        QString toolName = ev.fields.value(QStringLiteral("name")).toString();
+        if (toolName.isEmpty())
+            toolName = m_lastToolCall.value(sessionId).name;
         QJsonObject po;
         po.insert(QStringLiteral("session_id"), sessionId);
+        po.insert(QStringLiteral("tool_name"), toolName);
         po.insert(QStringLiteral("tool_result"), ev.fields.value(QStringLiteral("output")));
-        m_hooks.run(QStringLiteral("PostToolUse"), po);
+        m_hooks.run(QStringLiteral("PostToolUse"), po, toolName);
         observeToolLoop(sessionId, ev);
     }
 

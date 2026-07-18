@@ -137,18 +137,24 @@ void HookStore::runOne(const QString &command, int timeoutSec,
             if (o.value(QStringLiteral("continue")).isBool() &&
                 !o.value(QStringLiteral("continue")).toBool()) {
                 out.blocked = true;
-                out.blockReason += o.value(QStringLiteral("stopReason"))
-                                       .toString(QStringLiteral("hook requested stop"));
+                const QString reason = o.value(QStringLiteral("stopReason"))
+                                           .toString(QStringLiteral("hook requested stop"));
+                out.blockReason += (out.blockReason.isEmpty() ? QString()
+                                                                : QStringLiteral("\n")) + reason;
             }
             if (o.value(QStringLiteral("decision")).toString() == QStringLiteral("block")) {
                 out.blocked = true;
-                out.blockReason += o.value(QStringLiteral("reason")).toString();
+                const QString reason = o.value(QStringLiteral("reason")).toString();
+                out.blockReason += (out.blockReason.isEmpty() ? QString()
+                                                                : QStringLiteral("\n")) + reason;
             }
             const QJsonObject hso = o.value(QStringLiteral("hookSpecificOutput")).toObject();
             if (hso.value(QStringLiteral("permissionDecision")).toString()
                 == QStringLiteral("deny")) {
                 out.blocked = true;
-                out.blockReason += hso.value(QStringLiteral("permissionDecisionReason")).toString();
+                const QString reason = hso.value(QStringLiteral("permissionDecisionReason")).toString();
+                out.blockReason += (out.blockReason.isEmpty() ? QString()
+                                                                : QStringLiteral("\n")) + reason;
             }
             QString ctx = o.value(QStringLiteral("additionalContext")).toString();
             if (ctx.isEmpty())
