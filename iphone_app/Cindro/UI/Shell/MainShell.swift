@@ -79,7 +79,13 @@ struct MainShell: View {
             }
         }
         .onReceive(app.$openSessionId.compactMap { $0 }) { sid in
-            openSession(sid)
+            // A daemon `session.opened` push (a background subagent, a schedule, or
+            // another surface opening a chat) must NOT yank the user out of the chat
+            // they're currently reading — that made another session's chat "randomly"
+            // appear. Only honor the deep-link when we're at the root (not already
+            // inside a chat), matching the desktop, which never auto-switches
+            // sessions on session.opened (it only raises the window).
+            if path.isEmpty { openSession(sid) }
             app.openSessionId = nil
         }
     }

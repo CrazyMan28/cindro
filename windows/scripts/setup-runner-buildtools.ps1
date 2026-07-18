@@ -135,8 +135,15 @@ foreach ($d in @("$qtDir\bin", $ninjaDir, $nodeDir, "C:\Program Files\CMake\bin"
 [Environment]::SetEnvironmentVariable("Path", $machPath, "Machine")
 Log ("CMAKE_PREFIX_PATH=" + [Environment]::GetEnvironmentVariable("CMAKE_PREFIX_PATH", "Machine"))
 
-# ---- 6. restart runner to pick up the new env -----------------------------
-Restart-Service "actions.runner.CrazyMan28-jarvis.win-runner-1" -Force
-Start-Sleep 4
-Log ("runner=" + (Get-Service "actions.runner.CrazyMan28-jarvis.win-runner-1").Status)
+# ---- 6. restart runner(s) to pick up the new env --------------------------
+# Iterate every installed runner service (was hardcoded to win-runner-1, so a
+# provisioning run on win-runner-2 never restarted its own runner and the new
+# machine env stayed invisible until the next reboot).
+$runnerSvcs = Get-Service "actions.runner.*" -ErrorAction SilentlyContinue
+if (-not $runnerSvcs) { Log "no actions.runner.* service found — start the runner manually to pick up the env" }
+foreach ($svc in $runnerSvcs) {
+    Restart-Service $svc.Name -Force
+    Start-Sleep 4
+    Log ("runner=" + $svc.Name + " " + (Get-Service $svc.Name).Status)
+}
 Log "BUILDTOOLSDONE"

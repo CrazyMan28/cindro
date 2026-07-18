@@ -578,9 +578,9 @@ derived from the other). Load-bearing truths:
 - **The `.xcodeproj` is GENERATED, never committed** (`project.yml` → `xcodegen generate`), the same
   discipline as the Android app being pure-Gradle: a hand-edited pbxproj drifts. CI runs
   `xcodegen generate` before every `xcodebuild`.
-- **`ios-build.yml` runs on GitHub-hosted `macos-latest`** — one of two sanctioned exceptions to
-  the "100% self-hosted / zero GitHub-hosted minutes" rule below (the other being `website-ci.yml`,
-  a separate lightweight PHP/Node stack for `website/`), because iOS needs Xcode on macOS and
+- **`ios-build.yml` runs on GitHub-hosted `macos-latest`** — the one sanctioned exception to the
+  "100% self-hosted / zero GitHub-hosted minutes" rule below (`website-ci.yml`/`android-build.yml`
+  moved to the self-hosted fleet too — see that section), because iOS needs Xcode on macOS and
   the Proxmox fleet is Windows + Linux only. The owner opted into the Actions minutes. It rides the
   SAME `v*` tag `auto-release.yml` already creates, so merge-to-main attaches an **unsigned** `.ipa`
   next to the `.exe`/`.apk`/AppImage with no tagger change. Signed TestFlight/App Store builds need
@@ -613,10 +613,16 @@ triggering `auto-release.yml`'s version bump (see below).
 
 - **CI is 100% self-hosted for the product build workflows — ZERO GitHub-hosted minutes.**
   Windows builds run on `win-runner-1` (the winvm / Proxmox VM 106 box); Linux CI/release/
-  auto-release run on the six `pve-ubuntu-runner-*` (VM 104). **Never** switch one of these
-  four workflow files to `windows-latest` / `ubuntu-latest` — they use `runs-on: [self-hosted, …]`.
-  (`ios-build.yml` and `website-ci.yml` are the two sanctioned GitHub-hosted exceptions — see
-  above and the `website/` subsystem entry below.) The Windows
+  auto-release/website-ci/android-build all run on the six `pve-ubuntu-runner-*` (VM 104, raw
+  Ubuntu host — only linux-ci/linux-release additionally run inside the baked `jarvis-ci`
+  container via `container:`, since website-ci/android-build's toolchains (PHP/Node/JDK/Android
+  SDK) come from their own setup actions instead). **Never** switch one of these six workflow
+  files to `windows-latest` / `ubuntu-latest` — they use `runs-on: [self-hosted, …]`.
+  (`ios-build.yml` is the one sanctioned GitHub-hosted exception — see above; `website-ci.yml`/
+  `android-build.yml` moved off `ubuntu-latest` once GitHub-hosted minutes ran out, so what were
+  GitHub-hosted-only tools now get provisioned per-run: `android-actions/setup-android` for the
+  Android SDK, `shivammathur/setup-php` + `actions/setup-node` for PHP/Node — same as before, just
+  running on the self-hosted fleet instead.) The Windows
   runner is **prebuilt** (git, vcpkg + libsodium/libqrencode, Inno Setup, VS Build Tools,
   PowerShell 7, Python, Qt, Ninja, CMake, Node) via `windows/scripts/setup-runner-*.ps1`, so
   the workflow does **no per-run tool downloads** (mirrors the Linux prebuilt CI image). After
@@ -1440,7 +1446,7 @@ the `/api/license/verify` contract, and the full "known limitations" list. Load-
   path. See `website/README.md`'s "Known limitations" for the full list (also: the product repo
   being **private** means even a real `GITHUB_TOKEN` doesn't make GitHub's release *asset* URLs
   anonymously downloadable — flagged as a `// TODO` in `GitHubReleaseService`, not solved).
-- **CI**: new `website-ci.yml` (GitHub-hosted `ubuntu-latest` — see the CI section above) runs
+- **CI**: `website-ci.yml` (self-hosted `pve-ubuntu-runner-*` — see the CI section above) runs
   `composer install` + `npm run build` + `php artisan test`, gated to `paths: ['website/**']`. All
   six workflows (`auto-release.yml` + the five product build workflows) got
   `paths-ignore: ['website/**']` added so a website-only PR/merge doesn't bump a product version or
@@ -1588,6 +1594,49 @@ DB would have rejected the raw Stripe status string on the first webhook). 15/15
 passed after the fix. Two unrelated pre-existing failures (`Vite manifest not found` — no frontend
 build in this environment) are environmental, not regressions.
 
+## New subsystems (2026-07-17, CI-speed wave) — self-hosted runner speedups + gotchas
+
+Instrumented the Proxmox self-hosted fleet end-to-end (per-step timings from real runs + in-guest
+checks) and attacked the measured hot spots. Baseline: windows-build took ~26 min solo / 40–49 min
+when both win-runners built concurrently; ~10 of those min were the engine PyInstaller stage, ~6 C++,
+~3 outpost PyInstaller, ~3 LZMA compression, and up to 8 min of "checkout" that was actually
+`git clean -ffdx` deleting the previous build from the shared ROTATIONAL disk. Changes:
+
+- `windows-build.yml` checks out with `clean: ${{ github.event_name != 'pull_request' }}` — PR
+  builds now KEEP `windows/build-win/` + both `.venv-win`s between runs (incremental ninja/pip);
+  tag builds still fully clean. GOTCHA: anything cached in the tree must tolerate staleness —
+  `build.ps1` now deletes the stale payload AND stale `Cindro-Setup-*.exe` up front (the old
+  installer would otherwise ALSO match the upload/release glob).
+- `build.ps1` runs its five C++-independent stages (engine PyInstaller, outpost-mcp PyInstaller,
+  Go cross-compiles, phone-server npm, portable-Node fetch) as `Start-Job` BACKGROUND PROCESSES
+  overlapped with the foreground C++/bun/windeployqt work, joined before the isolation-assets
+  stage. Process (not thread) jobs on purpose: the Go stage mutates `GOOS`/`GOARCH` env.
+  Fatality preserved: engine + node-runtime fatal, go/outpost/phone warn-and-continue.
+- PR installers compress with `zip` (`-FastCompress` -> `/DFastCompress` -> `#ifdef` in
+  `jarvis.iss`); tag/release builds keep `lzma2`+solid. The Node zip now caches in `C:\ci-cache`
+  (outside the repo) so even clean tag builds skip the download.
+- `setup-runner-buildtools.ps1` restarts EVERY `actions.runner.*` service (was hardcoded to
+  win-runner-1 — provisioning win-runner-2 never restarted its own runner).
+- android-build (self-hosted since the infra/self-hosted-website-android merge): sherpa AAR now
+  cached at `~/ci-cache` on the runner VM's persistent disk (actions/cache restore of that one
+  56 MB file measured ~1m40s); `setup-gradle` remote cache disabled (`cache-disabled: true`) —
+  `~/.gradle` persists locally, the GitHub round-trip was pure overhead.
+- NEW `.github/workflows/runner-maintenance.yml` (workflow_dispatch only): the Linux runner VM
+  (`gh-runner-linux`, VMID 104) has NO ssh key authorized and NO qemu-guest-agent running, so a CI
+  job is the only management path onto it. It pre-installs PHP 8.4+composer (makes website-ci's
+  per-run `setup-php` apt-install a no-op) and qemu-guest-agent (VM config has `agent:enabled=1`
+  but the agent was never installed in-guest). GOTCHA: `workflow_dispatch` only becomes
+  runnable once the file exists on `main` — dispatch it after the promotion PR merges.
+- Proxmox host side (done live over SSH, not in-repo): VM 104 got `cpu: host` (was the ancient
+  `kvm64` default — no SSE4/AES/POPCNT exposed to compilers), `cpuunits 200`, and
+  `cache=writeback` on its disk — cpu/cache apply at its NEXT power-cycle. Win-runner VMs
+  106/107 still want the same treatment (+6 cores each) plus Windows Defender exclusions for
+  `C:\actions-runner`/`C:\Qt`/`C:\vcpkg` + build processes (both VMs measured with RTP on and
+  ZERO exclusions — the classic Windows CI tax); those needed explicit user approval.
+- Fleet topology gotcha: all six `pve-ubuntu-runner*` slots live on ONE 6-vCPU VM, and a PR into
+  main fires linux-ci + linux-release + android + website simultaneously — 4 concurrent jobs
+  each assuming `nproc` parallelism on 6 shared vCPUs (plus everything else on a 24-thread
+  2010-era host). Fewer slots or more vCPUs is the lever if linux jobs feel slow.
 ## New subsystems (2026-07-17, later still) — fifth Codex review round on PR #130
 
 A fifth review pass (triggered by the fourth round's push) found 6 more findings: one in my own
