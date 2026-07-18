@@ -3795,6 +3795,18 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
                 qInfo("jarvisd: rebound %s's brain with computer-use now that its "
                       "agent desktop is up (was transiently busy at creation)",
                       qPrintable(sessionId));
+                // Code-review finding (PR #132): the rebuilt Brain's
+                // Options::systemPromptAppend starts EMPTY, but guide/
+                // policyPreamble below are only computed once per session
+                // (gated by m_policyGuided/m_coworkGuided) — without clearing
+                // those flags here, they stay empty forever on every turn
+                // after this rebind, so setSystemPromptAppend() is never
+                // called again on the new brain and it silently loses its
+                // identity/permission/mode/plan-tools clauses and co-work
+                // guide for the rest of the session. Clearing them makes the
+                // preamble recompute and redeliver on THIS very turn below.
+                m_policyGuided.remove(sessionId);
+                m_coworkGuided.remove(sessionId);
             }
         }
         m_pendingComputerUseRebind.remove(sessionId);
@@ -3821,6 +3833,14 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
                 brain = rebuilt;
                 qInfo("jarvisd: rebound %s's brain to apply its current Plan-mode "
                       "restriction", qPrintable(sessionId));
+                // Same fix as the computer-use rebind above: force the one-time
+                // preamble (identity/permission/mode/plan-tools clauses, co-work
+                // guide) to recompute and redeliver via setSystemPromptAppend()
+                // on THIS turn, since the freshly rebuilt brain's
+                // Options::systemPromptAppend starts empty and would otherwise
+                // never be populated again for the rest of the session.
+                m_policyGuided.remove(sessionId);
+                m_coworkGuided.remove(sessionId);
             }
         }
         m_pendingPlanModeRebind.remove(sessionId);
