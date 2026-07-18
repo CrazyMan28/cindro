@@ -158,7 +158,10 @@ def register(mcp: FastMCP) -> list[str]:
     @mcp.tool()
     async def proxmox_backup_create(vmid: int, storage: str, mode: str = "snapshot",
                                     compress: str = "zstd", node: str = "") -> dict[str, Any]:
-        """Create a vzdump backup of a VM (risk: medium)."""
+        """Create a vzdump backup of a VM (risk: medium). Backups run for minutes;
+        if the client call times out this returns {status:"running", upid, ...}
+        (NOT a failure) — poll proxmox_task_status with the upid until it's done,
+        never re-run it."""
         params = {"vmid": vmid, "storage": storage, "mode": mode, "compress": compress}
         return ops.guarded_write("proxmox_backup_create", {"vmid": vmid}, "create",
                                  f"/nodes/{_node(node)}/vzdump", params)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 
 from proxmox_mcp import config, operator_store, proxmox_ops
 
@@ -58,10 +59,61 @@ def read(path: str, params: dict | None = None) -> dict:
     """A GET against the Proxmox API tree. Returns {ok, result} / {ok:False,error}."""
     try:
         return {"ok": True, "result": run_pvesh("get", path, params)}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "the read did not return in time; try again"}
     except proxmox_ops.CommandError as exc:
         # .redacted (not str(exc)) — don't leak the full argv (absolute host
         # paths / node names / volids) into the operator transcript.
         return {"ok": False, "error": exc.redacted}
+
+
+# Long-running Proxmox actions — vzdump/backup, migrate, a full clone — run as a
+# server-side WORKER task: the API returns a UPID and the task keeps going on its
+# own. Our pvesh CLIENT subprocess can outlast run_pvesh's timeout, but killing
+# that client does NOT stop the worker (it finishes regardless — that's why a
+# "timed out" backup keeps progressing). So a timeout on a MUTATING call is not a
+# failure; it means "still running, go poll the task" — never a reason to re-run.
+def _running_task_upid(vmids: set) -> str:
+    """Best-effort UPID of a currently-active task on the node whose id matches
+    one of `vmids`, so a timed-out mutating call can hand back the task it just
+    started for the caller to poll. Returns '' if none is found (or the lookup
+    itself fails/times out — it must never raise)."""
+    ids = {str(v) for v in vmids if v is not None}
+    if not ids:
+        return ""
+    try:
+        tasks = run_pvesh("get", f"/nodes/{node()}/tasks",
+                          {"source": "active", "limit": 100}, timeout=10.0)
+    except (proxmox_ops.CommandError, subprocess.TimeoutExpired, ValueError, OSError):
+        return ""
+    rows = tasks if isinstance(tasks, list) else []
+    for task in rows:
+        # Active tasks have no endtime; guest tasks (vzdump/migrate/qmclone/...)
+        # carry the vmid in `id`.
+        if isinstance(task, dict) and not task.get("endtime") \
+                and str(task.get("id")) in ids and task.get("upid"):
+            return str(task["upid"])
+    return ""
+
+
+def _detached_result(vmids: set, timeout: float) -> dict:
+    """The result a mutating call returns when its client subprocess times out:
+    the worker task is still running, so report it as running (NOT failed) with
+    its UPID and an explicit 'poll, do not re-run' instruction."""
+    upid = _running_task_upid(vmids)
+    return {
+        "ok": True,
+        "status": "running",
+        "detached": True,
+        "upid": upid,
+        "note": (
+            f"The command did not return within {int(timeout)}s, but the operation "
+            "is running in the background — a timeout is NOT a failure for a long "
+            "task (backup/migrate/clone). DO NOT re-issue this action. Poll "
+            "proxmox_task_status with the UPID above (use proxmox_tasks_recent to "
+            "find it if the UPID is empty) until it reports stopped/OK."
+        ),
+    }
 
 
 def guarded_write(tool: str, ctx: dict, verb: str, path: str,
@@ -112,6 +164,12 @@ def guarded_write(tool: str, ctx: dict, verb: str, path: str,
                     "tool": tool}
     try:
         return {"ok": True, "result": run_pvesh(verb, path, params)}
+    except subprocess.TimeoutExpired as exc:
+        # The pvesh CLIENT outran our timeout, but the server-side worker keeps
+        # running (killing the client doesn't stop a backup/migrate/clone). Report
+        # it as running + hand back the UPID to poll — never a hard failure the
+        # model would "fix" by re-issuing the (already-running) action.
+        return _detached_result(vmid_candidates, getattr(exc, "timeout", 0) or 0)
     except proxmox_ops.CommandError as exc:
         # .redacted (not str(exc)) — see read(): keep host paths/node names out
         # of the operator transcript.
