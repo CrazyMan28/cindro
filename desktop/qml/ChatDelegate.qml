@@ -900,19 +900,19 @@ Item {
             radius: Theme.radius
             property bool answered: false
             property string chosen: ""
-            // del.text is a JSON envelope {q, options}; fall back to plain text.
+            // del.text is a JSON envelope {q, options, kind}; fall back to plain text.
             property var parsed: {
                 try { return JSON.parse(del.text) }
-                catch (e) { return { "q": del.text, "options": [] } }
+                catch (e) { return { "q": del.text, "options": [], "kind": "" } }
             }
-            // present_plan (tools_plan.py) always uses exactly these two literal
-            // options — detect it so this card can (a) label itself as a plan
-            // presentation rather than a generic question, and (b) give
-            // "Request Changes" richer behavior below (see requestingChanges).
-            property bool isPlanDecision: qRoot.parsed.options
-                && qRoot.parsed.options.length === 2
-                && qRoot.parsed.options[0] === "Approve & Build"
-                && qRoot.parsed.options[1] === "Request Changes"
+            // present_plan (tools_plan.py) tags its ask via ask_bus.ask(kind="plan")
+            // — detect it via that explicit tag (not by string-matching the option
+            // labels, which used to be duplicated here AND in JarvisPanel.qml and
+            // would silently break if the labels were ever reworded — code review,
+            // PR #132) so this card can (a) label itself as a plan presentation
+            // rather than a generic question, and (b) give "Request Changes" richer
+            // behavior below (see requestingChanges).
+            property bool isPlanDecision: qRoot.parsed.kind === "plan"
             // Tapping "Request Changes" used to submit that literal label as the
             // answer — present_plan then got back note:"Request Changes" with no
             // actual feedback, leaving the model nothing to act on (it would go

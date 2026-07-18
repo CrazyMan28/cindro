@@ -972,8 +972,13 @@ signals:
 
     // The model asked the user a question (ask_user MCP tool). The chat shows a
     // card with the options; answerQuestion() sends the choice back to the model.
+    // `kind` is an optional caller-supplied tag (ask_bus.ask()'s new `kind` arg,
+    // e.g. "plan" for present_plan) -- empty for a plain ask_user question. Code
+    // review (PR #132): QML used to detect a plan card by string-matching the
+    // exact "Approve & Build"/"Request Changes" option labels in TWO separate
+    // files; a single explicit tag from the source of truth is more robust.
     void agentQuestion(const QString &id, const QString &question,
-                       const QStringList &options);
+                       const QStringList &options, const QString &kind);
 
     // The model rendered a custom widget (render_widget MCP tool, file bus
     // ~/.local/share/jarvis/widgets.jsonl). `widget` = {ts, title, id, spec} with

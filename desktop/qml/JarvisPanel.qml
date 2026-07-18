@@ -544,6 +544,13 @@ Item {
             // chat, and any future path that repopulates todoSpec without re-stamping
             // the owner would resurrect the old plan under the new session.
             panel.todoSpecSession = ""
+            // Code-review finding (PR #132): planDocText/planDocSession were
+            // added as a sibling to todoSpec/todoSpecSession but never wired
+            // into this same reset — reopening a session that once had a plan
+            // doc re-showed the stale doc (hasPlanDoc's session-match guard
+            // doesn't help since it's the SAME session id being reopened).
+            panel.planDocText = ""
+            panel.planDocSession = ""
             panel.thinking = false
             panel.thinkingRowId = ""
             panel.busy = false
@@ -602,24 +609,29 @@ Item {
             chatView.positionViewAtEnd()
         }
 
-        // The model called ask_user: show a tappable question card in the chat.
-        // The question + options are packed as a JSON envelope in `text`; the
-        // delegate parses it and answerQuestion() sends the choice back.
-        function onAgentQuestion(id, question, options) {
+        // The model called ask_user (or present_plan, which is ask_user under the
+        // hood): show a tappable question card in the chat. The question +
+        // options + kind are packed as a JSON envelope in `text`; the delegate
+        // parses it and answerQuestion() sends the choice back. `kind` is
+        // ask_bus.ask()'s caller-supplied tag ("plan" for present_plan, empty
+        // for a plain ask_user question) -- code review (PR #132): this used to
+        // be re-derived by string-matching the exact "Approve & Build"/
+        // "Request Changes" option labels independently in both this file and
+        // ChatDelegate.qml; a single explicit tag from the source of truth is
+        // more robust against a future relabeling.
+        function onAgentQuestion(id, question, options, kind) {
             chatModel.append({
                 "kind": "question", "role": "system",
-                "text": JSON.stringify({ "q": question, "options": options || [] }),
+                "text": JSON.stringify({ "q": question, "options": options || [],
+                                         "kind": kind || "" }),
                 "callId": "", "toolName": "", "approvalId": id, "risk": "", "ok": true,
                 "streaming": false
             })
             chatView.positionViewAtEnd()
-            // present_plan always uses exactly these two literal options (see
-            // tools_plan.py) -- same detection ChatDelegate's isPlanDecision does.
-            // Also mirror the plan text into the read-only peek-panel doc card
-            // (see planDocText above); the chat card above remains the ONLY place
+            // Mirror the plan text into the read-only peek-panel doc card (see
+            // planDocText above); the chat card above remains the ONLY place
             // the Approve & Build / Request Changes decision is actually made.
-            var opts = options || []
-            if (opts.length === 2 && opts[0] === "Approve & Build" && opts[1] === "Request Changes") {
+            if (kind === "plan") {
                 panel.planDocText = question
                 panel.planDocSession = "" + bridge.sessionId
                 panel.planDocOpen = true
@@ -2294,6 +2306,8 @@ Item {
         // plan haunts the new one (reported: "new chat had an old chat's plan").
         panel.todoSpec = ""
         panel.todoSpecSession = ""
+        panel.planDocText = ""
+        panel.planDocSession = ""
         panel.subagents = []
         panel.peekSnoozedSession = "__none__"
         panel.peekOpen = false

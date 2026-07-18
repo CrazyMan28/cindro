@@ -80,6 +80,7 @@ def register(mcp: FastMCP) -> None:
                 f"# {title}\n\n{markdown}",
                 ["Approve & Build", "Request Changes"],
                 timeout=float(os.environ.get("JARVIS_PLAN_ASK_TIMEOUT", "86400")),
+                kind="plan",
             )
             answer = str((res or {}).get("answer", "")).strip().lower()
             if ask_bus.is_affirmative(answer, "approve & build"):
@@ -131,21 +132,25 @@ def register(mcp: FastMCP) -> None:
         only be lifted by present_plan's Approve & Build) — it only clears a
         restriction you imposed on yourself.
 
-        Returns JSON {"ok": true, "still_restricted": bool, "restriction_source":
-        str}. ALWAYS check `still_restricted` before telling the user you can
-        write/execute again. If it's true (restriction_source will be
-        "settings"), the user's Settings-driven PLAN mode is STILL fully in
-        effect — this call did NOTHING to lift it, and your very next write
-        attempt will be denied. Do NOT say you've exited plan mode or that
-        tools are free again; call present_plan instead and wait for the
-        user's Approve & Build."""
+        Returns JSON {"ok": bool, "still_restricted": bool, "restriction_source":
+        str}. `ok` reflects whether you are ACTUALLY free to write/execute now —
+        it is false whenever `still_restricted` is true, so do not read a bare
+        "ok": true/false without also checking `still_restricted`/
+        `restriction_source` for WHY. `restriction_source` is usually "settings"
+        (the user's Settings-driven PLAN mode — only present_plan's Approve &
+        Build lifts that) but can also be "self" (your own enter_plan_mode call
+        wasn't actually cleared — retry), "unreachable" or "ambiguous_session"
+        (a transient daemon/session-resolution hiccup — retry shortly). In ALL
+        of these cases: do NOT say you've exited plan mode or that tools are
+        free again — call present_plan if the restriction is Settings-driven,
+        or simply retry for a transient one."""
         try:
             sid = daemon_client.current_session_id()
             daemon_client.call("plan.exit", {"session_id": sid})
             policy.bust_plan_cache(sid)
-            still_restricted, source = policy._plan_status()
+            still_restricted, source = policy._plan_status(sid)
             return json.dumps({
-                "ok": True,
+                "ok": not still_restricted,
                 "summary": summary,
                 "still_restricted": still_restricted,
                 "restriction_source": source,

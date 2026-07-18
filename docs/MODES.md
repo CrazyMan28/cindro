@@ -96,6 +96,18 @@ replaces). CodexBrain/ApiBrain keep the legacy prepend convention. See
 `ControlServer::identityClause()`/`sendToSession()` and
 `ClaudeBrain::Options::systemPromptAppend`.
 
+**Persona note, part 2 (`/code-review high` fix, 2026-07-17):** the persona fix above had a gap the
+review caught — a plan-mode/computer-use brain REBIND (`m_pendingComputerUseRebind`/
+`m_pendingPlanModeRebind` in `sendToSession()`, which tear down and reconstruct the `Brain*` when
+computer-use comes up late or Plan Mode state changes mid-session) built a fresh brain with an EMPTY
+`Options::systemPromptAppend`, but the `guide`/`policyPreamble` strings that actually get passed to
+`setSystemPromptAppend()` are gated by one-time flags (`m_policyGuided`/`m_coworkGuided`) that were
+already set from turn 1 and never cleared on rebind — so the identity/permission/mode/plan-tools
+preamble silently never got redelivered to the new brain for the rest of the session, reintroducing
+the exact "acts like plain Claude Code" bug from a different angle. Fixed by clearing both flags at
+the end of each rebind block so the preamble recomputes and redelivers on the same turn the rebind
+happens.
+
 ## Presenting a plan — `present_plan`
 
 `present_plan(title, markdown, todos)` (`computer_use_mcp/tools_plan.py`) publishes the
@@ -112,18 +124,34 @@ the user's feedback as `note` for the model to incorporate before calling `prese
 again — there is **no** separate edit/update-plan tool; `present_plan` is both how a plan
 is published and how revision feedback comes back, and the docstrings/`modePolicyClause`/
 `planToolsClause` say so explicitly so the model doesn't go looking for one. On the UI
-side, `ChatDelegate.qml`'s plan card detects `present_plan`'s fixed two-option shape and
-opens "Request Changes" into a focused text field instead of submitting the bare label as
-the answer (2026-07-17 live-testing fix — the bare label left the model with a
-`note` containing no actual feedback to act on).
+side, `ChatDelegate.qml`'s plan card detects `present_plan` via an explicit
+`ask_bus.ask(kind="plan")` tag (see below) and opens "Request Changes" into a focused text
+field instead of submitting the bare label as the answer (2026-07-17 live-testing fix —
+the bare label left the model with a `note` containing no actual feedback to act on).
+
+**Plan-card detection uses an explicit `kind` tag, not string-matching (`/code-review high`
+fix, 2026-07-17):** `ask_bus.ask()` takes an optional `kind` arg, written into the question
+file and threaded through `Bridge::scanQuestions()`'s `agentQuestion` Qt signal (now 4
+params: `id, question, options, kind`) to both `ChatDelegate.qml` (`isPlanDecision:
+parsed.kind === "plan"`) and `JarvisPanel.qml` (drives the read-only sidebar PLAN DOC card,
+see below). `present_plan` passes `kind="plan"`; plain `ask_user` questions leave it empty.
+Previously both QML files independently string-matched the exact "Approve & Build"/"Request
+Changes" option labels to detect a plan card — fragile against a future relabeling, and
+duplicated in two places with no shared source of truth.
 
 Approve/deny matching across every `ask_bus`-backed gate (this one, trust-policy,
 phone, command-scan) goes through `ask_bus.is_affirmative(answer, yes_label)`, not an
 exact `answer == "allow"` string match — the latter silently denied legitimate
 free-text affirmatives typed into a question card's custom-answer field (2026-07-17
 live-testing fix). Matching order: exact match against the button's own label first,
-then a small literal whitelist, then a narrow `"yes "`/`"sure "`/etc. prefix match —
-deliberately not fuzzy/substring, so a genuinely ambiguous reply still fails closed.
+then a small literal whitelist, then (`/code-review high` fix, 2026-07-17) a narrow
+TRAILING-punctuation strip only (`"yes!"`/`"sure."` still match a bare whitelisted word) —
+**not** a prefix match against a longer sentence. The original prefix rule
+(`answer.startswith("yeah ")`) silently approved a "Request Changes" revision note that
+happened to start with an affirmative word (e.g. "yeah but shorten the intro"),
+discarding the user's actual feedback — present_plan reuses this same function to decide
+Approve vs. Revise against free-typed text, not just a simple Allow/Deny tap. See
+`computer-use/tests/test_ask_bus.py`.
 
 `exit_plan_mode` used to unconditionally return `{"ok": true}` even when the session was
 under Settings-driven PLAN mode, which it has **zero** power to lift (only `present_plan`'s
@@ -136,6 +164,18 @@ after busting the cache and returning `still_restricted`/`restriction_source` in
 the docstring and `planToolsClause()`'s system-prompt text both now instruct the model to
 check `still_restricted` before saying anything about being free to write again, and to
 call `present_plan` instead if it's still true.
+
+**Two more `exit_plan_mode` gaps (`/code-review high` fix, 2026-07-17):** (1) it still
+returned a bare `"ok": true` even when `still_restricted` was also true — a
+self-contradictory response the model had to correctly resolve by reading the *other*
+field. `ok` now IS `not still_restricted`, so there's no contradiction to misread. (2) the
+docstring claimed `restriction_source` "will be settings" when restricted, but
+`policy._plan_status()` can also return `"self"`/`"unreachable"`/`"ambiguous_session"` —
+softened so the model doesn't wrongly tell the user to check Settings when the real cause
+is a retryable transient failure. Also fixed: `bust_plan_cache()` immediately followed by
+`_plan_status()` guaranteed a cache-miss round-trip on every call, and `_plan_status()`
+separately re-resolved `current_session_id()` even though the caller already had it —
+`_plan_status()` now takes an optional `sid` to skip that when the caller already knows it.
 
 ## Steering a dispatched subagent — `agent_send`
 
