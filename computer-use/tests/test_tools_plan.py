@@ -148,11 +148,30 @@ def test_exit_plan_mode_calls_plan_exit_and_busts_cache(tools, monkeypatch):
                          lambda method, params=None, timeout=15.0: calls.append((method, params)))
     busted = []
     monkeypatch.setattr(policy, "bust_plan_cache", lambda sid="": busted.append(sid))
+    monkeypatch.setattr(policy, "_plan_status", lambda: (False, ""))
 
     result = json.loads(tools["exit_plan_mode"]("done researching"))
     assert calls == [("plan.exit", {"session_id": "sess-1"})]
     assert busted == ["sess-1"]
-    assert result == {"ok": True, "summary": "done researching"}
+    assert result == {"ok": True, "summary": "done researching",
+                       "still_restricted": False, "restriction_source": ""}
+
+
+def test_exit_plan_mode_reports_still_restricted_under_settings_plan(tools, monkeypatch):
+    """The bug this guards: exit_plan_mode used to unconditionally return
+    {"ok": true} even when the session was under Settings-driven PLAN mode,
+    which it has NO power to lift -- the model would then wrongly tell the
+    user it had exited plan mode and could write/execute freely, when the
+    very next write attempt would still be denied by the gate. It must now
+    honestly report still_restricted=True/restriction_source="settings" so
+    the model knows to call present_plan instead of declaring success."""
+    monkeypatch.setattr(daemon_client, "call", lambda method, params=None, timeout=15.0: {})
+    monkeypatch.setattr(policy, "bust_plan_cache", lambda sid="": None)
+    monkeypatch.setattr(policy, "_plan_status", lambda: (True, "settings"))
+
+    result = json.loads(tools["exit_plan_mode"]("done researching"))
+    assert result["still_restricted"] is True
+    assert result["restriction_source"] == "settings"
 
 
 def test_present_plan_never_raises_on_daemon_error(tools, monkeypatch):
