@@ -145,8 +145,16 @@ tui/          jarvis-tui v2 — TypeScript/Bun + OpenTUI/SolidJS terminal UI,
 web/          Browser dashboard with full GUI parity — Bun+Vite+SolidJS SPA
               over the same control websocket (see web/README.md)
 android/      Kotlin/Compose app (MVVM, Room, DataStore, foreground WS service)
+iphone_app/   Native SwiftUI iOS app — 1:1 port of android/ over the same Contract C
+              device WebSocket (see iphone_app/README.md)
 kde-applet/   Plasma 6 applet to toggle the sidebar
 plugins/      Plugin SDK + signed-package format + registry
+outpost-mcp/  Pairing + relay server (Python) for remote-machine control; outpost-agent/
+              is the Go agent that runs on the paired machine (see docs/OUTPOST.md)
+proxmox-mcp/  Tool server for the always-on Proxmox workload-manager agent
+              (see docs/PROXMOX_WORKLOAD_MANAGER.md)
+windows/      Windows edition, isolated — zero changes to core/daemon/desktop/computer-use/
+              (see docs/WINDOWS.md)
 packaging/    systemd user units, Sway keybind, install scripts
 website/      Marketing/billing site — Laravel + Breeze + Cashier/Stripe + Filament admin,
               /api/license/verify is the intended integration point back into core/
