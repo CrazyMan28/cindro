@@ -539,16 +539,13 @@ Item {
             // plan haunting a fresh chat was part of the jarvis#72 leak).
             chatModel.clear()
             panel.todoSpec = ""
-            // Clear the plan's OWNING session too, matching startNewChat()'s explicit
-            // double-clear — otherwise todoSpecSession lingers pointing at the old
-            // chat, and any future path that repopulates todoSpec without re-stamping
-            // the owner would resurrect the old plan under the new session.
+            // Clear the plan's OWNING session too (matching startNewChat()'s explicit
+            // double-clear — otherwise todoSpecSession lingers pointing at the old chat
+            // and could resurrect the old plan under the new session) AND the plan-doc
+            // fields: planDocText/planDocSession (PR #132) were added as siblings to
+            // todoSpec/todoSpecSession but never wired into this reset, so reopening a
+            // session that once had a plan doc re-showed the stale doc.
             panel.todoSpecSession = ""
-            // Code-review finding (PR #132): planDocText/planDocSession were
-            // added as a sibling to todoSpec/todoSpecSession but never wired
-            // into this same reset — reopening a session that once had a plan
-            // doc re-showed the stale doc (hasPlanDoc's session-match guard
-            // doesn't help since it's the SAME session id being reopened).
             panel.planDocText = ""
             panel.planDocSession = ""
             panel.thinking = false

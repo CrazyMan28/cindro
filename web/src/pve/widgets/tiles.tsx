@@ -84,6 +84,7 @@ export const TILE_KINDS: TileKind[] = [
     defaultGrid: { x: 0, y: 0, w: 3, h: 3 },
     defaultContent: { value: 0, max: 1, label: "value" },
   },
+  { type: "node_load", label: "Node Load", icon: "≈", defaultTitle: "Load", defaultGrid: { x: 0, y: 0, w: 3, h: 2 } },
 ]
 
 export function tileKind(type: string): TileKind | undefined {
@@ -116,6 +117,10 @@ const TILE_ALIASES: Record<string, string> = {
   tasks: "tasks_board",
   task_board: "tasks_board",
   kanban: "tasks_board",
+  load: "node_load",
+  loadavg: "node_load",
+  system_load: "node_load",
+  sysload: "node_load",
 }
 
 /** Resolve a stored tile.type to a renderer key, following the alias table.
@@ -385,6 +390,43 @@ function NodeStatsTile(props: { tile: Tile }) {
       <div class="cx-stat-row">
         <span class="cx-stat-k">Load</span>
         <span class="cx-stat-v">{load() ? load()!.join(" / ") : "—"}</span>
+      </div>
+    </TileFrame>
+  )
+}
+
+function NodeLoadTile(props: { tile: Tile }) {
+  const allNodes = useNodeList()
+  const nodeName = () => props.tile.node || allNodes()[0]?.node || ""
+  const [status, refresh] = usePoll<NodeStatus | null>(
+    async () => {
+      const n = nodeName()
+      if (!n) return null
+      const r = await nodeStatus(n)
+      return r.ok ? r.data : null
+    },
+    null,
+    5000,
+  )
+  createEffect(() => {
+    nodeName()
+    refresh()
+  })
+  const load = () => status()?.loadavg
+  return (
+    <TileFrame title={props.tile.title || "Load"} live>
+      <div class="cx-tile-sub">{nodeName() || "no node"}</div>
+      <div class="cx-stat-row">
+        <span class="cx-stat-k">1 min</span>
+        <span class="cx-stat-v">{load()?.[0] ?? "—"}</span>
+      </div>
+      <div class="cx-stat-row">
+        <span class="cx-stat-k">5 min</span>
+        <span class="cx-stat-v">{load()?.[1] ?? "—"}</span>
+      </div>
+      <div class="cx-stat-row">
+        <span class="cx-stat-k">15 min</span>
+        <span class="cx-stat-v">{load()?.[2] ?? "—"}</span>
       </div>
     </TileFrame>
   )
@@ -689,6 +731,9 @@ export function TileBody(props: { tile: Tile; actions?: TileActions }) {
       </Match>
       <Match when={kind() === "node_stats"}>
         <NodeStatsTile tile={props.tile} />
+      </Match>
+      <Match when={kind() === "node_load"}>
+        <NodeLoadTile tile={props.tile} />
       </Match>
       <Match when={kind() === "storage"}>
         <StorageTile tile={props.tile} />
