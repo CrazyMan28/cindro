@@ -319,6 +319,7 @@ def register(mcp: FastMCP) -> list[str]:
             cpu_usage       — live CPU ring gauge for a node
             vm_status       — running/stopped VMs + containers
             node_stats      — a node's cpu/mem/load/uptime
+            node_load       — a node's 1/5/15-minute load averages
             storage         — per-storage usage bars
             cluster_status  — nodes online, guests running, health
             recent_backups  — latest backup archives

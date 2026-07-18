@@ -136,6 +136,7 @@ _DEFAULT_LAYOUT = {"tiles": [], "updated": 0}
 TILE_TYPES = frozenset({
     "cpu_usage", "vm_status", "node_stats", "storage",
     "cluster_status", "recent_backups", "tasks_board", "note", "gauge",
+    "node_load",
 })
 _TILE_ALIASES = {
     "vm_list": "vm_status", "vms": "vm_status", "guests": "vm_status",
@@ -146,6 +147,8 @@ _TILE_ALIASES = {
     "cluster": "cluster_status", "quorum": "cluster_status",
     "backups": "recent_backups", "recent_backup": "recent_backups",
     "tasks": "tasks_board", "task_board": "tasks_board", "kanban": "tasks_board",
+    "load": "node_load", "loadavg": "node_load", "system_load": "node_load",
+    "sysload": "node_load",
 }
 
 
