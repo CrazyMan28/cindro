@@ -134,12 +134,13 @@ claude JSONL) is parsed into one **normalized event stream** (`thinking`, `messa
 ## 📦 Repository layout
 
 **Core & daemon:**
-- `core/` — C++/Qt6 shared lib: Brain abstraction, session model, MCP registry, scheduler, memories, skills, settings
+- `core/` — C++/Qt6 shared lib: Brain abstraction, session model, MCP registry, scheduler, memories, skills, SSH allow-list, settings, FCM sender, voice
 - `daemon/` — `jarvisd` headless service: ControlServer (:8795 loopback) + DeviceServer (:8796 tailnet), pairing, orchestration
 
 **Client UIs (all talk to daemon over Contract A):**
 - `desktop/` — `cindro-sidebar` (QML + LayerShellQt): Home dashboard, chat, voice, canvas, widgets, sessions, settings, ⌘K palette
 - `android/` — Kotlin/Compose app: chat, live video, sessions, home-screen widgets
+- `iphone_app/` — Native SwiftUI iOS app (1:1 port of Android over Contract C)
 - `web/` — Browser dashboard (Bun+Vite+SolidJS): full GUI parity
 - `extension/` — Chrome MV3: side-panel + in-page agent
 - `acp-bridge/` — ACP stdio bridge for Zed/JetBrains
@@ -147,12 +148,20 @@ claude JSONL) is parsed into one **normalized event stream** (`thinking`, `messa
 **Engine & tools:**
 - `computer-use/` — Python FastMCP engine: mouse/kbd/screen, Chrome bridge, nested agent desktop
 - `plugins/` — Plugin SDK + signed-package registry
-- `outpost-mcp/` / `proxmox-mcp/` — Remote machine pairing + workload manager
+- `outpost-mcp/` — Remote machine pairing + relay server (Python + Go agent)
+- `proxmox-mcp/` — Proxmox workload-manager agent (auto-tune VMs, scout configs)
 
-**Ops & marketing:**
-- `packaging/` — systemd units, install scripts
+**Terminal & ops:**
+- `cli/` — Legacy TUI (Python/Textual); ops commands (`doctor`, `status`, `start`, `web`)
+- `tui/` — TUI v2 (TypeScript/Bun + OpenTUI): full GUI parity
+- `kde-applet/` — Plasma 6 applet to toggle sidebar
+- `packaging/` — systemd units, Sway keybind, install scripts
 - `website/` — Laravel billing site + license verification
-- `docs/` / `scripts/` — Architecture specs + live verification smoke tests
+
+**Docs & reference:**
+- `windows/` — Windows edition (isolated, zero changes to core/daemon/desktop)
+- `docs/` — Architecture specs, build guide, feature specs
+- `scripts/` — Live verification smoke tests (WS round-trips, voice, auth, etc.)
 
 ---
 
