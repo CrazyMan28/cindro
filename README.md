@@ -11,7 +11,7 @@ Drives mouse / keyboard / screen · works on its own virtual desktop *beside* yo
 [![Platforms](https://img.shields.io/badge/Linux_·_Android_·_Chrome-5B8CFF?style=for-the-badge&labelColor=0A0E16)](#)
 [![Last commit](https://img.shields.io/github/last-commit/CrazyMan28/jarvis?style=for-the-badge&color=B28BFF&labelColor=0A0E16)](https://github.com/CrazyMan28/jarvis/commits)
 
-[Demo](#-demo) · [Why it exists](#-why-cindro-exists) · [Features](#-what-it-does) · [Architecture](#-architecture) · [Build & run](#-build--run) · [Docs](#-docs) · [Roadmap & limits](#-known-limitations--roadmap)
+[Demo](#-demo) · [Quick Start](#-quick-start) · [Why it exists](#-why-cindro-exists) · [Features](#-what-it-does) · [Architecture](#-architecture) · [Build & run](#-build--run) · [Docs](#-docs) · [Roadmap](#-known-limitations--roadmap)
 
 </div>
 
@@ -21,30 +21,38 @@ Drives mouse / keyboard / screen · works on its own virtual desktop *beside* yo
 
 <div align="center">
 
-<!-- To embed: drag-and-drop a screen recording onto this section in the GitHub web editor
-     (GitHub hosts it and renders an inline <video>), or commit it to docs/media/ and link it. -->
-
 [![▶ Watch Cindro drive a computer, talk, and draw live widgets](https://img.shields.io/badge/▶%20Watch%20the%20demo-3DD6FF?style=for-the-badge&labelColor=0A0E16)](docs/media/jarvis-demo.mp4)
 
-*A 60-second tour: ask Cindro to open Chrome on its own desktop → watch it live in chat →
-pin a live widget to your home screen → unlock the desktop from your phone's fingerprint.*
+*60-second tour: ask Cindro to open Chrome on its own desktop → watch it live in chat → pin a live widget to your home screen → unlock the desktop from your phone's fingerprint.*
 
 </div>
 
 ---
 
+## 🚀 Quick Start
+
+```bash
+# One-shot install (builds + installs into ~/.local)
+./packaging/install.sh
+
+# Start the daemon and open the sidebar
+systemctl --user start jarvisd
+cindro-sidebar              # or toggle with $mod+j under Sway
+```
+
+For **Android**: build with `cd android && ./gradlew :app:assembleDebug`, or load the **Chrome extension** unpacked at `chrome://extensions` (Developer mode).
+
+Full build instructions → [Build & run](#-build--run)
+
+---
+
 ## 💡 Why Cindro exists
 
-I daily-drive **Linux** (Sway + KDE Plasma 6), and the polished "AI that uses your computer" products simply don't meet me there:
+Linux desktop AI tools were either **headless CLIs** (smart but no GUI/phone/voice) or **macOS/Windows-only** (not real Linux). Cindro is the missing body:
 
-- **OpenAI's Codex / ChatGPT desktop** computer-use and **Anthropic's Claude** computer-use / "co-work" desktop apps are **macOS- and Windows-first — there's no real Linux story.**
-- The excellent agentic **CLIs** (`codex`, `claude`) are headless brains: superb reasoning, but no *body* on a Linux desktop — no GUI, no phone, no voice, no live screen-share, no shared memory across your devices.
-
-So Cindro is the missing body. **One local daemon** gives those brains (and a direct API brain) **hands**:
-
-- a **pixel-accurate computer-use engine** that works on **KDE *and* Sway**,
-- a **nested "agent desktop"** so it can work *beside* you without hijacking your screen — or **take over your real screen** with a distinct glowing cursor when you ask,
-- and **one coherent world** — sessions, memory, skills, widgets, scheduling — reachable from a **desktop sidebar**, an **Android app**, and a **Chrome extension**.
+- **One local daemon** gives Claude/Codex/Mistral **hands** — pixel-accurate computer-use on KDE *and* Sway
+- **Nested agent desktop** so it works *beside* you (or takes over your real screen on request)
+- **One coherent world** — sessions, memory, skills, widgets, scheduling — on desktop, phone, and Chrome
 
 Local-first. Your keys, your machine, your data. One brain, many hands: a **coder** when you need one, a **co-worker** the rest of the time.
 
@@ -125,80 +133,82 @@ claude JSONL) is parsed into one **normalized event stream** (`thinking`, `messa
 
 ## 📦 Repository layout
 
-```
-core/         C++/Qt6 shared lib — session model, Brain abstraction, MCP registry,
-              scheduler, memories, skills, SSH allow-list, settings, FCM sender, voice
-daemon/       jarvisd — headless service: ControlServer (:8795) + DeviceServer (:8796),
-              pairing, session orchestration, Jarvis-MCP server, auth challenges
-desktop/      cindro-sidebar — QML/Quick + LayerShellQt UI (Home dashboard, chat + in-chat
-              agent peek, voice, canvas, widgets, sessions, memory, skills, schedules,
-              activity, MCP, plugins, ssh, settings) + ⌘K command palette
-computer-use/ Python FastMCP engine (mouse/kbd/screen, Chrome bridge, render_widget,
-              nested agent desktop, per-session input routing, agent pointer bus)
-extension/    Chrome MV3 "Computer Use Bridge" + Cindro side-panel
-acp-bridge/   ACP (Agent Client Protocol) stdio bridge — Zed/JetBrains drive Cindro natively
-cli/          the jarvis terminal (legacy TUI): Python/Textual agent + doctor/
-              status/start/web/ask commands — superseded by tui/, ops
-              commands still live here
-tui/          jarvis-tui v2 — TypeScript/Bun + OpenTUI/SolidJS terminal UI,
-              a thin client over the same control websocket (see tui/README.md)
-web/          Browser dashboard with full GUI parity — Bun+Vite+SolidJS SPA
-              over the same control websocket (see web/README.md)
-android/      Kotlin/Compose app (MVVM, Room, DataStore, foreground WS service)
-kde-applet/   Plasma 6 applet to toggle the sidebar
-plugins/      Plugin SDK + signed-package format + registry
-packaging/    systemd user units, Sway keybind, install scripts
-website/      Marketing/billing site — Laravel + Breeze + Cashier/Stripe + Filament admin,
-              /api/license/verify is the intended integration point back into core/
-              (see website/README.md)
-docs/         Architecture, build spec, feature specs (see docs/ARCHITECTURE.md)
-scripts/      Live verification scripts (WS round-trips, voice, auth gate, etc.)
-```
+**Core & daemon:**
+- `core/` — C++/Qt6 shared lib: Brain abstraction, session model, MCP registry, scheduler, memories, skills, settings
+- `daemon/` — `jarvisd` headless service: ControlServer (:8795 loopback) + DeviceServer (:8796 tailnet), pairing, orchestration
+
+**Client UIs (all talk to daemon over Contract A):**
+- `desktop/` — `cindro-sidebar` (QML + LayerShellQt): Home dashboard, chat, voice, canvas, widgets, sessions, settings, ⌘K palette
+- `android/` — Kotlin/Compose app: chat, live video, sessions, home-screen widgets
+- `web/` — Browser dashboard (Bun+Vite+SolidJS): full GUI parity
+- `extension/` — Chrome MV3: side-panel + in-page agent
+- `acp-bridge/` — ACP stdio bridge for Zed/JetBrains
+
+**Engine & tools:**
+- `computer-use/` — Python FastMCP engine: mouse/kbd/screen, Chrome bridge, nested agent desktop
+- `plugins/` — Plugin SDK + signed-package registry
+- `outpost-mcp/` / `proxmox-mcp/` — Remote machine pairing + workload manager
+
+**Ops & marketing:**
+- `packaging/` — systemd units, install scripts
+- `website/` — Laravel billing site + license verification
+- `docs/` / `scripts/` — Architecture specs + live verification smoke tests
 
 ---
 
 ## 🚀 Build & run
 
-**Desktop (C++/Qt6 + Python engine)**
+### Desktop (Linux, C++/Qt6 + Python engine)
+
+**Fast track:**
+```bash
+./packaging/install.sh                # one-shot: build + install to ~/.local
+```
+
+**Manual build:**
 ```bash
 cmake -S . -B build -G Ninja          # configure once
-cmake --build build                   # builds jarvisd + cindro-sidebar
-ctest --test-dir build                # C++ unit + GUI smoke tests
-# engine deps:
-cd computer-use && python -m venv .venv && .venv/bin/pip install -e . && cd -
-env -u PYTHONPATH computer-use/.venv/bin/python -m pytest computer-use/tests -q
+cmake --build build                   # jarvisd + cindro-sidebar + tests
+ctest --test-dir build                # run tests
 ```
-The one-shot installer copies the binaries to `~/.local/bin`, installs the desktop entry +
-systemd user units, and the Sway keybind:
-```bash
-./packaging/install.sh                # build + install jarvisd, cindro-sidebar, units
-```
-Then `systemctl --user start jarvisd` and launch **cindro-sidebar** (`--voice` boots straight
-into voice mode; `$mod+j` toggles it under Sway).
 
-**Android**
+**Then start:**
+```bash
+systemctl --user start jarvisd
+cindro-sidebar                        # launch the sidebar (--voice for voice mode)
+```
+
+**Engine tests:**
+```bash
+cd computer-use
+env -u PYTHONPATH .venv/bin/python -m pytest tests -q
+```
+
+> ⚠️ Always run Python with `env -u PYTHONPATH` (host PYTHONPATH leak breaks the engine venv).
+
+### Android
+
 ```bash
 cd android && ./gradlew :app:assembleDebug
 ```
 
-**Chrome extension** — load `extension/` unpacked at `chrome://extensions` (Developer mode).
+### Chrome extension
 
-**Bare-machine install (installs everything)**
+Load `extension/` unpacked at `chrome://extensions` (Developer mode).
+
+### Bare-machine install (all dependencies + everything)
+
 ```bash
-./packaging/bootstrap-install.sh     # detects dnf/apt/pacman/zypper, installs ALL deps, builds, installs
+./packaging/bootstrap-install.sh     # auto-detects dnf/apt/pacman/zypper, installs all, builds
 ```
 
-**Windows (experimental — second-tier)** — a native edition lives entirely in `windows/`
-(zero changes to the Linux build). It reuses the same daemon + the ~60 QML pages + the Python
-engine via a Win32 backend; ships as a **self-contained `Cindro-Setup.exe`** that bundles Qt, the
-MSVC runtime, a frozen Python engine, and a portable Node — the user needs nothing pre-installed.
-**Priority is Linux + Android first; Windows tracks them and may lag.** See [`docs/WINDOWS.md`](docs/WINDOWS.md).
+### Windows (experimental)
 
-**No Codex/Claude CLI?** Cindro falls back to a direct **Mistral** brain (chat + voice + a full
-function-calling loop so it drives the computer too). See [`docs/MISTRAL_SETUP.md`](docs/MISTRAL_SETUP.md).
+A native edition in `windows/` reuses the daemon + QML + Python engine via Win32. Ships as a self-contained `Cindro-Setup.exe` (bundles Qt, MSVC runtime, Python, Node). **Linux + Android are first-class; Windows tracks them and may lag.** See [`docs/WINDOWS.md`](docs/WINDOWS.md).
 
-> ⚠️ Always run Python/builds with `env -u PYTHONPATH` (a user site-packages `PYTHONPATH` leak
-> breaks the engine venv). Never broad-kill `foot` / `sway` / `kwin`; stop processes by PID/unit.
+### No Codex/Claude CLI?
+
+Cindro falls back to **Mistral** (full chat + voice + computer-use function loop). See [`docs/MISTRAL_SETUP.md`](docs/MISTRAL_SETUP.md).
 
 ---
 
@@ -206,40 +216,33 @@ function-calling loop so it drives the computer too). See [`docs/MISTRAL_SETUP.m
 
 Honest about the rough edges (full status in [`docs/STATUS.md`](docs/STATUS.md)):
 
-- **Battery: auto-killing an unused nested desktop is not done yet — on purpose.** When you're
-  not watching a session, the *expensive* parts are already paused (live-widget loops and the
-  video mirror are viewer-gated), so an idle, unwatched agent desktop sits near 0% CPU. Fully
-  **tearing it down** to "save battery" would look like a win but would silently **break the
-  agent's computer link**: the brain (codex/claude) has its computer-use engine's address +
-  token *baked in at spawn*, so a torn-down desktop comes back on a new port/token the brain
-  can't reach. The correct fix is **lazy-provisioning the engine at a stable, deterministic
-  per-session port** so it can be stopped and restarted transparently — a real refactor, tracked
-  rather than rushed.
-- **Phone-approved unlock can occasionally hang** (root cause needs a live repro). Mitigated:
-  a **local PIN** shows on the lock screen *while it's still waiting on the phone*, so you never
-  have to relaunch.
-- **Android widget sizing is best-effort.** An app can only *request* a home-screen tile size;
-  most launchers honor the content-height hint, a few keep your manual drag size.
-- This is a **single-developer, actively-built** project (Sway + KDE Plasma 6, Android, Chrome).
-  Packaging beyond `packaging/install.sh` is minimal.
+- **Nested desktop lifecycle** — Unused agent desktops are paused (not torn down yet) to avoid re-spawning overhead. Full teardown would break the brain's computer-link (engine address baked in at spawn). Fix: lazy-provision at stable per-session ports — tracked, not rushed.
+- **Phone-approved unlock hangs** — Occasional hangs on cross-device unlock. Mitigated: local PIN shows on lock screen while waiting, so no relaunch needed.
+- **Android widget sizing is best-effort** — Launchers honor content-height hints inconsistently; some keep manual drag sizes.
+- **Single-developer, Linux-first** — Sway + KDE Plasma 6 first-class; Android and Chrome are current; Windows experimental. Packaging is basic.
 
 ---
 
 ## 📚 Docs
 
-- [`docs/STATUS.md`](docs/STATUS.md) — **where the project actually is** (done vs partial vs next)
-- [`docs/PHONE.md`](docs/PHONE.md) — **native phone** subsystem: the full agent-phone UI on desktop (QML), Android (Compose v0.10.6+), and Chrome (MV3) — Calls (real dialpad + ext chips), Inbox (text-an-agent), per-agent voice/model config, call screening, Bluetooth relay, SMS agent, setup wizard. Jarvis = ext 101. Two daemon proxies: `phone.mcp` (MCP tools) + `phone.http` (REST API, bearer in daemon). Feature inventory: [`docs/AGENT_PHONE_FEATURE_MAP.md`](docs/AGENT_PHONE_FEATURE_MAP.md)
-- [`docs/BACKGROUND_JOBS.md`](docs/BACKGROUND_JOBS.md) — background jobs, `monitor`, sleep/wake (auto session-wake)
-- [`docs/HOOKS.md`](docs/HOOKS.md) — Claude-Code-style lifecycle hooks · [`docs/MODES.md`](docs/MODES.md) — plan/build/co-worker modes
+**Start here:**
+- [`AGENTS.md`](AGENTS.md) — read first if you're contributing to this repo
+- [`docs/STATUS.md`](docs/STATUS.md) — where the project actually is (done vs partial vs next)
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system design + Contract A/B/C protocols
-- [`docs/COMPUTER_USE.md`](docs/COMPUTER_USE.md) — the computer-use engine + nested agent desktop
-- [`docs/AGENTS_AND_COMMANDS.md`](docs/AGENTS_AND_COMMANDS.md) — the "/" command palette + custom agents (subagents)
-- [`docs/WIDGETS_CANVAS.md`](docs/WIDGETS_CANVAS.md) — canvases, widgets, `pager`, Home pins, home-screen widgets
-- [`docs/JARVIS_VOICE_AND_RENDERER.md`](docs/JARVIS_VOICE_AND_RENDERER.md) / [`docs/VOICE.md`](docs/VOICE.md) — voice + generative renderer
-- [`docs/SCHEDULES.md`](docs/SCHEDULES.md) · [`docs/HERMES_FEATURES.md`](docs/HERMES_FEATURES.md) · [`docs/JARVIS_GOOGLE_CONNECTORS.md`](docs/JARVIS_GOOGLE_CONNECTORS.md) · [`docs/TAKEOVER_UX.md`](docs/TAKEOVER_UX.md) · [`docs/KWIN_MULTISEAT_FORK.md`](docs/KWIN_MULTISEAT_FORK.md)
-- [`docs/OUTPOST.md`](docs/OUTPOST.md) — pair a remote machine and run gated exec/screenshot on it by name · [`docs/PROXMOX_WORKLOAD_MANAGER.md`](docs/PROXMOX_WORKLOAD_MANAGER.md) — an always-on Cindro agent that lives ON a Proxmox host, auto-tunes congested VMs' CPU/RAM (never restarts on its own), agentlessly scouts what runs INSIDE every VM/CT into per-VM `JARVIS.md` profiles, interviews you about what each VM is for, answers asks/tasks from your main Cindro in seconds, and watches "Pinged" rules ("when X happens on this VM, check up on it and fix it") — installed as an Outpost capability
-- [`docs/WINDOWS.md`](docs/WINDOWS.md) — the **Windows edition** (parity matrix, what's not portable, install/build) · [`docs/MISTRAL_SETUP.md`](docs/MISTRAL_SETUP.md) — **Cindro without Codex/Claude** (chat + drive with Mistral)
-- [`AGENTS.md`](AGENTS.md) — **read this first if you're an AI working on the repo**
+
+**Features & subsystems:**
+- [`docs/COMPUTER_USE.md`](docs/COMPUTER_USE.md) — computer-use engine + nested agent desktop
+- [`docs/AGENTS_AND_COMMANDS.md`](docs/AGENTS_AND_COMMANDS.md) — "/" command palette + custom agents
+- [`docs/PHONE.md`](docs/PHONE.md) — native phone subsystem (calls, SMS, Android/desktop/Chrome parity)
+- [`docs/WIDGETS_CANVAS.md`](docs/WIDGETS_CANVAS.md) — generative widgets + Home pins
+- [`docs/VOICE.md`](docs/VOICE.md) — voice input/output + STT/TTS setup
+- [`docs/SCHEDULES.md`](docs/SCHEDULES.md) · [`docs/HERMES_FEATURES.md`](docs/HERMES_FEATURES.md) — scheduler + memories + goals
+
+**Specialized topics:**
+- [`docs/OUTPOST.md`](docs/OUTPOST.md) — remote machine pairing · [`docs/PROXMOX_WORKLOAD_MANAGER.md`](docs/PROXMOX_WORKLOAD_MANAGER.md) — VM auto-tuning agent
+- [`docs/WINDOWS.md`](docs/WINDOWS.md) — Windows edition (parity matrix, install) · [`docs/MISTRAL_SETUP.md`](docs/MISTRAL_SETUP.md) — fallback to Mistral
+- [`docs/HOOKS.md`](docs/HOOKS.md) — lifecycle hooks · [`docs/MODES.md`](docs/MODES.md) — plan/build/co-worker modes
+- [`acp-bridge/README.md`](acp-bridge/README.md) — Zed/JetBrains integration · [`web/README.md`](web/README.md) — browser dashboard
 
 ---
 
