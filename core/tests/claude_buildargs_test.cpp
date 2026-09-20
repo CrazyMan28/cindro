@@ -184,6 +184,70 @@ int main()
               "plan mode: --disallowedTools value is the joined native-tool list");
     }
 
+    // Case 6: the APPENDED SYSTEM PROMPT must go to a FILE, never inline in argv.
+    //
+    // REGRESSION: ControlServer::sendToSession appends the co-work guide + the
+    // identity/permission/mode policy preamble via setSystemPromptAppend() — together
+    // ~17 KB. buildArgs used to pass that whole blob as one `--append-system-prompt
+    // <17 KB>` command-line argument. On Windows a `claude` on PATH is usually a .cmd
+    // shim, which CliResolve launches through `cmd.exe /c <shim> <args...>`, and cmd.exe
+    // caps the WHOLE command line at 8191 characters. So every turn died before the
+    // model was ever reached, with exactly:
+    //     The command line is too long.
+    //     claude exited with code 1
+    // `--append-system-prompt-file <path>` (claude CLI >= 1.0.55 for --system-prompt-file,
+    // documented for the append form since 2.0.30 — well under this repo's 2.1.170
+    // baseline) keeps argv bounded no matter how much guidance text accumulates.
+    {
+        ClaudeBrain::Options opts;
+        opts.configDir = tmpCfg;
+        opts.cwd = QStringLiteral("/home/user/project");
+        ClaudeBrain brain(opts);
+        // Roughly the real payload: ~17 KB of guide + policy text.
+        QString sys;
+        while (sys.size() < 17000)
+            sys += QStringLiteral("You are Cindro. Prefer notify_user over a voice call. ");
+        brain.setSystemPromptAppend(sys);
+        const QStringList args = brain.buildArgs(prompt);
+
+        check(!args.contains(QStringLiteral("--append-system-prompt")),
+              "system prompt is NOT passed inline via --append-system-prompt");
+        check(!args.contains(sys),
+              "the system-prompt TEXT never appears in argv");
+        const int fi = args.indexOf(QStringLiteral("--append-system-prompt-file"));
+        check(fi >= 0 && fi + 1 < args.size(),
+              "system prompt passed via --append-system-prompt-file <path>");
+        if (fi >= 0 && fi + 1 < args.size()) {
+            QFile spf(args[fi + 1]);
+            check(spf.open(QIODevice::ReadOnly),
+                  "the system-prompt file was actually written to disk");
+            const QString onDisk = QString::fromUtf8(spf.readAll());
+            spf.close();
+            check(onDisk == sys,
+                  "the system-prompt file holds the exact appended text (nothing lost)");
+        }
+
+        // THE guard for this bug: whatever else we add to argv later, the assembled
+        // command line must still fit cmd.exe's 8191-character ceiling.
+        int cmdLen = 0;
+        for (const QString &a : args)
+            cmdLen += a.size() + 3; // worst case: a space + a quote pair per argument
+        std::fprintf(stderr, "assembled command line: %d chars\n", cmdLen);
+        check(cmdLen < 8191,
+              "assembled command line fits cmd.exe's 8191-char limit");
+    }
+
+    // Case 7: NO system prompt -> neither system-prompt flag, and no stray temp file.
+    {
+        ClaudeBrain::Options opts;
+        opts.configDir = tmpCfg;
+        ClaudeBrain brain(opts);
+        const QStringList args = brain.buildArgs(prompt);
+        check(!args.contains(QStringLiteral("--append-system-prompt-file")) &&
+                  !args.contains(QStringLiteral("--append-system-prompt")),
+              "no system-prompt flag when nothing was appended");
+    }
+
     if (g_failures) {
         std::fprintf(stderr, "%d check(s) failed\n", g_failures);
         return 1;

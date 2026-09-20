@@ -1776,9 +1776,13 @@ above, before this branch merged their work in:
   injection and refuses to adopt the persona or trust the tools it lists, even when those tools are
   genuinely wired up and reachable. Fixed by giving `Brain` a new virtual `setSystemPromptAppend(text)`
   (no-op default) and routing the preamble through it for ClaudeBrain specifically
-  (`ControlServer::sendToSession`), which wires to the real `claude` CLI's `--append-system-prompt`
-  flag (`ClaudeBrain::Options::systemPromptAppend`, accumulates across calls — the guide can fire on
-  a later turn than the policy preamble, e.g. once an agent desktop comes up). CodexBrain/ApiBrain
+  (`ControlServer::sendToSession`), which wires to the real `claude` CLI's system-prompt channel
+  (`ClaudeBrain::Options::systemPromptAppend`, accumulates across calls — the guide can fire on
+  a later turn than the policy preamble, e.g. once an agent desktop comes up). It is handed over as
+  `--append-system-prompt-file <tmp path>`, NEVER inline: the accumulated guide + preamble is ~17 KB,
+  and on Windows `CliResolve` launches a `claude.cmd` shim through `cmd.exe /c`, which hard-caps the
+  whole command line at 8191 chars — an inline `--append-system-prompt` killed every turn with
+  "The command line is too long." / "claude exited with code 1". CodexBrain/ApiBrain
   keep the legacy prepend-to-user-turn-text convention (ApiBrain already has a real system prompt
   channel via its own `Options`; Codex has neither issue nor fix here). Also added `identityClause()`
   — one explicit "You are {assistant_name}" sentence at the very front of the preamble, since

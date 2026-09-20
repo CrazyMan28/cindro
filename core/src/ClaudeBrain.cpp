@@ -90,6 +90,7 @@ ClaudeBrain::~ClaudeBrain()
     }
     if (!m_mcpConfigPath.isEmpty())
         QFile::remove(m_mcpConfigPath);
+    clearSystemPromptFile();
 }
 
 bool ClaudeBrain::isBusy() const
@@ -112,7 +113,52 @@ void ClaudeBrain::setSystemPromptAppend(const QString &text)
         m_opts.systemPromptAppend += QStringLiteral("\n") + text;
 }
 
-QStringList ClaudeBrain::buildArgs(const QString &prompt, const QStringList &images) const
+void ClaudeBrain::clearSystemPromptFile()
+{
+    if (m_sysPromptPath.isEmpty())
+        return;
+    QFile::remove(m_sysPromptPath);
+    m_sysPromptPath.clear();
+}
+
+QString ClaudeBrain::writeSystemPromptFile()
+{
+    clearSystemPromptFile(); // never leave the previous turn's file behind
+    if (m_opts.systemPromptAppend.isEmpty())
+        return QString();
+
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    const QString path = dir + QStringLiteral("/jarvis-claude-sysprompt-") +
+                         m_claudeSessionId + QStringLiteral(".txt");
+    // This lands in a shared temp dir and spells out the user's tool grants and
+    // permission policy, so lock it to 0600 on the EMPTY file before the text goes
+    // in — same order as the MCP config above.
+    // NOT QIODevice::Text: the model must get the prompt byte-for-byte, and Text
+    // would rewrite every newline to CRLF on Windows.
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return QString();
+    f.close();
+    if (!QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner)) {
+        QFile::remove(path);
+        return QString();
+    }
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QFile::remove(path);
+        return QString();
+    }
+    const QByteArray payload = m_opts.systemPromptAppend.toUtf8();
+    const bool ok = f.write(payload) == payload.size();
+    f.close();
+    if (!ok) {
+        QFile::remove(path);
+        return QString();
+    }
+    m_sysPromptPath = path;
+    return path;
+}
+
+QStringList ClaudeBrain::buildArgs(const QString &prompt, const QStringList &images)
 {
     QStringList args;
     args << QStringLiteral("-p")
@@ -170,8 +216,29 @@ QStringList ClaudeBrain::buildArgs(const QString &prompt, const QStringList &ima
     // prompt text below), which Claude actually trusts as a genuine
     // developer/system instruction rather than flagging it as a likely
     // prompt injection.
-    if (!m_opts.systemPromptAppend.isEmpty())
-        args << QStringLiteral("--append-system-prompt") << m_opts.systemPromptAppend;
+    //
+    // Pass it by FILE, never inline. The daemon's guide + policy preamble is ~17 KB,
+    // and `--append-system-prompt <17 KB>` overflowed the command line: on Windows
+    // CliResolve launches a `claude.cmd` shim through `cmd.exe /c`, which hard-caps
+    // the WHOLE command line at 8191 chars, so every turn died with "The command line
+    // is too long." + "claude exited with code 1" before reaching the model. A path
+    // keeps argv bounded however much guidance accumulates. Inline stays as the
+    // fallback for the (unexpected) case where the temp file can't be written —
+    // dropping the text instead would make Claude treat its own identity/tool grants
+    // as an unsigned injection and refuse them.
+    if (!m_opts.systemPromptAppend.isEmpty()) {
+        const QString sysPath = writeSystemPromptFile();
+        if (!sysPath.isEmpty()) {
+            args << QStringLiteral("--append-system-prompt-file") << sysPath;
+        } else {
+            qWarning() << "ClaudeBrain: cannot write system-prompt temp file;"
+                       << "falling back to the inline flag (may overflow the command"
+                       << "line on Windows)";
+            args << QStringLiteral("--append-system-prompt") << m_opts.systemPromptAppend;
+        }
+    } else {
+        clearSystemPromptFile();
+    }
     // The prompt is NOT passed as a positional arg — it is fed via stdin in send()
     // (quoting-safe on every platform; a Windows claude.cmd + cmd.exe would otherwise
     // mangle a multi-word command-line prompt, leaving claude with none). `prompt` is
@@ -370,6 +437,9 @@ void ClaudeBrain::onFinished(int exitCode, QProcess::ExitStatus status)
         QFile::remove(m_mcpConfigPath);
         m_mcpConfigPath.clear();
     }
+    // The spawned claude read this at startup; it is safe (and required) to drop it
+    // now rather than leave the guide + policy text sitting in the temp dir.
+    clearSystemPromptFile();
 
     // After the first non-crash turn the session exists; resume it from now on so
     // the conversation context carries forward.
