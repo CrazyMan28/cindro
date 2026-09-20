@@ -57,8 +57,10 @@ public:
         // fresh with `--session-id` and losing all prior context. Set by the
         // daemon from the session's persisted session id.
         QString resumeSessionId;
-        // Extra system-prompt text, sent via `--append-system-prompt` on every
-        // turn (NOT the first user message). WHY THIS EXISTS: ClaudeBrain has
+        // Extra system-prompt text, sent via `--append-system-prompt-file` on
+        // every turn (NOT the first user message, and NOT inline in argv — it is
+        // ~17 KB and an argument that big overflows the command line; see
+        // writeSystemPromptFile()). WHY THIS EXISTS: ClaudeBrain has
         // no other true system-prompt field, so the daemon used to prepend its
         // "you are Cindro, here are your tools" co-work guide + permission/mode
         // policy text directly into the FIRST user-turn message instead. Live
@@ -88,7 +90,9 @@ public:
     // Build the `claude` argv for a one-shot `-p` turn. Public so a ctest can
     // assert the prompt is an isolated trailing positional after `--` (guards the
     // prior --add-dir regression where the variadic flag swallowed the prompt).
-    QStringList buildArgs(const QString &prompt, const QStringList &images = {}) const;
+    // NOT const: it also (re)writes this turn's system-prompt temp file, so argv
+    // carries only a path — see writeSystemPromptFile().
+    QStringList buildArgs(const QString &prompt, const QStringList &images = {});
 
 private slots:
     void onReadyReadStdout();
@@ -105,6 +109,17 @@ private:
     // permissions.allow entries ... this workspace has not been trusted". No CLI flag
     // skips the trust gate, so the config must be pre-populated. Idempotent; merges.
     void ensureWorkspaceTrusted();
+    // Spill Options::systemPromptAppend to a 0600 temp file and return its path (empty
+    // on failure -> caller falls back to the inline flag). WHY A FILE: that text is the
+    // daemon's co-work guide + policy preamble, ~17 KB and growing, and an argument that
+    // big overflows the command line. On Windows a `claude` on PATH is usually a .cmd
+    // shim, which CliResolve launches via `cmd.exe /c` — and cmd.exe hard-caps the whole
+    // command line at 8191 chars, so the turn died with "The command line is too long."
+    // + "claude exited with code 1" before ever reaching the model. Replaces the
+    // previous turn's file, so only one exists per brain at a time.
+    QString writeSystemPromptFile();
+    // Remove the current system-prompt temp file, if any.
+    void clearSystemPromptFile();
 
     Options m_opts;
     QProcess *m_proc = nullptr;
@@ -112,6 +127,7 @@ private:
     bool m_busy = false;
     bool m_sawFinal = false; // saw the terminal result -> final
     QString m_mcpConfigPath;  // temp file holding mcpConfigJson (cleaned per turn)
+    QString m_sysPromptPath;  // temp file holding systemPromptAppend (cleaned per turn)
     // Conversation continuity: a fixed session UUID set on the first turn via
     // --session-id, then --resume'd on every later turn so the model KEEPS the
     // whole conversation instead of starting cold each message.

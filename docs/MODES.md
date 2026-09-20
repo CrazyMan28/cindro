@@ -91,8 +91,11 @@ treats an unsigned instruction block riding inside user-turn text as a plausible
 injection, and refused to adopt the persona or trust the tools it listed even though they
 were genuinely wired up. Fixed by giving `Brain` a `setSystemPromptAppend(text)` virtual
 (no-op default) and routing the preamble through it for ClaudeBrain, which wires to the
-real `claude` CLI's `--append-system-prompt` flag (accumulates across calls, never
-replaces). CodexBrain/ApiBrain keep the legacy prepend convention. See
+real `claude` CLI's system-prompt channel (accumulates across calls, never
+replaces). It is delivered as `--append-system-prompt-file <tmp path>`, never inline:
+the accumulated text is ~17 KB, and an argument that big blew past cmd.exe's
+8191-char command-line cap on Windows ("The command line is too long." / "claude
+exited with code 1"). CodexBrain/ApiBrain keep the legacy prepend convention. See
 `ControlServer::identityClause()`/`sendToSession()` and
 `ClaudeBrain::Options::systemPromptAppend`.
 
