@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Computer-use MCP server: desktop UI control on KDE/Sway Wayland plus a Chrome extension bridge."
 requires-python = ">=3.12"
 dependencies = [
-    "mcp>=1.26.0",
+    "mcp>=1.26.0,<2",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pyyaml>=6.0",
