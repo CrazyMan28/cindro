@@ -567,16 +567,19 @@ def _plan_status(sid: str | None = None) -> tuple[bool, str]:
         except Exception:
             sid = ""
     if not sid:
-        # Codex review (PR #130): an empty sid means the shared global engine
-        # couldn't tell which of its concurrent sessions is calling (see
-        # current_session_id()'s docstring). Querying plan.status with "" asks
-        # the WRONG question — if some OTHER session happens to be unrestricted,
-        # or "" was never marked restricted, this reports unrestricted and the
-        # cache then lets THIS call's write tools through for up to the TTL,
-        # defeating session-scoped enforcement in exactly the concurrent case
-        # this module calls out. Fail closed instead of guessing, same
-        # deliberate deviation as the "unreachable" branch below.
-        return True, "ambiguous_session"
+        # Session-id is ambiguous (shared global engine, 2+ concurrent sessions).
+        # We can't enforce per-session self-plan-mode in this case, but we CAN
+        # enforce the global Settings-driven plan mode: calling plan.status with
+        # session_id="" makes the daemon skip the approved/self-plan checks and
+        # return only the global agentMode() result. Build/cowork modes must not
+        # fail closed — that blocks the user even though they haven't chosen plan mode.
+        try:
+            res = daemon_client.call("plan.status", {"session_id": ""}, timeout=5)
+            restricted = bool(res.get("restricted", False))
+            source = str(res.get("source", ""))
+        except Exception:
+            restricted, source = True, "unreachable"
+        return restricted, source
     now = time.time()
     cached = _PLAN_CACHE.get(sid)
     if cached and now - cached["ts"] < _PLAN_CACHE_TTL:

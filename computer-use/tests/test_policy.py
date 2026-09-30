@@ -297,23 +297,42 @@ def test_plan_status_fails_closed(monkeypatch):
     assert policy._plan_status() == (True, "unreachable")
 
 
-def test_plan_status_fails_closed_on_ambiguous_session(monkeypatch):
-    # Codex review (PR #130): an empty current_session_id() (0 or 2+ sessions
-    # running on the shared global engine) must not query plan.status with ""
-    # — some other session's cached state (or lack of it) could read back as
-    # unrestricted and get cached under the empty key for this call too.
+def test_plan_status_ambiguous_session_uses_global_mode(monkeypatch):
+    # When current_session_id() returns "" (0 or 2+ sessions on the shared
+    # global engine), we can't enforce per-session self-plan-mode. But we CAN
+    # enforce the global Settings-driven mode by calling plan.status with
+    # session_id="" — the daemon skips approved/self checks for empty ids and
+    # returns only agentMode(). Build/cowork must not fail closed.
     from computer_use_mcp import daemon_client
 
     _reset_plan_cache()
     monkeypatch.setattr(daemon_client, "current_session_id", lambda default="": "")
 
+    # Global mode is build/cowork → must NOT restrict
     calls = []
     monkeypatch.setattr(daemon_client, "call",
                          lambda method, params=None, timeout=15.0:
                          calls.append((method, params)) or {"restricted": False, "source": ""})
 
-    assert policy._plan_status() == (True, "ambiguous_session")
-    assert not calls, "must fail closed WITHOUT querying plan.status for an ambiguous session"
+    assert policy._plan_status() == (False, "")
+    assert calls == [("plan.status", {"session_id": ""})], \
+        "must query plan.status with empty session_id for the global Settings mode"
+
+    # Global mode is plan → must restrict
+    _reset_plan_cache()
+    calls.clear()
+    monkeypatch.setattr(daemon_client, "call",
+                         lambda method, params=None, timeout=15.0:
+                         calls.append((method, params)) or {"restricted": True, "source": "settings"})
+
+    assert policy._plan_status() == (True, "settings")
+
+    # Daemon unreachable → fail closed
+    _reset_plan_cache()
+    def boom(method, params=None, timeout=15.0):
+        raise RuntimeError("unreachable")
+    monkeypatch.setattr(daemon_client, "call", boom)
+    assert policy._plan_status() == (True, "unreachable")
 
 
 def test_bust_plan_cache_forces_refetch(monkeypatch):
