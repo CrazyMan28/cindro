@@ -190,7 +190,12 @@ private:
     QString widgetsPath() const;
     void startWidgetWatch();
     void readWidgetTail();
+    // Retry binding the tailnet socket if Tailscale wasn't connected at daemon
+    // startup. Polls every 5 s for up to 60 s, then gives up.
+    void tryBindTailnet();
     QTimer *m_widgetTimer = nullptr;
+    QTimer *m_tailnetRetryTimer = nullptr;
+    int m_tailnetRetryCount = 0;
     qint64 m_widgetOffset = 0;
     // Newest widget-record `ts` already broadcast — used only to dedup the
     // retained tail on bus rotation (see readWidgetTail), so a truncation neither

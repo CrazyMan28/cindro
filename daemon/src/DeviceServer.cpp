@@ -99,6 +99,16 @@ bool DeviceServer::start()
         }
     }
 
+    // If Tailscale wasn't connected yet at startup (common on Windows where the
+    // WinTun adapter finishes authenticating seconds after the user session opens),
+    // poll every 5 s for up to 60 s and bind the tailnet socket once it appears.
+    if (!m_tailnet) {
+        m_tailnetRetryTimer = new QTimer(this);
+        m_tailnetRetryTimer->setInterval(5000);
+        connect(m_tailnetRetryTimer, &QTimer::timeout, this, &DeviceServer::tryBindTailnet);
+        m_tailnetRetryTimer->start();
+    }
+
     // Fan brain events out to subscribed device sockets + push.
     if (m_control) {
         connect(m_control, &ControlServer::sessionEvent,
@@ -129,6 +139,32 @@ QString DeviceServer::widgetsPath() const
 {
     // Shared file bus with the engine — resolve identically on every OS (DataPaths.h).
     return jarvis::dataDir() + QStringLiteral("/widgets.jsonl");
+}
+
+void DeviceServer::tryBindTailnet()
+{
+    ++m_tailnetRetryCount;
+    if (m_tailnetRetryCount > 12) { // 12 * 5 s = 60 s max
+        m_tailnetRetryTimer->stop();
+        m_tailnetRetryTimer->deleteLater();
+        m_tailnetRetryTimer = nullptr;
+        return;
+    }
+    const QString tailnet = ControlServer::tailnetHost();
+    if (tailnet == QStringLiteral("127.0.0.1"))
+        return; // Tailscale still not up
+    m_tailnet = new QWebSocketServer(QStringLiteral("jarvisd-device-tailnet"),
+                                     QWebSocketServer::NonSecureMode, this);
+    connect(m_tailnet, &QWebSocketServer::newConnection,
+            this, &DeviceServer::onNewConnection);
+    if (!m_tailnet->listen(QHostAddress(tailnet), quint16(m_config.devicePort))) {
+        m_tailnet->deleteLater();
+        m_tailnet = nullptr;
+        return;
+    }
+    m_tailnetRetryTimer->stop();
+    m_tailnetRetryTimer->deleteLater();
+    m_tailnetRetryTimer = nullptr;
 }
 
 void DeviceServer::startWidgetWatch()
