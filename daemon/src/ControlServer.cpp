@@ -5785,9 +5785,10 @@ void ControlServer::applyPluginDisable(const PluginManifest &m)
 
 QString ControlServer::tailnetHost()
 {
-    // Prefer the tailscale0 interface; else the first 100.64/10 (CGNAT) IPv4.
+    // Prefer the Tailscale interface; else the first 100.64/10 (CGNAT) IPv4.
+    // Case-insensitive: Linux names it "tailscale0", Windows names it "Tailscale".
     for (const QNetworkInterface &iface : QNetworkInterface::allInterfaces()) {
-        const bool isTailscale = iface.name().startsWith(QStringLiteral("tailscale"));
+        const bool isTailscale = iface.name().startsWith(QStringLiteral("tailscale"), Qt::CaseInsensitive);
         for (const QNetworkAddressEntry &entry : iface.addressEntries()) {
             const QHostAddress ip = entry.ip();
             if (ip.protocol() != QAbstractSocket::IPv4Protocol)
