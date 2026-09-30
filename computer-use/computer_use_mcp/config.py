@@ -2,9 +2,27 @@
 
 import os
 import secrets
+import socket
 from pathlib import Path
 
 import yaml
+
+
+def _detect_tailscale_ip() -> str | None:
+    """Return the local Tailscale IP (100.64.0.0/10) via a UDP routing probe.
+
+    Sends no packets — asks the OS which source IP would route to Tailscale's
+    DNS relay (100.100.100.100). Works on Linux and Windows without netifaces."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(0)
+            s.connect(("100.100.100.100", 80))
+            ip = s.getsockname()[0]
+            if ip.startswith("100."):
+                return ip
+    except Exception:
+        pass
+    return None
 
 CONFIG_DIR = Path.home() / ".computer-use"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
@@ -51,6 +69,16 @@ def load_config() -> dict:
         with open(CONFIG_FILE, "w") as f:
             yaml.dump(cfg, f)
         os.chmod(CONFIG_FILE, 0o600)
+
+    # Auto-detect Tailscale IP at runtime without persisting it — the Tailscale
+    # IP can change across restarts (e.g. after a re-auth) and the config file
+    # may have been written before Tailscale was running. Only override when
+    # advertise_host is still the loopback default; an explicit user value wins.
+    if cfg.get("advertise_host") == "127.0.0.1":
+        ts_ip = _detect_tailscale_ip()
+        if ts_ip:
+            cfg["advertise_host"] = ts_ip
+
     return cfg
 
 
