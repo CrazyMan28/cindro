@@ -84,7 +84,7 @@ ClaudeBrain::~ClaudeBrain()
     if (m_proc) {
         m_proc->disconnect(this);
         if (m_proc->state() != QProcess::NotRunning) {
-            m_proc->kill();
+            jarvis::killProcessTree(m_proc);
             m_proc->waitForFinished(2000);
         }
     }
@@ -259,7 +259,7 @@ void ClaudeBrain::send(const QString &text, const QStringList &images)
     if (m_proc) {
         m_proc->disconnect(this);
         if (m_proc->state() != QProcess::NotRunning) {
-            m_proc->kill();
+            jarvis::killProcessTree(m_proc);
             m_proc->waitForFinished(2000);
         }
         m_proc->deleteLater();
@@ -358,11 +358,7 @@ void ClaudeBrain::send(const QString &text, const QStringList &images)
 
 void ClaudeBrain::cancel()
 {
-    if (m_proc && m_proc->state() != QProcess::NotRunning) {
-        m_proc->terminate();
-        if (!m_proc->waitForFinished(2000))
-            m_proc->kill();
-    }
+    jarvis::killProcessTree(m_proc);
     if (m_busy) {
         m_busy = false;
         emit turnFinished(m_sessionId);

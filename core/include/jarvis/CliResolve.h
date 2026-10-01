@@ -15,6 +15,7 @@
 // full path directly (no shell, no quoting surprises). On non-Windows this is a no-op,
 // so the Linux/macOS launch path is byte-for-byte unchanged.
 
+#include <QProcess>
 #include <QString>
 #include <QStringList>
 #ifdef Q_OS_WINDOWS
@@ -45,6 +46,31 @@ inline void resolveCliLaunch(QString &program, QStringList &args)
 #else
     Q_UNUSED(program);
     Q_UNUSED(args);
+#endif
+}
+
+// Kill a CLI brain AND everything it spawned. On Windows the brain runs as
+// `cmd.exe /c codex.cmd` -> node -> codex.exe, and QProcess::terminate()/kill() only
+// reach the direct child (cmd.exe): the real agent keeps running and keeps driving
+// the screen after the user hits Stop. taskkill /T walks the whole tree. Elsewhere
+// this is the usual terminate-then-kill.
+inline void killProcessTree(QProcess *p)
+{
+    if (!p || p->state() == QProcess::NotRunning)
+        return;
+#ifdef Q_OS_WINDOWS
+    const qint64 pid = p->processId();
+    if (pid > 0)
+        QProcess::execute(QStringLiteral("taskkill"),
+                          {QStringLiteral("/PID"), QString::number(pid),
+                           QStringLiteral("/T"), QStringLiteral("/F")});
+    if (p->state() != QProcess::NotRunning)
+        p->kill();
+    p->waitForFinished(2000);
+#else
+    p->terminate();
+    if (!p->waitForFinished(2000))
+        p->kill();
 #endif
 }
 

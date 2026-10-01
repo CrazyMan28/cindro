@@ -25,7 +25,22 @@ Rectangle {
     property real ram: bridge.ramPercent
     property real netUp: bridge.netUpMbps
     property real netDown: bridge.netDownMbps
-    property int mcpCount: 1
+    // REAL count of enabled MCP servers from mcp.list; 0 while the daemon link is down
+    // (was hard-coded 1, so the HUD claimed an MCP server was up when nothing was).
+    property int mcpCount: 0
+    Connections {
+        target: bridge
+        function onMcpListed(servers) {
+            var n = 0
+            for (var i = 0; i < servers.length; i++)
+                if (servers[i].enabled === true) n++
+            strip.mcpCount = n
+        }
+        function onConnectedChanged() {
+            if (bridge.connected) bridge.listMcp(); else strip.mcpCount = 0
+        }
+    }
+    Component.onCompleted: if (bridge.connected) bridge.listMcp()
     property int agents: bridge.sessionId.length > 0 ? 1 : 0
 
     // top hairline glow

@@ -200,7 +200,7 @@ Item {
     // ======================================================================
     GlowCursor {
         id: cursor
-        diameter: 128                      // BIG, unmistakable blue glow (user wants it large)
+        diameter: 44                       // compact: visible but not a screen-covering blob
         glow: overlay.driveBlue
         active: overlay.onThisScreen
         lastAction: overlay.lastAction

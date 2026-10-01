@@ -647,6 +647,12 @@ bool Bridge::supportsVision(const QString &brain, const QString &model) const
 
 void Bridge::cancelSession()
 {
+    // Stop means stop: drop the "Cindro is driving" state + overlay immediately
+    // instead of leaving it armed (it used to linger up to 180s, the auto-arm
+    // backstop, so the UI claimed Cindro was driving after the user stopped it).
+    if (m_realIdleTimer)
+        m_realIdleTimer->stop();
+    setDriving(false);
     if (m_sessionId.isEmpty())
         return;
     QVariantMap params;
