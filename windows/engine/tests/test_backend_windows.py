@@ -333,3 +333,32 @@ def test_ensure_dpi_aware_is_noop_off_windows(monkeypatch):
     monkeypatch.setattr(bw.sys, "platform", "linux")
     bw._ensure_dpi_aware()          # must not touch ctypes.windll
     assert bw._DPI_DONE is False
+
+
+# ---------------------------------------------------------------------------
+# (h) labelled desktop-coordinate grid on screenshots
+# ---------------------------------------------------------------------------
+def test_grid_step_keeps_line_count_reasonable():
+    assert bw._grid_step(600) == 50
+    assert bw._grid_step(1000) == 100
+    assert bw._grid_step(2560) == 250
+    assert bw._grid_step(6400) == 1000
+    assert all(span / bw._grid_step(span) <= 12 for span in (300, 1080, 1920, 2560, 4480, 6400, 20000))
+
+
+def test_grid_disabled_for_thumbnails_and_env(monkeypatch):
+    monkeypatch.delenv("CINDRO_SCREENSHOT_GRID", raising=False)
+    assert bw._grid_enabled(None) and bw._grid_enabled(1536)
+    assert not bw._grid_enabled(128)            # selfheal verification thumbnail
+    monkeypatch.setenv("CINDRO_SCREENSHOT_GRID", "0")
+    assert not bw._grid_enabled(1536)
+
+
+def test_draw_grid_marks_the_image_and_keeps_size():
+    from PIL import Image
+
+    rect = bw._screen.Rect(-1920, 459, 1920, 1080)       # the negative-X monitor
+    img = Image.new("RGB", (1536, 864), (255, 255, 255))
+    before = img.tobytes()
+    bw._draw_grid(img, rect, 1536 / 1920)
+    assert img.size == (1536, 864) and img.tobytes() != before

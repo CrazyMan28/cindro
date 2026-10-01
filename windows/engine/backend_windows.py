@@ -556,6 +556,73 @@ def _grab_region(rect):
     return PILImage.frombytes("RGB", raw.size, raw.rgb)
 
 
+def _grid_step(span: int) -> int:
+    """Gridline spacing (desktop px) giving at most ~12 lines across `span`."""
+    for s in (50, 100, 200, 250, 500, 1000, 2000):
+        if span / s <= 12:
+            return s
+    return 2000
+
+
+def _grid_enabled(max_width: int | None) -> bool:
+    if os.environ.get("CINDRO_SCREENSHOT_GRID", "1").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    return not (max_width and max_width <= 640)   # tiny verification thumbnails stay clean
+
+
+def _draw_grid(img, rect, scale: float) -> None:
+    """Overlay faint gridlines labelled with real DESKTOP coordinates, in place.
+
+    A vision model can't measure absolute pixel positions on an image to better than
+    ~+-100px, and then has to convert image->desktop coordinates in its head -- the
+    two errors that made it click "Course Content" while aiming at "Grades". With
+    labelled lines it READS coordinates off the picture (interpolating between two
+    labels) and clicks with coord_space='desktop'. Labels are drawn after the
+    downscale so they stay legible; positions use the shot's scale."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    step = _grid_step(max(rect.w, rect.h))
+    base = img.convert("RGBA")
+    layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    try:
+        font = ImageFont.load_default(size=11)
+    except TypeError:                      # Pillow < 10.1: fixed bitmap font
+        font = ImageFont.load_default()
+    W, H = base.size
+
+    def text(x, y, s):
+        try:
+            d.text((x, y), s, font=font, fill=(255, 235, 59, 255),
+                   stroke_width=1, stroke_fill=(0, 0, 0, 255))
+        except TypeError:                  # very old Pillow: no stroke support
+            d.text((x, y), s, font=font, fill=(255, 235, 59, 255))
+
+    def width(s):
+        try:
+            return int(d.textlength(s, font=font))
+        except Exception:
+            return 7 * len(s)
+
+    gx = -(-rect.x // step) * step
+    while gx < rect.x + rect.w:
+        ix = round((gx - rect.x) * scale)
+        d.line([ix, 0, ix, H], fill=(255, 235, 59, 70), width=1)
+        s = str(gx)
+        text(ix + 3, 2, s)
+        text(ix + 3, H - 15, s)
+        gx += step
+    gy = -(-rect.y // step) * step
+    while gy < rect.y + rect.h:
+        iy = round((gy - rect.y) * scale)
+        d.line([0, iy, W, iy], fill=(255, 235, 59, 70), width=1)
+        s = str(gy)
+        text(3, iy + 2, s)
+        text(W - width(s) - 4, iy + 2, s)
+        gy += step
+    img.paste(Image.alpha_composite(base, layer).convert("RGB"))
+
+
 def _draw_cursor_marker(img, cx: int, cy: int) -> None:
     """Draw a high-contrast ring + crosshair centred on (cx, cy), in place."""
     from PIL import ImageDraw
@@ -621,6 +688,16 @@ def take_screenshot(output: str | None = None, region: dict | None = None,
     png = buf.getvalue()
 
     scale = scaled_w / rect.w if rect.w else 1.0
+    grid = _grid_enabled(max_width)
+    if grid:
+        try:
+            _draw_grid(img, rect, scale)
+        except Exception:
+            grid = False                   # never fail a screenshot over an overlay
+    if grid:
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        png = buf.getvalue()
     shot = {
         "origin": (rect.x, rect.y),
         "scale": scale,
@@ -635,8 +712,15 @@ def take_screenshot(output: str | None = None, region: dict | None = None,
 
     meta = {
         "coord_space": "image",
-        "note": "Coordinates measured on THIS image are accepted directly by "
-                "mouse_move/mouse_click/mouse_drag/scroll (coord_space='image', the default).",
+        "note": ("Faint yellow gridlines are labelled with real DESKTOP pixel "
+                 "coordinates: read the labels at the lines around your target, "
+                 "interpolate, and click with coord_space='desktop'. Do NOT eyeball "
+                 "pixel positions. For small targets, move first, re-shoot with "
+                 "include_cursor=True and confirm the red ring sits on the target "
+                 "before clicking." if grid else
+                 "Coordinates measured on THIS image are accepted directly by "
+                 "mouse_move/mouse_click/mouse_drag/scroll (coord_space='image', the default)."),
+        "grid": grid,
         "captured_rect": rect.as_dict(),
         "image_size": {"w": scaled_w, "h": scaled_h},
         "scale": round(scale, 5),
