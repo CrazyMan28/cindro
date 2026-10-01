@@ -40,6 +40,14 @@ _RETRIES = 2                       # extra attempts after the first failure
 _BACKOFF = (0.25, 0.6)             # seconds before retry 1 / retry 2
 _SETTLE_STEPS = (0.35, 0.45, 0.5)  # post-action re-sample waits (~1.3s max)
 _DIFF_THRESHOLD = 2.0              # mean |pixel delta| (0..255) to call "changed"
+# A click often repaints only a small widget (a tab, a nav highlight). On a
+# multi-monitor desktop that is a tiny share of the whole-desktop thumbnail, so the
+# global MEAN stays under the threshold and a click that WORKED is reported as "no
+# change" (then the model is told to STOP/RE-PLAN and flails). So a handful of
+# strongly-changed cells counts as a change too.
+_CELL_THRESHOLD = 12               # per-cell |delta| that counts as a "hot" cell
+_MIN_HOT_CELLS = 2                 # this many hot cells => changed, whatever the mean
+_THUMB_CAPTURE_WIDTH = 512         # capture width before the 32x32 reduction
 _REPLAN_AFTER = 3                  # consecutive no-change actions -> re-plan
 
 # Consecutive no-change counter, per target session ("active"/"agent"/...).
@@ -58,17 +66,36 @@ def _thumb(which: str) -> bytes | None:
         from PIL import Image as PILImage
 
         from . import screen
-        png, _meta = screen.take_screenshot(max_width=128, which=which)
-        img = PILImage.open(BytesIO(png)).convert("L").resize((32, 32))
+        # take_screenshot() records LAST_SHOT, the origin/scale the mouse tools use to
+        # turn the model's image coordinates into desktop pixels. This verification
+        # frame is a whole-desktop thumbnail (on a 3-monitor desktop: 6400px wide ->
+        # scale ~0.08); if it were left as LAST_SHOT, every image-space click AFTER
+        # the first action would be mapped with the thumbnail's origin/scale and land
+        # far from where the model aimed. Save and restore the model's reference.
+        with screen._LOCK:
+            saved = screen.LAST_SHOT
+        try:
+            png, _meta = screen.take_screenshot(
+                max_width=_THUMB_CAPTURE_WIDTH, which=which)
+        finally:
+            with screen._LOCK:
+                screen.LAST_SHOT = saved
+        img = PILImage.open(BytesIO(png)).convert("L").resize((32, 32), PILImage.BOX)
         return img.tobytes()
     except Exception:
         return None
 
 
 def _delta(a: bytes, b: bytes) -> float:
+    """Change score between two thumbnails; >= _DIFF_THRESHOLD means "changed"."""
     if len(a) != len(b) or not a:
         return 255.0
-    return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+    diffs = [abs(x - y) for x, y in zip(a, b)]
+    mean = sum(diffs) / len(diffs)
+    hot = sum(1 for d in diffs if d >= _CELL_THRESHOLD)
+    if hot >= _MIN_HOT_CELLS:
+        return max(mean, _DIFF_THRESHOLD)
+    return mean
 
 
 def _log(entry: dict) -> None:

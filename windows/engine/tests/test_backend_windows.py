@@ -304,3 +304,32 @@ def test_mouse_move_abs_skips_fallback_when_cursor_pos_unavailable(monkeypatch):
     monkeypatch.setattr(bw, "_cursor_pos", lambda: None)  # GetCursorPos failed
     bw._mouse_move_abs(500, 400)
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# (g) multi-monitor input reliability: wait for the async move to land, and
+#     never touch DPI awareness off Windows.
+# ---------------------------------------------------------------------------
+def test_await_cursor_polls_until_move_lands(monkeypatch):
+    seq = iter([(10, 10), (300, 200), (480, 380), (500, 400)])
+    monkeypatch.setattr(bw, "_cursor_pos", lambda: next(seq))
+    monkeypatch.setattr(bw.time, "sleep", lambda s: None)
+    assert bw._await_cursor(500, 400) == (500, 400)
+
+
+def test_mouse_move_abs_waits_for_in_flight_move_before_fallback(monkeypatch):
+    """An injected move still in flight (cursor reads a stale spot for the first
+    polls) must NOT trigger the SetCursorPos fallback once it lands."""
+    calls = _stub_winapi(monkeypatch)
+    seq = iter([(10, 10), (300, 200), (500, 400)])
+    monkeypatch.setattr(bw, "_cursor_pos", lambda: next(seq))
+    monkeypatch.setattr(bw.time, "sleep", lambda s: None)
+    bw._mouse_move_abs(500, 400)
+    assert calls == []
+
+
+def test_ensure_dpi_aware_is_noop_off_windows(monkeypatch):
+    monkeypatch.setattr(bw, "_DPI_DONE", False)
+    monkeypatch.setattr(bw.sys, "platform", "linux")
+    bw._ensure_dpi_aware()          # must not touch ctypes.windll
+    assert bw._DPI_DONE is False

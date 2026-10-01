@@ -123,6 +123,38 @@ _EXTENDED_VKS: frozenset[int] = frozenset({
 # Lazy Win32 layer (ctypes). Only touched on Windows.
 # ---------------------------------------------------------------------------
 _WIN = None
+_DPI_DONE = False
+
+
+def _ensure_dpi_aware() -> None:
+    """Make this process Per-Monitor-DPI-aware (v2) BEFORE any coordinate is read.
+
+    Capture (mss), the monitor rects, GetSystemMetrics, SetCursorPos/GetCursorPos
+    and SendInput must all speak the same PHYSICAL-pixel space. A DPI-unaware
+    process gets *virtualised* (scaled) coordinates for any monitor whose scale
+    isn't 100%, so on a mixed 1440p + 1080p setup the capture grid and the input
+    grid silently diverge and clicks land off-target. Idempotent; no-op off
+    Windows. The first successful call wins (awareness is process-wide)."""
+    global _DPI_DONE
+    if _DPI_DONE or sys.platform != "win32":
+        return
+    _DPI_DONE = True
+    import ctypes
+
+    try:  # Windows 10 1703+: PER_MONITOR_AWARE_V2 == -4
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    except Exception:
+        pass
+    try:  # Windows 8.1+: PROCESS_PER_MONITOR_DPI_AWARE == 2
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:
+        pass
+    try:  # Vista+: system-DPI aware (better than unaware)
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 
 def _winapi():
@@ -134,6 +166,7 @@ def _winapi():
         raise RuntimeError(
             "The Windows input backend requires Windows (sys.platform=='win32')."
         )
+    _ensure_dpi_aware()
     import ctypes
     from ctypes import wintypes
     from types import SimpleNamespace
@@ -315,9 +348,37 @@ def _mouse_move_abs(gx: int, gy: int) -> None:
     # (exactly the "clicks land somewhere else" failure mode). Verify against
     # GetCursorPos and fall back to SetCursorPos, a different kernel path, so a
     # miss here doesn't propagate into a wrong-target click.
-    pos = _cursor_pos()
-    if pos is not None and (abs(pos[0] - gx) > 2 or abs(pos[1] - gy) > 2):
+    #
+    # The injected move is applied ASYNCHRONOUSLY through the input queue, so an
+    # immediate GetCursorPos can still read the OLD position (and, on a multi-monitor
+    # layout, the in-flight position can be hundreds of px away). Poll briefly for it
+    # to land before declaring a miss, then fall back to SetCursorPos and give THAT a
+    # moment to land too -- so the click that follows never fires at a stale spot.
+    pos = _await_cursor(gx, gy)
+    if pos is not None and not _near(pos, gx, gy):
         w.user32.SetCursorPos(int(gx), int(gy))
+        _await_cursor(gx, gy)
+
+
+_MOVE_TOLERANCE = 1          # px; absolute 0..65535 rounding can cost 1px
+_MOVE_SETTLE_POLLS = 8       # x _MOVE_SETTLE_STEP seconds ~= 64ms max wait
+_MOVE_SETTLE_STEP = 0.008
+
+
+def _near(pos: tuple[int, int], gx: int, gy: int) -> bool:
+    return abs(pos[0] - gx) <= _MOVE_TOLERANCE and abs(pos[1] - gy) <= _MOVE_TOLERANCE
+
+
+def _await_cursor(gx: int, gy: int) -> tuple[int, int] | None:
+    """Poll GetCursorPos until it reads (gx, gy) or the settle window ends.
+    Returns the last position read (None when GetCursorPos is unavailable)."""
+    pos = _cursor_pos()
+    for _ in range(_MOVE_SETTLE_POLLS):
+        if pos is None or _near(pos, gx, gy):
+            break
+        time.sleep(_MOVE_SETTLE_STEP)
+        pos = _cursor_pos()
+    return pos
 
 
 # ---------------------------------------------------------------------------
@@ -486,12 +547,25 @@ def type_text(text: str, method: str = "auto") -> dict:
 def _grab_region(rect):
     """Capture a virtual-desktop rect with mss -> PIL RGB Image."""
     from PIL import Image as PILImage
+    _ensure_dpi_aware()
     import mss
 
     with mss.mss() as sct:
         raw = sct.grab({"left": rect.x, "top": rect.y,
                         "width": rect.w, "height": rect.h})
     return PILImage.frombytes("RGB", raw.size, raw.rgb)
+
+
+def _draw_cursor_marker(img, cx: int, cy: int) -> None:
+    """Draw a high-contrast ring + crosshair centred on (cx, cy), in place."""
+    from PIL import ImageDraw
+
+    d = ImageDraw.Draw(img)
+    r = max(10, min(img.size) // 90)
+    for width, color in ((4, (255, 255, 255)), (2, (255, 0, 0))):  # white halo, red core
+        d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=color, width=width)
+        d.line([cx - r - 4, cy, cx + r + 4, cy], fill=color, width=width)
+        d.line([cx, cy - r - 4, cx, cy + r + 4], fill=color, width=width)
 
 
 def take_screenshot(output: str | None = None, region: dict | None = None,
@@ -525,6 +599,18 @@ def take_screenshot(output: str | None = None, region: dict | None = None,
 
     img = _grab_region(rect)  # mss already returns exactly the requested rect
 
+    # Where the OS cursor really is (desktop px), so the model can SEE whether its
+    # last move landed where it aimed instead of guessing. mss captures no cursor,
+    # so include_cursor=True draws a marker on the frame at the true position.
+    try:
+        cursor_pos = _cursor_pos()
+    except Exception:
+        cursor_pos = None
+    if (include_cursor and cursor_pos is not None
+            and rect.x <= cursor_pos[0] < rect.x + rect.w
+            and rect.y <= cursor_pos[1] < rect.y + rect.h):
+        _draw_cursor_marker(img, cursor_pos[0] - rect.x, cursor_pos[1] - rect.y)
+
     native_w, native_h = img.size
     if max_width and native_w > max_width:
         img.thumbnail((max_width, 10_000_000), PILImage.LANCZOS)
@@ -556,7 +642,8 @@ def take_screenshot(output: str | None = None, region: dict | None = None,
         "scale": round(scale, 5),
         "session": info.kind,
         "output": output,
-        "include_cursor": include_cursor,  # mss has no cursor overlay; advisory only
+        "include_cursor": include_cursor,  # True => a red ring marks the real cursor
+        "cursor_desktop_pos": list(cursor_pos) if cursor_pos else None,
         "outputs": [o.as_dict() for o in info.outputs],
     }
     return png, meta
@@ -598,6 +685,7 @@ _SESSION_TTL = 2.0
 
 def _enumerate_monitors() -> list[Output]:
     """Monitors via mss (EnumDisplayMonitors under the hood)."""
+    _ensure_dpi_aware()
     import mss
 
     outs: list[Output] = []

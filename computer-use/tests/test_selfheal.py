@@ -121,3 +121,55 @@ def test_decisions_logged(monkeypatch, tmp_path):
     rows = [_json.loads(l) for l in selfheal._LOG_FILE.read_text().splitlines()]
     assert rows[-1]["tool"] == "mouse_click"
     assert rows[-1]["screen_changed"] is False
+
+
+# ---------------------------------------------------------------------------
+# Multi-monitor regressions: the verification thumbnail must not hijack the
+# image-coordinate reference, and a small repaint must still count as a change.
+# ---------------------------------------------------------------------------
+def test_thumb_preserves_last_shot(monkeypatch):
+    """_thumb() goes through screen.take_screenshot, which records LAST_SHOT. That
+    frame is a whole-desktop thumbnail; leaving it as LAST_SHOT made every later
+    image-space click use the thumbnail's origin/scale and land far off-target."""
+    import io
+
+    from PIL import Image
+
+    from computer_use_mcp import screen
+
+    model_shot = {"origin": (0, 0), "scale": 0.6, "session_kind": "kde",
+                  "image_w": 1536, "image_h": 864, "taken_at": 1.0}
+    monkeypatch.setattr(screen, "LAST_SHOT", model_shot)
+
+    def fake_take_screenshot(max_width=None, which="active", **_kw):
+        buf = io.BytesIO()
+        Image.new("RGB", (512, 140), (10, 20, 30)).save(buf, format="PNG")
+        # what the real take_screenshot does: clobber LAST_SHOT with the thumb's
+        with screen._LOCK:
+            screen.LAST_SHOT = {"origin": (-1920, 0), "scale": 0.08,
+                                "session_kind": "kde", "taken_at": 2.0}
+        return buf.getvalue(), {}
+
+    monkeypatch.setattr(screen, "take_screenshot", fake_take_screenshot)
+    frame = selfheal._thumb("active")
+    assert frame is not None and len(frame) == 1024
+    assert screen.LAST_SHOT is model_shot
+
+
+def test_small_repaint_counts_as_change():
+    """A click that repaints a small widget barely moves the global mean on a
+    wide multi-monitor thumbnail, but it did change the screen."""
+    base = bytearray([100] * 1024)
+    after = bytearray(base)
+    for i in (10, 11, 42):                  # three cells flip strongly
+        after[i] = 220
+    mean_only = sum(abs(a - b) for a, b in zip(base, after)) / 1024
+    assert mean_only < selfheal._DIFF_THRESHOLD       # the old rule says "no change"
+    assert selfheal._delta(bytes(base), bytes(after)) >= selfheal._DIFF_THRESHOLD
+
+
+def test_single_noisy_cell_is_not_a_change():
+    base = bytearray([100] * 1024)
+    after = bytearray(base)
+    after[500] = 160                                   # one flickering cell (cursor/clock)
+    assert selfheal._delta(bytes(base), bytes(after)) < selfheal._DIFF_THRESHOLD
