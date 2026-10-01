@@ -7,7 +7,7 @@
 # computer-use/pyproject.toml untouched.
 
 # Cross-platform engine runtime (mirrors the portable subset of pyproject.toml):
-mcp>=1.26.0
+mcp>=1.26.0,<2   # 2.x renamed FastMCP -> MCPServer; engine code targets 1.x
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pyyaml>=6.0

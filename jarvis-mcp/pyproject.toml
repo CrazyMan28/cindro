@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Cindro-MCP: one MCP endpoint exposing Cindro orchestration (Contract A) plus the re-exported computer-use engine, so external agents can drive Cindro."
 requires-python = ">=3.12"
 dependencies = [
-    "mcp>=1.26.0",
+    "mcp>=1.26.0,<2",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "websockets>=12.0",
