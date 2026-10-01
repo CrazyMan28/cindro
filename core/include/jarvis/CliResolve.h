@@ -27,7 +27,21 @@ namespace jarvis {
 inline void resolveCliLaunch(QString &program, QStringList &args)
 {
 #ifdef Q_OS_WINDOWS
-    const QString resolved = QStandardPaths::findExecutable(program);
+    // Prefer a NATIVE <program>.exe over whatever shim PATH order finds first. A bare
+    // "claude" resolves to the first of claude.cmd / claude / claude.exe on PATH, and a
+    // user's own `claude.cmd` wrapper (VM-mode launchers, etc.) wins over the real
+    // binary: Cindro would then run cmd -> pwsh -> script -> claude, the wrapper would
+    // run its side effects (rewriting the user's mode.json / ~/.claude.json on every
+    // turn), and Stop would have to chase a deeper process tree. Launching the exe
+    // directly is faster, has no wrapper side effects, and makes cancel kill exactly
+    // the agent process. Falls back to the old lookup when no native exe exists
+    // (e.g. codex, an npm .cmd shim).
+    QString resolved;
+    if (!program.contains(QLatin1Char('.')) && !program.contains(QLatin1Char('\\')) &&
+        !program.contains(QLatin1Char('/')))
+        resolved = QStandardPaths::findExecutable(program + QStringLiteral(".exe"));
+    if (resolved.isEmpty())
+        resolved = QStandardPaths::findExecutable(program);
     if (resolved.isEmpty())
         return; // not on PATH → leave as-is; QProcess emits a clear FailedToStart error.
 

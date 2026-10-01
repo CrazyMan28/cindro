@@ -943,6 +943,13 @@ private:
     // flushed), the deferred cancel must become a no-op — otherwise it would
     // kill the FRESH guardrail-response turn instead of the loop.
     QSet<QString> m_toolLoopStopping;
+    // Sessions the USER stopped (session.cancel / take_over.cancel). A cancelled turn
+    // still emits turnFinished (twice for CLI brains: once from cancel(), once when the
+    // killed process reports exit), and onTurnFinished used to treat that like a normal
+    // end of turn: replay a held turn, send the persistent-goal "[AUTO-CONTINUE] keep
+    // working" nudge, resolve queue items. So Stop would report stopped and the agent
+    // started a NEW turn straight away. Sticky until the user sends a real message.
+    QSet<QString> m_userStopped;
     // Sessions that have already received the one-time co-work guidance preamble.
     QSet<QString> m_coworkGuided;
     // Sessions that have already received the one-time policy preamble

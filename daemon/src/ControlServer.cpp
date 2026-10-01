@@ -3481,6 +3481,18 @@ void ControlServer::wakeParentForSubagent(const QString &childSid)
 
 void ControlServer::onTurnFinished(const QString &sessionId)
 {
+    // The user hit Stop: this turn-end is the cancellation itself, not completion.
+    // Do NOT wake a parent, replay a held turn, auto-continue a goal, or resolve a
+    // queue item as "done" -- just clear the per-turn guardrail state.
+    if (m_userStopped.contains(sessionId)) {
+        m_toolLoop.remove(sessionId);
+        m_lastToolCall.remove(sessionId);
+        m_toolLoopWarned.remove(sessionId);
+        m_toolLoopStopping.remove(sessionId);
+        m_pendingTurns.remove(sessionId);
+        return;
+    }
+
     // Backup wake trigger (the primary is the `final` event in onBrainEvent).
     wakeParentForSubagent(sessionId);
 
@@ -3721,6 +3733,8 @@ void ControlServer::generateSessionTitle(const QString &sessionId, const QString
 bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
                                   const QStringList &images, QString *err)
 {
+    // Any new send (user, phone, scheduler, subagent) re-arms the session after a Stop.
+    m_userStopped.remove(sessionId);
     Brain *brain = m_brains.value(sessionId, nullptr);
     if (!brain) {
         // No LIVE brain (the daemon restarted, or this is an OLD session the user
@@ -4258,7 +4272,33 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
             *err = QStringLiteral("unknown or inactive session: ") + sessionId;
         return false;
     }
+    // Mark + purge BEFORE cancel(): brain->cancel() emits turnFinished synchronously,
+    // and onTurnFinished would otherwise replay the held turn / fire goal
+    // auto-continue (the bug where "stopped" sessions kept working).
+    m_userStopped.insert(sessionId);
+    m_pendingTurns.remove(sessionId);
+    m_subagentPendingWake.remove(sessionId);
+    if (m_queueItemBySession.contains(sessionId)) {
+        // A work-queue item whose worker the user stopped is not "running" any more.
+        const QString itemId = m_queueItemBySession.take(sessionId);
+        m_kanban.updateStatus(itemId, QStringLiteral("error"), sessionId,
+                              QStringLiteral("stopped by user"));
+    }
+    // Stop on a parent also stops its RUNNING subagents/children: they are separate
+    // brains (separate CLI processes) that would otherwise keep acting after the user
+    // sees "stopped", and a finishing child would wake the (stopped) parent.
+    QStringList children;
+    for (auto it = m_brains.constBegin(); it != m_brains.constEnd(); ++it) {
+        if (it.key() == sessionId || !it.value() || !it.value()->isBusy())
+            continue;
+        if (auto row = m_store.get(it.key()); row && row->parentSessionId == sessionId)
+            children << it.key();
+    }
     brain->cancel();
+    for (const QString &child : std::as_const(children)) {
+        QString cerr;
+        cancelSession(child, &cerr);
+    }
     abortOperatorApprovals(sessionId); // release any parked operator-permission gate
     m_store.updateState(sessionId, QStringLiteral("idle"));
     // Canceling a turn ends any real-session take-over (overlay hides).
@@ -4350,6 +4390,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
     m_toolLoopWarned.remove(sessionId);
     m_toolLoopStopping.remove(sessionId);
     m_pendingTurns.remove(sessionId);
+    m_userStopped.remove(sessionId);
     m_titleGenStarted.remove(sessionId);   // one-shot title-gen guard, per session
     // 4) Drop the row + its event stream from the store.
     if (!m_store.deleteSession(sessionId)) {
@@ -4584,6 +4625,7 @@ Response ControlServer::handleSessionSend(const Request &req)
     // the cap bounds unattended runs, not conversations the user is driving.
     if (auto r = m_store.get(sessionId); r && r->continuationCount > 0)
         m_store.setContinuationCount(sessionId, 0);
+    m_userStopped.remove(sessionId);   // a real user turn clears the Stop latch
 
     QString err;
     if (!sendToSession(sessionId, text, images, &err))
