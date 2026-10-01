@@ -71,6 +71,38 @@ $engineJob = Start-Job -Name "engine" -ArgumentList @("$repo","$win","$build","$
   $ErrorActionPreference = "Stop"
   $ProgressPreference = "SilentlyContinue"
   Write-Host "==> bundling computer-use engine"
+  # ENGINE BUNDLE CACHE. The PyInstaller freeze (faster-whisper/ctranslate2/onnxruntime/
+  # av/yt-dlp) is the slowest stage — it outlives the whole C++ build and sets the
+  # wall-clock — yet most releases (C++/QML/daemon changes) don't touch the engine at
+  # all. Key a cached copy of the frozen bundle on EVERYTHING that goes into it: the
+  # engine sources + tool modules, the Windows backend, requirements, this script (the
+  # PyInstaller flags live here), the Python version, and the calendar month (so the
+  # un-pinned `>=` deps still refresh monthly). Same inputs -> same bundle -> copy it.
+  $cacheRoot = if ($env:CINDRO_BUILD_CACHE) { $env:CINDRO_BUILD_CACHE } else { "C:\cindro-build-cache" }
+  $hashInputs = @()
+  $hashInputs += Get-ChildItem (Join-Path $repo "computer-use") -Recurse -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.FullName -notmatch '\\(tests|\.venv[^\\]*|__pycache__|\.pytest_cache|\.mypy_cache|node_modules)\\' -and $_.Extension -in '.py','.toml','.txt','.json','.yaml','.yml' }
+  $hashInputs += Get-ChildItem (Join-Path $win "engine") -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Extension -in '.py','.txt' }
+  $hashInputs += Get-Item (Join-Path $win "scripts\build.ps1")
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $manifest = (($hashInputs | Sort-Object FullName | ForEach-Object {
+    $_.FullName.Substring($repo.Length) + ":" + (Get-FileHash -Algorithm SHA256 $_.FullName).Hash
+  }) -join "`n") + "`npython=" + ((python --version 2>&1) -join "") + "`nmonth=" + (Get-Date -Format "yyyy-MM")
+  $engineKey = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($manifest)) | ForEach-Object { $_.ToString("x2") })
+  $engineKey = $engineKey.Substring(0, 24)
+  $engineCache = Join-Path $cacheRoot "engine-$engineKey"
+  $engineHit = Test-Path (Join-Path $engineCache "jarvis-engine.exe")
+  if ($engineHit) {
+    Write-Host "    engine bundle cache HIT ($engineKey) -- skipping pip + PyInstaller"
+    New-Item -ItemType Directory -Force -Path (Join-Path $payload "engine") | Out-Null
+    & robocopy $engineCache (Join-Path $payload "engine") /E /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -ge 8) { Write-Host "    cache copy failed (robocopy $LASTEXITCODE) -- rebuilding"; $engineHit = $false }
+    $global:LASTEXITCODE = 0
+  } else {
+    Write-Host "    engine bundle cache MISS ($engineKey) -- full freeze"
+  }
+  if (-not $engineHit) {
   $venv = Join-Path $win "engine\.venv-win"
   $venvPy = Join-Path $venv "Scripts\python.exe"
   if (-not (Test-Path $venv)) { python -m venv $venv }
@@ -129,6 +161,25 @@ $engineJob = Start-Job -Name "engine" -ArgumentList @("$repo","$win","$build","$
   if (-not (Test-Path (Join-Path $payload "engine\jarvis-engine.exe"))) {
     throw "engine\jarvis-engine.exe missing after flattening -- PyInstaller output layout changed?"
   }
+  # Store the fresh bundle for the next run with identical inputs. Best-effort and
+  # atomic (copy to a temp dir, then rename) so a half-written cache can never be
+  # served; keep only the 3 newest entries.
+  try {
+    New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
+    $tmp = Join-Path $cacheRoot "engine-$engineKey.tmp"
+    if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+    & robocopy (Join-Path $payload "engine") $tmp /E /NFL /NDL /NJH /NJS /NP | Out-Null
+    if ($LASTEXITCODE -lt 8 -and (Test-Path (Join-Path $tmp "jarvis-engine.exe"))) {
+      if (Test-Path $engineCache) { Remove-Item -Recurse -Force $engineCache }
+      Rename-Item $tmp $engineCache
+      Write-Host "    engine bundle cached ($engineKey)"
+    }
+    $global:LASTEXITCODE = 0
+    Get-ChildItem $cacheRoot -Directory -Filter "engine-*" -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending | Select-Object -Skip 3 |
+      Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  } catch { Write-Host "    engine cache store skipped: $_" }
+  }  # end if (-not $engineHit)
 }
 
 # 3c. outpost-agent binaries (Go, cross-compiled for every target) -------------

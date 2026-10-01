@@ -41,6 +41,10 @@ SolidCompression=no
 #else
 Compression=lzma2
 SolidCompression=yes
+; Use every core: the LZMA2 pass over the ~220 MB payload is single-threaded by
+; default (minutes of wall-clock on the CI VM). Block threads cost a sliver of size.
+LZMANumBlockThreads=4
+LZMAUseSeparateProcess=yes
 #endif
 ; Cindro emblem icon on the installer itself + Add/Remove Programs
 ; (the app/shortcut/taskbar icon comes from the exe's embedded RC icon —

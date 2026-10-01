@@ -58,9 +58,17 @@ jobs:
           # build on the IO-contended runner disk, then forcing a full from-scratch
           # rebuild + venv/pip reinstall every run. With it off, ninja/pip resume
           # incrementally; build.ps1 removes the stale payload + old installers itself.
-          # Tag (release) builds still fully clean so shipped artifacts come from a
-          # pristine tree.
-          clean: ${{ github.event_name != 'pull_request' }}
+          # Release (tag) builds used to clean too, which made EVERY release a ~50 min
+          # from-scratch rebuild (3 min checkout + 4 min CMake configure + full MSVC
+          # compile + venv/pip reinstall). They now keep the gitignored caches
+          # (build-win/, .venv-win) like PR builds do; the next step still wipes every
+          # untracked, NON-ignored file, so sources stay pristine and ninja's own
+          # dependency tracking decides what to recompile.
+          clean: false
+
+      - name: Remove untracked files (keep ignored build caches)
+        shell: pwsh
+        run: git clean -ffd
 
       # PowerShell (not bash): the self-hosted Windows runner has no git-bash on
       # PATH for Actions' `shell: bash`, and the Windows/WSL bash stub errors out.
