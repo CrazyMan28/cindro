@@ -39,30 +39,17 @@ concurrency:
 
 jobs:
   appimage:
-    # GitHub-hosted (switched from the self-hosted fleet on 2026-10-04; the
-    # self-hosted version is kept in .github/workflows-selfhosted/).
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
+    # 90 min (1h30) — gives slack when the Proxmox runner host is IO/CPU-starved and slow.
     timeout-minutes: 90
+    # Prebuilt: all deps (incl. curl/file/findutils/patchelf/fuse for linuxdeploy)
+    # baked into the image and served from the runner's local registry — instant pull,
+    # no 550MB download, no per-build install.
     container:
-      image: fedora:44
+      image: localhost:5000/jarvis-ci:latest
     steps:
-      # GitHub-hosted: the same fedora:44 environment as the self-hosted jarvis-ci
-      # image, with infra/ci-image/Dockerfile's package list installed per run
-      # (the local registry that served the prebuilt image isn't reachable here).
-      - name: Install build deps (infra/ci-image/Dockerfile package set)
-        run: |
-          dnf -y install --setopt=install_weak_deps=False \
-            gcc-c++ cmake ninja-build pkgconf-pkg-config git tar gzip xz \
-            curl file findutils which patchelf \
-            qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtquickcontrols2-devel \
-            qt6-qtwebsockets-devel qt6-qtmultimedia-devel qt6-qtsvg-devel \
-            qt6-qtwayland qt6-qtwayland-devel layer-shell-qt-devel \
-            extra-cmake-modules libsodium-devel qrencode-devel libsecret-devel \
-            python3 python3-pip python3-devel python3-pytest \
-            desktop-file-utils fuse fuse-libs xcb-util-cursor \
-            mesa-libGL-devel mesa-libEGL-devel unzip
-
-      - name: Verify toolchain
+      # Deps are in the image — assert the toolchain + AppImage tooling are present.
+      - name: Verify toolchain (baked into the image)
         run: |
           cmake --version && ninja --version && qmake6 --version
           command -v patchelf file curl && test -d /usr/lib64/cmake/Qt6

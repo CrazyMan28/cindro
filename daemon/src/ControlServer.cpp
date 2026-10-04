@@ -4018,6 +4018,47 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
 #define JARVIS_LIVE_CPU_CMD_EXAMPLE \
     "\"top -bn1 | awk '/Cpu/{print 100-$8}'\", "
 #endif
+        // Windows-only engine tools (windows/engine/tools_windows.py) — same
+        // macro-hoist as above so the per-OS text never puts a directive inside
+        // QStringLiteral(...). Expands to "" on Linux (those tools don't exist there).
+#ifdef Q_OS_WIN
+#define JARVIS_WINDOWS_TOOLS_CLAUSE \
+    "WINDOWS TOOLS (act like a person, not a teleporting cursor):\n" \
+    "  * Drags: mouse_drag_smooth(from_x, from_y, to_x, to_y) presses, HOLDS, glides " \
+    "and releases — use it for spreadsheet fill handles, selecting cell ranges, " \
+    "resizing columns, drag-and-drop and sliders (plain mouse_drag can be too fast " \
+    "for web apps). Read coordinates off the screenshot grid (coord_space='desktop').\n" \
+    "  * mouse_click_ex: modifiers='shift' (extend a selection) / 'ctrl' (multi-select), " \
+    "clicks=3 (select a line), hold_ms (long-press). key_down/key_up + mouse_down/" \
+    "mouse_up for custom sequences (always release; input_release_all if stuck). " \
+    "mouse_hover for tooltips/hover menus, scroll_smooth for a few rows at a time, " \
+    "type_text_paced when a web editor drops characters, wait_for_screen_idle " \
+    "instead of guessing sleeps.\n" \
+    "  * EXCEL IS USUALLY A WEBSITE (Excel for the web in Chrome; same for Google " \
+    "Sheets) — there is no Excel app to automate, so work it BY CELL ADDRESS: " \
+    "sheet_goto('B7' / 'A1:D20' / 'Sheet2!C3') jumps via the Name Box; " \
+    "sheet_read_range('A1:F40') returns exact values (never read numbers off a " \
+    "screenshot); sheet_paste_table(rows, ref='B2') fills many cells in one paste " \
+    "('=' values become formulas); sheet_set_cell('D2', '=B2*C2') for one cell; " \
+    "sheet_active_cell shows the selected cell + formula bar; sheet_shortcut('fill_down' " \
+    "/ 'bold' / 'insert_cells' / 'next_sheet' / ...) for named shortcuts. Fill handle, " \
+    "column resize and range select by mouse: mouse_drag_smooth.\n" \
+    "  * READ / CLICK BY TEXT: screen_ocr(window='Excel') reads on-screen text with " \
+    "exact boxes; screen_find_text / click_text('Insert') click what you can read — " \
+    "ribbon buttons, sheet tabs, menu items, cell values. window_screenshot('Excel') " \
+    "captures just that window.\n" \
+    "  * Native apps / dialogs / Settings / Explorer / desktop Office: ui_tree or " \
+    "ui_find shows every control with its name and exact rect; act with ui_click / " \
+    "ui_set_value / ui_toggle / ui_select instead of guessing pixels. Web page content: " \
+    "prefer browser_snapshot + browser_* tools.\n" \
+    "  * Only if DESKTOP Office is installed (office_status): excel_read_range / excel_write_range " \
+    "/ excel_run, word_read / word_insert / word_find_replace / word_save_as, " \
+    "ppt_list_slides / ppt_add_slide / ppt_set_text / ppt_export drive it exactly.\n" \
+    "  * Windows: window_list / window_activate / window_set (move_resize, maximize), " \
+    "app_launch('excel'|'chrome'|...), clipboard_get/clipboard_set all work here.\n"
+#else
+#define JARVIS_WINDOWS_TOOLS_CLAUSE ""
+#endif
         const QString coworkClause = m_agentDesktops.has(sessionId)
             ? QStringLiteral(
                 "[Cindro co-work — READ FIRST] You have TWO separate computer-use tool "
@@ -4080,7 +4121,8 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
                 "desktop_screenshot here captures the user's REAL screen, not a private one. If "
                 "asked to show/screenshot \"your desktop\", call ask_user first (per the rule "
                 "above) rather than silently sending a capture of their real screen.\n");
-        guide = coworkClause + showingWorkClause + QStringLiteral(
+        guide = coworkClause + showingWorkClause
+            + QStringLiteral(JARVIS_WINDOWS_TOOLS_CLAUSE) + QStringLiteral(
             "VISUALS: whenever the user asks you to SHOW / DRAW / DISPLAY / VISUALIZE "
             "something (a chart, a list, a diagram, a card, \"show me a duck\"), you "
             "MUST CALL the render_widget tool with a JSON spec — it pops the widget on "
@@ -4219,6 +4261,7 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
             "• MODES — the user selects plan / build / co-worker in Settings; follow "
             "the mode clause appended below.");
 #undef JARVIS_LIVE_CPU_CMD_EXAMPLE
+#undef JARVIS_WINDOWS_TOOLS_CLAUSE
     }
 
     // Deliver whatever fired this turn. ClaudeBrain has a REAL system-prompt

@@ -49,7 +49,7 @@ concurrency:
 
 jobs:
   tag:
-    runs-on: ubuntu-latest  # GitHub-hosted; self-hosted copy in .github/workflows-selfhosted/
+    runs-on: [self-hosted, Linux, X64]
     timeout-minutes: 10
     steps:
       - name: Auto-bump patch + tag (via API, no checkout)

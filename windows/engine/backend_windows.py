@@ -42,7 +42,9 @@ from __future__ import annotations
 
 import io
 import os
+import random
 import sys
+import threading
 import time
 
 # Engine modules: imported (never modified). map_to_desktop / Rect / LAST_SHOT /
@@ -433,8 +435,11 @@ def drag(x1: float, y1: float, x2: float, y2: float, button: str = "left",
     time.sleep(0.1)
     _send(_mouse_input(0, 0, 0, down))
     try:
-        for i in range(1, max(2, steps) + 1):
-            t = i / steps
+        n = max(2, int(steps))
+        for i in range(1, n + 1):
+            # t must be i/n (not i/steps): with steps=1 the loop still runs to 2,
+            # and i/steps overshot the target by a whole drag length.
+            t = i / n
             px = round(g1[0] + (g2[0] - g1[0]) * t)
             py = round(g1[1] + (g2[1] - g1[1]) * t)
             _mouse_move_abs(px, py)
@@ -539,6 +544,333 @@ def type_text(text: str, method: str = "auto") -> dict:
     # method is accepted for API parity; Windows always uses Unicode injection
     # (no clipboard-paste fallback is needed -- KEYEVENTF_UNICODE is full Unicode).
     return {"typed_chars": len(text), "method": "unicode"}
+
+
+# ---------------------------------------------------------------------------
+# Human-style input  (Windows-only extras; registered as tools by tools_windows)
+#
+# The engine's click/drag/key_press are atomic: press+release in one call. Web
+# apps (Excel for the web in Chrome, Google Sheets, Figma, ...) need what a hand
+# does: hold a button while the pointer travels (fill handle, range select,
+# column resize), keep shift/ctrl down across a click, long-press, hover, and
+# type slowly enough that a canvas editor doesn't drop keystrokes.
+# ---------------------------------------------------------------------------
+_DRAG_GRAB_DWELL = 0.08      # s after button-down before moving (arms drag thresholds)
+_DRAG_DROP_DWELL = 0.05      # s parked on the target before button-up (drop targets)
+_HOLD_MAX_S = float(os.environ.get("CINDRO_INPUT_HOLD_MAX_S", "15"))
+
+# Everything currently held down via mouse_down/key_down:
+#   ("button", "left") -> (pressed_at, False) / ("key", vk) -> (pressed_at, extended)
+# A stuck shift/ctrl or left button wrecks the user's machine (every click
+# becomes a shift-click / every move a drag), so the watchdog below releases
+# anything held longer than _HOLD_MAX_S, and input_release_all() frees it all.
+_HELD: dict[tuple[str, object], tuple[float, bool]] = {}
+_HELD_LOCK = threading.Lock()
+_WATCHDOG: threading.Timer | None = None
+
+
+def smooth_path(g1: tuple[int, int], g2: tuple[int, int], steps: int,
+                jitter: int = 2, rng: random.Random | None = None) -> list[tuple[int, int]]:
+    """`steps` points from just after g1 to EXACTLY g2, linearly interpolated,
+    with +-`jitter` px on every intermediate point (a hand never moves in a
+    perfectly straight line, and some apps ignore pixel-perfect synthetic
+    motion). The last point is always g2 so the release lands on target."""
+    steps = max(1, int(steps))
+    jitter = max(0, int(jitter))
+    rng = rng or random
+    pts: list[tuple[int, int]] = []
+    for i in range(1, steps + 1):
+        t = i / steps
+        px = round(g1[0] + (g2[0] - g1[0]) * t)
+        py = round(g1[1] + (g2[1] - g1[1]) * t)
+        if i < steps and jitter:
+            px += rng.randint(-jitter, jitter)
+            py += rng.randint(-jitter, jitter)
+        pts.append((px, py))
+    return pts
+
+
+def _button_flags(button: str) -> tuple[int, int]:
+    if button not in _BUTTON_FLAGS:
+        raise ValueError(f"button must be one of {list(_BUTTONS)}")
+    w = _winapi()
+    down, up = (getattr(w, n) for n in _BUTTON_FLAGS[button])
+    return down, up
+
+
+def drag_smooth(from_x: float, from_y: float, to_x: float, to_y: float,
+                steps: int = 12, step_delay_ms: int = 30, button: str = "left",
+                coord_space: str = "desktop", which: str = "active",
+                jitter: int = 2) -> dict:
+    """A real hold -> travel -> release drag: move to the start, press and HOLD
+    the button, walk `steps` jittered points to the target (`step_delay_ms`
+    apart), park on the target, then release. Unlike a teleport this produces a
+    genuine mousedown / mousemove(buttons=1)... / mouseup sequence that browser
+    content (canvas grids, drag-and-drop, sliders) recognises."""
+    down, up = _button_flags(button)
+    steps = max(1, min(200, int(steps)))
+    delay = max(0, min(1000, int(step_delay_ms))) / 1000.0
+    g1 = _screen.map_to_desktop(from_x, from_y, coord_space, which)
+    g2 = _screen.map_to_desktop(to_x, to_y, coord_space, which)
+    tag = _pointer_session(which)
+    _mouse_move_abs(*g1)
+    _agent_bus.publish(g1[0], g1[1], button=button, kind="down", session=tag)
+    time.sleep(0.05)
+    _send(_mouse_input(0, 0, 0, down))
+    try:
+        time.sleep(_DRAG_GRAB_DWELL)
+        for px, py in smooth_path(g1, g2, steps, jitter):
+            _mouse_move_abs(px, py)
+            _agent_bus.publish(px, py, button=button, kind="drag", session=tag)
+            time.sleep(delay)
+        time.sleep(_DRAG_DROP_DWELL)
+    finally:
+        # Always release, even if a move raised -- a held button is a stuck drag.
+        _send(_mouse_input(0, 0, 0, up))
+        _agent_bus.publish(g2[0], g2[1], button=button, kind="up", session=tag)
+    return {"dragged": True, "from": list(g1), "to": list(g2), "button": button,
+            "steps": steps, "step_delay_ms": round(delay * 1000)}
+
+
+def _hold(key: tuple[str, object], extended: bool = False) -> None:
+    with _HELD_LOCK:
+        _HELD[key] = (time.monotonic(), extended)
+    _arm_watchdog()
+
+
+def _unhold(key: tuple[str, object]) -> None:
+    with _HELD_LOCK:
+        _HELD.pop(key, None)
+
+
+def _release_entry(key: tuple[str, object], extended: bool) -> None:
+    kind, ident = key
+    if kind == "button":
+        _send(_mouse_input(0, 0, 0, _button_flags(str(ident))[1]))
+    else:
+        _send(_key_input(int(ident), up=True, extended=extended))
+
+
+def release_all() -> dict:
+    """Release every button/key still held via mouse_down/key_down."""
+    with _HELD_LOCK:
+        held = list(_HELD.items())
+        _HELD.clear()
+    released = []
+    # keys first (reverse press order), then buttons -- so a shift+drag ends as
+    # a plain button-up rather than a shift-modified one.
+    held.sort(key=lambda kv: (kv[0][0] == "button", -kv[1][0]))
+    for key, (_t, ext) in held:
+        try:
+            _release_entry(key, ext)
+            released.append(f"{key[0]}:{key[1]}")
+        except Exception:
+            pass
+    return {"released": released}
+
+
+def _watchdog_sweep(now: float | None = None) -> list[str]:
+    """Release entries held longer than _HOLD_MAX_S. Returns what was freed."""
+    now = time.monotonic() if now is None else now
+    with _HELD_LOCK:
+        stale = [(k, v) for k, v in _HELD.items() if now - v[0] >= _HOLD_MAX_S]
+        for k, _v in stale:
+            _HELD.pop(k, None)
+    freed = []
+    for key, (_t, ext) in stale:
+        try:
+            _release_entry(key, ext)
+            freed.append(f"{key[0]}:{key[1]}")
+        except Exception:
+            pass
+    return freed
+
+
+def _watchdog_fire() -> None:
+    global _WATCHDOG
+    _watchdog_sweep()
+    with _HELD_LOCK:
+        _WATCHDOG = None
+        pending = bool(_HELD)
+    if pending:
+        _arm_watchdog()
+
+
+def _arm_watchdog() -> None:
+    global _WATCHDOG
+    with _HELD_LOCK:
+        if _WATCHDOG is not None:
+            return
+        t = threading.Timer(_HOLD_MAX_S, _watchdog_fire)
+        t.daemon = True
+        _WATCHDOG = t
+    t.start()
+
+
+def mouse_down(x: float | None = None, y: float | None = None, button: str = "left",
+               coord_space: str = "image", which: str = "active") -> dict:
+    down, _up = _button_flags(button)
+    pos = move(x, y, coord_space, which) if x is not None and y is not None else None
+    if pos is not None:
+        time.sleep(0.04)
+    _send(_mouse_input(0, 0, 0, down))
+    _hold(("button", button))
+    p = pos or _cursor_pos()
+    if p is not None:
+        _agent_bus.publish(p[0], p[1], button=button, kind="down",
+                           session=_pointer_session(which))
+    return {"down": button, "desktop_pos": list(pos) if pos else None,
+            "auto_release_after_s": _HOLD_MAX_S}
+
+
+def mouse_up(x: float | None = None, y: float | None = None, button: str = "left",
+             coord_space: str = "image", which: str = "active") -> dict:
+    _down, up = _button_flags(button)
+    pos = move(x, y, coord_space, which) if x is not None and y is not None else None
+    if pos is not None:
+        time.sleep(0.04)
+    _send(_mouse_input(0, 0, 0, up))
+    _unhold(("button", button))
+    p = pos or _cursor_pos()
+    if p is not None:
+        _agent_bus.publish(p[0], p[1], button=button, kind="up",
+                           session=_pointer_session(which))
+    return {"up": button, "desktop_pos": list(pos) if pos else None}
+
+
+def key_down(combo: str) -> dict:
+    vks = _resolve_vk(combo)
+    _send(*[_key_input(vk, extended=ext) for vk, ext in vks])
+    for vk, ext in vks:
+        _hold(("key", vk), ext)
+    return {"down": combo, "auto_release_after_s": _HOLD_MAX_S}
+
+
+def key_up(combo: str) -> dict:
+    vks = _resolve_vk(combo)
+    _send(*[_key_input(vk, up=True, extended=ext) for vk, ext in reversed(vks)])
+    for vk, _ext in vks:
+        _unhold(("key", vk))
+    return {"up": combo}
+
+
+def click_ex(x: float | None = None, y: float | None = None, button: str = "left",
+             clicks: int = 1, modifiers: str = "", hold_ms: int = 0,
+             coord_space: str = "image", which: str = "active") -> dict:
+    """Click with modifiers held (shift/ctrl/alt), 1-3 clicks (3 = select a
+    line/paragraph), and an optional per-click hold (long-press)."""
+    down, up = _button_flags(button)
+    clicks = max(1, min(3, int(clicks)))
+    hold = max(0, min(10_000, int(hold_ms))) / 1000.0
+    mods = _resolve_vk(modifiers) if modifiers and modifiers.strip() else []
+    pos = move(x, y, coord_space, which) if x is not None and y is not None else None
+    if pos is not None:
+        time.sleep(0.06)
+    if mods:
+        _send(*[_key_input(vk, extended=ext) for vk, ext in mods])
+    try:
+        if mods:
+            time.sleep(0.03)
+        for i in range(clicks):
+            _send(_mouse_input(0, 0, 0, down))
+            time.sleep(hold or 0.04)
+            _send(_mouse_input(0, 0, 0, up))
+            if i + 1 < clicks:
+                time.sleep(0.08)   # well inside the double-click time
+    finally:
+        if mods:
+            _send(*[_key_input(vk, up=True, extended=ext) for vk, ext in reversed(mods)])
+    if pos is not None:
+        _agent_bus.publish(pos[0], pos[1], button=button, kind="click",
+                           session=_pointer_session(which))
+    return {"clicked": button, "clicks": clicks, "modifiers": modifiers or None,
+            "hold_ms": round(hold * 1000), "desktop_pos": list(pos) if pos else None}
+
+
+def hover(x: float, y: float, dwell_ms: int = 600, coord_space: str = "image",
+          which: str = "active") -> dict:
+    """Glide (not teleport) to the point, then rest there so hover-triggered UI
+    (tooltips, menus, cell comments) opens."""
+    target = _screen.map_to_desktop(x, y, coord_space, which)
+    start = None
+    try:
+        start = _cursor_pos()
+    except Exception:
+        start = None
+    tag = _pointer_session(which)
+    if start is not None:
+        for px, py in smooth_path(start, target, 8, jitter=1):
+            _mouse_move_abs(px, py)
+            time.sleep(0.012)
+    else:
+        _mouse_move_abs(*target)
+    _agent_bus.publish(target[0], target[1], kind="move", session=tag)
+    time.sleep(max(0, min(10_000, int(dwell_ms))) / 1000.0)
+    return {"hovered": list(target), "dwell_ms": int(dwell_ms)}
+
+
+def scroll_smooth(amount: float = 1, direction: str = "down",
+                  x: float | None = None, y: float | None = None,
+                  delta_per_step: int = 40, coord_space: str = "image",
+                  which: str = "active") -> dict:
+    """Scroll `amount` notches (fractions allowed) in sub-notch wheel deltas, so
+    grids/maps scroll by a few rows instead of a whole page."""
+    if direction not in ("up", "down", "left", "right"):
+        raise ValueError("direction must be up/down/left/right")
+    pos = move(x, y, coord_space, which) if x is not None and y is not None else None
+    if pos is not None:
+        time.sleep(0.06)
+    total = max(1, round(abs(float(amount)) * WHEEL_DELTA))
+    step = max(1, min(WHEEL_DELTA, int(delta_per_step)))
+    w = _winapi()
+    if direction in ("left", "right"):
+        sign = 1 if direction == "right" else -1
+        flag = w.MOUSEEVENTF_HWHEEL
+    else:
+        sign = 1 if direction == "up" else -1
+        sign *= -1 if load_config()["scroll_invert"] else 1
+        flag = w.MOUSEEVENTF_WHEEL
+    sent = 0
+    while sent < total:
+        d = min(step, total - sent)
+        _send(_mouse_input(0, 0, sign * d, flag))
+        sent += d
+        time.sleep(0.012)
+    if pos is not None:
+        _agent_bus.publish(pos[0], pos[1], button=direction, kind="scroll",
+                           session=_pointer_session(which))
+    return {"scrolled": direction, "wheel_delta": sent, "notches": round(sent / WHEEL_DELTA, 2),
+            "desktop_pos": list(pos) if pos else None}
+
+
+def type_text_paced(text: str, delay_ms: int = 12) -> dict:
+    """type_text, but one character per SendInput with a pause between -- for
+    web/canvas editors (Excel for the web, Sheets, Docs) that drop characters
+    from a single large injected burst."""
+    delay = max(0, min(1000, int(delay_ms))) / 1000.0
+    n = 0
+    for ch in text:
+        if ch == "\r":
+            continue
+        if ch == "\n":
+            evs = [_key_input(0x0D), _key_input(0x0D, up=True)]
+        elif ch == "\t":
+            evs = [_key_input(0x09), _key_input(0x09, up=True)]
+        else:
+            evs = []
+            for unit in _utf16_units(ch):
+                evs.append(_key_input(0, scan=unit, unicode=True))
+                evs.append(_key_input(0, scan=unit, up=True, unicode=True))
+        _send(*evs)
+        n += 1
+        if delay:
+            time.sleep(delay)
+    return {"typed_chars": n, "method": "unicode-paced", "delay_ms": round(delay * 1000)}
+
+
+def mouse_position() -> dict:
+    pos = _cursor_pos()
+    return {"desktop_pos": list(pos) if pos else None}
 
 
 # ---------------------------------------------------------------------------

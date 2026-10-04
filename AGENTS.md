@@ -611,6 +611,14 @@ triggering `auto-release.yml`'s version bump (see below).
 
 ## GitHub / CI / releases (how Issac runs this repo)
 
+- **CURRENT STATE (2026-10-04): CI runs on GitHub-hosted runners.** At the owner's request,
+  `windows-build`, `linux-ci`, `linux-release`, `android-build`, `auto-release` and `website-ci`
+  now use `windows-latest` / `ubuntu-latest`. The Linux jobs use a `fedora:44` container that
+  installs `infra/ci-image/Dockerfile`'s package list each run. The Windows job provisions
+  Qt 6.10.3, vcpkg, Inno Setup, Python, Node and Go each run, with `actions/cache`. The
+  self-hosted versions are saved untouched in `.github/workflows-selfhosted/` (see its README),
+  as are the runner provisioning scripts. To switch back, copy those files over. The
+  self-hosted notes below describe that saved setup.
 - **CI is 100% self-hosted for the product build workflows — ZERO GitHub-hosted minutes.**
   Windows builds run on `win-runner-1` (the winvm / Proxmox VM 106 box); Linux CI/release/
   auto-release/website-ci/android-build all run on the six `pve-ubuntu-runner-*` (VM 104, raw
@@ -1907,6 +1915,68 @@ formality. Fixed:
 `test_ask_bus.py` — new, `test_phone_policy_gate.py`). Full `cindro-sidebar`/`jarvisd` rebuild clean,
 including the `agentQuestion` Qt signal signature change (3 args → 4); offscreen `--selftest` renders
 OK. Live-verified against the actual running daemon, not just unit tests.
+
+## New subsystems (2026-10-04) — Windows computer-use upgrade (human-style input, platform tools, UIA, Office)
+
+- **Engine tool bodies that call Linux modules were silently broken on Windows.** `tools_desktop`
+  calls `clipboard.*`, `windows.*`, `apps.*` and `workspaces.*` by module attribute, but
+  `server_windows.py` used to patch only `input`/`screen`/`session`. Every `clipboard_*`,
+  `window_*`, `app_*` and `workspace_*` call therefore ran `wl-copy`/KWin/swaymsg and failed.
+  `windows/engine/win_platform.py` now provides Win32 versions, and `apply_patches()` rebinds them
+  from `wp.PATCHES`. If the engine gains a new Linux-only helper module that a tool calls, add a
+  Windows implementation and a `PATCHES` entry, or the tool is dead on Windows.
+- **`desktop_reset` + working `list_windows` = data loss.** The engine's `desktop_reset` closes
+  everything `windows.list_windows("sway")` returns. On the Windows host, the `win_platform`
+  version therefore returns `[]` for `"sway"`/`"agent"` unless `JARVIS_AGENT_INSANDBOX`.
+  `tools_windows` also overrides `desktop_reset` to refuse on the host. Don't "fix" either back.
+- **Windows-only tools are registered, not patched.** `server_windows.main()` calls
+  `tools_windows.register(computer_use_mcp.server.mcp)` before `_srv.main()`. That works because
+  FastMCP reads `_tool_manager` per `tools/list` and `policy.install`'s wrapper looks tools up by
+  name at call time. Overriding an engine tool means popping it from `mcp._tool_manager._tools`
+  and re-registering it, which is done for `desktop_calibrate` and `desktop_reset`. Read-only
+  tools join plan mode by rebinding `policy._PLAN_SAFE_TOOLS` (a module global the gate reads per
+  call). The Windows tool list is now a SUPERSET of Linux's; the shared schemas are unchanged.
+- **Held input must never leak.** `mouse_down`/`key_down` record presses in
+  `backend_windows._HELD`. A daemon `threading.Timer` watchdog releases anything older than
+  `CINDRO_INPUT_HOLD_MAX_S` (15s), and `input_release_all` frees it on demand.
+  `drag_smooth`/`click_ex` release in `finally`. A stuck shift or left button turns every later
+  user click into a shift-click or a drag, so keep the `finally`s.
+- **Spreadsheet I/O goes through the clipboard on purpose.** Excel for the web (the user's main
+  target, in Chrome) has no COM. TSV paste and copy is the one channel Excel web, Google Sheets and
+  desktop Excel all honour. `sheet_paste_table` waits `settle_ms` before restoring the user's
+  clipboard, because the page reads it asynchronously after ctrl+v and an early restore pastes
+  the OLD contents.
+- **Excel is a WEBSITE for the owner (Excel for the web in Chrome), so there's no COM.** The
+  `sheet_*` tools work by cell address. `win_sheet.goto` types into the page's Name Box, which it
+  finds through UIA because Chrome exposes page controls to UIA. When there is no Name Box it
+  falls back to ctrl+g, but only after `selfheal._thumb` confirms the Go To dialog actually
+  opened. Without that check, a missing dialog means the address gets typed INTO THE ACTIVE CELL
+  and overwrites the user's data. Keep that check. Reading and writing ranges goes through the
+  clipboard (`sheet_read_range`, `sheet_paste_table(ref=)`). `sheet_set_cell` also pastes
+  instead of typing, because Excel's AutoComplete rewrites typed text when you press Enter.
+- **Windows OCR goes through `powershell.exe`, never pywinrt.** `win_ocr` runs
+  `Windows.Media.Ocr` via Windows PowerShell 5.1's WinRT projection in a child process. The
+  pywinrt `winrt-runtime` wheel bundles its own `winrt/msvcp140.dll`. Once that is loaded before
+  onnxruntime (faster-whisper), the process dies with 0xC0000005 (the MSVC std::mutex ABI break).
+  That killed the PyInstaller freeze on hosted CI and would crash the shipped engine too. The
+  child process also keeps WinRT's apartment away from the UIA/COM STA.
+- **`drag()` interpolation bug (both backends).** It looped `range(1, max(2, steps)+1)` but used
+  `t = i/steps`, so `steps=1` overshot the target by a full drag length. This is fixed in
+  `backend_windows.drag` only. `computer-use/computer_use_mcp/input.py:237` still has it; it's
+  harmless at the default `steps=14`.
+- **Packaging.** `uiautomation` (comtypes) is in `requirements-windows.txt`; OCR needs no
+  package. `build.ps1` adds `--hidden-import win32clipboard/pythoncom/win32com/win32com.client`,
+  `--collect-all uiautomation` and `--collect-submodules comtypes`, plus a fail-fast import
+  probe. New engine
+  modules stay flat in `windows/engine/`: the bundle-cache hash only lists that directory
+  non-recursively.
+- **Prompt.** The co-work guide gets a Windows-only `WINDOWS TOOLS` clause via
+  `JARVIS_WINDOWS_TOOLS_CLAUSE`. It uses the same macro hoist as `JARVIS_LIVE_CPU_CMD_EXAMPLE`
+  and expands to `""` on Linux.
+
+**Verification:** 105/105 `windows/engine/tests` pass on Linux, 58 of them new
+(`test_tools_windows.py`). The clause macro was compile-checked on both branches. The live checks
+on a real Windows VM (`winlab`) are listed in the PR and still pending.
 
 ## Conventions
 

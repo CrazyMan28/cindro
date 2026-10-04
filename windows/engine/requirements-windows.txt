@@ -14,8 +14,13 @@ pyyaml>=6.0
 pillow>=10.0
 
 # Windows computer-use backend:
-pywin32        # Win32 access (helper alongside the ctypes SendInput path)
+pywin32        # Win32: clipboard, windows, Office COM (win32com) + ctypes SendInput helper
 mss            # fast multi-monitor screen capture
+uiautomation   # UI Automation (ui_* tools); pulls in comtypes
+# NB: OCR (screen_ocr / click_text) deliberately has NO Python dependency -- it
+# drives Windows.Media.Ocr through powershell.exe. Do NOT add the pywinrt
+# winrt-* wheels: they bundle msvcp140.dll, which crashes onnxruntime
+# (faster-whisper) when loaded first -- it broke the PyInstaller freeze.
 
 # Video understanding (computer_use_mcp/video) — keep in sync with the video
 # block in computer-use/pyproject.toml:
