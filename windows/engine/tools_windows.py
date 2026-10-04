@@ -8,8 +8,10 @@ Nothing under ``computer-use/`` is edited.
 Groups:
   * human-style input -- real held drags, modifier clicks, hold/release,
     hover, fine scroll, paced typing, waiting on the screen
-  * spreadsheet helpers -- tables through the clipboard (Excel for the web,
-    Google Sheets, desktop Excel all accept TSV paste / produce TSV on copy)
+  * spreadsheet helpers -- address-based (Name Box via UIA) go-to / read /
+    write of ranges through the clipboard (Excel for the web in Chrome, Google
+    Sheets, desktop Excel all accept TSV paste / produce TSV on copy)
+  * on-screen text (built-in Windows OCR) -- read, find and click by text
   * UI Automation -- read and drive controls by name (``ui_*``)
   * desktop Office COM -- Excel / Word / PowerPoint object models
   * Windows-correct overrides of two engine tools (desktop_calibrate,
@@ -22,13 +24,15 @@ import io
 import json
 import time
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP, Image
 
 from computer_use_mcp import policy, screen, selfheal
 
 import backend_windows as bw
+import win_ocr as ocr
 import win_office as office
 import win_platform as wp
+import win_sheet as sheet
 import win_uia as uia
 
 # Read-only tools that stay usable in PLAN mode (policy._PLAN_SAFE_TOOLS is a
@@ -38,6 +42,7 @@ PLAN_SAFE = frozenset({
     "clipboard_get_table", "clipboard_formats",
     "ui_tree", "ui_find", "ui_focused", "ui_element_at",
     "office_status", "excel_read_range", "word_read", "ppt_list_slides",
+    "screen_ocr", "screen_find_text", "window_screenshot", "sheet_active_cell",
 })
 
 # Engine tools whose Linux bodies are wrong on Windows; replaced in register().
@@ -140,12 +145,14 @@ def _restore_clipboard(text: str | None) -> None:
 
 
 def paste_table(rows, x=None, y=None, coord_space="image", include_html=False,
-                restore_clipboard=True, settle_ms=1000) -> dict:
+                restore_clipboard=True, settle_ms=1000, ref=None, window=None) -> dict:
     if not rows or not isinstance(rows, list):
         raise ValueError("rows must be a non-empty list of row lists")
     rows = [r if isinstance(r, list) else [r] for r in rows]
     prior = _saved_clipboard() if restore_clipboard else None
-    if x is not None and y is not None:
+    if ref:
+        sheet.goto(sheet.top_left(ref), window)
+    elif x is not None and y is not None:
         bw.click(x, y, coord_space=coord_space)
         time.sleep(0.15)
     info = wp.clipboard_set_table(rows, include_html=include_html)
@@ -175,6 +182,41 @@ def read_selection(restore_clipboard=True, timeout_ms=2500) -> dict:
     rows = wp.tsv_to_rows(text)
     return {"rows": rows, "row_count": len(rows),
             "col_count": max((len(r) for r in rows), default=0)}
+
+
+def read_range(ref, window=None, restore_clipboard=True) -> dict:
+    sheet.goto(ref, window)
+    time.sleep(0.2)
+    out = read_selection(restore_clipboard)
+    return {"ref": ref, **out}
+
+
+def _area(window, region_x, region_y, region_w, region_h):
+    return {"window": window or None, "region": _region(region_x, region_y, region_w, region_h)}
+
+
+def ocr_find(text, exact, scale, lang, window, region) -> dict:
+    res = ocr.read(region, window, scale, lang)
+    # reading order: top-to-bottom (rows within ~8px count as one), then left-to-right
+    hits = sorted(ocr.find_phrase(res["lines"], text, exact),
+                  key=lambda h: (h["rect"][1] // 8, h["rect"][0]))
+    return {"text": text, "count": len(hits), "matches": hits,
+            "captured_rect": res["captured_rect"]}
+
+
+def click_text_impl(text, occurrence=1, exact=False, button="left", clicks=1, modifiers="",
+               scale=2.0, lang=None, window=None, region=None) -> dict:
+    found = ocr_find(text, exact, scale, lang, window, region)
+    hits = found["matches"]
+    if not hits:
+        raise RuntimeError(f"text {text!r} not found on screen (OCR). Screenshot to check "
+                           "it's visible; try a shorter/partial phrase or a window= filter.")
+    n = int(occurrence)
+    if not 1 <= n <= len(hits):
+        raise RuntimeError(f"only {len(hits)} match(es) for {text!r}; occurrence={n}")
+    cx, cy = hits[n - 1]["center"]
+    res = bw.click_ex(cx, cy, button, clicks, modifiers, 0, "desktop", "active")
+    return {"clicked_text": hits[n - 1]["text"], "matches": len(hits), **res}
 
 
 # ---------------------------------------------------------------------------
@@ -423,19 +465,24 @@ def register(mcp: FastMCP) -> None:  # noqa: C901 - flat list of tool defs
             return _err(exc)
 
     @mcp.tool()
-    def sheet_paste_table(rows: list[list], x: float | None = None, y: float | None = None,
+    def sheet_paste_table(rows: list[list], ref: str | None = None,
+                          x: float | None = None, y: float | None = None,
                           coord_space: str = "image", include_html: bool = False,
-                          restore_clipboard: bool = True, settle_ms: int = 1000) -> str:
+                          restore_clipboard: bool = True, settle_ms: int = 1000,
+                          window: str = "foreground") -> str:
         """FASTEST way to fill a spreadsheet (Excel for the web in Chrome,
-        Google Sheets, desktop Excel): optionally click the top-left target cell
-        at x/y, then paste `rows` as real cells with ctrl+v. Values starting
-        with '=' are entered as formulas (e.g. [["Item","Qty","Total"],
-        ["Pens",3,"=B2*2"]]). Hundreds of cells land in one action instead of
-        typing cell by cell. The user's clipboard is restored afterwards.
+        Google Sheets, desktop Excel): pastes `rows` as real cells with ctrl+v,
+        starting at cell `ref` (e.g. 'B2' -- jumps there via the Name Box, no
+        coordinates needed) or at a cell you click via x/y, or at the current
+        selection. Values starting with '=' become formulas (e.g.
+        [["Item","Qty","Total"],["Pens","3","=B2*2"]]). Hundreds of cells land in
+        one action instead of typing cell by cell, and Excel's AutoComplete
+        can't alter them. The user's clipboard is restored afterwards.
         Screenshot to confirm."""
         try:
             return json.dumps(_healed("sheet_paste_table", "active", lambda: paste_table(
-                rows, x, y, coord_space, include_html, restore_clipboard, settle_ms)))
+                rows, x, y, coord_space, include_html, restore_clipboard, settle_ms,
+                ref, window)))
         except Exception as exc:
             return _err(exc)
 
@@ -453,22 +500,140 @@ def register(mcp: FastMCP) -> None:  # noqa: C901 - flat list of tool defs
             return _err(exc)
 
     @mcp.tool()
-    def sheet_goto(ref: str) -> str:
-        """Jump to / select a cell or range in Excel (desktop or web) via the Go
-        To box: ref like 'B7', 'A1:D20' or 'Sheet2!C3'. For Google Sheets click
-        the Name Box (left of the formula bar), type the ref and press Enter
-        instead."""
+    def sheet_goto(ref: str, window: str = "foreground", method: str = "auto") -> str:
+        """Jump to / select a cell or range BY ADDRESS in a web spreadsheet
+        (Excel for the web in Chrome, Google Sheets) or desktop Excel: ref like
+        'B7', 'A1:D20', 'C:C', 'Sheet2!C3'. Types into the Name Box (found via UI
+        Automation, no pixel guessing); falls back to Excel's ctrl+g Go To box
+        only after confirming it opened. window: 'foreground' or a title
+        substring like 'Excel' (it's focused first)."""
         try:
-            def go():
-                bw.key_press("ctrl+g")
-                time.sleep(0.5)
-                bw.type_text(ref)
-                time.sleep(0.1)
-                bw.key_press("enter")
-                return {"goto": ref}
-            return json.dumps(_healed("sheet_goto", "active", go))
+            return json.dumps(_healed("sheet_goto", "active",
+                                      lambda: sheet.goto(ref, window, method)))
         except Exception as exc:
             return _err(exc)
+
+    @mcp.tool()
+    def sheet_read_range(ref: str, window: str = "foreground",
+                         restore_clipboard: bool = True) -> str:
+        """Read a range BY ADDRESS (e.g. 'A1:F40', 'Sheet2!B:B') from a web
+        spreadsheet / Excel: selects it via the Name Box, copies, and returns the
+        exact cell values as rows. Use this instead of reading numbers off a
+        screenshot. (Formulas come back as their displayed values.)"""
+        try:
+            return json.dumps(read_range(ref, window, restore_clipboard))
+        except Exception as exc:
+            return _err(exc)
+
+    @mcp.tool()
+    def sheet_set_cell(ref: str, value: str, window: str = "foreground") -> str:
+        """Put one value or formula (e.g. '=SUM(B2:B9)') into cell `ref` -- goes
+        there by address and pastes, so AutoComplete can't change it. For many
+        cells use sheet_paste_table."""
+        try:
+            return json.dumps(_healed("sheet_set_cell", "active", lambda: paste_table(
+                [[value]], ref=sheet.top_left(ref), window=window)))
+        except Exception as exc:
+            return _err(exc)
+
+    @mcp.tool()
+    def sheet_active_cell(window: str = "foreground") -> str:
+        """Which cell is selected (Name Box address) and what the formula bar
+        shows (its formula, not just the value) -- read through UI Automation,
+        best effort."""
+        try:
+            return json.dumps(sheet.active_cell(window))
+        except Exception as exc:
+            return _err(exc)
+
+    @mcp.tool()
+    def sheet_shortcut(action: str, repeat: int = 1) -> str:
+        """Run a named spreadsheet keyboard shortcut (works in Excel for the
+        web): undo, redo, copy, cut, paste, paste_values, bold, italic,
+        underline, fill_down, fill_right, select_all, select_column, select_row,
+        extend_down/up/left/right, jump_down/up/left/right, go_top,
+        go_last_cell, next_sheet, prev_sheet, edit_cell, clear, cancel, confirm,
+        next_cell, new_line_in_cell, find, replace, insert_link, insert_cells,
+        delete_cells, format_currency, format_percent, format_cells, save."""
+        try:
+            return json.dumps(_healed("sheet_shortcut", "active",
+                                      lambda: sheet.shortcut(action, repeat)))
+        except Exception as exc:
+            return _err(exc)
+
+    # -- on-screen text (Windows OCR) -----------------------------------------------
+
+    @mcp.tool()
+    def screen_ocr(window: str | None = None, region_x: int | None = None,
+                   region_y: int | None = None, region_w: int | None = None,
+                   region_h: int | None = None, scale: float = 2.0,
+                   include_words: bool = False, lang: str | None = None) -> str:
+        """Read the TEXT on screen with the built-in Windows OCR (offline):
+        every line with its desktop-pixel box [x,y,w,h]. Limit it to a window
+        (title substring, e.g. 'Excel') or a desktop region for speed and
+        accuracy. Great for reading a spreadsheet grid, a web page, or any app
+        whose text you need exactly."""
+        try:
+            area = _area(window, region_x, region_y, region_w, region_h)
+            res = ocr.read(area["region"], area["window"], scale, lang)
+            if not include_words:
+                for line in res["lines"]:
+                    line.pop("words", None)
+            res["lines"] = res["lines"][:600]
+            return json.dumps(res)
+        except Exception as exc:
+            return _err(exc)
+
+    @mcp.tool()
+    def screen_find_text(text: str, window: str | None = None, exact: bool = False,
+                         region_x: int | None = None, region_y: int | None = None,
+                         region_w: int | None = None, region_h: int | None = None,
+                         scale: float = 2.0, lang: str | None = None) -> str:
+        """Find where a word/phrase appears on screen (OCR): every match with
+        its desktop box and centre -- click a centre with coord_space='desktop'.
+        Case-insensitive; exact=True requires the whole OCR word run to match."""
+        try:
+            area = _area(window, region_x, region_y, region_w, region_h)
+            return json.dumps(ocr_find(text, exact, scale, lang, area["window"], area["region"]))
+        except Exception as exc:
+            return _err(exc)
+
+    @mcp.tool()
+    def click_text(text: str, occurrence: int = 1, window: str | None = None,
+                   exact: bool = False, button: str = "left", clicks: int = 1,
+                   modifiers: str = "",
+                   region_x: int | None = None, region_y: int | None = None,
+                   region_w: int | None = None, region_h: int | None = None,
+                   scale: float = 2.0) -> str:
+        """Click on visible TEXT, like a person reading the screen: 'Total',
+        'Sheet2', 'Insert', a cell value, a link. occurrence picks the Nth
+        match (top-to-bottom, left-to-right); clicks=2 double-clicks (e.g. to
+        edit a cell or rename a sheet tab); modifiers='shift'/'ctrl' work too."""
+        try:
+            area = _area(window, region_x, region_y, region_w, region_h)
+            return json.dumps(_healed("click_text", "active", lambda: click_text_impl(
+                text, occurrence, exact, button, clicks, modifiers, scale, None,
+                area["window"], area["region"])))
+        except Exception as exc:
+            return _err(exc)
+
+    @mcp.tool()
+    def window_screenshot(window: str = "foreground", max_width: int | None = None,
+                          include_cursor: bool = False) -> list:
+        """Screenshot just one window (default: the focused one; or a title
+        substring like 'Excel' / 'Chrome'). Sharper than a whole-desktop shot on
+        multi-monitor setups. Image coordinates work with the mouse tools like
+        desktop_screenshot's."""
+        try:
+            if window == "foreground":
+                import ctypes
+                window = f"win:{ctypes.windll.user32.GetForegroundWindow()}"
+            r = ocr._capture_rect(None, window)
+            png, meta = screen.take_screenshot(region=r.as_dict(), max_width=max_width,
+                                               include_cursor=include_cursor)
+            return [Image(data=png, format="png"), json.dumps(meta)]
+        except Exception as exc:
+            return [_err(exc)]
 
     # -- UI Automation ----------------------------------------------------------
 

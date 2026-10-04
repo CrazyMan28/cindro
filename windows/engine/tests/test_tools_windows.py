@@ -413,3 +413,155 @@ def test_uia_describe_uses_generic_patterns(monkeypatch):
     assert node["value"] == "draft"
     assert node["rect"] == [10, 20, 100, 30]
     assert node["type"] == "Custom" and node["aid"] == "save"
+
+
+# ---------------------------------------------------------------------------
+# web-spreadsheet helpers (win_sheet) + OCR (win_ocr)
+# ---------------------------------------------------------------------------
+import win_ocr  # noqa: E402
+import win_sheet  # noqa: E402
+
+
+@pytest.mark.parametrize("ref", ["B7", "A1:D20", "$A$1", "Sheet2!C3", "'My Sheet'!A1:B2",
+                                 "C:C", "A:F", "3:5", "aa10"])
+def test_valid_refs(ref):
+    assert win_sheet.valid_ref(ref)
+
+
+@pytest.mark.parametrize("ref", ["", "hello world", "=SUM(A1)", "A1;B2", "1A"])
+def test_invalid_refs(ref):
+    assert not win_sheet.valid_ref(ref)
+
+
+def test_top_left():
+    assert win_sheet.top_left("Sheet2!B2:D9") == "Sheet2!B2"
+    assert win_sheet.top_left("$C$4:$F$9") == "C4"
+    assert win_sheet.top_left("A:C") == "A1"
+    assert win_sheet.top_left("3:5") == "A3"
+
+
+def test_every_sheet_shortcut_resolves_to_real_keys():
+    for action, combo in win_sheet.SHORTCUTS.items():
+        assert bw._resolve_vk(combo), action
+
+
+def test_shortcut_rejects_unknown_action(rec):
+    with pytest.raises(ValueError, match="Known"):
+        win_sheet.shortcut("explode")
+
+
+def _sheet_io(monkeypatch):
+    log = []
+    monkeypatch.setattr(win_sheet._bw, "click", lambda x, y, **k: log.append(("click", x, y)))
+    monkeypatch.setattr(win_sheet._bw, "key_press", lambda c, r=1: log.append(("key", c)))
+    monkeypatch.setattr(win_sheet._bw, "type_text_paced", lambda t, d=12: log.append(("type", t)))
+    monkeypatch.setattr(win_sheet.time, "sleep", lambda *_: None)
+    return log
+
+
+def test_goto_types_address_into_name_box(monkeypatch):
+    log = _sheet_io(monkeypatch)
+    monkeypatch.setattr(win_sheet, "_name_box",
+                        lambda w: {"eid": "1:0", "name": "Name Box", "rect": [100, 50, 80, 20]})
+    out = win_sheet.goto("B2:D9")
+    assert out["via"] == "name_box"
+    assert log == [("click", 140, 60), ("key", "ctrl+a"), ("type", "B2:D9"), ("key", "enter")]
+
+
+def test_goto_dialog_fallback_never_types_into_a_cell_when_nothing_opened(monkeypatch):
+    log = _sheet_io(monkeypatch)
+    monkeypatch.setattr(win_sheet, "_name_box", lambda w: None)
+    monkeypatch.setattr(win_sheet.selfheal, "_thumb", lambda which: bytes(1024))  # no change
+    with pytest.raises(RuntimeError, match="Go To"):
+        win_sheet.goto("B7")
+    assert log == [("key", "ctrl+g")]          # the address was NOT typed anywhere
+
+
+def test_goto_dialog_fallback_types_once_dialog_opened(monkeypatch):
+    log = _sheet_io(monkeypatch)
+    monkeypatch.setattr(win_sheet, "_name_box", lambda w: None)
+    frames = iter([bytes(1024), bytes([200]) * 1024])
+    monkeypatch.setattr(win_sheet.selfheal, "_thumb", lambda which: next(frames))
+    assert win_sheet.goto("B7")["via"] == "goto_dialog"
+    assert log == [("key", "ctrl+g"), ("type", "B7"), ("key", "enter")]
+
+
+def test_goto_rejects_non_reference(monkeypatch):
+    _sheet_io(monkeypatch)
+    with pytest.raises(ValueError):
+        win_sheet.goto("=SUM(A1)")
+
+
+def test_paste_table_with_ref_goes_there_first(monkeypatch):
+    calls = []
+    monkeypatch.setattr(tw.sheet, "goto", lambda ref, window=None: calls.append(("goto", ref)))
+    monkeypatch.setattr(tw.wp, "clipboard_paste", lambda: "old")
+    monkeypatch.setattr(tw.wp, "clipboard_copy", lambda t: calls.append(("restore", t)))
+    monkeypatch.setattr(tw.wp, "clipboard_set_table",
+                        lambda rows, include_html=False: calls.append(("set", rows)) or {})
+    monkeypatch.setattr(tw.bw, "key_press", lambda c, r=1: calls.append(("key", c)))
+    monkeypatch.setattr(tw.time, "sleep", lambda *_: None)
+    tw.paste_table([["a", "b"]], ref="Sheet2!B2:C2", settle_ms=0)
+    assert calls == [("goto", "Sheet2!B2"), ("set", [["a", "b"]]), ("key", "ctrl+v"),
+                     ("restore", "old")]
+
+
+def _ocr_lines():
+    raw = [("Item Qty Total", [("Item", 0, 0, 40, 20), ("Qty", 60, 0, 30, 20),
+                               ("Total", 120, 0, 50, 20)]),
+           ("Grand Total 42", [("Grand", 0, 100, 50, 20), ("Total", 60, 100, 50, 20),
+                               ("42", 120, 100, 20, 20)])]
+    return win_ocr.build_lines(raw, (1000, 500), 2.0)
+
+
+def test_ocr_boxes_map_back_to_desktop_pixels():
+    lines = _ocr_lines()
+    assert lines[0]["words"][2]["rect"] == [1060, 500, 25, 10]
+    assert lines[1]["rect"] == [1000, 550, 70, 10]
+
+
+def test_find_phrase_single_and_multi_word():
+    lines = _ocr_lines()
+    hits = win_ocr.find_phrase(lines, "total")
+    assert [h["rect"][1] for h in hits] == [500, 550]
+    grand = win_ocr.find_phrase(lines, "grand  TOTAL")
+    assert len(grand) == 1 and grand[0]["text"] == "Grand Total"
+    assert grand[0]["center"] == [1027, 555]
+    assert win_ocr.find_phrase(lines, "nope") == []
+
+
+def test_click_text_clicks_the_nth_match_centre(monkeypatch):
+    monkeypatch.setattr(tw.ocr, "read", lambda region, window, scale, lang:
+                        {"lines": _ocr_lines(), "captured_rect": {}})
+    clicked = []
+    monkeypatch.setattr(tw.bw, "click_ex",
+                        lambda x, y, *a: clicked.append((x, y)) or {"clicked": "left"})
+    out = tw.click_text_impl("total", occurrence=2)
+    assert clicked == [(1042, 555)] and out["matches"] == 2
+    with pytest.raises(RuntimeError, match="only 2"):
+        tw.click_text_impl("total", occurrence=3)
+    with pytest.raises(RuntimeError, match="not found"):
+        tw.click_text_impl("missing")
+
+
+def test_ocr_off_windows_fails_clearly():
+    if win_ocr.sys.platform != "win32":
+        with pytest.raises(RuntimeError, match="requires Windows"):
+            win_ocr._winrt()
+
+
+def test_new_web_sheet_and_ocr_tools_registered(monkeypatch):
+    from mcp.server.fastmcp import FastMCP
+
+    from computer_use_mcp import policy
+
+    monkeypatch.setattr(policy, "_PLAN_SAFE_TOOLS", policy._PLAN_SAFE_TOOLS)
+    m = FastMCP("t")
+    tw.register(m)
+    tools = {t.name: t for t in asyncio.run(m.list_tools())}
+    for n in ("sheet_read_range", "sheet_set_cell", "sheet_active_cell", "sheet_shortcut",
+              "screen_ocr", "screen_find_text", "click_text", "window_screenshot"):
+        assert n in tools, n
+    assert "ref" in tools["sheet_paste_table"].inputSchema["properties"]
+    assert {"screen_ocr", "screen_find_text", "window_screenshot"} <= policy._PLAN_SAFE_TOOLS
+    assert "click_text" not in policy._PLAN_SAFE_TOOLS

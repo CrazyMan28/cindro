@@ -4034,17 +4034,24 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
     "mouse_hover for tooltips/hover menus, scroll_smooth for a few rows at a time, " \
     "type_text_paced when a web editor drops characters, wait_for_screen_idle " \
     "instead of guessing sleeps.\n" \
-    "  * SPREADSHEETS (Excel for the web in Chrome, Google Sheets, desktop Excel): " \
-    "fill data with sheet_paste_table(rows, x, y) — one paste instead of typing cell " \
-    "by cell; '=' values become formulas. Read data with sheet_read_selection after " \
-    "selecting cells (click + shift-click, or sheet_goto 'A1:F40') — never read " \
-    "numbers off a screenshot. Type a formula with type_text_paced then Enter; " \
-    "extend it down with the fill handle via mouse_drag_smooth or ctrl+d.\n" \
+    "  * EXCEL IS USUALLY A WEBSITE (Excel for the web in Chrome; same for Google " \
+    "Sheets) — there is no Excel app to automate, so work it BY CELL ADDRESS: " \
+    "sheet_goto('B7' / 'A1:D20' / 'Sheet2!C3') jumps via the Name Box; " \
+    "sheet_read_range('A1:F40') returns exact values (never read numbers off a " \
+    "screenshot); sheet_paste_table(rows, ref='B2') fills many cells in one paste " \
+    "('=' values become formulas); sheet_set_cell('D2', '=B2*C2') for one cell; " \
+    "sheet_active_cell shows the selected cell + formula bar; sheet_shortcut('fill_down' " \
+    "/ 'bold' / 'insert_cells' / 'next_sheet' / ...) for named shortcuts. Fill handle, " \
+    "column resize and range select by mouse: mouse_drag_smooth.\n" \
+    "  * READ / CLICK BY TEXT: screen_ocr(window='Excel') reads on-screen text with " \
+    "exact boxes; screen_find_text / click_text('Insert') click what you can read — " \
+    "ribbon buttons, sheet tabs, menu items, cell values. window_screenshot('Excel') " \
+    "captures just that window.\n" \
     "  * Native apps / dialogs / Settings / Explorer / desktop Office: ui_tree or " \
     "ui_find shows every control with its name and exact rect; act with ui_click / " \
     "ui_set_value / ui_toggle / ui_select instead of guessing pixels. Web page content: " \
     "prefer browser_snapshot + browser_* tools.\n" \
-    "  * Desktop Office installed (office_status)? excel_read_range / excel_write_range " \
+    "  * Only if DESKTOP Office is installed (office_status): excel_read_range / excel_write_range " \
     "/ excel_run, word_read / word_insert / word_find_replace / word_save_as, " \
     "ppt_list_slides / ppt_add_slide / ppt_set_text / ppt_export drive it exactly.\n" \
     "  * Windows: window_list / window_activate / window_set (move_resize, maximize), " \

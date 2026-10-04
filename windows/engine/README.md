@@ -63,6 +63,8 @@ brain and go through the same trust and plan-mode checks. The read-only ones are
 | `backend_windows.py` | New primitives: `drag_smooth` (with `smooth_path`), `click_ex`, `mouse_down`/`mouse_up`, `key_down`/`key_up` (held-input registry plus a 15s watchdog, `release_all`), `hover`, `scroll_smooth`, `type_text_paced`. All of them publish to `agent_bus`. |
 | `win_platform.py` | Clipboard (text and TSV/CF_HTML tables), windows (`win:<hwnd>` ids), apps (`Get-StartApps`, Start-menu shortcuts, ShellExecute), virtual desktops. |
 | `win_uia.py` | UI Automation via the `uiautomation` package (comtypes). Element ids are `<hwnd>:<i>.<j>…` child-index paths, and live elements are cached. |
+| `win_sheet.py` | Web-spreadsheet control by address: finds the Name Box through UIA (the cache is keyed by hwnd), falls back to ctrl+g Go To only after a screen-change check confirms the dialog opened, and holds the vetted `SHORTCUTS` table. |
+| `win_ocr.py` | Built-in Windows OCR (`Windows.Media.Ocr` through pywinrt). Runs on one dedicated worker thread so its WinRT MTA apartment never collides with the UIA/COM STA. Upscales 2x and maps boxes back to desktop pixels; `find_phrase` does the multi-word matching. |
 | `win_office.py` | Excel/Word/PowerPoint through late-bound `win32com` (no gencache). |
 | `tools_windows.py` | The MCP tool definitions. They overlap the existing tools only in the `desktop_calibrate` and `desktop_reset` overrides. |
 
@@ -73,7 +75,8 @@ the watchdog.
 
 New Win32 deps are lazy-imported and need matching flags in `windows/scripts/build.ps1`
 (`--hidden-import win32clipboard/pythoncom/win32com.client`, `--collect-all uiautomation`,
-`--collect-submodules comtypes`) plus `uiautomation` in `requirements-windows.txt`.
+`--collect-submodules comtypes`, `--collect-all winrt`) plus `uiautomation` and the
+`winrt-*` OCR packages in `requirements-windows.txt`.
 
 ## Running on Windows
 

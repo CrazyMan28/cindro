@@ -1938,20 +1938,33 @@ OK. Live-verified against the actual running daemon, not just unit tests.
   desktop Excel all honour. `sheet_paste_table` waits `settle_ms` before restoring the user's
   clipboard, because the page reads it asynchronously after ctrl+v and an early restore pastes
   the OLD contents.
+- **Excel is a WEBSITE for the owner (Excel for the web in Chrome), so there's no COM.** The
+  `sheet_*` tools work by cell address. `win_sheet.goto` types into the page's Name Box, which it
+  finds through UIA because Chrome exposes page controls to UIA. When there is no Name Box it
+  falls back to ctrl+g, but only after `selfheal._thumb` confirms the Go To dialog actually
+  opened. Without that check, a missing dialog means the address gets typed INTO THE ACTIVE CELL
+  and overwrites the user's data. Keep that check. Reading and writing ranges goes through the
+  clipboard (`sheet_read_range`, `sheet_paste_table(ref=)`). `sheet_set_cell` also pastes
+  instead of typing, because Excel's AutoComplete rewrites typed text when you press Enter.
+- **Windows OCR lives on its own thread.** `win_ocr` uses `Windows.Media.Ocr` through pywinrt.
+  pywinrt wants an MTA apartment, but the tool thread is an STA once uiautomation or pythoncom
+  have initialised it. So recognition runs on a single-worker `ThreadPoolExecutor` with its own
+  `asyncio.run`. Don't call WinRT from the tool thread.
 - **`drag()` interpolation bug (both backends).** It looped `range(1, max(2, steps)+1)` but used
   `t = i/steps`, so `steps=1` overshot the target by a full drag length. This is fixed in
   `backend_windows.drag` only. `computer-use/computer_use_mcp/input.py:237` still has it; it's
   harmless at the default `steps=14`.
-- **Packaging.** `uiautomation` (comtypes) is in `requirements-windows.txt`. `build.ps1` adds
-  `--hidden-import win32clipboard/pythoncom/win32com/win32com.client`, `--collect-all
-  uiautomation` and `--collect-submodules comtypes`, plus a fail-fast import probe. New engine
+- **Packaging.** `uiautomation` (comtypes) and the `winrt-*` OCR packages are in
+  `requirements-windows.txt`. `build.ps1` adds `--hidden-import
+  win32clipboard/pythoncom/win32com/win32com.client`, `--collect-all uiautomation`,
+  `--collect-submodules comtypes` and `--collect-all winrt`, plus a fail-fast import probe. New engine
   modules stay flat in `windows/engine/`: the bundle-cache hash only lists that directory
   non-recursively.
 - **Prompt.** The co-work guide gets a Windows-only `WINDOWS TOOLS` clause via
   `JARVIS_WINDOWS_TOOLS_CLAUSE`. It uses the same macro hoist as `JARVIS_LIVE_CPU_CMD_EXAMPLE`
   and expands to `""` on Linux.
 
-**Verification:** 77/77 `windows/engine/tests` pass on Linux, 30 of them new
+**Verification:** 105/105 `windows/engine/tests` pass on Linux, 58 of them new
 (`test_tools_windows.py`). The clause macro was compile-checked on both branches. The live checks
 on a real Windows VM (`winlab`) are listed in the PR and still pending.
 

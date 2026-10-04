@@ -202,14 +202,15 @@ def _matches(ctl, name, ctype, aid) -> bool:
 
 def find(name: str | None = None, control_type: str | None = None,
          automation_id: str | None = None, window: str | None = "foreground",
-         max_results: int = 20, max_depth: int = 25, visible_only: bool = True) -> dict:
+         max_results: int = 20, max_depth: int = 25, visible_only: bool = True,
+         max_nodes: int = 5000) -> dict:
     if not (name or control_type or automation_id):
         raise ValueError("ui_find needs name, control_type and/or automation_id")
     auto = _auto()
     ctype = normalize_type(control_type)
     hwnd, root = _window_root(auto, window)
     hits = []
-    for ctl, eid, depth in _walk(root, hwnd, int(max_depth), 5000, visible_only):
+    for ctl, eid, depth in _walk(root, hwnd, int(max_depth), int(max_nodes), visible_only):
         if _matches(ctl, name, ctype, automation_id):
             _remember(eid, ctl)
             hits.append(_describe(ctl, eid, depth))
