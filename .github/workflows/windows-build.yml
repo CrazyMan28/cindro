@@ -98,10 +98,18 @@ jobs:
           arch: win64_msvc2022_64
           modules: qtwebsockets qtmultimedia
           cache: true
+          # Without this the action runs its OWN setup-python (latest 3.x) AFTER
+          # ours, so the engine got frozen with Python 3.14 -- where onnxruntime
+          # crashes PyInstaller (0xC0000005 importing onnxruntime.quantization).
+          # aqtinstall installs fine into the 3.12 set up above.
+          setup-python: false
 
-      - name: Point CMake at Qt
+      - name: Point CMake at Qt (and assert Python 3.12)
         shell: pwsh
         run: |
+          $pv = (python --version 2>&1) -join ""
+          Write-Host "python on PATH: $pv"
+          if ($pv -notmatch '^Python 3\.12\.') { throw "expected Python 3.12 for the engine freeze, got '$pv'" }
           "CMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append
           Get-Command windeployqt | Select-Object -ExpandProperty Source
 
