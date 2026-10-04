@@ -1908,6 +1908,53 @@ formality. Fixed:
 including the `agentQuestion` Qt signal signature change (3 args → 4); offscreen `--selftest` renders
 OK. Live-verified against the actual running daemon, not just unit tests.
 
+## New subsystems (2026-10-04) — Windows computer-use upgrade (human-style input, platform tools, UIA, Office)
+
+- **Engine tool bodies that call Linux modules were silently broken on Windows.** `tools_desktop`
+  calls `clipboard.*`, `windows.*`, `apps.*` and `workspaces.*` by module attribute, but
+  `server_windows.py` used to patch only `input`/`screen`/`session`. Every `clipboard_*`,
+  `window_*`, `app_*` and `workspace_*` call therefore ran `wl-copy`/KWin/swaymsg and failed.
+  `windows/engine/win_platform.py` now provides Win32 versions, and `apply_patches()` rebinds them
+  from `wp.PATCHES`. If the engine gains a new Linux-only helper module that a tool calls, add a
+  Windows implementation and a `PATCHES` entry, or the tool is dead on Windows.
+- **`desktop_reset` + working `list_windows` = data loss.** The engine's `desktop_reset` closes
+  everything `windows.list_windows("sway")` returns. On the Windows host, the `win_platform`
+  version therefore returns `[]` for `"sway"`/`"agent"` unless `JARVIS_AGENT_INSANDBOX`.
+  `tools_windows` also overrides `desktop_reset` to refuse on the host. Don't "fix" either back.
+- **Windows-only tools are registered, not patched.** `server_windows.main()` calls
+  `tools_windows.register(computer_use_mcp.server.mcp)` before `_srv.main()`. That works because
+  FastMCP reads `_tool_manager` per `tools/list` and `policy.install`'s wrapper looks tools up by
+  name at call time. Overriding an engine tool means popping it from `mcp._tool_manager._tools`
+  and re-registering it, which is done for `desktop_calibrate` and `desktop_reset`. Read-only
+  tools join plan mode by rebinding `policy._PLAN_SAFE_TOOLS` (a module global the gate reads per
+  call). The Windows tool list is now a SUPERSET of Linux's; the shared schemas are unchanged.
+- **Held input must never leak.** `mouse_down`/`key_down` record presses in
+  `backend_windows._HELD`. A daemon `threading.Timer` watchdog releases anything older than
+  `CINDRO_INPUT_HOLD_MAX_S` (15s), and `input_release_all` frees it on demand.
+  `drag_smooth`/`click_ex` release in `finally`. A stuck shift or left button turns every later
+  user click into a shift-click or a drag, so keep the `finally`s.
+- **Spreadsheet I/O goes through the clipboard on purpose.** Excel for the web (the user's main
+  target, in Chrome) has no COM. TSV paste and copy is the one channel Excel web, Google Sheets and
+  desktop Excel all honour. `sheet_paste_table` waits `settle_ms` before restoring the user's
+  clipboard, because the page reads it asynchronously after ctrl+v and an early restore pastes
+  the OLD contents.
+- **`drag()` interpolation bug (both backends).** It looped `range(1, max(2, steps)+1)` but used
+  `t = i/steps`, so `steps=1` overshot the target by a full drag length. This is fixed in
+  `backend_windows.drag` only. `computer-use/computer_use_mcp/input.py:237` still has it; it's
+  harmless at the default `steps=14`.
+- **Packaging.** `uiautomation` (comtypes) is in `requirements-windows.txt`. `build.ps1` adds
+  `--hidden-import win32clipboard/pythoncom/win32com/win32com.client`, `--collect-all
+  uiautomation` and `--collect-submodules comtypes`, plus a fail-fast import probe. New engine
+  modules stay flat in `windows/engine/`: the bundle-cache hash only lists that directory
+  non-recursively.
+- **Prompt.** The co-work guide gets a Windows-only `WINDOWS TOOLS` clause via
+  `JARVIS_WINDOWS_TOOLS_CLAUSE`. It uses the same macro hoist as `JARVIS_LIVE_CPU_CMD_EXAMPLE`
+  and expands to `""` on Linux.
+
+**Verification:** 77/77 `windows/engine/tests` pass on Linux, 30 of them new
+(`test_tools_windows.py`). The clause macro was compile-checked on both branches. The live checks
+on a real Windows VM (`winlab`) are listed in the PR and still pending.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

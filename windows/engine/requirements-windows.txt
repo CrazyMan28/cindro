@@ -14,8 +14,9 @@ pyyaml>=6.0
 pillow>=10.0
 
 # Windows computer-use backend:
-pywin32        # Win32 access (helper alongside the ctypes SendInput path)
+pywin32        # Win32: clipboard, windows, Office COM (win32com) + ctypes SendInput helper
 mss            # fast multi-monitor screen capture
+uiautomation   # UI Automation (ui_* tools); pulls in comtypes
 
 # Video understanding (computer_use_mcp/video) — keep in sync with the video
 # block in computer-use/pyproject.toml:

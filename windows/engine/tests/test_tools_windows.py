@@ -387,3 +387,29 @@ def test_mouse_drag_smooth_tool_reports_dragged_and_screen_changed(rec, monkeypa
     res = m._tool_manager._tools["mouse_drag_smooth"].fn(0, 0, 50, 50)
     out = json.loads(res)
     assert out["dragged"] is True and out["screen_changed"] is True
+
+
+def test_uia_describe_uses_generic_patterns(monkeypatch):
+    """Pattern support is probed via Control.GetPattern(PatternId.X), which every
+    control class has -- not the per-subclass GetInvokePattern() helpers."""
+    pid = types.SimpleNamespace(InvokePattern=1, ValuePattern=2, TogglePattern=3,
+                                ExpandCollapsePattern=4, SelectionItemPattern=5,
+                                ScrollPattern=6, RangeValuePattern=7)
+    monkeypatch.setitem(win_uia.sys.modules, "uiautomation", types.SimpleNamespace(PatternId=pid))
+    rect = types.SimpleNamespace(left=10, top=20, right=110, bottom=50)
+
+    class Custom:          # no GetInvokePattern / GetValuePattern helpers at all
+        Name = "Save"
+        ControlTypeName = "CustomControl"
+        AutomationId = "save"
+        BoundingRectangle = rect
+        IsEnabled = True
+
+        def GetPattern(self, p):
+            return {1: object(), 2: types.SimpleNamespace(Value="draft")}.get(p)
+
+    node = win_uia._describe(Custom(), "99:0.1", 2)
+    assert node["patterns"] == ["invoke", "value"]
+    assert node["value"] == "draft"
+    assert node["rect"] == [10, 20, 100, 30]
+    assert node["type"] == "Custom" and node["aid"] == "save"

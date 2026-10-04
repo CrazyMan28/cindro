@@ -119,9 +119,15 @@ $engineJob = Start-Job -Name "engine" -ArgumentList @("$repo","$win","$build","$
   # ctranslate2/av wheel would otherwise only surface after the (slow) freeze.
   & $venvPy -c "import faster_whisper, ctranslate2, av, yt_dlp, huggingface_hub, onnxruntime"
   if ($LASTEXITCODE -ne 0) { throw "video deps import probe failed (faster-whisper/ctranslate2/av/yt-dlp/onnxruntime)" }
+  # Same fail-fast for the Windows-only tools (tools_windows.py): clipboard/window
+  # control (pywin32), Office COM (win32com/pythoncom) and UI Automation.
+  & $venvPy -c "import win32clipboard, win32gui, win32process, win32com.client, pythoncom, comtypes, uiautomation"
+  if ($LASTEXITCODE -ne 0) { throw "windows tools import probe failed (pywin32/comtypes/uiautomation)" }
   # --collect-submodules computer_use_mcp guarantees EVERY tool module ships
   # (tools_desktop/browser/widgets/todo/bg/phone/jarvis_ops/video); --collect-all mss/PIL
-  # + the win32 hidden-imports cover the Windows backend's lazy imports.
+  # + the win32 hidden-imports cover the Windows backend's lazy imports (incl. the
+  # Windows-only tools: win32clipboard, win32com/pythoncom for Office COM, and
+  # uiautomation -- which ships its own DLLs, hence --collect-all -- over comtypes).
   # Video understanding needs the heavy --collect-all trio: ctranslate2 and av ship
   # compiled .pyd/.dll payloads the default import scanner misses, and faster_whisper
   # carries data assets — same class of silent-drop as the jsonschema gotcha
@@ -140,6 +146,9 @@ $engineJob = Start-Job -Name "engine" -ArgumentList @("$repo","$win","$build","$
     --collect-submodules yt_dlp --collect-data yt_dlp `
     --hidden-import win32api --hidden-import win32gui --hidden-import win32con `
     --hidden-import win32process --hidden-import pywintypes `
+    --hidden-import win32clipboard --hidden-import pythoncom `
+    --hidden-import win32com --hidden-import win32com.client --collect-submodules win32com `
+    --collect-all uiautomation --collect-submodules comtypes `
     --paths (Join-Path $win "engine") (Join-Path $win "engine\server_windows.py")
   if ($LASTEXITCODE -ne 0) { throw "PyInstaller (engine) failed" }
 

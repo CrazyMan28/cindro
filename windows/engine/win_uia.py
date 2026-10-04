@@ -29,16 +29,28 @@ _CACHE: dict[str, object] = {}
 _CACHE_MAX = 4000
 _VALUE_MAX = 200
 
-# (pattern getter on uiautomation.Control, label) -- probed per element.
+# (uiautomation.PatternId attribute, label) -- probed per element. Uses the
+# generic Control.GetPattern(id): the GetInvokePattern()-style helpers only
+# exist on SOME control subclasses (a CustomControl that supports Invoke has no
+# GetInvokePattern method), so they'd under-report what an element can do.
 _PATTERNS = (
-    ("GetInvokePattern", "invoke"),
-    ("GetValuePattern", "value"),
-    ("GetTogglePattern", "toggle"),
-    ("GetExpandCollapsePattern", "expand"),
-    ("GetSelectionItemPattern", "select"),
-    ("GetScrollPattern", "scroll"),
-    ("GetRangeValuePattern", "range"),
+    ("InvokePattern", "invoke"),
+    ("ValuePattern", "value"),
+    ("TogglePattern", "toggle"),
+    ("ExpandCollapsePattern", "expand"),
+    ("SelectionItemPattern", "select"),
+    ("ScrollPattern", "scroll"),
+    ("RangeValuePattern", "range"),
 )
+
+
+def _pat(ctl, pattern: str):
+    """The element's pattern object, or None when unsupported."""
+    try:
+        auto = sys.modules.get("uiautomation") or _auto()
+        return ctl.GetPattern(getattr(auto.PatternId, pattern))
+    except Exception:
+        return None
 
 
 def _auto():
@@ -112,25 +124,20 @@ def _describe(ctl, eid: str, depth: int, with_patterns: bool = True) -> dict:
     except Exception:
         pass
     if with_patterns:
-        pats = []
-        for getter, label in _PATTERNS:
+        found = {label: p for pattern, label in _PATTERNS
+                 if (p := _pat(ctl, pattern)) is not None}
+        if found:
+            node["patterns"] = list(found)
+        if "value" in found:
             try:
-                if getattr(ctl, getter)() is not None:
-                    pats.append(label)
-            except Exception:
-                pass
-        if pats:
-            node["patterns"] = pats
-        if "value" in pats:
-            try:
-                v = ctl.GetValuePattern().Value
+                v = found["value"].Value
                 if v:
                     node["value"] = v[:_VALUE_MAX]
             except Exception:
                 pass
-        if "toggle" in pats:
+        if "toggle" in found:
             try:
-                node["toggled"] = int(ctl.GetTogglePattern().ToggleState) == 1
+                node["toggled"] = int(found["toggle"].ToggleState) == 1
             except Exception:
                 pass
     return node
@@ -273,10 +280,7 @@ def click(eid=None, name=None, control_type=None, automation_id=None,
     desc = _describe(ctl, e, 0, with_patterns=False)
     inv = None
     if method in ("auto", "invoke") and button == "left" and not double:
-        try:
-            inv = ctl.GetInvokePattern()
-        except Exception:
-            inv = None
+        inv = _pat(ctl, "InvokePattern")
     if inv is not None:
         inv.Invoke()
         try:  # keep the take-over overlay in the loop even without a mouse move
@@ -295,9 +299,8 @@ def click(eid=None, name=None, control_type=None, automation_id=None,
 def set_value(text: str, eid=None, name=None, control_type=None, automation_id=None,
               window="foreground") -> dict:
     ctl, e = _resolve(eid, name, control_type, automation_id, window)
-    vp = None
+    vp = _pat(ctl, "ValuePattern")
     try:
-        vp = ctl.GetValuePattern()
         if vp is not None and vp.IsReadOnly:
             vp = None
     except Exception:
@@ -316,7 +319,7 @@ def set_value(text: str, eid=None, name=None, control_type=None, automation_id=N
 def toggle(eid=None, name=None, control_type=None, automation_id=None,
            window="foreground") -> dict:
     ctl, e = _resolve(eid, name, control_type, automation_id, window)
-    tp = ctl.GetTogglePattern()
+    tp = _pat(ctl, "TogglePattern")
     if tp is None:
         raise RuntimeError(f"element {e!r} can't be toggled (no Toggle pattern)")
     tp.Toggle()
@@ -326,7 +329,7 @@ def toggle(eid=None, name=None, control_type=None, automation_id=None,
 def expand(expand_: bool = True, eid=None, name=None, control_type=None,
            automation_id=None, window="foreground") -> dict:
     ctl, e = _resolve(eid, name, control_type, automation_id, window)
-    ep = ctl.GetExpandCollapsePattern()
+    ep = _pat(ctl, "ExpandCollapsePattern")
     if ep is None:
         raise RuntimeError(f"element {e!r} can't expand/collapse")
     ep.Expand() if expand_ else ep.Collapse()
@@ -336,7 +339,7 @@ def expand(expand_: bool = True, eid=None, name=None, control_type=None,
 def select(eid=None, name=None, control_type=None, automation_id=None,
            window="foreground") -> dict:
     ctl, e = _resolve(eid, name, control_type, automation_id, window)
-    sp = ctl.GetSelectionItemPattern()
+    sp = _pat(ctl, "SelectionItemPattern")
     if sp is None:
         raise RuntimeError(f"element {e!r} isn't selectable (no SelectionItem pattern)")
     sp.Select()

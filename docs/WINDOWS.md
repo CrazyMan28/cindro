@@ -17,6 +17,7 @@ platform guards; it never changes how Linux/Android build or run.
 |---|---|---|---|
 | Chat, streaming, sessions, history, brain/model picker | ✅ | ✅ | Same daemon + QML. Mistral is the default brain on a CLI-less box. |
 | **Computer use** (screenshot, mouse, keyboard, scroll, windows, apps, clipboard) | ✅ | ✅ | Win32 `SendInput` + `mss` capture (see below). **Real screen.** |
+| **Windows-only computer-use extras** (smooth held drags, modifier/triple clicks, hover, fine scroll, paced typing, spreadsheet paste/read, UI Automation, desktop Office COM) | — | ✅ | `windows/engine/tools_windows.py` — see "Windows-only tools" below. Built for Excel for the web in Chrome as much as desktop apps. |
 | Nested "beside-you" agent desktop | ✅ headless Sway | ⚠ v2, opt-in | Windows Sandbox tier — validated end-to-end on real hardware 2026-07-13, but still gated behind `JARVIS_ENABLE_V2=1` pending wider-machine validation before it's the default. See `windows/isolation/DESIGN.md`. |
 | Multi-seat isolated agent cursor | ✅ forked KWin | ❌ | No compositor to fork; the v2 Sandbox tier isolates via an OS-level VM boundary instead (see above), not a second cursor on your live desktop. Without v2 opted in, the agent shares your input queue (gated by the take-over banner + consent). |
 | Real-screen take-over (glow cursor + banner + consent + Esc) | ✅ | ✅ | Transparent click-through overlay (`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST`). |
@@ -46,7 +47,9 @@ consent, mirroring the Linux *take-over* UX.
 The Linux engine funnels every input/screen tool through one coordinate layer
 (`screen.map_to_desktop()` + `move/click/drag/scroll/key_press/type_text/take_screenshot`).
 Windows swaps only the **backend** beneath those tools (`computer_use_mcp/backend_windows.py`,
-selected by `platform.system()`); the model-facing MCP tool schema is **byte-identical**.
+selected by `platform.system()`); every tool the Linux engine has keeps the **same schema**
+on Windows. Windows additionally registers its own extra tools (below), so the Windows tool
+list is a **superset** of Linux's.
 
 | Primitive | Linux | Windows |
 |---|---|---|
@@ -55,6 +58,24 @@ selected by `platform.system()`); the model-facing MCP tool schema is **byte-ide
 | Keyboard / type | ydotool / vkbd | `SendInput`; `KEYEVENTF_UNICODE` for full-Unicode typing |
 | Screenshot | grim / spectacle | `mss` (DXGI) + PIL downscale/crop (reused) |
 | Windows/apps | sway-IPC / KWin DBus | `EnumWindows`/`SetForegroundWindow`/`ShowWindow`, `os.startfile` |
+| Clipboard | wl-copy / wl-paste | `win32clipboard` (`CF_UNICODETEXT`, plus TSV/`HTML Format` tables) |
+| Workspaces | sway / KWin virtual desktops | Windows virtual desktops (registry + `ctrl+win+←/→/d`); rename unsupported |
+
+### Windows-only tools
+
+Registered by `windows/engine/tools_windows.py` on the engine's own FastMCP instance (same
+trust/plan-mode gate as every engine tool). Nothing under `computer-use/` changes.
+
+| Group | Tools | What for |
+|---|---|---|
+| Human-style input | `mouse_drag_smooth`, `mouse_click_ex`, `mouse_down`/`mouse_up`, `key_down`/`key_up`, `input_release_all`, `mouse_hover`, `mouse_position`, `scroll_smooth`, `type_text_paced`, `wait_for_screen_change`, `wait_for_screen_idle` | Real hold→glide→release drags (fill handle, range select, column resize, drag-and-drop), shift/ctrl-click, triple-click, long-press, tooltips, sub-notch scrolling, typing web editors don't drop, waiting for loads. Held keys/buttons auto-release after 15s. |
+| Spreadsheets | `sheet_paste_table`, `sheet_read_selection`, `sheet_goto`, `clipboard_set_table`, `clipboard_get_table`, `clipboard_formats` | Fill or read a whole range in one action through the clipboard (TSV) — works in Excel for the web, Google Sheets and desktop Excel. |
+| UI Automation | `ui_tree`, `ui_find`, `ui_focused`, `ui_element_at`, `ui_click`, `ui_set_value`, `ui_toggle`, `ui_expand`, `ui_select` | Read and drive native controls by name with exact rects (dialogs, Settings, Explorer, desktop Office). For web page content prefer the extension's `browser_*` tools. |
+| Desktop Office (COM) | `office_status`, `office_open`, `excel_read_range`, `excel_write_range`, `excel_run`, `word_read`, `word_insert`, `word_find_replace`, `word_save_as`, `ppt_list_slides`, `ppt_add_slide`, `ppt_set_text`, `ppt_export` | Only when desktop Office is installed; clean "not installed" error otherwise. |
+
+`desktop_calibrate` and `desktop_reset` are replaced with Windows versions. The calibration
+reads back `GetCursorPos`, and `desktop_reset` refuses to run on the real screen, because there
+it would close the user's own windows.
 
 ## Install (end users) — assumes a BARE machine, bundles everything
 
