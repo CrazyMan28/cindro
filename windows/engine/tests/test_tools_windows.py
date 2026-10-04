@@ -547,7 +547,25 @@ def test_click_text_clicks_the_nth_match_centre(monkeypatch):
 def test_ocr_off_windows_fails_clearly():
     if win_ocr.sys.platform != "win32":
         with pytest.raises(RuntimeError, match="requires Windows"):
-            win_ocr._winrt()
+            win_ocr._recognize("x.png", None)
+
+
+def test_ocr_never_imports_pywinrt():
+    """pywinrt bundles its own msvcp140.dll; loaded before onnxruntime it crashed
+    the PyInstaller freeze (0xC0000005). OCR goes through powershell.exe instead."""
+    import inspect
+    src = inspect.getsource(win_ocr)
+    assert "import_module(\"winrt" not in src and "from winrt" not in src
+
+
+def test_parse_ps_output_handles_powershell_single_element_collapse():
+    full = ('[{"t":"Grand Total","w":[{"t":"Grand","x":0,"y":1,"w":5,"h":2},'
+            '{"t":"Total","x":6,"y":1,"w":5,"h":2}]}]')
+    assert win_ocr.parse_ps_output(full) == [
+        ("Grand Total", [("Grand", 0.0, 1.0, 5.0, 2.0), ("Total", 6.0, 1.0, 5.0, 2.0)])]
+    collapsed = '{"t":"Hi","w":{"t":"Hi","x":1,"y":2,"w":3,"h":4}}'
+    assert win_ocr.parse_ps_output(collapsed) == [("Hi", [("Hi", 1.0, 2.0, 3.0, 4.0)])]
+    assert win_ocr.parse_ps_output("") == [] and win_ocr.parse_ps_output("[]") == []
 
 
 def test_new_web_sheet_and_ocr_tools_registered(monkeypatch):

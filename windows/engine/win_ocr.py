@@ -6,83 +6,139 @@ gives the model the actual text on screen WITH desktop-pixel boxes, so it can
 read values and click "the cell that says Total" instead of estimating pixels.
 
 Offline, no model download -- Windows 10/11 ship the engine (it uses the user's
-installed language packs). Accessed through the pywinrt projection
-(``winrt-Windows.Media.Ocr`` & friends).
-
-WinRT wants its own (MTA) apartment, while UI Automation / Office COM put the
-tool thread in an STA. So every recognition runs on ONE dedicated worker thread
-that owns the WinRT apartment and its own asyncio loop. All imports are lazy:
-the pure helpers (phrase matching, box mapping) are tested on Linux.
+installed language packs). Reached through Windows PowerShell 5.1's built-in
+WinRT projection, in a child process, NOT through the pywinrt wheels: those
+bundle their own msvcp140.dll, and loading it before onnxruntime (faster-whisper)
+crashes the process (0xC0000005 -- the MSVC std::mutex ABI break). A separate
+process also keeps WinRT's apartment away from the UIA/COM STA on the tool
+thread. The pure helpers (phrase matching, box mapping) are tested on Linux.
 """
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
-import importlib
+import json
+import os
 import re
+import subprocess
 import sys
+import tempfile
 
 import backend_windows as _bw
 
-_POOL: concurrent.futures.ThreadPoolExecutor | None = None
-_MAX_DIM = 4096          # stay well under OcrEngine.max_image_dimension after upscaling
+_MAX_DIM = 4096          # stay well under OcrEngine.MaxImageDimension after upscaling
+_CREATE_NO_WINDOW = 0x08000000
+
+# Windows PowerShell 5.1 (powershell.exe -- NOT pwsh 7, which has no WinRT
+# projection). Writes [{t: line, w: [{t,x,y,w,h}, ...]}, ...] as UTF-8 JSON to
+# -Out (a file, so non-ASCII text survives the console code page).
+_PS_SCRIPT = r"""
+param([string]$Path, [string]$Out, [string]$Lang)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Storage.StorageFile, Windows.Storage, ContentType=WindowsRuntime]
+$null = [Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics, ContentType=WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrResult, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Globalization.Language, Windows.Globalization, ContentType=WindowsRuntime]
+$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+    $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+function Await($op, [Type]$type) {
+    $task = $asTask.MakeGenericMethod($type).Invoke($null, @($op))
+    $null = $task.Wait(-1)
+    $task.Result
+}
+$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($Path)) ([Windows.Storage.StorageFile])
+$stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+try {
+    $decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+    $bmp = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+    if ($Lang) {
+        $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new($Lang))
+    } else {
+        $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+    }
+    if ($null -eq $engine) { throw "NO_OCR_LANGUAGE" }
+    $result = Await ($engine.RecognizeAsync($bmp)) ([Windows.Media.Ocr.OcrResult])
+    $lines = @()
+    foreach ($line in $result.Lines) {
+        $words = @()
+        foreach ($w in $line.Words) {
+            $r = $w.BoundingRect
+            $words += [pscustomobject]@{ t = $w.Text; x = $r.X; y = $r.Y; w = $r.Width; h = $r.Height }
+        }
+        $lines += [pscustomobject]@{ t = $line.Text; w = $words }
+    }
+    $json = ConvertTo-Json -InputObject @($lines) -Depth 6 -Compress
+    [System.IO.File]::WriteAllText($Out, $json, (New-Object System.Text.UTF8Encoding $false))
+} finally {
+    $stream.Dispose()
+}
+"""
+_SCRIPT_PATH: str | None = None
 
 
-def _pool() -> concurrent.futures.ThreadPoolExecutor:
-    global _POOL
-    if _POOL is None:
-        _POOL = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="winocr")
-    return _POOL
-
-
-def _winrt():
+def _require_windows() -> None:
     if sys.platform != "win32":
         raise RuntimeError("Windows OCR requires Windows (sys.platform=='win32').")
-    try:
-        ocr = importlib.import_module("winrt.windows.media.ocr")
-        imaging = importlib.import_module("winrt.windows.graphics.imaging")
-        streams = importlib.import_module("winrt.windows.storage.streams")
-        glob = importlib.import_module("winrt.windows.globalization")
-        importlib.import_module("winrt.windows.foundation.collections")
-    except ImportError as exc:
-        raise RuntimeError(
-            "Windows OCR support (pywinrt winrt-Windows.Media.Ocr) is missing from this "
-            f"engine build ({exc}).") from exc
-    return ocr, imaging, streams, glob
 
 
-async def _recognize(rgba: bytes, w: int, h: int, lang: str | None):
-    ocr, imaging, streams, glob = _winrt()
+def _script() -> str:
+    global _SCRIPT_PATH
+    if _SCRIPT_PATH is None or not os.path.exists(_SCRIPT_PATH):
+        fd, path = tempfile.mkstemp(prefix="cindro-ocr-", suffix=".ps1")
+        with os.fdopen(fd, "w", encoding="utf-8-sig") as f:
+            f.write(_PS_SCRIPT)
+        _SCRIPT_PATH = path
+    return _SCRIPT_PATH
+
+
+def parse_ps_output(text: str) -> list:
+    """The script's JSON -> [(line_text, [(word, x, y, w, h), ...]), ...].
+    Tolerates PowerShell 5.1 collapsing a one-element array to an object."""
+    data = json.loads(text) if text.strip() else []
+    if isinstance(data, dict):
+        data = [data]
+    out = []
+    for line in data or []:
+        words = line.get("w") or []
+        if isinstance(words, dict):
+            words = [words]
+        out.append((str(line.get("t", "")),
+                    [(str(w.get("t", "")), float(w["x"]), float(w["y"]),
+                      float(w["w"]), float(w["h"])) for w in words]))
+    return out
+
+
+def _recognize(png_path: str, lang: str | None):
+    _require_windows()
+    out = png_path + ".json"
+    args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+            "-File", _script(), "-Path", png_path, "-Out", out]
     if lang:
-        language = glob.Language(lang)
-        if not ocr.OcrEngine.is_language_supported(language):
-            raise RuntimeError(
-                f"OCR language {lang!r} isn't installed. Install it with (admin PowerShell): "
-                f'Add-WindowsCapability -Online -Name "Language.OCR~~~{lang}~0.0.1.0"')
-        engine = ocr.OcrEngine.try_create_from_language(language)
-    else:
-        engine = ocr.OcrEngine.try_create_from_user_profile_languages()
-    if engine is None:
-        raise RuntimeError("No Windows OCR language is installed for this user "
-                           "(Settings > Time & language > Language > add English).")
-    writer = streams.DataWriter()
-    writer.write_bytes(rgba)
-    bmp = imaging.SoftwareBitmap.create_copy_from_buffer(
-        writer.detach_buffer(), imaging.BitmapPixelFormat.RGBA8, w, h)
-    result = await engine.recognize_async(bmp)
-    lines = []
-    for line in result.lines:
-        words = []
-        for word in line.words:
-            r = word.bounding_rect
-            words.append((word.text, float(r.x), float(r.y), float(r.width), float(r.height)))
-        lines.append((line.text, words))
-    return lines
-
-
-def _recognize_sync(rgba: bytes, w: int, h: int, lang: str | None):
-    return asyncio.run(_recognize(rgba, w, h, lang))
+        args += ["-Lang", lang]
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=60,
+                              creationflags=_CREATE_NO_WINDOW)
+        if proc.returncode != 0 or not os.path.exists(out):
+            err = (proc.stderr or proc.stdout or "").strip()
+            if "NO_OCR_LANGUAGE" in err:
+                raise RuntimeError(
+                    (f"OCR language {lang!r} isn't installed. Install it with (admin PowerShell): "
+                     f'Add-WindowsCapability -Online -Name "Language.OCR~~~{lang}~0.0.1.0"')
+                    if lang else
+                    "No Windows OCR language is installed for this user "
+                    "(Settings > Time & language > Language > add English).")
+            raise RuntimeError(f"Windows OCR failed: {err[-600:] or f'rc={proc.returncode}'}")
+        with open(out, encoding="utf-8-sig") as f:
+            return parse_ps_output(f.read())
+    finally:
+        try:
+            os.remove(out)
+        except OSError:
+            pass
 
 
 def map_box(x: float, y: float, w: float, h: float, origin: tuple[int, int],
@@ -182,6 +238,7 @@ def read(region: dict | None = None, window: str | None = None, scale: float = 2
     better at 2x."""
     from PIL import Image as PILImage
 
+    _require_windows()
     rect = _capture_rect(region, window)
     img = _bw._grab_region(rect)
     scale = max(1.0, min(4.0, float(scale)))
@@ -189,10 +246,16 @@ def read(region: dict | None = None, window: str | None = None, scale: float = 2
         scale = max(1.0, _MAX_DIM / max(img.width, img.height))
     if scale != 1.0:
         img = img.resize((round(img.width * scale), round(img.height * scale)), PILImage.LANCZOS)
-    rgba = img.convert("RGBA")
-    _winrt()   # fail fast with a clear message before hopping threads
-    raw = _pool().submit(_recognize_sync, rgba.tobytes(), rgba.width, rgba.height,
-                         lang).result(timeout=60)
+    fd, png = tempfile.mkstemp(prefix="cindro-ocr-", suffix=".png")
+    os.close(fd)
+    try:
+        img.convert("RGB").save(png, format="PNG")
+        raw = _recognize(png, lang)
+    finally:
+        try:
+            os.remove(png)
+        except OSError:
+            pass
     lines = build_lines(raw, (rect.x, rect.y), scale)
     return {"captured_rect": rect.as_dict(), "scale": round(scale, 3),
             "text": "\n".join(l["text"] for l in lines), "lines": lines}

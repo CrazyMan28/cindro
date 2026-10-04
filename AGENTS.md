@@ -1954,18 +1954,20 @@ OK. Live-verified against the actual running daemon, not just unit tests.
   and overwrites the user's data. Keep that check. Reading and writing ranges goes through the
   clipboard (`sheet_read_range`, `sheet_paste_table(ref=)`). `sheet_set_cell` also pastes
   instead of typing, because Excel's AutoComplete rewrites typed text when you press Enter.
-- **Windows OCR lives on its own thread.** `win_ocr` uses `Windows.Media.Ocr` through pywinrt.
-  pywinrt wants an MTA apartment, but the tool thread is an STA once uiautomation or pythoncom
-  have initialised it. So recognition runs on a single-worker `ThreadPoolExecutor` with its own
-  `asyncio.run`. Don't call WinRT from the tool thread.
+- **Windows OCR goes through `powershell.exe`, never pywinrt.** `win_ocr` runs
+  `Windows.Media.Ocr` via Windows PowerShell 5.1's WinRT projection in a child process. The
+  pywinrt `winrt-runtime` wheel bundles its own `winrt/msvcp140.dll`. Once that is loaded before
+  onnxruntime (faster-whisper), the process dies with 0xC0000005 (the MSVC std::mutex ABI break).
+  That killed the PyInstaller freeze on hosted CI and would crash the shipped engine too. The
+  child process also keeps WinRT's apartment away from the UIA/COM STA.
 - **`drag()` interpolation bug (both backends).** It looped `range(1, max(2, steps)+1)` but used
   `t = i/steps`, so `steps=1` overshot the target by a full drag length. This is fixed in
   `backend_windows.drag` only. `computer-use/computer_use_mcp/input.py:237` still has it; it's
   harmless at the default `steps=14`.
-- **Packaging.** `uiautomation` (comtypes) and the `winrt-*` OCR packages are in
-  `requirements-windows.txt`. `build.ps1` adds `--hidden-import
-  win32clipboard/pythoncom/win32com/win32com.client`, `--collect-all uiautomation`,
-  `--collect-submodules comtypes` and `--collect-all winrt`, plus a fail-fast import probe. New engine
+- **Packaging.** `uiautomation` (comtypes) is in `requirements-windows.txt`; OCR needs no
+  package. `build.ps1` adds `--hidden-import win32clipboard/pythoncom/win32com/win32com.client`,
+  `--collect-all uiautomation` and `--collect-submodules comtypes`, plus a fail-fast import
+  probe. New engine
   modules stay flat in `windows/engine/`: the bundle-cache hash only lists that directory
   non-recursively.
 - **Prompt.** The co-work guide gets a Windows-only `WINDOWS TOOLS` clause via
