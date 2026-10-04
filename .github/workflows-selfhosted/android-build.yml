@@ -45,9 +45,16 @@ concurrency:
 jobs:
   build:
     timeout-minutes: 30
-    runs-on: ubuntu-latest  # GitHub-hosted; self-hosted copy in .github/workflows-selfhosted/
+    runs-on: [self-hosted, Linux, X64]
 
     steps:
+      # This runner's _work dir is shared with linux-ci.yml/linux-release.yml, which run inside
+      # a Docker container (as root) — files that container writes land root-owned on the host,
+      # which the unprivileged runner user then can't unlink, and actions/checkout@v4 fails
+      # outright instead of falling back to a fresh clone. Force-clear it first every run.
+      - name: Clear any root-owned files left by a container-based job on this runner
+        run: sudo rm -rf "$GITHUB_WORKSPACE" && mkdir -p "$GITHUB_WORKSPACE"
+
       - uses: actions/checkout@v4
 
       - name: Set up JDK 17
@@ -64,16 +71,16 @@ jobs:
         uses: android-actions/setup-android@v3
         with:
           cmdline-tools-version: 12266719
-          # The action's default ("tools platform-tools") asks for the legacy
-          # 'tools' package, which the SDK repository no longer serves:
-          # sdkmanager exits 1 ("Failed to find package 'tools'").
-          packages: 'platform-tools'
 
-      # Gradle wrapper + dependency caching (GitHub cache: a hosted VM starts empty).
+      # Gradle wrapper + dependency caching: on this SELF-HOSTED fleet ~/.gradle
+      # already persists on the runner VM's disk, so the action's GitHub-hosted
+      # remote cache is pure overhead (multi-hundred-MB restore/save round-trips
+      # over the WAN every run) — disable it and rely on the local caches.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           build-root-directory: android
+          cache-disabled: true
 
       # android/app/build.gradle.kts references libs/sherpa-onnx-1.13.2.aar
       # (on-device TTS) as a local file dependency, but the ~56MB AAR is

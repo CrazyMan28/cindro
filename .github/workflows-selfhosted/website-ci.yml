@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest  # GitHub-hosted; self-hosted copy in .github/workflows-selfhosted/
+    runs-on: [self-hosted, Linux, X64]
     # First self-hosted run hung indefinitely in shivammathur/setup-php's apt install: Ubuntu's
     # needrestart hooks into dpkg and pops an interactive "which services should be restarted?"
     # prompt on package installs that touch daemons — with no TTY in a CI job, that prompt just
@@ -40,6 +40,13 @@ jobs:
       run:
         working-directory: website
     steps:
+      # This runner's _work dir is shared with linux-ci.yml/linux-release.yml, which run inside
+      # a Docker container (as root) — files that container writes land root-owned on the host,
+      # which the unprivileged runner user then can't unlink, and actions/checkout@v4 fails
+      # outright instead of falling back to a fresh clone. Force-clear it first every run.
+      - name: Clear any root-owned files left by a container-based job on this runner
+        run: sudo rm -rf "$GITHUB_WORKSPACE" && mkdir -p "$GITHUB_WORKSPACE"
+
       - uses: actions/checkout@v4
 
       - uses: shivammathur/setup-php@v2

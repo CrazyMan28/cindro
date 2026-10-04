@@ -30,48 +30,29 @@ permissions:
 
 # Concurrency: a v* tag build (release) is NEVER auto-cancelled — keyed by unique SHA so
 # no two tags ever share a group. Only PULL-REQUEST re-pushes dedup: a newer commit on the
-# PR supersedes that PR's still-running build (standard, saves runner time). With two
-# Windows runners (win-runner-1 + win-runner-2) tag + PR builds run in parallel.
+# PR supersedes that PR's still-running build (standard, saves runner time).
 concurrency:
   group: windows-build-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
-    # Hard ceiling so a hung build.ps1 (seen before) self-aborts and frees the runner
-    # instead of clogging it forever. Normal build is ~40 min; 90 (1h30) gives slack for a
-    # slow/IO-starved Proxmox host while still catching a true hang.
-    timeout-minutes: 90
-    # Self-hosted Windows runner (win-runner-1 on the pve/winvm box) — ZERO GitHub
-    # minutes. Toolchain provisioned by windows/scripts/setup-runner-tools.ps1
-    # (git + vcpkg + Inno Setup; VS Build Tools 2022 already present). Qt / Ninja /
-    # Python / Node come from the setup actions below and persist in the runner's
-    # tool cache across runs. If the runner is offline the job queues until it's back.
-    runs-on: [self-hosted, windows, jarvis-win]
+    # GitHub-hosted runner (switched from the self-hosted win-runner fleet on
+    # 2026-10-04; the self-hosted version of this file is kept in
+    # .github/workflows-selfhosted/). A hosted VM starts empty, so the toolchain
+    # the self-hosted runner had preinstalled (windows/scripts/setup-runner-*.ps1)
+    # is provisioned per run below, with actions/cache keeping Qt, vcpkg packages,
+    # pip wheels and the frozen engine bundle warm between runs.
+    timeout-minutes: 120
+    runs-on: windows-latest
+    env:
+      # build.ps1 keeps its frozen-engine bundle cache + node zip here.
+      CINDRO_BUILD_CACHE: C:\cindro-build-cache
+      VCPKG_DEFAULT_BINARY_CACHE: C:\vcpkg-bincache
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          # PR builds KEEP the previous run's gitignored state (windows/build-win/,
-          # windows/engine/.venv-win, node zip, …): the default clean:true runs
-          # `git clean -ffdx`, measured spending up to 8 min just DELETING the previous
-          # build on the IO-contended runner disk, then forcing a full from-scratch
-          # rebuild + venv/pip reinstall every run. With it off, ninja/pip resume
-          # incrementally; build.ps1 removes the stale payload + old installers itself.
-          # Release (tag) builds used to clean too, which made EVERY release a ~50 min
-          # from-scratch rebuild (3 min checkout + 4 min CMake configure + full MSVC
-          # compile + venv/pip reinstall). They now keep the gitignored caches
-          # (build-win/, .venv-win) like PR builds do; the next step still wipes every
-          # untracked, NON-ignored file, so sources stay pristine and ninja's own
-          # dependency tracking decides what to recompile.
-          clean: false
 
-      - name: Remove untracked files (keep ignored build caches)
-        shell: pwsh
-        run: git clean -ffd
-
-      # PowerShell (not bash): the self-hosted Windows runner has no git-bash on
-      # PATH for Actions' `shell: bash`, and the Windows/WSL bash stub errors out.
       - name: Derive version
         id: ver
         shell: pwsh
@@ -83,59 +64,89 @@ jobs:
           }
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      # MSVC toolchain (cl + ninja on PATH) for the Ninja generator that build.ps1
-      # uses. msvc-dev-cmd finds VS via vswhere and exports the env to later steps.
+      # MSVC toolchain (cl on PATH) for the Ninja generator build.ps1 uses.
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      # Ninja, Qt 6.10.3 (win64_msvc2022_64 + qtwebsockets + qtmultimedia), Python 3.12
-      # and Node 20 are PRE-INSTALLED on the runner by setup-runner-buildtools.ps1 and
-      # exposed via machine env (CMAKE_PREFIX_PATH + PATH) — NO per-run downloads, just
-      # like the Linux prebuilt CI image. Assert they're present so a mis-provisioned
-      # runner fails loudly here instead of halfway through build.ps1.
-      # (Qt is pinned to 6.10.3 on the runner: it fixes the Qt6Qml.dll access-violation
-      #  that crashed the sidebar on 6.8.1/6.9.1 — headless, no window.)
-      - name: Verify prebuilt toolchain
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: windows/engine/requirements-windows.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # outpost-agent cross-compile (build.ps1 would otherwise download Go itself).
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      # Same Qt the self-hosted runner pins (6.10.3: fixes the Qt6Qml.dll crash
+      # seen on 6.8.1/6.9.1), cached between runs.
+      - name: Install Qt 6.10.3
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.10.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtwebsockets qtmultimedia
+          cache: true
+
+      - name: Point CMake at Qt
         shell: pwsh
         run: |
-          $ok = $true
-          function Need($name, $cmd) {
-            $c = Get-Command $cmd -ErrorAction SilentlyContinue
-            if ($c) { Write-Host "OK   $name -> $($c.Source)" } else { Write-Host "MISSING  $name ($cmd)"; $script:ok = $false }
-          }
-          Need "ninja"       ninja
-          Need "python"      python
-          Need "node"        node
-          Need "npm"         npm
-          Need "windeployqt" windeployqt
-          if (-not $env:CMAKE_PREFIX_PATH -or -not (Test-Path "$env:CMAKE_PREFIX_PATH")) {
-            Write-Host "MISSING  CMAKE_PREFIX_PATH ($env:CMAKE_PREFIX_PATH)"; $ok = $false
-          } else { Write-Host "OK   Qt   -> $env:CMAKE_PREFIX_PATH" }
-          if (-not $ok) { throw "Runner not fully provisioned — run windows/scripts/setup-runner-buildtools.ps1" }
+          "CMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Get-Command windeployqt | Select-Object -ExpandProperty Source
 
-      # libsodium + libqrencode via vcpkg. On the self-hosted runner vcpkg lives at
-      # C:\vcpkg (VCPKG_INSTALLATION_ROOT, set by setup-runner-tools.ps1) and the
-      # packages are prebuilt, so this install is a near-instant cache hit.
+      # libsodium + libqrencode via the image's vcpkg (C:\vcpkg), with vcpkg's
+      # binary cache persisted so they compile only once.
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg-bincache
+          key: vcpkg-bin-${{ runner.os }}-sodium-qrencode-v1
+
       - name: Install vcpkg deps
         shell: pwsh
         run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           $vcpkg = $env:VCPKG_INSTALLATION_ROOT
           if (-not $vcpkg) { $vcpkg = "C:\vcpkg" }
           & "$vcpkg\vcpkg.exe" install libsodium libqrencode --triplet x64-windows
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg install failed" }
           "VCPKG_ROOT=$vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      # Inno Setup 6 (iscc) — packages the staged payload into the installer.
-      # Pre-installed on the self-hosted runner by setup-runner-tools.ps1 (no choco);
-      # this just puts it on PATH and fails loudly if the runner wasn't provisioned.
-      - name: Ensure Inno Setup on PATH
+      # Inno Setup 6 (iscc) packages the installer. Installed via choco when the
+      # image doesn't already have it.
+      - name: Ensure Inno Setup
         shell: pwsh
         run: |
           $inno = "C:\Program Files (x86)\Inno Setup 6"
           if (-not (Test-Path "$inno\ISCC.exe")) {
-            throw "Inno Setup not found on the runner — run windows/scripts/setup-runner-tools.ps1"
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw "choco install innosetup failed" }
           }
+          if (-not (Test-Path "$inno\ISCC.exe")) { throw "Inno Setup not found after install" }
           $inno | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # build.ps1 hashes the engine's sources/requirements into its own cache key
+      # and only re-freezes on a miss, so restoring older entries is safe.
+      - name: Cache frozen engine bundle + node zip
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\cindro-build-cache
+            C:\ci-cache
+          key: cindro-engine-${{ runner.os }}-${{ hashFiles('computer-use/**/*.py', 'computer-use/**/*.toml', 'windows/engine/*.py', 'windows/engine/*.txt', 'windows/scripts/build.ps1') }}
+          restore-keys: |
+            cindro-engine-${{ runner.os }}-
 
       # One-shot: build the daemon + shell, bundle engine + node, make the installer.
       # PR builds pass -FastCompress (zip installer, exists-only validation, saves

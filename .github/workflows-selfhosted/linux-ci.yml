@@ -34,31 +34,19 @@ concurrency:
 
 jobs:
   build-test:
-    # GitHub-hosted (switched from the self-hosted fleet on 2026-10-04; the
-    # self-hosted version is kept in .github/workflows-selfhosted/).
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64]
+    # 90 min (1h30) — the self-hosted Proxmox runner host gets IO/CPU-starved and a build
+    # that normally takes ~15 min can crawl. 30 min was cancelling healthy-but-slow builds.
     timeout-minutes: 90
+    # Prebuilt: all deps baked in. The local registry on the runner host serves it,
+    # so the "pull" is instant + layer-cached (no 550MB download, no 533-pkg install).
     container:
-      image: fedora:44
+      image: localhost:5000/jarvis-ci:latest
 
     steps:
-      # GitHub-hosted: the same fedora:44 environment as the self-hosted jarvis-ci
-      # image, with infra/ci-image/Dockerfile's package list installed per run
-      # (the local registry that served the prebuilt image isn't reachable here).
-      - name: Install build deps (infra/ci-image/Dockerfile package set)
-        run: |
-          dnf -y install --setopt=install_weak_deps=False \
-            gcc-c++ cmake ninja-build pkgconf-pkg-config git tar gzip xz \
-            curl file findutils which patchelf \
-            qt6-qtbase-devel qt6-qtdeclarative-devel qt6-qtquickcontrols2-devel \
-            qt6-qtwebsockets-devel qt6-qtmultimedia-devel qt6-qtsvg-devel \
-            qt6-qtwayland qt6-qtwayland-devel layer-shell-qt-devel \
-            extra-cmake-modules libsodium-devel qrencode-devel libsecret-devel \
-            python3 python3-pip python3-devel python3-pytest \
-            desktop-file-utils fuse fuse-libs xcb-util-cursor \
-            mesa-libGL-devel mesa-libEGL-devel unzip
-
-      - name: Verify toolchain
+      # Deps are in the image — just assert the toolchain is present (fails fast +
+      # clearly if the image is stale/broken) instead of installing anything.
+      - name: Verify toolchain (baked into the image)
         run: |
           cmake --version && ninja --version && qmake6 --version
           test -d /usr/lib64/cmake/Qt6 && echo "Qt6 + toolchain present"

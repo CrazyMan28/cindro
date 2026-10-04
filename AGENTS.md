@@ -611,6 +611,14 @@ triggering `auto-release.yml`'s version bump (see below).
 
 ## GitHub / CI / releases (how Issac runs this repo)
 
+- **CURRENT STATE (2026-10-04): CI runs on GitHub-hosted runners.** At the owner's request,
+  `windows-build`, `linux-ci`, `linux-release`, `android-build`, `auto-release` and `website-ci`
+  now use `windows-latest` / `ubuntu-latest`. The Linux jobs use a `fedora:44` container that
+  installs `infra/ci-image/Dockerfile`'s package list each run. The Windows job provisions
+  Qt 6.10.3, vcpkg, Inno Setup, Python, Node and Go each run, with `actions/cache`. The
+  self-hosted versions are saved untouched in `.github/workflows-selfhosted/` (see its README),
+  as are the runner provisioning scripts. To switch back, copy those files over. The
+  self-hosted notes below describe that saved setup.
 - **CI is 100% self-hosted for the product build workflows — ZERO GitHub-hosted minutes.**
   Windows builds run on `win-runner-1` (the winvm / Proxmox VM 106 box); Linux CI/release/
   auto-release/website-ci/android-build all run on the six `pve-ubuntu-runner-*` (VM 104, raw

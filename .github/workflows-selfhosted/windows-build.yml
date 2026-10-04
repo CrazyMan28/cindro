@@ -1,0 +1,163 @@
+# Builds the REAL Windows artifact: jarvisd.exe + cindro-sidebar.exe, the bundled
+# computer-use engine + Node phone server, packaged into Cindro-Setup-<ver>.exe.
+#
+# Everything is driven by the self-contained windows/ build (windows/CMakeLists.txt
+# via windows/scripts/build.ps1) — the Linux dirs (core/daemon/desktop) are never
+# touched. On a tag (v*) the installer is also attached to the GitHub Release.
+name: windows-build
+
+on:
+  # Builds run ONLY for releases and PR validation — NEVER on a branch push. Day-to-day
+  # work pushed to dev / qa / main triggers nothing here. A build fires on exactly two
+  # events: (1) a v* tag — the release: it builds AND attaches Cindro-Setup.exe to the
+  # GitHub Release; (2) a pull_request into main — validates main-bound changes before
+  # merge. A merge to main fires auto-release, which creates the v* tag -> case (1) builds
+  # and attaches the installer.
+  pull_request:
+    branches: [main]
+    # Codex review (PR #130): a PR that only touches website-ci.yml (the
+    # website's own CI config) belongs solely to the non-versioned site, but
+    # wasn't covered by website/** — it still ran this product build. Ignore
+    # that workflow file too.
+    paths-ignore: ['website/**', '.github/workflows/website-ci.yml']
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Needed so the tag build can CREATE the GitHub Release + attach Cindro-Setup.exe.
+permissions:
+  contents: write
+
+# Concurrency: a v* tag build (release) is NEVER auto-cancelled — keyed by unique SHA so
+# no two tags ever share a group. Only PULL-REQUEST re-pushes dedup: a newer commit on the
+# PR supersedes that PR's still-running build (standard, saves runner time). With two
+# Windows runners (win-runner-1 + win-runner-2) tag + PR builds run in parallel.
+concurrency:
+  group: windows-build-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    # Hard ceiling so a hung build.ps1 (seen before) self-aborts and frees the runner
+    # instead of clogging it forever. Normal build is ~40 min; 90 (1h30) gives slack for a
+    # slow/IO-starved Proxmox host while still catching a true hang.
+    timeout-minutes: 90
+    # Self-hosted Windows runner (win-runner-1 on the pve/winvm box) — ZERO GitHub
+    # minutes. Toolchain provisioned by windows/scripts/setup-runner-tools.ps1
+    # (git + vcpkg + Inno Setup; VS Build Tools 2022 already present). Qt / Ninja /
+    # Python / Node come from the setup actions below and persist in the runner's
+    # tool cache across runs. If the runner is offline the job queues until it's back.
+    runs-on: [self-hosted, windows, jarvis-win]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # PR builds KEEP the previous run's gitignored state (windows/build-win/,
+          # windows/engine/.venv-win, node zip, …): the default clean:true runs
+          # `git clean -ffdx`, measured spending up to 8 min just DELETING the previous
+          # build on the IO-contended runner disk, then forcing a full from-scratch
+          # rebuild + venv/pip reinstall every run. With it off, ninja/pip resume
+          # incrementally; build.ps1 removes the stale payload + old installers itself.
+          # Release (tag) builds used to clean too, which made EVERY release a ~50 min
+          # from-scratch rebuild (3 min checkout + 4 min CMake configure + full MSVC
+          # compile + venv/pip reinstall). They now keep the gitignored caches
+          # (build-win/, .venv-win) like PR builds do; the next step still wipes every
+          # untracked, NON-ignored file, so sources stay pristine and ninja's own
+          # dependency tracking decides what to recompile.
+          clean: false
+
+      - name: Remove untracked files (keep ignored build caches)
+        shell: pwsh
+        run: git clean -ffd
+
+      # PowerShell (not bash): the self-hosted Windows runner has no git-bash on
+      # PATH for Actions' `shell: bash`, and the Windows/WSL bash stub errors out.
+      - name: Derive version
+        id: ver
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            $v = $env:GITHUB_REF_NAME -replace '^v', ''
+          } else {
+            $v = "0.1.0-" + $env:GITHUB_SHA.Substring(0, 7)
+          }
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # MSVC toolchain (cl + ninja on PATH) for the Ninja generator that build.ps1
+      # uses. msvc-dev-cmd finds VS via vswhere and exports the env to later steps.
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Ninja, Qt 6.10.3 (win64_msvc2022_64 + qtwebsockets + qtmultimedia), Python 3.12
+      # and Node 20 are PRE-INSTALLED on the runner by setup-runner-buildtools.ps1 and
+      # exposed via machine env (CMAKE_PREFIX_PATH + PATH) — NO per-run downloads, just
+      # like the Linux prebuilt CI image. Assert they're present so a mis-provisioned
+      # runner fails loudly here instead of halfway through build.ps1.
+      # (Qt is pinned to 6.10.3 on the runner: it fixes the Qt6Qml.dll access-violation
+      #  that crashed the sidebar on 6.8.1/6.9.1 — headless, no window.)
+      - name: Verify prebuilt toolchain
+        shell: pwsh
+        run: |
+          $ok = $true
+          function Need($name, $cmd) {
+            $c = Get-Command $cmd -ErrorAction SilentlyContinue
+            if ($c) { Write-Host "OK   $name -> $($c.Source)" } else { Write-Host "MISSING  $name ($cmd)"; $script:ok = $false }
+          }
+          Need "ninja"       ninja
+          Need "python"      python
+          Need "node"        node
+          Need "npm"         npm
+          Need "windeployqt" windeployqt
+          if (-not $env:CMAKE_PREFIX_PATH -or -not (Test-Path "$env:CMAKE_PREFIX_PATH")) {
+            Write-Host "MISSING  CMAKE_PREFIX_PATH ($env:CMAKE_PREFIX_PATH)"; $ok = $false
+          } else { Write-Host "OK   Qt   -> $env:CMAKE_PREFIX_PATH" }
+          if (-not $ok) { throw "Runner not fully provisioned — run windows/scripts/setup-runner-buildtools.ps1" }
+
+      # libsodium + libqrencode via vcpkg. On the self-hosted runner vcpkg lives at
+      # C:\vcpkg (VCPKG_INSTALLATION_ROOT, set by setup-runner-tools.ps1) and the
+      # packages are prebuilt, so this install is a near-instant cache hit.
+      - name: Install vcpkg deps
+        shell: pwsh
+        run: |
+          $vcpkg = $env:VCPKG_INSTALLATION_ROOT
+          if (-not $vcpkg) { $vcpkg = "C:\vcpkg" }
+          & "$vcpkg\vcpkg.exe" install libsodium libqrencode --triplet x64-windows
+          "VCPKG_ROOT=$vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # Inno Setup 6 (iscc) — packages the staged payload into the installer.
+      # Pre-installed on the self-hosted runner by setup-runner-tools.ps1 (no choco);
+      # this just puts it on PATH and fails loudly if the runner wasn't provisioned.
+      - name: Ensure Inno Setup on PATH
+        shell: pwsh
+        run: |
+          $inno = "C:\Program Files (x86)\Inno Setup 6"
+          if (-not (Test-Path "$inno\ISCC.exe")) {
+            throw "Inno Setup not found on the runner — run windows/scripts/setup-runner-tools.ps1"
+          }
+          $inno | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      # One-shot: build the daemon + shell, bundle engine + node, make the installer.
+      # PR builds pass -FastCompress (zip installer, exists-only validation, saves
+      # minutes of LZMA); tag builds keep lzma2/max for what users actually download.
+      - name: Build Cindro (Windows)
+        shell: pwsh
+        run: .\windows\scripts\build.ps1 -Version ${{ steps.ver.outputs.version }} -VcpkgRoot $env:VCPKG_ROOT -FastCompress:$${{ github.event_name == 'pull_request' }}
+
+      - name: Upload installer artifact
+        # Installer is already built above; a transient GitHub artifact-storage
+        # quota hit must not red the PR. Short retention stops re-accumulation.
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cindro-Setup-${{ steps.ver.outputs.version }}
+          path: windows/dist/Cindro-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      # On a version tag, attach the installer to the Release.
+      - name: Attach to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: windows/dist/Cindro-Setup-*.exe
