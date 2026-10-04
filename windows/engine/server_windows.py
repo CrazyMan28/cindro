@@ -111,11 +111,16 @@ if sys.platform == "win32":
 # Make `import backend_windows` work no matter the cwd.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from computer_use_mcp import apps as _ap  # noqa: E402
+from computer_use_mcp import clipboard as _cb  # noqa: E402
 from computer_use_mcp import input as _i  # noqa: E402
 from computer_use_mcp import screen as _s  # noqa: E402
 from computer_use_mcp import session as _se  # noqa: E402
+from computer_use_mcp import windows as _wn  # noqa: E402
+from computer_use_mcp import workspaces as _ws  # noqa: E402
 
 import backend_windows as bw  # noqa: E402
+import win_platform as wp  # noqa: E402
 
 # Primitive names patched onto each engine module (verified against the engine:
 # every caller reads these as module attributes, and nothing does
@@ -123,6 +128,12 @@ import backend_windows as bw  # noqa: E402
 _INPUT_PRIMS = ("move", "click", "drag", "scroll", "key_press", "type_text")
 _SCREEN_PRIMS = ("take_screenshot", "grab_jpeg_frame")
 _SESSION_PRIMS = ("detect", "get_session", "compositor_hint")
+
+
+# The engine's clipboard / windows / apps / workspaces modules are Linux-only
+# (wl-copy, KWin JS, swaymsg, .desktop files): without these rebinds every
+# clipboard_*, window_*, app_* and workspace_* tool failed on Windows.
+_PLATFORM_MODULES = {"clipboard": _cb, "windows": _wn, "apps": _ap, "workspaces": _ws}
 
 
 def apply_patches() -> None:
@@ -133,6 +144,9 @@ def apply_patches() -> None:
         setattr(_s, n, getattr(bw, n))
     for n in _SESSION_PRIMS:
         setattr(_se, n, getattr(bw, n))
+    for mod_name, funcs in wp.PATCHES.items():
+        for n, fn in funcs.items():
+            setattr(_PLATFORM_MODULES[mod_name], n, fn)
 
 
 # Apply at import so the engine is already Windows-routed once this module loads.
@@ -224,8 +238,15 @@ def main() -> None:
         return
     # Import the heavy server lazily (after patching) so merely importing this
     # module for tests doesn't pull in uvicorn/fastapi/the full tool surface.
-    from computer_use_mcp.server import main as _engine_main
-    _engine_main()
+    from computer_use_mcp import server as _srv
+
+    import tools_windows
+    # Windows-only tools (human-style input, spreadsheet helpers, UI Automation,
+    # Office) on the engine's own FastMCP instance -- tools/list reads the tool
+    # manager per request and the policy gate looks tools up by name at call
+    # time, so registering here (after the server module built its app) is fine.
+    tools_windows.register(_srv.mcp)
+    _srv.main()
 
 
 if __name__ == "__main__":
