@@ -263,6 +263,15 @@ for n in libpipewire-0.3 libpulse libpulsecommon libasound libudev libsystemd; d
 done
 say "pruned $pruned host-provided libs"
 
+# appimagetool's continuous build (2026-10-29+) refuses an AppDir whose .DirIcon is
+# missing, a symlink, or broken ("No valid .DirIcon"), and only resolves the desktop
+# file's Icon= as .png/.xpm. linuxdeploy only symlinks the SVG, so ship real files:
+# cindro.png is packaging/cindro.svg rendered at 256x256
+# (rsvg-convert -w 256 -h 256 packaging/cindro.svg -o packaging/cindro.png).
+install -m644 "$REPO/packaging/cindro.png" "$APPDIR/cindro.png"
+rm -f "$APPDIR/.DirIcon"
+install -m644 "$REPO/packaging/cindro.png" "$APPDIR/.DirIcon"
+
 # Package the pruned AppDir with appimagetool.
 say "Packaging with appimagetool..."
 AT="$(fetch appimagetool "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${ARCH}.AppImage")"
