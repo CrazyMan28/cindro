@@ -68,6 +68,11 @@ Item {
             // streaming flag now, so any later recycle of this row shows the full
             // text rather than replaying (completed OR interrupted mid-reveal).
             if (!del.revealing) {
+                // Break the `shown` binding (it depends on `streaming`) BEFORE
+                // clearing the model flag. Otherwise `revealed()` flips `streaming`
+                // to false, the binding re-evaluates to text.length, and the
+                // reveal snaps to full on its first tick -- no animation at all.
+                del.shown = del.shown
                 del.revealing = true
                 del.revealed()
             }
@@ -85,6 +90,11 @@ Item {
         del.revealing = false
         del.shown = (del.streaming && del.isAssistant) ? 0 : del.text.length
         del.latchIfNothingToReveal()
+        // A pooled delegate may carry a finished/half-run entrance state.
+        appear.stop()
+        del.opacity = 1
+        slide.y = 0
+        if (del.animateIn) appear.start()
     }
 
     // A streaming assistant row with nothing to reveal (e.g. empty text) never ticks
@@ -97,10 +107,17 @@ Item {
             del.revealed()
     }
 
-    // entrance animation
-    opacity: 0
-    transform: Translate { id: slide; y: 8 }
-    Component.onCompleted: { appear.start(); del.latchIfNothingToReveal() }
+    // Entrance animation -- ONLY for a row that was just appended live. A delegate
+    // is also (re)created whenever the ListView scrolls or re-pins to the bottom
+    // (finite cacheBuffer), and replaying the fade/slide for those made every prior
+    // message slide back in and lag while the assistant was talking. The panel binds
+    // this to "is the newest row, appended a moment ago"; other hosts keep the default.
+    property bool animateIn: true
+    transform: Translate { id: slide; y: 0 }
+    Component.onCompleted: {
+        if (del.animateIn) appear.start()
+        del.latchIfNothingToReveal()
+    }
     ParallelAnimation {
         id: appear
         NumberAnimation { target: del; property: "opacity"; from: 0; to: 1; duration: 220; easing.type: Easing.OutCubic }

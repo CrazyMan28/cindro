@@ -13,6 +13,13 @@ Item {
 
     // chat transcript model fed from bridge.sessionEvent
     ListModel { id: chatModel }
+    // Timestamp of the last row append -- the delegate entrance animation is gated on
+    // it so only a genuinely new row fades in (see ChatDelegate.animateIn).
+    property double lastAppendMs: 0
+    Connections {
+        target: chatModel
+        function onCountChanged() { panel.lastAppendMs = Date.now() }
+    }
 
     // recent sessions for the in-chat "Switch" picker (bridge.sessionsListed)
     ListModel { id: sessionModel }
@@ -1341,6 +1348,10 @@ Item {
 
                 delegate: ChatDelegate {
                     width: chatView.width
+                    // Entrance fade only for the row appended a moment ago -- never for
+                    // delegates recreated by scrolling / re-pinning to the bottom.
+                    animateIn: index === chatView.count - 1
+                               && (Date.now() - panel.lastAppendMs) < 600
                     onAllow: function(approvalId) { bridge.respondApproval(approvalId, "allow") }
                     onDeny:  function(approvalId) { bridge.respondApproval(approvalId, "deny") }
                     onAlways: function(approvalId) { bridge.respondApproval(approvalId, "always") }
@@ -1351,7 +1362,7 @@ Item {
                     onGrew: {
                         if (chatView.atYEnd
                             || chatView.contentHeight <= chatView.height)
-                            chatView.positionViewAtEnd()
+                            Qt.callLater(chatView.positionViewAtEnd)  // coalesce per-tick relayouts
                     }
                     // Typewriter finished → latch this row as no-longer-streaming, so a
                     // recycled delegate (reuseItems/cacheBuffer) can't replay the
