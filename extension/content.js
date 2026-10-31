@@ -424,6 +424,13 @@
       return { scrollY: Math.round(scrollY), max: Math.max(0, doc.scrollHeight - innerHeight) };
     },
 
+    // Coordinate-level (graphical/VM) input from visual.js: move the glow
+    // cursor to the main-frame CSS point being clicked/typed at.
+    pointAt: (p) => {
+      Takeover.onAction(null, { x: Number(p.x), y: Number(p.y) });
+      return { ok: true };
+    },
+
     // Explicit driving on/off signal (e.g. relayed from sw.js when a take-over
     // starts/ends or is cancelled). Lets the chip appear/disappear even when no
     // element-targeted action has arrived yet.

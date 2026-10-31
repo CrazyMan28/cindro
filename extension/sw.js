@@ -5,6 +5,9 @@
 // The server pings every 20s with a real JSON message, which also keeps this
 // MV3 service worker alive (Chrome 116+ extends SW lifetime on WS activity).
 
+// Graphical/VM control (page.inspect, input.sequence, ...): see visual.js.
+importScripts("visual.js");
+
 let ws = null;
 let reconnectDelay = 1000;
 let connecting = false;
@@ -66,7 +69,10 @@ async function ensureConnected() {
       console.log("computer-use: connected");
       sock.send(JSON.stringify({
         event: "hello",
-        params: { extVersion: chrome.runtime.getManifest().version, userAgent: navigator.userAgent },
+        params: {
+          extVersion: chrome.runtime.getManifest().version, userAgent: navigator.userAgent,
+          visual: CINDRO_VISUAL_VERSION,
+        },
       }));
     };
     sock.onmessage = (ev) => onCommand(sock, ev.data);
@@ -288,7 +294,7 @@ async function cdp(tabId, method, params) {
 const HANDLERS = {
   async ping() {
     lastPingTs = Date.now();
-    return { ok: true, ts: lastPingTs, attachedTabs: [...attached] };
+    return { ok: true, ts: lastPingTs, attachedTabs: [...attached], visual: CINDRO_VISUAL_VERSION };
   },
 
   async "tabs.list"() {
@@ -433,3 +439,5 @@ const HANDLERS = {
     return await cdp(tab.id, p.method, p.params);
   },
 };
+
+Object.assign(HANDLERS, VISUAL_HANDLERS);

@@ -4123,6 +4123,16 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
                 "above) rather than silently sending a capture of their real screen.\n");
         guide = coworkClause + showingWorkClause
             + QStringLiteral(JARVIS_WINDOWS_TOOLS_CLAUSE) + QStringLiteral(
+            "VMs / REMOTE DESKTOPS IN CHROME: a VM, remote desktop or canvas app open in one "
+            "of the user's Chrome tabs (Proxmox/noVNC, Guacamole, SPICE, VMware consoles, "
+            "...) is driven with the browser_* tools (in a co-work session: the real_screen "
+            "set's browser_* tools — they act inside that tab only, no cursor takeover). "
+            "browser_visual_inspect to LOOK (screenshot + surfaces), then browser_click_xy / "
+            "browser_type_trusted / browser_key_press ('ctrl+alt+delete', 'win+r') / "
+            "browser_drag_xy / browser_scroll_xy with x/y measured on that image; pass "
+            "verify=true to get a fresh screenshot and confirm each step worked, and "
+            "browser_visual_inspect(surface='s1') to zoom in and read console output. Never "
+            "ask the user for coordinates.\n"
             "VISUALS: whenever the user asks you to SHOW / DRAW / DISPLAY / VISUALIZE "
             "something (a chart, a list, a diagram, a card, \"show me a duck\"), you "
             "MUST CALL the render_widget tool with a JSON spec — it pops the widget on "
@@ -6685,7 +6695,7 @@ void ControlServer::seedInternalDocsSkill()
     // installs pick up new capabilities — but never clobber a user's own skills.
     // If internal_docs exists and already carries the current marker, skip;
     // otherwise (absent OR stale) refresh it.
-    const QString kMarker = QStringLiteral("[catalog v5]");
+    const QString kMarker = QStringLiteral("[catalog v6]");
     if (auto existing = m_skills.get(QStringLiteral("internal_docs"))) {
         QFile f(existing->path);
         if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
@@ -6697,7 +6707,7 @@ void ControlServer::seedInternalDocsSkill()
         m_skills.remove(QStringLiteral("internal_docs")); // stale builtin -> refresh
     }
     const QString body = QStringLiteral(
-        "[catalog v5] When the user asks what you can do, your features, how to do "
+        "[catalog v6] When the user asks what you can do, your features, how to do "
         "something with you, or you're unsure you're capable of something, use THIS as "
         "the source of truth for Cindro's capabilities. Tell them what fits + offer to "
         "do it.\n\n"
@@ -6708,7 +6718,10 @@ void ControlServer::seedInternalDocsSkill()
         "glowing cursor + banner). Tools: app_launch, desktop_screenshot, mouse/keyboard, "
         "window ops, desktop_reset. (docs/COMPUTER_USE.md)\n"
         "**Chrome** — drive the user's browser tabs in-page via the extension (navigate, "
-        "click, type, read, screenshot).\n"
+        "click, type, read, screenshot), including VMs / remote desktops / canvas apps open "
+        "in a tab: look with browser_visual_inspect, act with real mouse + keyboard "
+        "(browser_click_xy, browser_type_trusted, browser_key_press). "
+        "(docs/BROWSER_VM_CONTROL.md)\n"
         "**Voice** — hands-free voice mode (Mistral Voxtral STT/TTS), an animated orb. "
         "(docs/VOICE.md)\n"
         "**Generative widgets** — render_widget draws custom UI from a JSON DSL "

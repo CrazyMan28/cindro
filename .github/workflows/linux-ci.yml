@@ -56,7 +56,8 @@ jobs:
             extra-cmake-modules libsodium-devel qrencode-devel libsecret-devel \
             python3 python3-pip python3-devel python3-pytest \
             desktop-file-utils fuse fuse-libs xcb-util-cursor \
-            mesa-libGL-devel mesa-libEGL-devel unzip
+            mesa-libGL-devel mesa-libEGL-devel unzip \
+            chromium
 
       - name: Verify toolchain
         run: |
@@ -74,7 +75,11 @@ jobs:
       - name: Test (ctest, offscreen)
         run: QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 
+      # chromium (above) lets computer-use/tests/test_browser_vm_chromium.py run the
+      # REAL extension against fake VM consoles (it skips when no browser exists).
       - name: Engine pytest (regression gate)
+        env:
+          CINDRO_TEST_CHROMIUM: /usr/bin/chromium-browser
         run: |
           python3 -m pip install --upgrade pip
           python3 -m pip install -e ./computer-use

@@ -20,6 +20,15 @@
 // (a synchronous initialize / tools-call client, mirroring McpRegistry::testHttp),
 // appends the tool results to the running history, and re-issues the chat request
 // (capped at 12 iterations). Anthropic stays chat-only (different tool format).
+//
+// TOOL IMAGES: OpenAI-style `tool` messages carry text only, so an MCP tool's
+// image result (a screenshot from desktop_screenshot / browser_visual_inspect)
+// is forwarded as ONE follow-up user message after the round's tool results
+// (marker text + image_url parts). Only the newest kKeepToolImageMessages keep
+// their pixels (older ones collapse to a note), and if the backend rejects
+// images (HTTP 400/413/422 — a non-vision model, or Mistral's "no user after
+// tool" rule) they are dropped for the rest of the brain's life and the
+// request is retried once without them.
 
 #include "jarvis/Brain.h"
 #include "jarvis/HookStore.h"
@@ -90,6 +99,10 @@ public:
         // digest before the request (the PreCompact hook fires first and may
         // supply the digest text). 0 = never compress.
         int contextMaxTokens = 0;
+        // Forward image parts of MCP tool results to the model (see TOOL
+        // IMAGES above). Ignored for mistral, which rejects a user message
+        // straight after tool results.
+        bool toolImages = true;
         // Optional hook store (daemon-owned) for the PreCompact fire point, and
         // the owning session id for hook payloads.
         HookStore *hooks = nullptr;
@@ -162,6 +175,22 @@ public:
     static int compressHistory(QJsonArray &history, int keepTail,
                                const QString &digest = QString());
 
+    // --- tool-result images (pure; unit-tested) -----------------------------
+    // Text that opens every forwarded tool-image message (how pruning finds them).
+    static const QString kToolImageMarker;
+    // MCP tools/call result `content[]` -> its image parts as {data, mimeType}.
+    static QJsonArray mcpImageParts(const QJsonArray &mcpContent);
+    // One OpenAI user message carrying `images` ({data,mimeType}) returned by
+    // `toolNames` in the round that just ran.
+    static QJsonObject toolImagesMessage(const QStringList &toolNames,
+                                         const QJsonArray &images);
+    // Keep pixels only in the newest `keepLatest` tool-image messages; older
+    // ones become a short text note. removeAll drops every tool-image message
+    // outright (the fallback when the backend rejects them). Returns the number
+    // of messages changed or removed.
+    static int pruneToolImages(QJsonArray &history, int keepLatest, bool removeAll = false);
+    static bool historyHasToolImages(const QJsonArray &history);
+
     // Test seam (no network): feed one SSE `data:` payload through the streaming
     // parser exactly as drainSse() would. Lets the unit test drive the delta
     // buffering / event contract without a live endpoint.
@@ -191,7 +220,8 @@ private:
     bool mcpPost(const QByteArray &body, int wantId, std::optional<QJsonObject> *out);
     bool ensureMcpInitialized();          // initialize + notifications/initialized (once)
     QJsonArray fetchMcpTools();           // tools/list -> cached OpenAI tools[] (once)
-    bool callMcpTool(const QString &name, const QJsonObject &args, QString *output);
+    bool callMcpTool(const QString &name, const QJsonObject &args, QString *output,
+                     QJsonArray *images = nullptr);
     // After a stream that finished with finish_reason=="tool_calls": append the
     // assistant tool_calls msg, run each call, append tool results, and re-issue
     // the chat request (or stop at the iteration cap). Replaces finishTurn() for
@@ -224,6 +254,7 @@ private:
     QMap<int, StreamedToolCall> m_toolAccum;
     QString m_finishReason;
     int m_toolIterations = 0;    // tool-loop iterations this turn (cap 12)
+    bool m_toolImages = false;   // forward tool-result images (off after a rejection)
 
     // MCP client session state (cached for the brain's lifetime).
     QString m_mcpSessionId;

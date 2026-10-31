@@ -1978,6 +1978,47 @@ OK. Live-verified against the actual running daemon, not just unit tests.
 (`test_tools_windows.py`). The clause macro was compile-checked on both branches. The live checks
 on a real Windows VM (`winlab`) are listed in the PR and still pending.
 
+## New subsystems (2026-10-31) — graphical VMs / remote desktops inside Chrome
+
+Full write-up: [`docs/BROWSER_VM_CONTROL.md`](docs/BROWSER_VM_CONTROL.md). The gotchas:
+
+- **The logic is in Python, not the extension.** `computer_use_mcp/browser_visual.py` does the
+  coordinate math, frame and letterbox composition, and builds every CDP `Input.*` event.
+  `extension/visual.js` only captures, measures and dispatches. Keep it that way, because only the
+  Python side is unit-tested in CI without a browser.
+- **`visual.js` exists twice and must stay byte-identical.** It lives in `extension/` and in
+  `computer-use/extension/`, and `test_browser_visual_extension.py` enforces it. Both `sw.js`
+  files load it with a top-level `importScripts("visual.js")`, which needs a classic (non-module)
+  service worker. Bump both manifest versions when the protocol changes; the engine maps
+  "unknown method" to an upgrade hint.
+- **Measure the image→CSS scale, never derive it.** `scale = capture px / main-frame innerWidth`
+  absorbs DPR, browser zoom and the debugger infobar in one number. CDP
+  `Input.dispatchMouseEvent` takes main-frame CSS px. Verified at 150% zoom and DPR 2 in real
+  Chromium.
+- **Integer CSS points, rounded half-up, clamped inside the drawn rect.** Chrome gives pages
+  integer `clientX`, and consoles truncate client→guest. Python's `round()` is banker's
+  rounding, so use `_round_half_up`. A guest pixel maps to its centre. Without the clamp, the last
+  framebuffer column lands on the canvas edge and Chrome hit-tests it as outside.
+- **A first debugger attach shrinks the viewport** (the "being debugged" infobar). `visualAttach`
+  waits 350 ms after a fresh attach, and inspect re-measures once if the size changed during
+  capture. Actions carry `expectViewport` (size + scroll) and the extension refuses a stale
+  mapping, so don't "relax" that check.
+- **Mouse events start with `mouseMoved`, and wheel events go one per notch.** VNC clients only
+  learn the pointer position from motion. noVNC/Guacamole send at most one remote wheel click per
+  DOM wheel event, so one big delta scrolls once.
+- **`browser_type_trusted` text goes through `policy._scan_command`.** Typing into a VM terminal
+  runs commands on that machine. `browser_visual_inspect` is in `_PLAN_SAFE_TOOLS`; the acting
+  tools are not.
+- **ApiBrain forwards tool images.** OpenAI `tool` messages are text-only, so screenshots go in
+  one marker-tagged user message after the round. `pruneToolImages` keeps the newest two. On HTTP
+  400/413/422 with images attached, they're removed for the brain's lifetime and the request is
+  retried once. This is off for mistral (it rejects user-after-tool).
+- **The real-Chromium lab:** `computer-use/tests/browser_lab.py`. It loads the real unpacked
+  extension into headless Chromium and points it at an in-process bridge. The fixture site is
+  served as both `127.0.0.1` and `localhost`, which are two sites, so the iframe is a genuine
+  OOPIF. Everything runs on one asyncio loop, because bridge futures are loop-bound. The suite
+  runs once per shipped extension.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.

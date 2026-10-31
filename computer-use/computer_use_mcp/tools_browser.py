@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from mcp.server.fastmcp import FastMCP, Image
 
+from computer_use_mcp import tools_browser_visual
 from computer_use_mcp.browser_bridge import bridge
 
 
@@ -83,10 +84,17 @@ def register(mcp: FastMCP) -> None:
     async def browser_snapshot(tab_id: Optional[int] = None, max_nodes: int = 600) -> str:
         """Read the page: title/url plus an outline of interactive elements,
         each with a ref like e7. Pass refs to browser_click/browser_type/
-        browser_select. Refs go stale after navigation — re-snapshot then."""
+        browser_select. Refs go stale after navigation — re-snapshot then.
+        If the tab shows a VM console / remote desktop / big canvas, the result
+        carries graphical=true + a hint: switch to browser_visual_inspect and
+        the *_xy / browser_type_trusted / browser_key_press tools there."""
         try:
-            return _j(await bridge.send_command(
-                "page.snapshot", {"tabId": tab_id, "maxNodes": max_nodes}))
+            snap = await bridge.send_command(
+                "page.snapshot", {"tabId": tab_id, "maxNodes": max_nodes})
+            hint = await tools_browser_visual.graphical_hint(tab_id)
+            if hint and isinstance(snap, dict):
+                snap = dict(snap, graphical=hint)
+            return _j(snap)
         except Exception as exc:
             return _err(exc)
 
@@ -211,3 +219,5 @@ def register(mcp: FastMCP) -> None:
                 "cdp.send", {"method": method, "params": params, "tabId": tab_id}, timeout=45))
         except Exception as exc:
             return _err(exc)
+
+    tools_browser_visual.register(mcp)

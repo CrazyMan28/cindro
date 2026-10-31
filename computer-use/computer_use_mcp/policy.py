@@ -344,7 +344,8 @@ def _phone_gate(tool: str, arguments: Any) -> None:
 # --- pre-exec command scanner (jarvis#76 feature 12) ------------------------
 # The free-form command tools run their `command` arg via subprocess(shell=True)
 # in a DETACHED runner — this call_tool wrapper is the ONLY window to inspect it.
-_CMD_TOOLS = {"bg_start", "monitor", "watch", "widget_live", "app_launch"}
+_CMD_TOOLS = {"bg_start", "monitor", "watch", "widget_live", "app_launch",
+              "browser_type_trusted"}
 
 
 def _log_cmd(tool: str, cmd: str, hit: "cmd_scan.Result",
@@ -367,7 +368,8 @@ def _log_cmd(tool: str, cmd: str, hit: "cmd_scan.Result",
 
 
 def _scan_command(tool: str, arguments: Any) -> None:
-    """Scan bg_start/monitor/watch/widget_live shell `command` args.
+    """Scan bg_start/monitor/watch/widget_live shell `command` args (and the
+    text browser_type_trusted types into a VM console).
 
     Runs inside the call_tool gate AFTER the trust-policy gate. A risky command
     routes to the SAME ask-bus flow as an `ask` policy (Allow / Deny); anything
@@ -395,6 +397,12 @@ def _scan_command(tool: str, arguments: Any) -> None:
         app_arg = arguments.get("app")
         if isinstance(app_arg, str) and app_arg.strip() and app_arg not in candidates:
             candidates.append(app_arg)
+    # Text typed into a VM console / remote terminal in Chrome is a command on
+    # that machine — the same destruction/exfil cues apply.
+    if tool == "browser_type_trusted":
+        typed = arguments.get("text")
+        if isinstance(typed, str) and typed.strip():
+            candidates.append(typed)
 
     for cmd in candidates:
         hit = cmd_scan.scan(cmd)
@@ -501,7 +509,7 @@ _PLAN_SAFE_TOOLS = frozenset({
     # Read-only browser introspection — NOT navigate/click/type/select/scroll/
     # eval/cdp/tab_new/tab_close/tab_activate
     "browser_status", "browser_tabs", "browser_snapshot", "browser_screenshot",
-    "browser_console",
+    "browser_console", "browser_visual_inspect",
     # Subagent research fan-out — planning is explicitly allowed to delegate,
     # but ONLY via paths that reliably propagate the restriction to the child
     # (agent_start/agent_committee/agent_moa all route through

@@ -15,6 +15,7 @@
 - [x] **Type A — nested "agent" desktop (co-work):** per-session headless Sway + isolated engine; input goes to the nested compositor, never your real seat
 - [x] **Type B — real-screen takeover:** approval-gated, glowing cursor + "Cindro is using your computer · Esc to cancel" banner **on all 3 monitors** (overlay surfaces verified per-output; pointer feed verified end-to-end)
 - [x] **Type C — in-browser (Chrome CDP bridge):** `browser_*` tools (navigate/click/type/eval/snapshot/screenshot)
+- [x] **Graphical VMs / remote desktops inside Chrome:** `browser_visual_inspect` + `browser_click_xy`/`drag_xy`/`scroll_xy`/`key_press`/`type_trusted` drive noVNC/Guacamole/SPICE/VMware consoles and canvas apps with real CDP input — see [BROWSER_VM_CONTROL.md](BROWSER_VM_CONTROL.md)
 - [x] **Multi-monitor correct:** engine maps the full virtual desktop (bbox `6400×1570`); overlay maps global→per-monitor and culls the glow off-screen
 - [x] **Re-exported through Jarvis-MCP** (`:8797`, 37 computer-use tools incl. `ask_user`) and registered into codex + claude CLIs
 - [x] **Brain isolation (Wave 6)** — the co-work brain sees ONLY the nested engine, never your global MCP servers / real desktop. codex: private `CODEX_HOME` + `--ignore-user-config`; claude: `--strict-mcp-config`. *Verified live: codex "open chrome" lands on the nested `HEADLESS-1`, never touches your real KDE/Chrome; no hand-desktop, no FAULTs.*
@@ -71,7 +72,7 @@ Cindro keeps the proven Python/FastMCP engine and wraps it in a daemon. Concrete
 |---|---|---|---|
 | **A · Nested agent desktop** | A headless Sway it spawns per session | **Total** — its own compositor/seat; you keep your screen | Co-work in parallel; let it grind while you work |
 | **B · Real-screen takeover** | Your actual desktop (real seat) | None — *your* cursor; gated + glowing banner + Esc | "Do this *here*, on my screen, now" |
-| **C · Browser (CDP)** | A Chrome tab | Tab-scoped, DOM-accurate | Web tasks where DOM beats pixels |
+| **C · Browser (CDP)** | A Chrome tab | Tab-scoped, DOM-accurate — or pixel-accurate for VM consoles/canvas ([BROWSER_VM_CONTROL.md](BROWSER_VM_CONTROL.md)) | Web tasks where DOM beats pixels; VMs and remote desktops open in a tab |
 
 Type A is the headline feature — most local "computer use" tools only do Type B (drive your one real screen), so the agent fights you for the cursor.
 
