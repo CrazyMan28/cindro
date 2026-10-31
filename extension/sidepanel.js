@@ -1157,6 +1157,14 @@ const BROWSER_PRIMER =
   "1) Use ONLY the browser tools: browser_snapshot (read the page + element refs), " +
   "browser_click, browser_type, browser_navigate, browser_scroll, browser_select, " +
   "browser_tabs. They drive the real Chrome directly and PRECISELY via this extension.\n" +
+  "   GRAPHICAL pages — a VM / remote desktop in a tab (noVNC, Proxmox, Guacamole, " +
+  "SPICE, VMware consoles), a canvas app, or when browser_snapshot says graphical=true: " +
+  "look with browser_visual_inspect (screenshot + surfaces), then act with " +
+  "browser_click_xy / browser_drag_xy / browser_scroll_xy / browser_type_trusted / " +
+  "browser_key_press using x/y measured on that image (verify=true returns a fresh " +
+  "screenshot to confirm the change; re-inspect and retry if it didn't happen). Zoom " +
+  "with browser_visual_inspect(surface='s1') to read small console text. These are " +
+  "still browser tools, inside this Chrome.\n" +
   "2) NEVER use real_screen / desktop_screenshot / mouse_click / mouse_move / key_press / " +
   "type_text or ANY real-screen or full-desktop computer-use tool. Those take over the " +
   "user's whole screen with a big cursor — that is FORBIDDEN here. This agent is " +

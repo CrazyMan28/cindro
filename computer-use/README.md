@@ -45,6 +45,16 @@ Browser (need Chrome + the extension connected): `browser_status`,
 (`full_page` via CDP), `browser_eval` (MAIN world, CDP fallback),
 `browser_console`, `browser_cdp` (raw DevTools-protocol escape hatch).
 
+Graphical pages — a VM or remote desktop in a tab (noVNC, Proxmox, Guacamole,
+SPICE, VMware consoles) or any canvas app: `browser_visual_inspect` (screenshot
++ surfaces + coordinate mapping; `surface="s1"` zooms in), then
+`browser_click_xy`, `browser_move_xy`, `browser_drag_xy`, `browser_scroll_xy`,
+`browser_mouse_down`/`browser_mouse_up`, `browser_key_press`
+(`ctrl+alt+delete`, `win+r`, …), `browser_type_trusted` and
+`browser_input_release`. Real CDP input, coordinates measured on the inspect
+image, `verify=True` re-captures to confirm the change. See
+[docs/BROWSER_VM_CONTROL.md](../docs/BROWSER_VM_CONTROL.md).
+
 `trusted` clicks, console capture, full-page shots and `browser_cdp` attach
 Chrome's debugger to the tab — Chrome shows its "is being debugged" banner
 until the tab closes; that's inherent to the API. If DevTools is open on the

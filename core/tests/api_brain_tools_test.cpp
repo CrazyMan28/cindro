@@ -4,7 +4,8 @@
 //   (a) MCP `tools/list` -> OpenAI `tools[]` conversion,
 //   (b) streamed `tool_calls` accumulation across FRAGMENTED SSE deltas, then
 //       finalization into a complete {id,name,arguments} array,
-//   (c) `finish_reason` detection from a streamed chunk.
+//   (c) `finish_reason` detection from a streamed chunk,
+// plus forwarding/pruning of MCP tool-result images (screenshots).
 //
 // These are the static helpers ApiBrain uses in startOpenAi / handleSseData /
 // onFinished; exercising them directly proves the wire shapes are right without
@@ -424,6 +425,83 @@ int main(int argc, char **argv)
         const qint64 dDegenerate = ApiBrain::backoffDelayMs(0, 5000, 1000);
         check(dDegenerate >= 500 && dDegenerate <= 5000,
               "maxMs < baseMs is clamped up to baseMs rather than inverting");
+    }
+
+    // ---- (h) tool-result images: forwarded, pruned, estimated, removable -----
+    {
+        // MCP content[] from browser_visual_inspect: an image + a JSON text part.
+        const QJsonArray mcpContent = QJsonDocument::fromJson(
+            "[{\"type\":\"image\",\"data\":\"QUJD\",\"mimeType\":\"image/png\"},"
+            " {\"type\":\"text\",\"text\":\"{\\\"inspect_id\\\":\\\"v1\\\"}\"},"
+            " {\"type\":\"image\",\"data\":\"\"}]").array();
+        const QJsonArray imgs = ApiBrain::mcpImageParts(mcpContent);
+        check(imgs.size() == 1, "only non-empty image parts are extracted");
+        check(imgs[0].toObject().value(QStringLiteral("data")).toString() == QStringLiteral("QUJD") &&
+                  imgs[0].toObject().value(QStringLiteral("mimeType")).toString() ==
+                      QStringLiteral("image/png"),
+              "image part keeps its data + mime type");
+
+        const QJsonObject msg = ApiBrain::toolImagesMessage(
+            {QStringLiteral("browser_visual_inspect")}, imgs);
+        check(msg.value(QStringLiteral("role")).toString() == QStringLiteral("user"),
+              "tool images ride a user message (tool messages are text-only)");
+        const QJsonArray parts = msg.value(QStringLiteral("content")).toArray();
+        check(parts.size() == 2 &&
+                  parts[0].toObject().value(QStringLiteral("text")).toString()
+                      .startsWith(ApiBrain::kToolImageMarker) &&
+                  parts[0].toObject().value(QStringLiteral("text")).toString()
+                      .contains(QStringLiteral("browser_visual_inspect")),
+              "marker text names the tool");
+        check(parts[1].toObject().value(QStringLiteral("image_url")).toObject()
+                      .value(QStringLiteral("url")).toString() ==
+                  QStringLiteral("data:image/png;base64,QUJD"),
+              "image becomes an OpenAI image_url data URL");
+
+        QJsonArray history;
+        QJsonObject u;
+        u.insert(QStringLiteral("role"), QStringLiteral("user"));
+        u.insert(QStringLiteral("content"), QStringLiteral("open powershell in the VM"));
+        history.append(u);
+        check(!ApiBrain::historyHasToolImages(history), "plain history has no tool images");
+        for (int i = 0; i < 3; ++i) {
+            QJsonObject tool;
+            tool.insert(QStringLiteral("role"), QStringLiteral("tool"));
+            tool.insert(QStringLiteral("tool_call_id"), QStringLiteral("c%1").arg(i));
+            tool.insert(QStringLiteral("content"), QStringLiteral("{}"));
+            history.append(tool);
+            history.append(ApiBrain::toolImagesMessage({QStringLiteral("t%1").arg(i)}, imgs));
+        }
+        check(ApiBrain::historyHasToolImages(history), "tool images detected");
+        const int pruned = ApiBrain::pruneToolImages(history, 1);
+        check(pruned == 2, "all but the newest tool-image message collapsed");
+        check(history[2].toObject().value(QStringLiteral("content")).isString() &&
+                  history[2].toObject().value(QStringLiteral("content")).toString()
+                      .contains(QStringLiteral("omitted")),
+              "an old screenshot collapses to a text note");
+        check(history[6].toObject().value(QStringLiteral("content")).isArray(),
+              "the newest screenshot keeps its pixels");
+        check(ApiBrain::pruneToolImages(history, 1) == 0, "pruning is idempotent");
+        check(history[0].toObject().value(QStringLiteral("content")).toString() ==
+                  QStringLiteral("open powershell in the VM"),
+              "ordinary user messages are never touched");
+
+        // A big base64 screenshot must not look like ~250k tokens.
+        QJsonArray big;
+        QJsonObject huge;
+        huge.insert(QStringLiteral("data"), QString(1000000, QLatin1Char('A')));
+        huge.insert(QStringLiteral("mimeType"), QStringLiteral("image/png"));
+        big.append(huge);
+        QJsonArray h2;
+        h2.append(ApiBrain::toolImagesMessage({QStringLiteral("x")}, big));
+        check(ApiBrain::estimateHistoryTokens(h2) < 5000,
+              "image parts are estimated at a flat weight, not their base64 size");
+
+        const int removed = ApiBrain::pruneToolImages(history, 0, /*removeAll=*/true);
+        check(removed == 3 && !ApiBrain::historyHasToolImages(history) && history.size() == 4,
+              "removeAll drops every tool-image message (non-vision fallback)");
+        check(history.last().toObject().value(QStringLiteral("role")).toString() ==
+                  QStringLiteral("tool"),
+              "tool results themselves survive the fallback");
     }
 
     if (g_failures) {

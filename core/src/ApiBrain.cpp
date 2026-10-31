@@ -109,6 +109,12 @@ std::optional<QJsonObject> mcpExtractRpcResult(const QByteArray &body, int wantI
 constexpr int kMcpTimeoutMs = 7200 * 1000;
 // Max tool-loop iterations per turn before we stop and tell the user.
 constexpr int kMaxToolIterations = 12;
+// Tool-image messages that keep their pixels (older screenshots are stale and
+// expensive: each is ~1-2k tokens, resent on every request).
+constexpr int kKeepToolImageMessages = 2;
+// Token weight of one image part for estimateHistoryTokens (its base64 bytes
+// would wildly overstate it and trigger compression on every screenshot).
+constexpr qint64 kImagePartBytes = 1600 * 4;
 
 } // namespace
 
@@ -122,6 +128,8 @@ ApiBrain::ApiBrain(Options opts, QObject *parent)
     // chat-only; ollama with no key still works (the loop is endpoint-gated).
     m_toolsEnabled = !m_opts.mcpEndpoint.isEmpty() &&
                      m_provider != QStringLiteral("anthropic");
+    m_toolImages = m_toolsEnabled && m_opts.toolImages &&
+                   m_provider != QStringLiteral("mistral");
 }
 
 ApiBrain::~ApiBrain()
@@ -417,9 +425,127 @@ void ApiBrain::send(const QString &text, const QStringList &images)
 int ApiBrain::estimateHistoryTokens(const QJsonArray &history)
 {
     qint64 bytes = 0;
-    for (const QJsonValue &v : history)
-        bytes += QJsonDocument(v.toObject()).toJson(QJsonDocument::Compact).size();
+    for (const QJsonValue &v : history) {
+        QJsonObject m = v.toObject();
+        const QJsonValue content = m.value(QStringLiteral("content"));
+        if (content.isArray()) {
+            // Count image parts at a flat per-image weight, not their base64 size.
+            QJsonArray parts;
+            for (const QJsonValue &pv : content.toArray()) {
+                const QString type = pv.toObject().value(QStringLiteral("type")).toString();
+                if (type == QStringLiteral("image_url") || type == QStringLiteral("image"))
+                    bytes += kImagePartBytes;
+                else
+                    parts.append(pv);
+            }
+            m.insert(QStringLiteral("content"), parts);
+        }
+        bytes += QJsonDocument(m).toJson(QJsonDocument::Compact).size();
+    }
     return int(bytes / 4);
+}
+
+// --- tool-result images ------------------------------------------------------
+
+const QString ApiBrain::kToolImageMarker = QStringLiteral("[tool image output");
+
+QJsonArray ApiBrain::mcpImageParts(const QJsonArray &mcpContent)
+{
+    QJsonArray out;
+    for (const QJsonValue &cv : mcpContent) {
+        const QJsonObject c = cv.toObject();
+        if (c.value(QStringLiteral("type")).toString() != QStringLiteral("image"))
+            continue;
+        const QString data = c.value(QStringLiteral("data")).toString();
+        if (data.isEmpty())
+            continue;
+        QJsonObject img;
+        img.insert(QStringLiteral("data"), data);
+        img.insert(QStringLiteral("mimeType"),
+                   c.value(QStringLiteral("mimeType")).toString(QStringLiteral("image/png")));
+        out.append(img);
+    }
+    return out;
+}
+
+QJsonObject ApiBrain::toolImagesMessage(const QStringList &toolNames, const QJsonArray &images)
+{
+    QJsonArray content;
+    QJsonObject t;
+    t.insert(QStringLiteral("type"), QStringLiteral("text"));
+    t.insert(QStringLiteral("text"),
+             kToolImageMarker + QStringLiteral(" from %1 — the screenshot(s) that tool "
+                                               "returned; measure coordinates on it]")
+                                    .arg(toolNames.join(QStringLiteral(", "))));
+    content.append(t);
+    for (const QJsonValue &iv : images) {
+        const QJsonObject img = iv.toObject();
+        QJsonObject url;
+        url.insert(QStringLiteral("url"),
+                   QStringLiteral("data:") + img.value(QStringLiteral("mimeType")).toString() +
+                       QStringLiteral(";base64,") + img.value(QStringLiteral("data")).toString());
+        QJsonObject part;
+        part.insert(QStringLiteral("type"), QStringLiteral("image_url"));
+        part.insert(QStringLiteral("image_url"), url);
+        content.append(part);
+    }
+    QJsonObject msg;
+    msg.insert(QStringLiteral("role"), QStringLiteral("user"));
+    msg.insert(QStringLiteral("content"), content);
+    return msg;
+}
+
+namespace {
+bool isToolImageMessage(const QJsonObject &m)
+{
+    if (m.value(QStringLiteral("role")).toString() != QStringLiteral("user"))
+        return false;
+    const QJsonValue c = m.value(QStringLiteral("content"));
+    QString first;
+    if (c.isArray())
+        first = c.toArray().first().toObject().value(QStringLiteral("text")).toString();
+    else
+        first = c.toString();
+    return first.startsWith(ApiBrain::kToolImageMarker);
+}
+} // namespace
+
+bool ApiBrain::historyHasToolImages(const QJsonArray &history)
+{
+    for (const QJsonValue &v : history) {
+        const QJsonObject m = v.toObject();
+        if (isToolImageMessage(m) && m.value(QStringLiteral("content")).isArray())
+            return true;
+    }
+    return false;
+}
+
+int ApiBrain::pruneToolImages(QJsonArray &history, int keepLatest, bool removeAll)
+{
+    int changed = 0;
+    int seen = 0;
+    for (int i = history.size() - 1; i >= 0; --i) {
+        const QJsonObject m = history.at(i).toObject();
+        if (!isToolImageMessage(m))
+            continue;
+        if (removeAll) {
+            history.removeAt(i);
+            ++changed;
+            continue;
+        }
+        if (!m.value(QStringLiteral("content")).isArray())
+            continue; // already collapsed
+        if (++seen <= keepLatest)
+            continue;
+        QJsonObject collapsed = m;
+        const QString note = m.value(QStringLiteral("content")).toArray().first().toObject()
+                                 .value(QStringLiteral("text")).toString();
+        collapsed.insert(QStringLiteral("content"),
+                         note + QStringLiteral(" (older screenshot omitted)"));
+        history.replace(i, collapsed);
+        ++changed;
+    }
+    return changed;
 }
 
 int ApiBrain::compressHistory(QJsonArray &history, int keepTail, const QString &digest)
@@ -812,6 +938,23 @@ void ApiBrain::onFinished()
                 m_backoffTimer->start(int(delay));
                 return;
             }
+            // A backend that can't take images (non-vision model, or a strict
+            // dialect) rejects the forwarded tool screenshots: drop them for the
+            // rest of this brain's life and retry the same round once without.
+            if ((httpStatus == 400 || httpStatus == 413 || httpStatus == 422) &&
+                !m_cancelled && m_toolImages && historyHasToolImages(m_history)) {
+                m_toolImages = false;
+                pruneToolImages(m_history, 0, /*removeAll=*/true);
+                qWarning("ApiBrain: HTTP %d with tool images attached — retrying without "
+                         "them (model/backend likely lacks vision)", httpStatus);
+                m_reply->deleteLater();
+                m_reply = nullptr;
+                m_buf.clear();
+                m_toolAccum.clear();
+                m_finishReason.clear();
+                startOpenAi(QString());
+                return;
+            }
             const QByteArray body = m_reply->readAll();
             QString msg = m_reply->errorString();
             // Surface an API error body if present (e.g. invalid key / model).
@@ -889,6 +1032,8 @@ void ApiBrain::runToolCallsAndContinue()
 
     // Execute each call against the computer-use MCP endpoint, threading results
     // back into history as {role:"tool",tool_call_id,content}.
+    QJsonArray roundImages;
+    QStringList imageTools;
     for (const QJsonValue &tcv : toolCalls) {
         if (m_cancelled)
             return;
@@ -923,9 +1068,17 @@ void ApiBrain::runToolCallsAndContinue()
             m_history.append(deniedMsg);
             continue;
         }
-        const bool ok = callMcpTool(name, args, &output);
+        QJsonArray images;
+        const bool ok = callMcpTool(name, args, &output, m_toolImages ? &images : nullptr);
         if (m_cancelled)
             return; // cancel() raced in during the (blocking) MCP call
+        if (!images.isEmpty()) {
+            for (const QJsonValue &iv : std::as_const(images))
+                roundImages.append(iv);
+            imageTools << name;
+            if (output.isEmpty())
+                output = QStringLiteral("[image returned — attached below]");
+        }
         emitEvent(NormalizedBrainEvent::toolResult(id, ok, output, name, args,
                                                    QStringLiteral("computer-use")));
 
@@ -934,6 +1087,13 @@ void ApiBrain::runToolCallsAndContinue()
         toolMsg.insert(QStringLiteral("tool_call_id"), id);
         toolMsg.insert(QStringLiteral("content"), output);
         m_history.append(toolMsg);
+    }
+
+    // `tool` messages are text-only on the OpenAI wire: hand the round's images
+    // to the model in one follow-up user message so it can actually SEE them.
+    if (m_toolImages && !roundImages.isEmpty()) {
+        pruneToolImages(m_history, kKeepToolImageMessages - 1);
+        m_history.append(toolImagesMessage(imageTools, roundImages));
     }
 
     // Iteration cap: stop runaway loops.
@@ -1076,7 +1236,8 @@ QJsonArray ApiBrain::fetchMcpTools()
     return m_toolsCatalog;
 }
 
-bool ApiBrain::callMcpTool(const QString &name, const QJsonObject &args, QString *output)
+bool ApiBrain::callMcpTool(const QString &name, const QJsonObject &args, QString *output,
+                           QJsonArray *images)
 {
     if (!ensureMcpInitialized()) {
         if (output)
@@ -1106,13 +1267,16 @@ bool ApiBrain::callMcpTool(const QString &name, const QJsonObject &args, QString
     const QJsonObject r = result->value(QStringLiteral("result")).toObject();
     // Concatenate the text parts of the MCP content[] block.
     QString text;
-    for (const QJsonValue &cv : r.value(QStringLiteral("content")).toArray()) {
+    const QJsonArray content = r.value(QStringLiteral("content")).toArray();
+    for (const QJsonValue &cv : content) {
         const QJsonObject c = cv.toObject();
         if (c.value(QStringLiteral("type")).toString() == QStringLiteral("text"))
             text += c.value(QStringLiteral("text")).toString();
     }
     if (output)
         *output = text;
+    if (images)
+        *images = mcpImageParts(content);
     // MCP marks a tool-level failure with isError:true (result still 200/no error).
     return !r.value(QStringLiteral("isError")).toBool(false);
 }
