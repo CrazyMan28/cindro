@@ -1126,6 +1126,16 @@ transcript recycles/renders rows:
   animation for the last message of every turn. Also reset `shown` in
   `ChatDelegate`'s `ListView.onReused` — the Timer breaks the `shown` binding by assigning
   it, so a pooled delegate keeps the previous row's count until re-derived.
+- **Follow-up (2026-10-31): the entrance animation and the reveal binding both bit back.**
+  (1) `ChatDelegate`'s fade/slide ran in `Component.onCompleted`, i.e. for EVERY delegate
+  creation — so while the assistant streamed (auto-pin to bottom) or the user scrolled, every
+  recreated prior row slid in again and lagged. It is now gated by `animateIn`, which
+  `JarvisPanel` binds to "newest row, appended <600ms ago" (`lastAppendMs`, updated from
+  `chatModel.onCountChanged`); `onReused` resets opacity/slide. (2) `shown` is bound to
+  `streaming`, and the first typer tick calls `revealed()` (clears `streaming`) — that re-evaluated
+  the binding to `text.length` and snapped the reveal to full. Break the binding
+  (`del.shown = del.shown`) BEFORE `revealed()`. `onGrew` also coalesces
+  `positionViewAtEnd` with `Qt.callLater` instead of relayouting every 12ms tick.
 - **The chat `WheelHandler` must snap to the ends via `positionViewAtBeginning/End()`, not
   clamp against `contentHeight`.** For a ListView of variable-height reused delegates
   `contentHeight` is only an estimate (and the `busy` footer changes it 0↔58), so the old
