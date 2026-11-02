@@ -24,7 +24,7 @@ its own vision.
    PowerShell window, a text field). It measures pixels on that image and never needs coordinates
    from the user.
 3. **Act** with real input: `browser_click_xy`, `browser_move_xy`, `browser_drag_xy`,
-   `browser_scroll_xy`, `browser_mouse_down`/`browser_mouse_up`, `browser_key_press`,
+   `browser_scroll_xy`, `browser_mouse_down`/`browser_mouse_up`, `browser_mouse_down_xy`/`browser_mouse_move_xy`/`browser_mouse_up_xy` (step-by-step drag: hold, move, inspect mid-drag, drop), `browser_key_press`,
    `browser_type_trusted`.
 4. **Verify.** Pass `verify=True` to any action. It waits `settle_ms`, re-captures the same view
    and reports `screen_changed`/`change_ratio`, and returns the new image. Coordinates then refer

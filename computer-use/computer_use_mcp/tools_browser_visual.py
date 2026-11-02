@@ -164,6 +164,66 @@ def _image_point(ctx: _Ctx, cx: float, cy: float) -> Optional[list]:
     return [round(ix, 1), round(iy, 1)]
 
 
+async def _move(x: float, y: float, steps: int, coord_space: str, surface: Optional[str],
+                inspect_id: Optional[str], tab_id: Optional[int], verify: bool,
+                settle_ms: int) -> list:
+    try:
+        ctx = _Ctx(tab_id, inspect_id, coord_space)
+        cx, cy = ctx.point(x, y, surface)
+        last = bv.store.last_point.get(ctx.tab)
+        events = bv.move_events(cx, cy, ctx.held, from_xy=last, steps=max(1, min(int(steps), 100)))
+        return await _dispatch(ctx, events, pointer=(cx, cy),
+                               release=bv.release_all_events(cx, cy, ctx.held),
+                               verify=verify, settle_ms=settle_ms,
+                               summary={"moved_to_css": [cx, cy],
+                                        "point_image": _image_point(ctx, cx, cy),
+                                        "buttons_held": ctx.held})
+    except Exception as exc:
+        return _err(exc)
+
+
+async def _down(x: float, y: float, button: str, coord_space: str, surface: Optional[str],
+                inspect_id: Optional[str], tab_id: Optional[int]) -> list:
+    try:
+        ctx = _Ctx(tab_id, inspect_id, coord_space)
+        cx, cy = ctx.point(x, y, surface)
+        events, now = bv.press_events(cx, cy, button, ctx.held)
+        out = await _dispatch(ctx, events, pointer=(cx, cy),
+                              release=bv.release_all_events(cx, cy, now),
+                              verify=False, settle_ms=0,
+                              summary={"pressed": bv.button_name(button), "point_css": [cx, cy],
+                                       "point_image": _image_point(ctx, cx, cy),
+                                       "holding": True})
+        tab = json.loads(out[-1]).get("tab_id", ctx.tab)
+        bv.store.held[tab] = now
+        return out
+    except Exception as exc:
+        return _err(exc)
+
+
+async def _up(x: Optional[float], y: Optional[float], button: str, coord_space: str,
+              surface: Optional[str], inspect_id: Optional[str], tab_id: Optional[int],
+              verify: bool, settle_ms: int) -> list:
+    try:
+        ctx = _Ctx(tab_id, inspect_id, coord_space)
+        if x is not None and y is not None:
+            cx, cy = ctx.point(x, y, surface)
+        else:
+            last = bv.store.last_point.get(ctx.tab)
+            if last is None:
+                raise ValueError("no known pointer position — pass x and y")
+            cx, cy = last
+        events, now = bv.release_events(cx, cy, button, ctx.held)
+        out = await _dispatch(ctx, events, pointer=(cx, cy), release=[],
+                              verify=verify, settle_ms=settle_ms,
+                              summary={"released": bv.button_name(button), "point_css": [cx, cy]})
+        tab = json.loads(out[-1]).get("tab_id", ctx.tab)
+        bv.store.held[tab] = now
+        return out
+    except Exception as exc:
+        return _err(exc)
+
+
 def register(mcp: FastMCP) -> None:
     @mcp.tool()
     async def browser_visual_inspect(
@@ -279,18 +339,7 @@ def register(mcp: FastMCP) -> None:
         """Move the mouse (hover) to a point with real input — opens hover menus
         and tooltips, moves the VM's pointer. Glides from the last position in
         `steps` moves; held buttons (browser_mouse_down) stay held."""
-        try:
-            ctx = _Ctx(tab_id, inspect_id, coord_space)
-            cx, cy = ctx.point(x, y, surface)
-            last = bv.store.last_point.get(ctx.tab)
-            events = bv.move_events(cx, cy, ctx.held, from_xy=last, steps=max(1, min(int(steps), 100)))
-            return await _dispatch(ctx, events, pointer=(cx, cy),
-                                   release=bv.release_all_events(cx, cy, ctx.held),
-                                   verify=verify, settle_ms=settle_ms,
-                                   summary={"moved_to_css": [cx, cy],
-                                            "buttons_held": ctx.held})
-        except Exception as exc:
-            return _err(exc)
+        return await _move(x, y, steps, coord_space, surface, inspect_id, tab_id, verify, settle_ms)
 
     @mcp.tool()
     async def browser_drag_xy(
@@ -371,19 +420,7 @@ def register(mcp: FastMCP) -> None:
         """Press and HOLD a mouse button at a point (for custom drags / long
         presses: then browser_move_xy, then browser_mouse_up). Always release;
         browser_input_release frees anything stuck."""
-        try:
-            ctx = _Ctx(tab_id, inspect_id, coord_space)
-            cx, cy = ctx.point(x, y, surface)
-            events, now = bv.press_events(cx, cy, button, ctx.held)
-            out = await _dispatch(ctx, events, pointer=(cx, cy),
-                                  release=bv.release_all_events(cx, cy, now),
-                                  verify=False, settle_ms=0,
-                                  summary={"pressed": bv.button_name(button), "point_css": [cx, cy]})
-            tab = json.loads(out[-1]).get("tab_id", ctx.tab)
-            bv.store.held[tab] = now
-            return out
-        except Exception as exc:
-            return _err(exc)
+        return await _down(x, y, button, coord_space, surface, inspect_id, tab_id)
 
     @mcp.tool()
     async def browser_mouse_up(
@@ -398,24 +435,84 @@ def register(mcp: FastMCP) -> None:
         settle_ms: int = 600,
     ) -> list:
         """Release a held mouse button (at x/y, or where the pointer last was)."""
+        return await _up(x, y, button, coord_space, surface, inspect_id, tab_id, verify, settle_ms)
+
+    # --- Step-by-step drag: press, look mid-drag, adjust, drop. -------------
+    # Same input as browser_mouse_down / browser_move_xy / browser_mouse_up, named
+    # as one family so a drag-and-drop that only shows its drop targets WHILE the
+    # button is held (highlighted slots, snap circles, insertion markers) can be
+    # inspected between the press and the release.
+
+    @mcp.tool()
+    async def browser_mouse_down_xy(
+        x: float,
+        y: float,
+        tab_id: Optional[int] = None,
+        button: str = "left",
+        coord_space: str = "image",
+        surface: Optional[str] = None,
+        inspect_id: Optional[str] = None,
+    ) -> list:
+        """STEP 1 of a step-by-step drag: press the mouse button at (x, y) and
+        KEEP IT HELD — nothing is released. Then browser_mouse_move_xy (any
+        number of times) and finish with browser_mouse_up_xy. Use this instead
+        of browser_drag_xy when drop targets only appear mid-drag: after
+        moving, call browser_visual_inspect (or pass verify=true to the move)
+        to SEE the highlighted targets, move onto one, then release. x/y are
+        on the latest browser_visual_inspect image. If anything goes wrong,
+        browser_input_release frees the button."""
+        return await _down(x, y, button, coord_space, surface, inspect_id, tab_id)
+
+    @mcp.tool()
+    async def browser_mouse_move_xy(
+        x: float,
+        y: float,
+        tab_id: Optional[int] = None,
+        steps: int = 12,
+        coord_space: str = "image",
+        surface: Optional[str] = None,
+        inspect_id: Optional[str] = None,
+        verify: bool = False,
+        settle_ms: int = 400,
+    ) -> list:
+        """STEP 2 of a step-by-step drag: glide the pointer to (x, y) with the
+        button from browser_mouse_down_xy STILL HELD (in `steps` small moves,
+        so the page sees a real drag). Call as many times as needed to slide
+        around. Between moves, browser_visual_inspect shows what the page is
+        highlighting (drop zones / blue circles); verify=true does that in the
+        same call and returns the screenshot. The button stays held until
+        browser_mouse_up_xy."""
+        return await _move(x, y, steps, coord_space, surface, inspect_id, tab_id, verify, settle_ms)
+
+    @mcp.tool()
+    async def browser_mouse_up_xy(
+        x: Optional[float] = None,
+        y: Optional[float] = None,
+        tab_id: Optional[int] = None,
+        button: str = "left",
+        coord_space: str = "image",
+        surface: Optional[str] = None,
+        inspect_id: Optional[str] = None,
+        verify: bool = True,
+        settle_ms: int = 600,
+    ) -> list:
+        """STEP 3 of a step-by-step drag: release the held button, completing
+        the drop. With x/y the pointer first glides there (still held) and
+        releases on that point; without them it releases where the last
+        browser_mouse_move_xy left it. verify=true (default) returns a fresh
+        screenshot so you can confirm the item landed."""
         try:
-            ctx = _Ctx(tab_id, inspect_id, coord_space)
             if x is not None and y is not None:
+                ctx = _Ctx(tab_id, inspect_id, coord_space)
                 cx, cy = ctx.point(x, y, surface)
-            else:
                 last = bv.store.last_point.get(ctx.tab)
-                if last is None:
-                    raise ValueError("no known pointer position — pass x and y")
-                cx, cy = last
-            events, now = bv.release_events(cx, cy, button, ctx.held)
-            out = await _dispatch(ctx, events, pointer=(cx, cy), release=[],
-                                  verify=verify, settle_ms=settle_ms,
-                                  summary={"released": bv.button_name(button), "point_css": [cx, cy]})
-            tab = json.loads(out[-1]).get("tab_id", ctx.tab)
-            bv.store.held[tab] = now
-            return out
+                if ctx.held and (last is None or abs(last[0] - cx) > 0.5 or abs(last[1] - cy) > 0.5):
+                    moved = await _move(x, y, 6, coord_space, surface, inspect_id, tab_id, False, 0)
+                    if "error" in json.loads(moved[-1]):
+                        return moved
         except Exception as exc:
             return _err(exc)
+        return await _up(x, y, button, coord_space, surface, inspect_id, tab_id, verify, settle_ms)
 
     @mcp.tool()
     async def browser_key_press(
