@@ -125,9 +125,11 @@ class _Ctx:
 
 async def _dispatch(ctx: _Ctx, events: list[dict], *, pointer: Optional[tuple[float, float]],
                     release: list[dict], verify: bool, settle_ms: int,
-                    summary: dict) -> list:
+                    summary: dict, cancel_drag: bool = False) -> list:
     params: dict = {"tabId": ctx.tab, "events": events, "releaseOnError": release,
                     "expectViewport": ctx.expect_viewport()}
+    if cancel_drag:
+        params["cancelDrag"] = True
     if pointer:
         params["pointer"] = {"x": pointer[0], "y": pointer[1]}
     settle = max(0, min(int(settle_ms), 10000))
@@ -139,6 +141,10 @@ async def _dispatch(ctx: _Ctx, events: list[dict], *, pointer: Optional[tuple[fl
     tab = res.get("tabId", ctx.tab)
     out = {"ok": True, "tab_id": tab, "dispatched": res.get("dispatched")}
     out.update(summary)
+    if res.get("html5Drag"):
+        # A native HTML5 (draggable) drag the extension is driving: started /
+        # dragging (still held, drop targets live) / dropped.
+        out["html5_drag"] = res["html5Drag"]
     if pointer:
         bv.store.last_point[tab] = pointer
     if not verify or not res.get("verify"):
@@ -610,14 +616,15 @@ def register(mcp: FastMCP) -> None:
     async def browser_input_release(tab_id: Optional[int] = None) -> list:
         """Recovery: release every held mouse button and modifier key in the tab
         (use if a drag or shortcut was interrupted and the VM acts as if
-        shift/ctrl or the mouse is stuck down)."""
+        shift/ctrl or the mouse is stuck down). A live HTML5 drag is
+        cancelled, not dropped."""
         try:
             ctx = _Ctx(tab_id, None, "viewport")
             x, y = bv.store.last_point.get(ctx.tab, (0, 0))
             held = ctx.held or sum(bv.BUTTONS.values())
             out = await _dispatch(ctx, bv.release_all_events(x, y, held), pointer=None,
                                   release=[], verify=False, settle_ms=0,
-                                  summary={"released": "all"})
+                                  summary={"released": "all"}, cancel_drag=True)
             tab = json.loads(out[-1]).get("tab_id", ctx.tab)
             bv.store.held.pop(tab, None)
             return out

@@ -149,6 +149,48 @@ PAGES = {
         'object-fit:contain;background:#000;outline:none"></canvas>',
         SINK_SELF + "fakeConsole(document.getElementById('c'), sink);",
         title="letterbox"),
+    # Drag-and-drop labs whose drop target (a blue circle) only exists WHILE the
+    # item is being dragged. dnd_html5: native HTML5 draggable/dragover/drop.
+    # dnd_pointer: a JS library-style drag on mousedown/mousemove/mouseup.
+    "dnd_html5.html": (
+        "<!doctype html><html><head><meta charset=utf-8><title>dnd</title><style>"
+        "html,body{margin:0;background:#eee;overflow:hidden}"
+        "#item{position:absolute;left:100px;top:100px;width:80px;height:80px;background:#c33}"
+        "#bldg{position:absolute;left:500px;top:300px;width:300px;height:200px;background:#999}"
+        "#ring{position:absolute;left:720px;top:420px;width:40px;height:40px;border-radius:50%;"
+        "background:#36f;display:none}</style></head><body>"
+        "<div id=item draggable=true></div><div id=bldg></div><div id=ring></div><script>"
+        "window.__log=[];const L=(o)=>window.__log.push(o);"
+        "const ring=document.getElementById('ring');"
+        "item.addEventListener('dragstart',e=>{e.dataTransfer.setData('text/plain','router');"
+        "e.dataTransfer.effectAllowed='move';L({type:'dragstart'});});"
+        "bldg.addEventListener('dragenter',e=>{e.preventDefault();ring.style.display='block';"
+        "L({type:'dragenter'});});"
+        "for(const t of [bldg,ring]){t.addEventListener('dragover',e=>{e.preventDefault();});"
+        "t.addEventListener('drop',e=>{e.preventDefault();L({type:'drop',x:e.clientX,y:e.clientY,"
+        "onRing:e.target===ring,data:e.dataTransfer.getData('text/plain')});});}"
+        "item.addEventListener('dragend',e=>{ring.style.display='none';"
+        "L({type:'dragend',dropEffect:e.dataTransfer.dropEffect});});"
+        "</script></body></html>"),
+    "dnd_pointer.html": (
+        "<!doctype html><html><head><meta charset=utf-8><title>dnd</title><style>"
+        "html,body{margin:0;background:#eee;overflow:hidden}"
+        "#item{position:absolute;left:100px;top:100px;width:80px;height:80px;background:#c33}"
+        "#bldg{position:absolute;left:500px;top:300px;width:300px;height:200px;background:#999}"
+        "#ring{position:absolute;left:720px;top:420px;width:40px;height:40px;border-radius:50%;"
+        "background:#36f;display:none}</style></head><body>"
+        "<div id=item></div><div id=bldg></div><div id=ring></div><script>"
+        "window.__log=[];const L=(o)=>window.__log.push(o);let drag=false;"
+        "const ring=document.getElementById('ring');"
+        "const inB=(e)=>{const r=bldg.getBoundingClientRect();return e.clientX>=r.left&&"
+        "e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;};"
+        "item.addEventListener('mousedown',e=>{drag=true;L({type:'grab'});});"
+        "document.addEventListener('mousemove',e=>{if(drag&&e.buttons&1)"
+        "ring.style.display=inB(e)?'block':'none';});"
+        "document.addEventListener('mouseup',e=>{if(!drag)return;drag=false;"
+        "const onRing=ring.style.display==='block'&&document.elementFromPoint(e.clientX,e.clientY)===ring;"
+        "ring.style.display='none';L({type:'drop',x:e.clientX,y:e.clientY,onRing});});"
+        "</script></body></html>"),
     # Plain DOM page for regressions + insert-mode typing.
     "form.html": (
         "<!doctype html><html><head><meta charset=utf-8><title>form</title></head><body>"
@@ -244,7 +286,11 @@ class Lab:
 
         # Chromium with the real extension.
         prof = self.tmp / "profile"
-        args = [chromium, "--headless=new", "--no-sandbox", "--disable-gpu",
+        # CINDRO_LAB_HEADFUL=1 (under a real or virtual X display, e.g. xvfb-run)
+        # runs a real browser window: native HTML5 drags then go through the
+        # platform drag loop the way they do in the user's Chrome.
+        headless = [] if os.environ.get("CINDRO_LAB_HEADFUL") else ["--headless=new"]
+        args = [chromium, *headless, "--no-sandbox", "--disable-gpu",
                 "--disable-dev-shm-usage",  # CI containers have a tiny /dev/shm
                 "--no-first-run", "--no-default-browser-check", "--disable-search-engine-choice-screen",
                 f"--user-data-dir={prof}", f"--load-extension={self.ext_dir}",

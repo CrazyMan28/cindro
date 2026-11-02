@@ -1,0 +1,74 @@
+# Proves the Chrome-extension browser tools (browser_visual_inspect, *_xy clicks,
+# drags, step-by-step mouse_down_xy/move_xy/up_xy, HTML5 drag-and-drop, keys,
+# typing) work on WINDOWS: runs the real-Chrome browser lab
+# (computer-use/tests/test_browser_vm_chromium.py) on a GitHub Windows runner,
+# with the real unpacked extension in Chrome for Testing — both in a real
+# window (headful: native drags go through the Windows drag loop path) and
+# headless.
+#
+# Branded Chrome ignores --load-extension, so this uses Chrome for Testing.
+# --noconftest: the shared tests/conftest.py is Linux-only (os.getuid, sway
+# fixtures) and the browser tests don't use it.
+name: windows-browser-lab
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'computer-use/computer_use_mcp/**'
+      - 'computer-use/tests/**'
+      - 'computer-use/extension/**'
+      - 'extension/**'
+      - '.github/workflows/windows-browser-lab.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: windows-browser-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lab:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [headful, headless]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install engine (Windows dep set) + pytest
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "mcp>=1.26.0,<2" "fastapi>=0.115" "uvicorn[standard]>=0.30" `
+            "pyyaml>=6.0" "pillow>=10.0" websockets pytest
+          # --no-deps: the Linux-only deps (evdev, dbus-fast, pywayland) don't build
+          # on Windows — exactly how the Windows engine installs this package.
+          python -m pip install -e computer-use --no-deps
+
+      - name: Install Chrome for Testing
+        shell: pwsh
+        run: |
+          $out = npx --yes @puppeteer/browsers install chrome@stable --path "$env:RUNNER_TEMP\cft"
+          Write-Host $out
+          $line = ($out | Select-String -Pattern '^chrome@\S+\s+(.+)$' | Select-Object -Last 1)
+          $exe = $line.Matches[0].Groups[1].Value.Trim()
+          if (-not (Test-Path $exe)) { throw "Chrome for Testing not found at '$exe'" }
+          "CINDRO_TEST_CHROMIUM=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Browser lab (${{ matrix.mode }})
+        shell: pwsh
+        env:
+          CINDRO_LAB_HEADFUL: ${{ matrix.mode == 'headful' && '1' || '' }}
+          CINDRO_REQUIRE_BROWSER_LAB: '1'
+          PYTHONPATH: ''
+        run: |
+          python -m pytest --noconftest -q -rs `
+            computer-use/tests/test_browser_vm_chromium.py `
+            computer-use/tests/test_browser_visual_tools.py `
+            computer-use/tests/test_browser_visual_extension.py

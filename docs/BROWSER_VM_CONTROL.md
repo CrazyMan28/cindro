@@ -86,6 +86,16 @@ scrolled…") and the agent re-inspects.
 - Held input: `browser_mouse_down`/`up` track the held buttons per tab. If an event batch fails
   midway, the extension releases the held buttons and modifiers. `browser_input_release` frees
   anything stuck.
+- Step-by-step drag: `browser_mouse_down_xy` → `browser_mouse_move_xy` (repeat) →
+  `browser_mouse_up_xy`. The button stays held between calls, so `browser_visual_inspect` can
+  look at drop targets that only appear mid-drag (highlighted slots, snap circles) before the drop.
+- HTML5 drag-and-drop (`draggable=true`): while our button is held the extension turns on
+  `Input.setInterceptDrags`. When the page starts a native drag, Chrome hands it to the extension
+  instead of the OS drag loop, and held moves are sent as `dragEnter`/`dragOver` and the release
+  as `drop` (`Input.dispatchDragEvent`). That works the same on Windows, macOS and Linux.
+  Tool results carry `html5_drag: started|dragging|dropped|cancelled`. `browser_input_release`
+  cancels a live HTML5 drag instead of dropping it. `.github/workflows/windows-browser-lab.yml`
+  runs the real-Chrome lab on Windows (headful and headless).
 
 ## Safety and boundaries
 

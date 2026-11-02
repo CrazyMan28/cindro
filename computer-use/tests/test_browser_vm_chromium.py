@@ -8,6 +8,7 @@ coordinates). See browser_lab.py. Skipped when no Chromium binary is available
 """
 
 import json
+import os
 import time
 
 import pytest
@@ -15,15 +16,23 @@ import pytest
 from browser_lab import Lab, find_chromium
 
 CHROMIUM = find_chromium()
-pytestmark = pytest.mark.skipif(CHROMIUM is None, reason="no Chromium binary for the browser lab")
+# CI jobs that exist to run this lab (e.g. windows-browser-lab) set this so a
+# missing/broken browser FAILS instead of silently skipping to green.
+REQUIRED = bool(os.environ.get("CINDRO_REQUIRE_BROWSER_LAB"))
+pytestmark = pytest.mark.skipif(CHROMIUM is None and not REQUIRED,
+                                reason="no Chromium binary for the browser lab")
 
 
 def _start(ext):
+    if CHROMIUM is None:
+        pytest.fail("CINDRO_REQUIRE_BROWSER_LAB is set but no Chromium binary was found")
     lab = Lab(ext)
     try:
         return lab.start(CHROMIUM)
     except Exception as exc:  # pragma: no cover - environment problem, not a code bug
         lab.stop()
+        if REQUIRED:
+            pytest.fail(f"browser lab could not start: {exc}")
         pytest.skip(f"browser lab could not start: {exc}")
 
 
@@ -387,4 +396,56 @@ def test_failed_sequence_releases_held_input(lab):
         lab.run(lab.bridge.send_command("input.sequence", {
             "tabId": tab, "events": [{"method": "Runtime.evaluate", "params": {"expression": "1"}}]}))
     lab.call("browser_input_release", tab_id=tab)
+    lab.call("browser_tab_close", tab_id=tab)
+
+
+def _ring_visible(lab, tab):
+    return lab.eval("getComputedStyle(document.getElementById('ring')).display", tab) == "block"
+
+
+@pytest.mark.parametrize("page", ["dnd_pointer.html", "dnd_html5.html"])
+def test_step_by_step_drag_sees_mid_drag_targets_and_drops_on_them(lab, page):
+    """The blue circle only exists while the item is held over the building:
+    press, move in, LOOK (it's there), move onto it, release on it."""
+    tab = lab.open(page)
+    inspect(lab, tab_id=tab)
+    vp = dict(coord_space="viewport", tab_id=tab)
+    assert not _ring_visible(lab, tab)
+    lab.call("browser_mouse_down_xy", x=140, y=140, **vp)
+    moved = lab.call("browser_mouse_move_xy", x=600, y=350, **vp)
+    if page == "dnd_html5.html":
+        assert moved.get("html5_drag") == "started", moved
+    time.sleep(0.2)
+    assert _ring_visible(lab, tab), "drop target should appear mid-drag"
+    meta = inspect(lab, tab_id=tab)                  # looking must not end the drag
+    assert meta.get("url")
+    assert _ring_visible(lab, tab)
+    lab.call("browser_mouse_move_xy", x=740, y=440, **vp)
+    res = lab.call("browser_mouse_up_xy", verify=False, **vp)
+    assert res.get("released") == "left", res
+    if page == "dnd_html5.html":
+        assert res.get("html5_drag") == "dropped", res
+    time.sleep(0.2)
+    drops = [e for e in lab.eval("window.__log", tab) if e["type"] == "drop"]
+    assert len(drops) == 1, lab.eval("window.__log", tab)
+    assert drops[0]["onRing"] and near((drops[0]["x"], drops[0]["y"]), (740, 440))
+    if page == "dnd_html5.html":
+        assert drops[0]["data"] == "router"
+    assert not _ring_visible(lab, tab)
+    lab.call("browser_tab_close", tab_id=tab)
+
+
+def test_html5_drag_is_cancelled_not_dropped_by_input_release(lab):
+    tab = lab.open("dnd_html5.html")
+    inspect(lab, tab_id=tab)
+    vp = dict(coord_space="viewport", tab_id=tab)
+    lab.call("browser_mouse_down_xy", x=140, y=140, **vp)
+    lab.call("browser_mouse_move_xy", x=600, y=350, **vp)
+    assert _ring_visible(lab, tab)
+    lab.call("browser_input_release", tab_id=tab)
+    time.sleep(0.2)
+    log = lab.eval("window.__log", tab)
+    assert not [e for e in log if e["type"] == "drop"], log
+    # and plain clicks work again afterwards (interception switched off)
+    lab.call("browser_click_xy", x=140, y=140, **vp)
     lab.call("browser_tab_close", tab_id=tab)
