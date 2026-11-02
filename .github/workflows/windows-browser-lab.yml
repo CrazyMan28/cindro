@@ -1,0 +1,121 @@
+# Proves the Chrome-extension browser tools (browser_visual_inspect, *_xy clicks,
+# drags, step-by-step mouse_down_xy/move_xy/up_xy, HTML5 drag-and-drop, keys,
+# typing) work on WINDOWS: runs the real-Chrome browser lab
+# (computer-use/tests/test_browser_vm_chromium.py) on a GitHub Windows runner,
+# with the real unpacked extension in Chrome for Testing — both in a real
+# window (headful: native drags go through the Windows drag loop path) and
+# headless.
+#
+# Branded Chrome ignores --load-extension, so this uses Chrome for Testing.
+# --noconftest: the shared tests/conftest.py is Linux-only (os.getuid, sway
+# fixtures) and the browser tests don't use it.
+name: windows-browser-lab
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'computer-use/computer_use_mcp/**'
+      - 'computer-use/tests/**'
+      - 'computer-use/extension/**'
+      - 'extension/**'
+      - '.github/workflows/windows-browser-lab.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: windows-browser-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lab:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [headful, headless]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install engine (Windows dep set) + pytest
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "mcp>=1.26.0,<2" "fastapi>=0.115" "uvicorn[standard]>=0.30" `
+            "pyyaml>=6.0" "pillow>=10.0" websockets pytest
+          # --no-deps: the Linux-only deps (evdev, dbus-fast, pywayland) don't build
+          # on Windows — exactly how the Windows engine installs this package.
+          python -m pip install -e computer-use --no-deps
+
+      - name: Install Chrome for Testing
+        shell: pwsh
+        run: |
+          $out = npx --yes @puppeteer/browsers install chrome@stable --path "$env:RUNNER_TEMP\cft"
+          Write-Host $out
+          $line = ($out | Select-String -Pattern '^chrome@\S+\s+(.+)$' | Select-Object -Last 1)
+          $exe = $line.Matches[0].Groups[1].Value.Trim()
+          if (-not (Test-Path $exe)) { throw "Chrome for Testing not found at '$exe'" }
+          "CINDRO_TEST_CHROMIUM=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Hosted Windows runners boot a 1024x768 desktop, and Windows clamps the
+      # lab's --window-size=1280,900 to that work area: the headful viewport
+      # ends up 580px tall and every surface below y=580 is clipped. Raise the
+      # desktop to 1920x1080 first (Win32 ChangeDisplaySettings, no extra module).
+      - name: Set 1920x1080 desktop (headful)
+        if: matrix.mode == 'headful'
+        shell: pwsh
+        run: |
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Display {
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+            public struct DEVMODE {
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+              public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+              public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
+              public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+              public short dmLogPixels;
+              public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+              public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2;
+              public int dmPanningWidth, dmPanningHeight;
+            }
+            [DllImport("user32.dll")] public static extern bool EnumDisplaySettings(string dev, int mode, ref DEVMODE dm);
+            [DllImport("user32.dll")] public static extern int ChangeDisplaySettings(ref DEVMODE dm, int flags);
+            public static int Set(int w, int h) {
+              DEVMODE dm = new DEVMODE();
+              dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+              if (!EnumDisplaySettings(null, -1, ref dm)) return -100;
+              dm.dmPelsWidth = w; dm.dmPelsHeight = h;
+              dm.dmFields = 0x80000 | 0x100000;  // DM_PELSWIDTH | DM_PELSHEIGHT
+              return ChangeDisplaySettings(ref dm, 0);
+            }
+            public static string Current() {
+              DEVMODE dm = new DEVMODE();
+              dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+              EnumDisplaySettings(null, -1, ref dm);
+              return dm.dmPelsWidth + "x" + dm.dmPelsHeight;
+            }
+          }
+          "@
+          Write-Host "desktop before: $([Display]::Current())"
+          $rc = [Display]::Set(1920, 1080)
+          Write-Host "ChangeDisplaySettings -> $rc; desktop now: $([Display]::Current())"
+          if ($rc -ne 0) { throw "could not set a 1920x1080 desktop (DISP_CHANGE code $rc)" }
+
+      - name: Browser lab (${{ matrix.mode }})
+        shell: pwsh
+        env:
+          CINDRO_LAB_HEADFUL: ${{ matrix.mode == 'headful' && '1' || '' }}
+          CINDRO_REQUIRE_BROWSER_LAB: '1'
+          PYTHONPATH: ''
+        run: |
+          python -m pytest --noconftest -q -rs `
+            computer-use/tests/test_browser_vm_chromium.py `
+            computer-use/tests/test_browser_visual_tools.py `
+            computer-use/tests/test_browser_visual_extension.py

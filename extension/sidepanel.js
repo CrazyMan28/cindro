@@ -1163,7 +1163,11 @@ const BROWSER_PRIMER =
   "browser_click_xy / browser_drag_xy / browser_scroll_xy / browser_type_trusted / " +
   "browser_key_press using x/y measured on that image (verify=true returns a fresh " +
   "screenshot to confirm the change; re-inspect and retry if it didn't happen). Zoom " +
-  "with browser_visual_inspect(surface='s1') to read small console text. These are " +
+  "with browser_visual_inspect(surface='s1') to read small console text. " +
+  "Drag-and-drop whose drop targets only appear WHILE the button is held (highlighted " +
+  "slots, blue circles): drag in steps — browser_mouse_down_xy on the item, " +
+  "browser_mouse_move_xy toward the target, browser_visual_inspect to see the targets, " +
+  "browser_mouse_move_xy onto one, browser_mouse_up_xy to drop. These are " +
   "still browser tools, inside this Chrome.\n" +
   "2) NEVER use real_screen / desktop_screenshot / mouse_click / mouse_move / key_press / " +
   "type_text or ANY real-screen or full-desktop computer-use tool. Those take over the " +

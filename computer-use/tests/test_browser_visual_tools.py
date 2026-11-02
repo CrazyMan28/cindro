@@ -89,6 +89,7 @@ def test_all_graphical_tools_registered():
     names = set(mcp._tool_manager._tools)
     for t in ("browser_visual_inspect", "browser_click_xy", "browser_move_xy", "browser_drag_xy",
               "browser_scroll_xy", "browser_mouse_down", "browser_mouse_up", "browser_key_press",
+              "browser_mouse_down_xy", "browser_mouse_move_xy", "browser_mouse_up_xy",
               "browser_type_trusted", "browser_input_release",
               # existing DOM tools untouched
               "browser_snapshot", "browser_click", "browser_type", "browser_screenshot",
@@ -228,6 +229,40 @@ def test_mouse_down_holds_until_up_and_release_recovers(lab):
     assert res["released"] == "all" and 11 not in bv.store.held
     kinds = [e["params"]["type"] for e in lab.last("input.sequence")[1]["events"]]
     assert "mouseReleased" in kinds and kinds.count("keyUp") == 4
+
+
+def test_step_by_step_drag_holds_between_calls_and_inspects_mid_drag(lab):
+    lab.call("browser_visual_inspect", tab_id=11)
+    res, _ = lab.call("browser_mouse_down_xy", x=10, y=10, tab_id=11)
+    assert res["holding"] and bv.store.held[11] == 1
+    kinds = [e["params"]["type"] for e in lab.last("input.sequence")[1]["events"]]
+    assert "mousePressed" in kinds and "mouseReleased" not in kinds
+    lab.call("browser_mouse_move_xy", x=200, y=150, tab_id=11, steps=5)
+    evs = lab.last("input.sequence")[1]["events"]
+    assert len(evs) == 5 and all(e["params"]["type"] == "mouseMoved" for e in evs)
+    assert all(e["params"]["buttons"] == 1 for e in evs)
+    # Looking mid-drag must not release the button.
+    lab.call("browser_visual_inspect", tab_id=11)
+    assert bv.store.held[11] == 1
+    res, out = lab.call("browser_mouse_move_xy", x=220, y=160, tab_id=11, verify=True)
+    assert res["verify"]["screen_changed"] and len(out) == 2 and bv.store.held[11] == 1
+    res, _ = lab.call("browser_mouse_up_xy", tab_id=11)
+    assert res["released"] == "left" and bv.store.held[11] == 0
+    rel = lab.last("input.sequence")[1]["events"][0]["params"]
+    assert rel["type"] == "mouseReleased" and (rel["x"], rel["y"]) == (220, 160)
+
+
+def test_mouse_up_xy_at_new_point_glides_there_before_release(lab):
+    lab.call("browser_visual_inspect", tab_id=11)
+    lab.call("browser_mouse_down_xy", x=10, y=10)
+    n = len([c for c in lab.calls if c[0] == "input.sequence"])
+    res, _ = lab.call("browser_mouse_up_xy", x=300, y=200, verify=False)
+    seqs = [c[1]["events"] for c in lab.calls if c[0] == "input.sequence"][n:]
+    assert len(seqs) == 2
+    assert all(e["params"]["type"] == "mouseMoved" and e["params"]["buttons"] == 1 for e in seqs[0])
+    assert seqs[1][0]["params"]["type"] == "mouseReleased"
+    assert (seqs[1][0]["params"]["x"], seqs[1][0]["params"]["y"]) == (300, 200)
+    assert res["released"] == "left" and bv.store.held[11] == 0
 
 
 def test_mouse_up_without_known_position(lab):

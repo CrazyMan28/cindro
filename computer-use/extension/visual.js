@@ -25,9 +25,104 @@ const VISUAL_INPUT_METHODS = new Set([
 const focusEmulated = new Set();   // tabIds with Emulation.setFocusEmulationEnabled on
 const tabLocks = new Map();        // tabId -> promise tail (serializes input per tab)
 
+// Native HTML5 drag-and-drop (draggable=true). While one of OUR mouse buttons is
+// held we turn on Input.setInterceptDrags: when the page starts a native drag,
+// Chrome hands it to us (Input.dragIntercepted, with the dataTransfer payload)
+// instead of entering the OS drag loop, which synthetic input can't steer on
+// every platform. We then drive it ourselves: held moves become
+// dragEnter/dragOver, the release becomes drop. The drag stays live across
+// separate input.sequence calls, so the page's mid-drag highlights can be
+// inspected between moves.
+const dragIntercept = new Set();   // tabIds with interception on
+const nativeDrags = new Map();     // tabId -> { data, entered, x, y }
+
 chrome.debugger.onDetach.addListener((source) => {
-  if (source.tabId != null) focusEmulated.delete(source.tabId);
+  if (source.tabId != null) {
+    focusEmulated.delete(source.tabId);
+    dragIntercept.delete(source.tabId);
+    nativeDrags.delete(source.tabId);
+  }
 });
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (method === "Input.dragIntercepted" && source.tabId != null && dragIntercept.has(source.tabId)) {
+    nativeDrags.set(source.tabId, { data: params.data, entered: false, x: null, y: null });
+  }
+});
+
+async function setDragIntercept(tabId, enabled) {
+  if (enabled === dragIntercept.has(tabId)) return;
+  try {
+    await chrome.debugger.sendCommand({ tabId }, "Input.setInterceptDrags", { enabled });
+    if (enabled) dragIntercept.add(tabId); else dragIntercept.delete(tabId);
+  } catch (e) {
+    dragIntercept.delete(tabId);   // older Chrome: leave native drags to the browser
+  }
+}
+
+// Input.dragIntercepted lands just AFTER the move that started the drag
+// returns. Later moves pick it up on their own; at the end of a batch of held
+// moves we wait briefly once so the caller learns a drag started.
+async function awaitDragStart(tabId) {
+  for (let i = 0; i < 5 && !nativeDrags.has(tabId); i++) await visualSleep(10);
+}
+
+function dragEvent(type, drag, x, y, modifiers) {
+  return ["Input.dispatchDragEvent",
+    { type, x, y, data: drag.data, modifiers: modifiers || 0 }];
+}
+
+// Dispatch one validated Input.* event, translating mouse events into the
+// intercepted native drag when one is live. Returns how the event was sent.
+async function dispatchInput(tabId, ev) {
+  const prm = ev.params || {};
+  const target = { tabId };
+  if (ev.method === "Input.dispatchMouseEvent") {
+    if (prm.type === "mousePressed") await setDragIntercept(tabId, true);
+    const drag = nativeDrags.get(tabId);
+    if (drag && prm.type === "mouseMoved") {
+      const [m, ep] = dragEvent(drag.entered ? "dragOver" : "dragEnter", drag, prm.x, prm.y, prm.modifiers);
+      await chrome.debugger.sendCommand(target, m, ep);
+      drag.entered = true; drag.x = prm.x; drag.y = prm.y;
+      return "drag";
+    }
+    if (drag && prm.type === "mouseReleased") {
+      nativeDrags.delete(tabId);
+      try {
+        if (!drag.entered || drag.x !== prm.x || drag.y !== prm.y) {
+          const [m, ep] = dragEvent(drag.entered ? "dragOver" : "dragEnter", drag, prm.x, prm.y, prm.modifiers);
+          await chrome.debugger.sendCommand(target, m, ep);
+        }
+        const [m, ep] = dragEvent("drop", drag, prm.x, prm.y, prm.modifiers);
+        await chrome.debugger.sendCommand(target, m, ep);
+      } finally {
+        await chrome.debugger.sendCommand(target, ev.method, prm);
+        if (!prm.buttons) await setDragIntercept(tabId, false);
+      }
+      return "drop";
+    }
+    await chrome.debugger.sendCommand(target, ev.method, prm);
+    if (prm.type === "mouseMoved" && prm.buttons) return "heldmove";
+    if (prm.type === "mouseReleased" && !prm.buttons) await setDragIntercept(tabId, false);
+    return "mouse";
+  }
+  await chrome.debugger.sendCommand(target, ev.method, prm);
+  return "other";
+}
+
+// Abort a live native drag (error/recovery path) without dropping.
+async function cancelNativeDrag(tabId) {
+  const drag = nativeDrags.get(tabId);
+  nativeDrags.delete(tabId);
+  if (drag) {
+    try {
+      const [m, ep] = dragEvent("dragCancel", drag, drag.x || 0, drag.y || 0, 0);
+      await chrome.debugger.sendCommand({ tabId }, m, ep);
+    } catch (_) {}
+  }
+  await setDragIntercept(tabId, false);
+  return !!drag;
+}
 
 function visualSleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -418,14 +513,22 @@ async function visualInput(p) {
         { frameId: 0 }).catch(() => {});
     }
     let n = 0;
+    let html5 = null;   // what happened to a native HTML5 drag in this batch
+    let heldMove = false;
+    if (p.cancelDrag && await cancelNativeDrag(tab.id)) html5 = "cancelled";
+    const dragBefore = nativeDrags.has(tab.id);
     try {
       for (const ev of events) {
         const d = Math.min(Math.max(Number(ev.delayMs) || 0, 0), 10000);
         if (d) await visualSleep(d);
-        await chrome.debugger.sendCommand({ tabId: tab.id }, ev.method, ev.params || {});
+        const how = await dispatchInput(tab.id, ev);
+        if (how === "heldmove") heldMove = true;
+        else if (how === "drop") html5 = "dropped";
         n++;
       }
+      if (heldMove && dragIntercept.has(tab.id)) await awaitDragStart(tab.id);
     } catch (e) {
+      await cancelNativeDrag(tab.id);
       for (const rel of (p.releaseOnError || [])) {
         try { await chrome.debugger.sendCommand({ tabId: tab.id }, rel.method, rel.params || {}); } catch (_) {}
       }
@@ -433,6 +536,8 @@ async function visualInput(p) {
         "(held buttons/keys were released)");
     }
     const out = { tabId: tab.id, dispatched: n, viewport: vp };
+    if (!html5 && nativeDrags.has(tab.id)) html5 = dragBefore ? "dragging" : "started";
+    if (html5) out.html5Drag = html5;
     if (p.verify) {
       await visualSleep(Math.min(Math.max(Number(p.verify.settleMs) || 0, 0), 10000));
       const frames = await visualFrames(tab.id);

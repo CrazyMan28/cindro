@@ -49,7 +49,7 @@ Graphical pages — a VM or remote desktop in a tab (noVNC, Proxmox, Guacamole,
 SPICE, VMware consoles) or any canvas app: `browser_visual_inspect` (screenshot
 + surfaces + coordinate mapping; `surface="s1"` zooms in), then
 `browser_click_xy`, `browser_move_xy`, `browser_drag_xy`, `browser_scroll_xy`,
-`browser_mouse_down`/`browser_mouse_up`, `browser_key_press`
+`browser_mouse_down`/`browser_mouse_up`, the step-by-step drag trio `browser_mouse_down_xy`/`browser_mouse_move_xy`/`browser_mouse_up_xy`, `browser_key_press`
 (`ctrl+alt+delete`, `win+r`, …), `browser_type_trusted` and
 `browser_input_release`. Real CDP input, coordinates measured on the inspect
 image, `verify=True` re-captures to confirm the change. See

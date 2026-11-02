@@ -24,6 +24,17 @@ def _detect_tailscale_ip() -> str | None:
         pass
     return None
 
+def _default_ydotool_socket() -> str:
+    """Per-user ydotool socket path. os.getuid() doesn't exist on Windows (where
+    ydotool isn't used anyway), and this runs at import time — calling it
+    unguarded made importing config (and everything that imports it, e.g. the
+    browser tools) crash with AttributeError on Windows."""
+    getuid = getattr(os, "getuid", None)
+    if getuid is None:
+        return ""
+    return f"/run/user/{getuid()}/.ydotool_socket"
+
+
 CONFIG_DIR = Path.home() / ".computer-use"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 
@@ -45,7 +56,7 @@ DEFAULT_CONFIG = {
     "video_fps": 6,             # default frame cadence for /video/mjpeg
     "scroll_invert": False,
     "accel_autoconfig": True,
-    "ydotool_socket": f"/run/user/{os.getuid()}/.ydotool_socket",
+    "ydotool_socket": _default_ydotool_socket(),
 }
 
 
