@@ -61,6 +61,53 @@ jobs:
           if (-not (Test-Path $exe)) { throw "Chrome for Testing not found at '$exe'" }
           "CINDRO_TEST_CHROMIUM=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # Hosted Windows runners boot a 1024x768 desktop, and Windows clamps the
+      # lab's --window-size=1280,900 to that work area: the headful viewport
+      # ends up 580px tall and every surface below y=580 is clipped. Raise the
+      # desktop to 1920x1080 first (Win32 ChangeDisplaySettings, no extra module).
+      - name: Set 1920x1080 desktop (headful)
+        if: matrix.mode == 'headful'
+        shell: pwsh
+        run: |
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Display {
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+            public struct DEVMODE {
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName;
+              public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra;
+              public int dmFields, dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput;
+              public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName;
+              public short dmLogPixels;
+              public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+              public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2;
+              public int dmPanningWidth, dmPanningHeight;
+            }
+            [DllImport("user32.dll")] public static extern bool EnumDisplaySettings(string dev, int mode, ref DEVMODE dm);
+            [DllImport("user32.dll")] public static extern int ChangeDisplaySettings(ref DEVMODE dm, int flags);
+            public static int Set(int w, int h) {
+              DEVMODE dm = new DEVMODE();
+              dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+              if (!EnumDisplaySettings(null, -1, ref dm)) return -100;
+              dm.dmPelsWidth = w; dm.dmPelsHeight = h;
+              dm.dmFields = 0x80000 | 0x100000;  // DM_PELSWIDTH | DM_PELSHEIGHT
+              return ChangeDisplaySettings(ref dm, 0);
+            }
+            public static string Current() {
+              DEVMODE dm = new DEVMODE();
+              dm.dmSize = (short)Marshal.SizeOf(typeof(DEVMODE));
+              EnumDisplaySettings(null, -1, ref dm);
+              return dm.dmPelsWidth + "x" + dm.dmPelsHeight;
+            }
+          }
+          "@
+          Write-Host "desktop before: $([Display]::Current())"
+          $rc = [Display]::Set(1920, 1080)
+          Write-Host "ChangeDisplaySettings -> $rc; desktop now: $([Display]::Current())"
+          if ($rc -ne 0) { throw "could not set a 1920x1080 desktop (DISP_CHANGE code $rc)" }
+
       - name: Browser lab (${{ matrix.mode }})
         shell: pwsh
         env:

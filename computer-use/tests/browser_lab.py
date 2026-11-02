@@ -310,7 +310,19 @@ class Lab:
         threading.Thread(target=lambda: [None for _ in self.proc.stderr], daemon=True).start()
         self.browser_ws = ws_url
         self.run(self._configure_extension())
+        if not headless:
+            self._check_headful_window()
         return self
+
+    def _check_headful_window(self) -> None:
+        """A real window is clamped to the desktop's work area (hosted Windows
+        runners boot at 1024x768), which silently clips the fixture pages and
+        shows up later as off-by-a-viewport rect mismatches. Fail up front."""
+        win = self.sw_eval("chrome.windows.getAll().then(ws => ws.map(w => [w.width, w.height]))")
+        if not win or any(w < 1200 or h < 850 for w, h in win):
+            raise RuntimeError(
+                f"headful lab window is {win}, not the requested 1280x900: the desktop is "
+                "too small (raise the display resolution, e.g. 1920x1080)")
 
     async def _cdp_session(self):
         import websockets
