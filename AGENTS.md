@@ -237,6 +237,11 @@ Design pillars:
   type" (gui_selftest catches this).
 - **Background jobs wake via `session.wake`** (`bg_jobs.py` → daemon), the generalized form
   of the subagent wake — queued if the session is mid-turn. Don't add a second wake path.
+  On Windows the frozen engine can't re-exec `sys.executable -m computer_use_mcp.bg_jobs`
+  (that boots a second engine) and `os.kill(pid, 0)` TERMINATES the pid — so
+  `windows/engine/server_windows.py` `install_bg_jobs_fix()` rebinds `_spawn_runner`
+  (→ `<exe> --bg-runner ...`), `_alive` and `stop`. Any new detached-runner module in
+  `computer-use/` needs the same Windows rebind (same story as `live_widgets --supervise`).
 - **Hooks fire points are mostly observational.** Only UserPromptSubmit blocks/injects and
   SessionStart injects; tool/Stop/Notification hooks can't abort (the brain's CLI runs MCP
   tools itself). `HookStore::run()` is a no-op when an event has no hooks — keep it that way
