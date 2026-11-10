@@ -229,12 +229,110 @@ if sys.platform == "win32":
     _lw.ensure_supervisor = _win_ensure_supervisor
 
 
+# ── Windows fix: background jobs / monitors / wake_me_in never fired ─────────
+# computer_use_mcp.bg_jobs has the SAME three Linux-isms live_widgets had, and
+# every wake path (wake_me_in, bg_start notify-on-done, bg_monitor, bg_watch)
+# goes through them, so on Windows the agent was never woken:
+#   1. _spawn_runner() launches [sys.executable, "-m", "computer_use_mcp.bg_jobs",
+#      "--sleep", "--job", <id>]. In the frozen build sys.executable is
+#      jarvis-engine.exe, which ignores "-m" and boots a SECOND ENGINE (which
+#      fails to bind :8794 and exits) — the sleep/run/monitor runner never runs,
+#      so session.wake is never called. The timer just sits in "sleeping".
+#   2. start_new_session=True is a POSIX no-op, so the runner shares the
+#      engine's console group (the Ctrl-C/Ctrl-Break hazard described above).
+#   3. _alive() probes with os.kill(pid, 0), which on Windows TERMINATES the
+#      target — so bg_status/bg_list on a live timer killed it outright.
+# Fix: relaunch THIS entry point with "--bg-runner <args>" (handled in main())
+# in its own hidden console + process group, probe liveness with
+# OpenProcess/GetExitCodeProcess, and stop() kills the whole tree (os.killpg
+# doesn't exist on Windows; os.kill only ends the top process).
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+_CREATE_NO_WINDOW = 0x08000000
+_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+
+
+def _bg_runner_argv(args, frozen=None, executable=None) -> list:
+    """Command line that re-enters THIS entry point in bg-runner mode."""
+    frozen = getattr(sys, "frozen", False) if frozen is None else frozen
+    exe = executable or sys.executable
+    if frozen:
+        return [exe, "--bg-runner", *args]
+    return [exe, os.path.abspath(__file__), "--bg-runner", *args]
+
+
+def _win_spawn_bg_runner(args) -> int:
+    import subprocess as _sp
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    # Own HIDDEN console (CREATE_NO_WINDOW): not the engine's console group, and
+    # the job's shell children inherit it, so no console windows pop up.
+    # Try to break away from any kill-on-close job object the engine runs in, so
+    # a timer survives an engine restart; fall back if breakaway isn't allowed.
+    base = _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
+    last_exc = None
+    for flags in (base | _CREATE_BREAKAWAY_FROM_JOB, base):
+        try:
+            p = _sp.Popen(_bg_runner_argv(args), stdin=_sp.DEVNULL,
+                          stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                          creationflags=flags, close_fds=True, env=env)
+            return p.pid
+        except OSError as exc:
+            last_exc = exc
+    raise last_exc  # type: ignore[misc]
+
+
+def _win_kill_tree(pid) -> None:
+    if not pid:
+        return
+    import subprocess as _sp
+    try:
+        _sp.run(["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                creationflags=_CREATE_NO_WINDOW, timeout=15)
+    except Exception:
+        pass
+
+
+def install_bg_jobs_fix(alive=None) -> None:
+    """Rebind bg_jobs' process primitives to Windows-correct versions."""
+    from computer_use_mcp import bg_jobs as _bj
+    if getattr(_bj, "_cindro_win_fixed", False):
+        return
+    alive = alive or _win_alive
+    orig_stop = _bj.stop
+
+    def _win_stop(jid: str) -> dict:
+        m = _bj._read_meta(jid)
+        # Runner first (its tree contains the job: no setsid on Windows), so it
+        # can't record "failed" + wake when the job dies under it.
+        for key in ("runner_pid", "pid"):
+            pid = m.get(key)
+            if pid and alive(pid):
+                _win_kill_tree(pid)
+        return orig_stop(jid)
+
+    _bj._spawn_runner = _win_spawn_bg_runner
+    _bj._alive = alive
+    _bj.stop = _win_stop
+    _bj._cindro_win_fixed = True
+
+
+if sys.platform == "win32":
+    install_bg_jobs_fix()
+
+
 def main() -> None:
     # Windows supervisor mode: _win_ensure_supervisor() (above) relaunches THIS
     # exe with "--supervise"; run the live-widget supervisor loop, not the server.
     if "--supervise" in sys.argv[1:]:
         from computer_use_mcp import live_widgets as _lw
         _lw._supervise_loop()
+        return
+    # Background-job runner mode (wake_me_in / bg_start / bg_monitor / bg_watch):
+    # _win_spawn_bg_runner() relaunches this entry with "--bg-runner <args>".
+    if len(sys.argv) > 1 and sys.argv[1] == "--bg-runner":
+        from computer_use_mcp import bg_jobs as _bj
+        _bj._main(sys.argv[2:])
         return
     # Import the heavy server lazily (after patching) so merely importing this
     # module for tests doesn't pull in uvicorn/fastapi/the full tool surface.
