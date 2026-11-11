@@ -137,6 +137,89 @@ int main(int argc, char **argv)
     check(!store.setGoals(QStringLiteral("nope"), QStringLiteral("x")),
           "setGoals on unknown session reports failure");
 
+    // --- historyPage: windowed, compacted session open ------------------------
+    {
+        SessionRow h;
+        h.id = QStringLiteral("sess-history");
+        check(store.create(h), "history session created");
+        // 30 turns: user msg, turn_started, 50 streamed thinking chunks, usage,
+        // tool call/result (huge output), assistant msg, final.
+        const QString bigOut(50000, QLatin1Char('x'));
+        for (int t = 0; t < 30; ++t) {
+            store.appendEvent(h.id, NormalizedBrainEvent::message(
+                QStringLiteral("user"), QStringLiteral("question %1").arg(t)));
+            store.appendEvent(h.id, NormalizedBrainEvent::turnStarted());
+            for (int c = 0; c < 50; ++c)
+                store.appendEvent(h.id, NormalizedBrainEvent::thinking(QStringLiteral("t%1.").arg(c)));
+            store.appendEvent(h.id, NormalizedBrainEvent::usage(QJsonObject{{QStringLiteral("input_tokens"), 5}}));
+            store.appendEvent(h.id, NormalizedBrainEvent::toolCall(
+                QStringLiteral("call%1").arg(t), QStringLiteral("shell"), QJsonObject{}));
+            store.appendEvent(h.id, NormalizedBrainEvent::toolResult(
+                QStringLiteral("call%1").arg(t), true, bigOut));
+            store.appendEvent(h.id, NormalizedBrainEvent::message(
+                QStringLiteral("assistant"), QStringLiteral("answer %1").arg(t)));
+            store.appendEvent(h.id, NormalizedBrainEvent::final_());
+        }
+        // Each turn compacts to 7 items: user, turn_started, thinking, call, result, answer, final.
+        const auto p1 = store.historyPage(h.id, -1, 14, 1000);
+        check(p1.events.size() == 14, "page 1 holds exactly maxItems items");
+        check(p1.hasMore, "page 1 reports more history");
+        check(!p1.events.isEmpty()
+                  && p1.events.last().ev.kind == NormalizedBrainEvent::Kind::Final,
+              "page 1 ends at the newest event");
+        int thinkingRows = 0;
+        bool sawUsage = false, capped = false, fullThought = false;
+        for (const auto &se : p1.events) {
+            if (se.ev.kind == NormalizedBrainEvent::Kind::Thinking) {
+                ++thinkingRows;
+                const QString txt = se.ev.fields.value(QStringLiteral("text")).toString();
+                fullThought = txt.startsWith(QStringLiteral("t0.")) && txt.endsWith(QStringLiteral("t49."));
+            }
+            if (se.ev.kind == NormalizedBrainEvent::Kind::Usage)
+                sawUsage = true;
+            if (se.ev.kind == NormalizedBrainEvent::Kind::ToolResult)
+                capped = se.ev.fields.value(QStringLiteral("output")).toString().size() == 1000
+                         && se.ev.fields.value(QStringLiteral("truncated")).toBool()
+                         && se.ev.fields.value(QStringLiteral("full_chars")).toInt() == 50000;
+        }
+        check(thinkingRows == 2, "50 thinking chunks per turn coalesce into one row");
+        check(fullThought, "coalesced thinking keeps every chunk in order");
+        check(!sawUsage, "usage events are dropped from the page");
+        check(capped, "oversized tool output is capped + tagged truncated");
+
+        // Walk every page back to the start; total must be 30 turns * 7 items.
+        int total = p1.events.size();
+        int cursor = p1.oldestSeq;
+        bool more = p1.hasMore;
+        int pages = 1;
+        int prevFirstSeq = p1.events.first().seq;
+        bool ordered = true;
+        while (more && pages < 100) {
+            const auto p = store.historyPage(h.id, cursor, 14, 1000);
+            if (!p.events.isEmpty()) {
+                ordered = ordered && p.events.last().seq < prevFirstSeq;
+                prevFirstSeq = p.events.first().seq;
+            }
+            total += p.events.size();
+            cursor = p.oldestSeq;
+            more = p.hasMore;
+            ++pages;
+        }
+        check(total == 30 * 7, "paging back visits every renderable item exactly once");
+        check(ordered, "older pages strictly precede newer ones");
+        check(cursor == 0, "last page reaches seq 0");
+
+        const auto all = store.historyPage(h.id, -1, 100000, 0);
+        check(!all.hasMore && all.events.size() == 30 * 7, "one big page = whole history, no more");
+        bool uncapped = false;
+        for (const auto &se : all.events)
+            if (se.ev.kind == NormalizedBrainEvent::Kind::ToolResult)
+                uncapped = se.ev.fields.value(QStringLiteral("output")).toString().size() == 50000;
+        check(uncapped, "maxFieldChars=0 leaves outputs intact");
+        check(store.historyPage(QStringLiteral("nope"), -1, 10).events.isEmpty(),
+              "unknown session pages empty");
+    }
+
     // --- delete clears the FTS mirror ----------------------------------------
     check(store.deleteSession(a.id), "delete session alpha");
     {

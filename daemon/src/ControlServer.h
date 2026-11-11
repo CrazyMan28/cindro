@@ -151,6 +151,14 @@ public:
     // channel so both serialize identically.
     static QJsonArray searchHitsToJson(const QVector<SessionSearchHit> &hits);
 
+    // session.history, shared by the control AND device channels so both wire
+    // shapes stay identical. Legacy call (no `compact`/`before_seq`): the whole
+    // raw log (or the newest `limit` raw rows) — unchanged for Replay/web/extension.
+    // Windowed call (`compact:true` and/or `before_seq`): one SessionStore::
+    // historyPage of up to `limit` render-ready items (default 80, max 1000) with
+    // optional `max_field_chars`, plus {has_more, oldest_seq} for "load earlier".
+    static Response sessionHistoryResponse(SessionStore &store, const Request &req);
+
     // device->phone FILE PUSH (Contract C). Stores the bytes under the jarvis
     // inbox and returns a {file_id,name,size,mime,session_id} descriptor the
     // DeviceServer emits to phones as a 'file.offer' event. b64 OR an on-disk
@@ -274,6 +282,13 @@ private:
     void handleRequest(QWebSocket *client, const Request &req);
     void sendResponse(QWebSocket *client, const Response &resp);
     void broadcastSessionEvent(const QString &sessionId, const NormalizedBrainEvent &ev);
+    // Persist + fan out a DAEMON-synthesized lifecycle event (turn_started on
+    // send, final{cancelled} on Stop) to every surface WITHOUT onBrainEvent's
+    // side effects (task-done toasts, hooks, subagent wakes, push).
+    void publishLifecycleEvent(const QString &sessionId, const NormalizedBrainEvent &ev);
+    // Sessions whose current turn was already announced by the daemon's own
+    // turn_started — a brain-emitted duplicate (codex/api) is swallowed.
+    QSet<QString> m_turnAnnounced;
 
     // Method handlers return a Response for the request id.
     Response handlePing(const Request &req);

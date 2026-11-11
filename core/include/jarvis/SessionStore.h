@@ -164,6 +164,27 @@ public:
     int appendEvent(const QString &sessionId, const NormalizedBrainEvent &ev);
     // Events for a session ordered by seq ascending. limit<=0 => all.
     QVector<StoredEvent> listEvents(const QString &sessionId, int limit = 0);
+
+    // Windowed, render-ready history for opening a chat (the "fast open" path).
+    // Walks the session's events NEWEST-first and returns up to `maxItems`
+    // renderable events (ascending), so opening a 10k-event session costs the
+    // same as opening a 50-event one. Compaction (all lossless for rendering):
+    //   * consecutive `thinking` chunks are coalesced into ONE event (the API
+    //     brain persists one row per streamed delta — thousands per turn);
+    //   * kinds no transcript renders (usage, thread_started, driving.state,
+    //     unknown) are dropped;
+    //   * when maxFieldChars > 0, oversized text fields (message/thinking text,
+    //     tool output, diff patch) are cut to that many chars and the event is
+    //     tagged {"truncated":true,"full_chars":N}.
+    // beforeSeq < 0 => start from the newest event; otherwise only events with
+    // seq < beforeSeq (the cursor from the previous page's `oldestSeq`).
+    struct HistoryPage {
+        QVector<StoredEvent> events; // ascending by seq
+        bool hasMore = false;        // older events remain before oldestSeq
+        int oldestSeq = -1;          // raw seq of the oldest row consumed (-1 = none)
+    };
+    HistoryPage historyPage(const QString &sessionId, int beforeSeq, int maxItems,
+                            int maxFieldChars = 0);
     // Cross-session full-text search over message/thinking text and tool
     // outputs (FTS5-ranked, LIKE fallback). Optional sessionId narrows to one
     // session; contextWindow (clamped 0..5) events either side ride along.

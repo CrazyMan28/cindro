@@ -438,6 +438,186 @@ Item {
         }
     }
 
+    // ---- Windowed history (fast session open) ------------------------------
+    // Fold one page of stored events into ListModel rows in PLAIN JS (no model
+    // reads/writes per event), so a page lands in the transcript as a single
+    // batch. Mirrors appendEvent(ev, false) row-for-row. Returns
+    // {rows, running, openThinkId}: `running` = a turn_started with no final yet.
+    function foldHistory(events) {
+        var rows = []
+        var byCall = ({})          // call_id -> index in rows (tool result merge)
+        var thinkIdx = -1          // open thinking row
+        var thinkData = null
+        var running = false
+        function mk(kind, role, text, extra) {
+            var r = { "kind": kind, "role": role, "text": text, "callId": "",
+                      "toolName": "", "approvalId": "", "risk": "", "ok": true,
+                      "streaming": false }
+            if (extra) for (var k in extra) r[k] = extra[k]
+            return r
+        }
+        function tsOf(ev) { return (ev.ts !== undefined && ev.ts > 0) ? Number(ev.ts) : Date.now() }
+        function closeThink(ts) {
+            if (thinkIdx < 0) return
+            thinkData.e = Math.max(ts, thinkData.s + 1)
+            rows[thinkIdx].text = JSON.stringify(thinkData)
+            thinkIdx = -1; thinkData = null
+        }
+        function cut(ev, txt) {
+            return ev.truncated === true
+                ? txt + "\n… (" + (ev.full_chars !== undefined ? ev.full_chars : "many")
+                      + " chars total — truncated for display)"
+                : txt
+        }
+        for (var i = 0; i < events.length; i++) {
+            var ev = events[i]
+            var kind = ev.kind !== undefined ? "" + ev.kind : ""
+            var ts = tsOf(ev)
+            switch (kind) {
+            case "turn_started": running = true; break
+            case "final": closeThink(ts); running = false; break
+            case "thinking": {
+                var chunk = ev.text !== undefined ? "" + ev.text : ""
+                if (thinkIdx >= 0) { thinkData.t += chunk; break }
+                thinkData = { t: chunk, s: ts, e: 0 }
+                rows.push(mk("thinking", "tool", "", { "callId": "think-h" + i + "-" + ts }))
+                thinkIdx = rows.length - 1
+                break
+            }
+            case "message":
+                closeThink(ts)
+                rows.push(mk("message", ev.role !== undefined ? "" + ev.role : "assistant",
+                             cut(ev, ev.text !== undefined ? "" + ev.text : "")))
+                break
+            case "tool_call": {
+                closeThink(ts)
+                var cid = ev.call_id !== undefined ? "" + ev.call_id : ""
+                rows.push(mk("tool", "tool", JSON.stringify({
+                    i: ev.args !== undefined ? JSON.stringify(ev.args, null, 2) : "",
+                    o: "", d: false, s: ev.server !== undefined ? "" + ev.server : "" }),
+                    { "callId": cid, "toolName": ev.name !== undefined ? "" + ev.name : "tool" }))
+                if (cid.length > 0) byCall[cid] = rows.length - 1
+                break
+            }
+            case "tool_result": {
+                closeThink(ts)
+                var rcid = ev.call_id !== undefined ? "" + ev.call_id : ""
+                var outp = cut(ev, ev.output !== undefined ? "" + ev.output : "")
+                var inp = ev.args !== undefined ? JSON.stringify(ev.args, null, 2) : ""
+                var nm = (ev.name !== undefined && ("" + ev.name).length > 0) ? "" + ev.name : ""
+                var srv = ev.server !== undefined ? "" + ev.server : ""
+                var at = (rcid.length > 0 && byCall[rcid] !== undefined) ? byCall[rcid] : -1
+                if (at >= 0) {
+                    var d = { i: "", o: "", d: false, s: "" }
+                    try { d = JSON.parse(rows[at].text) } catch (e) {}
+                    d.o = outp; d.d = true
+                    if ((!d.i || d.i.length === 0) && inp.length > 0) d.i = inp
+                    if ((!d.s || d.s.length === 0) && srv.length > 0) d.s = srv
+                    rows[at].text = JSON.stringify(d)
+                    rows[at].ok = ev.ok !== false
+                    if (nm.length > 0 && (rows[at].toolName === "" || rows[at].toolName === "tool"))
+                        rows[at].toolName = nm
+                } else {
+                    rows.push(mk("tool", "tool", JSON.stringify({ i: inp, o: outp, d: true, s: srv }),
+                                 { "callId": rcid, "toolName": nm.length > 0 ? nm : "result",
+                                   "ok": ev.ok !== false }))
+                }
+                break
+            }
+            case "approval":
+                closeThink(ts)
+                rows.push(mk("approval", "system",
+                             ev.summary !== undefined ? "" + ev.summary : "Approval requested",
+                             { "approvalId": ev.approval_id !== undefined ? "" + ev.approval_id : "",
+                               "risk": ev.risk !== undefined ? "" + ev.risk : "" }))
+                break
+            case "diff":
+                closeThink(ts)
+                rows.push(mk("diff", "tool", cut(ev, ev.patch !== undefined ? "" + ev.patch : ""),
+                             { "toolName": ev.path !== undefined ? "" + ev.path : "diff" }))
+                break
+            case "error":
+                closeThink(ts)
+                running = false
+                rows.push(mk("error", "system", ev.message !== undefined ? "" + ev.message : "error"))
+                break
+            default:
+                break
+            }
+        }
+        // A reasoning block still open at the end of the page: if the turn is live
+        // it's still being written (leave e=0); otherwise stamp it closed.
+        var openThinkId = ""
+        if (thinkIdx >= 0) {
+            if (running) {
+                rows[thinkIdx].text = JSON.stringify(thinkData)
+                openThinkId = rows[thinkIdx].callId
+            } else {
+                closeThink(thinkData.s + 1)
+            }
+        }
+        return { "rows": rows, "running": running, "openThinkId": openThinkId }
+    }
+
+    // An older page's tool CALL whose result is already on screen (as an orphan
+    // "result" card at the top of the newer page): fold the call's input/name
+    // into that card instead of showing two halves. Returns true when merged.
+    function mergeOlderCall(r) {
+        var n = Math.min(chatModel.count, 80)
+        for (var i = 0; i < n; i++) {
+            var row = chatModel.get(i)
+            if (row.kind !== "tool" || row.callId !== r.callId)
+                continue
+            var cur = { i: "", o: "", d: true, s: "" }, old = { i: "", s: "" }
+            try { cur = JSON.parse(row.text) } catch (e) {}
+            try { old = JSON.parse(r.text) } catch (e2) {}
+            if ((!cur.i || cur.i.length === 0) && old.i) cur.i = old.i
+            if ((!cur.s || cur.s.length === 0) && old.s) cur.s = old.s
+            chatModel.setProperty(i, "text", JSON.stringify(cur))
+            if (row.toolName === "result" || row.toolName === "tool" || row.toolName === "")
+                chatModel.setProperty(i, "toolName", r.toolName)
+            return true
+        }
+        return false
+    }
+
+    // Pull the next older page when the transcript is scrolled to (near) its top.
+    function maybeLoadOlder() {
+        if (!bridge.historyHasMore || bridge.historyLoadingOlder || chatModel.count === 0)
+            return
+        if (chatView.contentY - chatView.originY > 600)
+            return
+        bridge.loadOlderHistory()
+    }
+
+    // Show the OPEN session's brain/model in the pickers (it's fixed per session).
+    function adoptSessionModel() {
+        var b = "" + bridge.sessionBrain
+        var m = "" + bridge.sessionModel
+        if (b.length === 0)
+            return
+        if (b !== panel.selectedBrain) {
+            panel.selectedBrain = b
+            // Show the session's model right away; onModelsListed then fills in
+            // the rest of that brain's catalog and keeps it selected.
+            if (m.length > 0) {
+                panel.modelOptions = [m]
+                panel.selectedModel = m
+            }
+            if (bridge.connected)
+                bridge.listModels(b)
+            return
+        }
+        if (m.length > 0) {
+            if (panel.modelOptions.indexOf(m) < 0) {
+                var o = panel.modelOptions.slice()
+                o.unshift(m)
+                panel.modelOptions = o
+            }
+            panel.selectedModel = m
+        }
+    }
+
     // ---- Bridge wiring (Contract A client + Contract B rendering) ----------
     Connections {
         target: bridge
@@ -489,9 +669,25 @@ Item {
             if (brain && brain.length > 0 && brain !== panel.selectedBrain)
                 return
             if (models && models.length > 0) {
-                panel.modelOptions = models
-                panel.selectedModel = models[0]
+                // Prefer the OPEN session's stored model (it's fixed per session),
+                // then the user's current pick, then the brain's default (first).
+                var opts = models.slice()
+                var want = ""
+                if (bridge.sessionModel.length > 0 && bridge.sessionBrain === panel.selectedBrain)
+                    want = bridge.sessionModel
+                else if (opts.indexOf(panel.selectedModel) >= 0)
+                    want = panel.selectedModel
+                if (want.length > 0 && opts.indexOf(want) < 0)
+                    opts.unshift(want)   // a model the catalog no longer lists: still show it
+                panel.modelOptions = opts
+                panel.selectedModel = want.length > 0 ? want : opts[0]
             }
+        }
+
+        // The open session's brain/model arrived with its history: show THAT in the
+        // pickers (the session runs on it regardless of what the picker says).
+        function onSessionMetaChanged() {
+            panel.adoptSessionModel()
         }
 
         // When the daemon connects after the panel loaded, fetch settings (to pick
@@ -507,6 +703,10 @@ Item {
         function onSettingsLoaded(s) {
             panel._availableBrains = s.available_brains !== undefined ? s.available_brains : ({})
             var db = s.default_brain !== undefined ? ("" + s.default_brain) : ""
+            // An opened session pins its own brain — don't flip the picker back to
+            // the default brain under it (settings reload on every reconnect).
+            if (bridge.sessionBrain.length > 0)
+                return
             if (db.length > 0 && db !== panel.selectedBrain)
                 panel.selectBrain(db)   // updates selectedBrain + re-queries model list
         }
@@ -576,17 +776,49 @@ Item {
             // a chat that no longer owns it. Only replay for the CURRENT session.
             if (sessionId !== bridge.sessionId)
                 return
-            chatModel.clear()
-            panel.busy = false
             panel.thinkingRowId = ""
+            panel.thinking = false
             panel.chatSessionId = sessionId   // the transcript now represents this session
-            // History replay: full text immediately (live=false => no typewriter).
-            for (var i = 0; i < events.length; i++)
-                panel.appendEvent(events[i], false)
+            // History replay (windowed): fold the page into rows in plain JS, then
+            // hand the ListModel ONE batch. The old path appended event-by-event,
+            // each tool_result/thinking chunk re-scanning + JSON round-tripping rows
+            // through the live model — O(n²) on long chats (the ~40 s open).
+            var fold = panel.foldHistory(events)
+            chatModel.clear()
+            if (fold.rows.length > 0)
+                chatModel.append(fold.rows)
+            // A turn still running on the daemon (turn_started with no final yet):
+            // show Stop so it can be interrupted from here.
+            panel.busy = fold.running
+            if (fold.openThinkId.length > 0) {
+                panel.thinkingRowId = fold.openThinkId   // live chunks keep extending it
+                panel.thinking = true
+            }
             // Restore the widgets THIS session rendered (they live on a separate bus,
             // not in the event history) so reopening a session brings them back.
             bridge.replaySessionWidgets(sessionId)
             chatView.positionViewAtEnd()
+            // A short page that doesn't fill the view: keep pulling older ones.
+            Qt.callLater(panel.maybeLoadOlder)
+        }
+        // An OLDER page (scrolled to the top / "Load earlier"): prepend it above the
+        // current rows. ListView keeps the visible rows anchored, so no jump.
+        function onSessionHistoryOlder(sessionId, events) {
+            if (sessionId !== bridge.sessionId)
+                return
+            var fold = panel.foldHistory(events)
+            // Pair a call in this older page with its result already shown as an
+            // orphan card in the newer page (the page boundary split them).
+            var keep = []
+            for (var i = 0; i < fold.rows.length; i++) {
+                var r = fold.rows[i]
+                if (r.kind === "tool" && r.callId.length > 0 && panel.mergeOlderCall(r))
+                    continue
+                keep.push(r)
+            }
+            for (var k = keep.length - 1; k >= 0; k--)
+                chatModel.insert(0, keep[k])
+            Qt.callLater(panel.maybeLoadOlder)
         }
         // Fill the in-chat session switcher's list (bridge.listSessions()).
         function onSessionsListed(list) {
@@ -1022,6 +1254,12 @@ Item {
                 Layout.preferredHeight: 32
                 model: panel.brainOptions
                 currentIndex: Math.max(0, panel.brainOptions.indexOf(panel.selectedBrain))
+                Connections {
+                    target: panel
+                    function onSelectedBrainChanged() {
+                        brainPicker.currentIndex = Math.max(0, panel.brainOptions.indexOf(panel.selectedBrain))
+                    }
+                }
                 onActivated: panel.selectBrain(currentText)
 
                 background: Rectangle {
@@ -1110,6 +1348,21 @@ Item {
                 Layout.preferredWidth: 188
                 Layout.preferredHeight: 32
                 model: panel.modelOptions
+                // Follow selectedModel (session open / brain switch / "/model"). The
+                // picker had NO currentIndex binding, so it always showed entry 0 —
+                // why a reopened Sonnet chat displayed the default brain's gpt-5.5.
+                // A Connections re-sync (not a binding) because a user pick breaks
+                // a currentIndex binding inside ComboBox.
+                currentIndex: Math.max(0, panel.modelOptions.indexOf(panel.selectedModel))
+                Connections {
+                    target: panel
+                    function onSelectedModelChanged() {
+                        modelPicker.currentIndex = Math.max(0, panel.modelOptions.indexOf(panel.selectedModel))
+                    }
+                    function onModelOptionsChanged() {
+                        modelPicker.currentIndex = Math.max(0, panel.modelOptions.indexOf(panel.selectedModel))
+                    }
+                }
                 onActivated: panel.selectedModel = currentText
 
                 background: Rectangle {
@@ -1258,6 +1511,33 @@ Item {
                 cacheBuffer: 300
                 reuseItems: true
                 boundsBehavior: Flickable.StopAtBounds
+                // Windowed history: reaching the top pulls the next older page.
+                // callLater = evaluate after the open's positionViewAtEnd(), so a
+                // fresh open doesn't immediately fetch a page it doesn't need.
+                onContentYChanged: Qt.callLater(panel.maybeLoadOlder)
+
+                header: Item {
+                    width: chatView.width
+                    height: (bridge.historyHasMore || bridge.historyLoadingOlder) ? 34 : 0
+                    visible: height > 0
+                    Text {
+                        anchors.centerIn: parent
+                        text: bridge.historyLoadingOlder ? "Loading earlier messages…"
+                                                         : "↑ Load earlier messages"
+                        color: olderMa.containsMouse ? Theme.accentBright : Theme.textFaint
+                        font.family: Theme.fontDisplay
+                        font.pixelSize: 10
+                        font.letterSpacing: Theme.trackMid
+                        MouseArea {
+                            id: olderMa
+                            anchors.fill: parent
+                            anchors.margins: -6
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: bridge.loadOlderHistory()
+                        }
+                    }
+                }
 
                 // Mouse-wheel / trackpad scrolling. The old handler multiplied
                 // angleDelta by a fixed 2.0 (≈240px per mouse notch, but applied that
@@ -1276,14 +1556,23 @@ Item {
                         var dy = (ev.pixelDelta.y !== 0)
                                  ? ev.pixelDelta.y
                                  : (ev.angleDelta.y / 120) * (chatView.height * 0.15)
-                        var maxY = Math.max(0, chatView.contentHeight - chatView.height)
+                        // ListView's content does NOT start at y=0: with variable-height
+                        // delegates (and pages prepended above) originY drifts, often
+                        // negative. The old `target <= 0` / `contentHeight - height`
+                        // bounds ignored it, so once originY moved, EVERY wheel notch hit
+                        // a bound and snapped to the top/bottom — mouse scrolling "did
+                        // nothing". Bound against [originY, originY+contentHeight-height].
+                        var minY = chatView.originY
+                        var maxY = Math.max(minY, chatView.originY + chatView.contentHeight - chatView.height)
                         var target = chatView.contentY - dy
-                        if (target <= 0)
+                        if (target <= minY) {
                             chatView.positionViewAtBeginning()   // exact top, no under-scroll
-                        else if (target >= maxY)
+                            panel.maybeLoadOlder()
+                        } else if (target >= maxY) {
                             chatView.positionViewAtEnd()          // exact bottom, no over-scroll past last msg
-                        else
+                        } else {
                             chatView.contentY = target
+                        }
                         ev.accepted = true
                     }
                 }
@@ -1641,6 +1930,32 @@ Item {
                     }
                 }
 
+                // Mid-turn STOP while the user is typing a follow-up (the send button
+                // itself is busy sending then). Same stopTurn() path.
+                Rectangle {
+                    Layout.alignment: Qt.AlignBottom
+                    Layout.bottomMargin: 6
+                    visible: panel.busy && !sendWrap.stop
+                    Layout.preferredWidth: 32; Layout.preferredHeight: 32; radius: 16
+                    color: stopMa.containsMouse ? Theme.danger : "transparent"
+                    border.width: 1
+                    border.color: Theme.danger
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: 11; height: 11; radius: 2
+                        color: stopMa.containsMouse ? Theme.inkOnAccent : Theme.danger
+                    }
+                    MouseArea {
+                        id: stopMa
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: panel.stopTurn()
+                    }
+                    ToolTip.visible: stopMa.containsMouse
+                    ToolTip.text: "Stop the current turn"
+                }
+
                 // glowing circular send button — becomes a red STOP button while the
                 // model's turn is in flight (panel.busy), so the user can cancel.
                 Item {
@@ -1648,8 +1963,11 @@ Item {
                     Layout.alignment: Qt.AlignBottom
                     Layout.bottomMargin: 2
                     width: 40; height: 40
-                    // When busy, the button cancels the turn; otherwise it sends.
-                    readonly property bool stop: panel.busy
+                    // Busy with an EMPTY composer -> the button stops the turn. Busy with
+                    // text typed -> it SENDS (the daemon queues it behind the running
+                    // turn), and the separate stop button beside it stays available.
+                    readonly property bool stop: panel.busy && inputArea.text.trim().length === 0
+                                                 && panel.pendingImages.length === 0
                     property bool ready: stop || (bridge.connected && inputArea.text.trim().length > 0)
 
                     Rectangle {  // glow halo

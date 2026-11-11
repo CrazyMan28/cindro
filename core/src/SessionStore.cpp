@@ -8,6 +8,8 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QVariant>
+#include <algorithm>
+#include <limits>
 
 namespace jarvis {
 
@@ -695,6 +697,134 @@ QVector<StoredEvent> SessionStore::listEvents(const QString &sessionId, int limi
         std::reverse(out.begin(), out.end());
     }
     return out;
+}
+
+namespace {
+// Cut one string field of an event to `maxChars`, tagging the event so a client
+// can say "(N chars, truncated)". No-op when the field is short or maxChars<=0.
+void capField(QJsonObject &fields, const QString &key, int maxChars)
+{
+    if (maxChars <= 0)
+        return;
+    const QJsonValue v = fields.value(key);
+    if (!v.isString())
+        return;
+    const QString s = v.toString();
+    if (s.size() <= maxChars)
+        return;
+    fields.insert(key, s.left(maxChars));
+    fields.insert(QStringLiteral("truncated"), true);
+    // Keep the LARGEST original length if several fields were cut.
+    const int prev = fields.value(QStringLiteral("full_chars")).toInt(0);
+    fields.insert(QStringLiteral("full_chars"), qMax(prev, int(s.size())));
+}
+} // namespace
+
+SessionStore::HistoryPage SessionStore::historyPage(const QString &sessionId, int beforeSeq,
+                                                    int maxItems, int maxFieldChars)
+{
+    using K = NormalizedBrainEvent::Kind;
+    HistoryPage page;
+    if (maxItems <= 0)
+        maxItems = 100;
+    // Newest-first accumulation; reversed to ascending at the end.
+    QVector<StoredEvent> rev;
+    rev.reserve(maxItems);
+    constexpr int kBatch = 512;
+    int cursor = beforeSeq < 0 ? std::numeric_limits<int>::max() : beforeSeq;
+    bool stopped = false;
+    bool exhausted = false;
+
+    while (!stopped && !exhausted) {
+        QSqlQuery q(m_db);
+        q.prepare(QStringLiteral(
+            "SELECT seq,json,ts FROM events WHERE session_id=? AND seq<?"
+            " ORDER BY seq DESC LIMIT ?"));
+        q.addBindValue(sessionId);
+        q.addBindValue(cursor);
+        q.addBindValue(kBatch);
+        if (!q.exec()) {
+            m_lastError = q.lastError().text();
+            break;
+        }
+        int rows = 0;
+        while (q.next()) {
+            ++rows;
+            const int seq = q.value(0).toInt();
+            cursor = seq;
+            const QJsonObject obj =
+                QJsonDocument::fromJson(q.value(1).toString().toUtf8()).object();
+            auto ev = NormalizedBrainEvent::fromJson(obj);
+            if (!ev) {
+                page.oldestSeq = seq;
+                continue;
+            }
+            switch (ev->kind) {
+            case K::Usage:
+            case K::ThreadStarted:
+            case K::DrivingState:
+            case K::Unknown:
+                page.oldestSeq = seq; // consumed, nothing to render
+                continue;
+            default:
+                break;
+            }
+            // Coalesce a run of thinking chunks: walking DESC, this (older) chunk
+            // goes IN FRONT of the newer block we already hold. Merging never adds
+            // an item, so a long reasoning block is kept whole across the limit.
+            if (ev->kind == K::Thinking && !rev.isEmpty()
+                && rev.last().ev.kind == K::Thinking) {
+                StoredEvent &blk = rev.last();
+                blk.ev.fields.insert(
+                    QStringLiteral("text"),
+                    ev->fields.value(QStringLiteral("text")).toString()
+                        + blk.ev.fields.value(QStringLiteral("text")).toString());
+                blk.seq = seq;
+                blk.ts = q.value(2).toLongLong();
+                page.oldestSeq = seq;
+                continue;
+            }
+            if (rev.size() >= maxItems) {
+                // Page full: leave this row for the next page.
+                stopped = true;
+                break;
+            }
+            StoredEvent se;
+            se.sessionId = sessionId;
+            se.seq = seq;
+            se.ev = *ev;
+            se.ts = q.value(2).toLongLong();
+            rev.push_back(se);
+            page.oldestSeq = seq;
+        }
+        if (rows < kBatch)
+            exhausted = true;
+    }
+
+    // hasMore: we stopped on a full page, or there are rows older than the cursor
+    // we consumed (exhausted==true means the last batch came back short).
+    page.hasMore = stopped;
+
+    std::reverse(rev.begin(), rev.end());
+    for (StoredEvent &se : rev) {
+        QJsonObject &f = se.ev.fields;
+        switch (se.ev.kind) {
+        case K::Message:
+        case K::Thinking:
+            capField(f, QStringLiteral("text"), maxFieldChars);
+            break;
+        case K::ToolResult:
+            capField(f, QStringLiteral("output"), maxFieldChars);
+            break;
+        case K::Diff:
+            capField(f, QStringLiteral("patch"), maxFieldChars);
+            break;
+        default:
+            break;
+        }
+    }
+    page.events = std::move(rev);
+    return page;
 }
 
 // --- MCP servers -----------------------------------------------------------

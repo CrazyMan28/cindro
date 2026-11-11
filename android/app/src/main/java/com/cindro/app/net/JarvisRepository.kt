@@ -93,9 +93,13 @@ class JarvisRepository(
     }
 
     suspend fun history(sessionId: String, limit: Int = 200): List<BrainEvent> {
+        // compact = windowed, render-ready page: streamed thinking deltas arrive
+        // pre-coalesced and non-rendered kinds are dropped, so `limit` counts real
+        // chat items (an older daemon ignores the flag and returns raw rows).
+        // No max_field_chars: tool outputs stay whole so screenshots still render.
         val r = client.request(
             "session.history",
-            Params.of("session_id" to sessionId, "limit" to limit),
+            Params.of("session_id" to sessionId, "limit" to limit, "compact" to true),
         ).orThrow()
         return r.getAsJsonArray("events")?.toObjects()?.map { evObj ->
             // history events may be wrapped as {ev:{...}} or be the raw event.

@@ -40,6 +40,9 @@ Item {
 
     implicitHeight: loader.item ? loader.item.implicitHeight : 0
 
+    // Longest message text handed to layout (see msgText).
+    readonly property int maxMessageChars: 12000
+
     readonly property bool isUser: kind === "message" && role === "user"
     readonly property bool isAssistant: kind === "message" && role === "assistant"
 
@@ -624,7 +627,14 @@ Item {
                     anchors.rightMargin: del.isUser ? 15 : 13
                     anchors.topMargin: 11
                     anchors.bottomMargin: 11
-                    text: del.displayText
+                    // Cap what the layout engine measures: Text lays out + wraps the
+                    // WHOLE string on the GUI thread every time the delegate is
+                    // created (i.e. on every scroll-in), so one pasted file / log dump
+                    // made scrolling past it stutter. Same cap as Android's bubble.
+                    text: del.displayText.length > del.maxMessageChars
+                          ? del.displayText.substring(0, del.maxMessageChars)
+                            + "\n… (" + del.displayText.length + " chars — truncated for display)"
+                          : del.displayText
                     color: Theme.text
                     wrapMode: Text.Wrap
                     font.family: Theme.fontSans

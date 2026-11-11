@@ -1030,26 +1030,9 @@ Response DeviceServer::devSessionDelete(const Request &req)
 
 Response DeviceServer::devSessionHistory(const Request &req)
 {
-    const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
-    const int limit = req.params.value(QStringLiteral("limit")).toInt(0);
-
-    auto sess = m_control->store().get(sessionId);
-    if (!sess)
-        return Response::failure(req.id, QStringLiteral("no_session"),
-                                 QStringLiteral("unknown session: ") + sessionId);
-
-    QJsonArray events;
-    for (const StoredEvent &se : m_control->store().listEvents(sessionId, limit)) {
-        QJsonObject e;
-        e.insert(QStringLiteral("seq"), se.seq);
-        e.insert(QStringLiteral("ts"), se.ts);
-        e.insert(QStringLiteral("ev"), se.ev.toJson());
-        events.append(e);
-    }
-    QJsonObject result;
-    result.insert(QStringLiteral("session"), sess->toJson());
-    result.insert(QStringLiteral("events"), events);
-    return Response::success(req.id, result);
+    // Same wire shape as the control channel (incl. the windowed compact mode the
+    // phone uses to open long chats fast) — by construction, one shared helper.
+    return ControlServer::sessionHistoryResponse(m_control->store(), req);
 }
 
 Response DeviceServer::devSessionSearch(const Request &req)
@@ -1434,7 +1417,9 @@ void DeviceServer::onSessionEvent(const QString &sessionId, const NormalizedBrai
         msg.data.insert(QStringLiteral("kind"), QStringLiteral("approval"));
         msg.data.insert(QStringLiteral("approval_id"),
                         ev.fields.value(QStringLiteral("approval_id")));
-    } else if (ev.kind == NormalizedBrainEvent::Kind::Final) {
+    } else if (ev.kind == NormalizedBrainEvent::Kind::Final
+               && !ev.fields.value(QStringLiteral("cancelled")).toBool()) {
+        // (A user-cancelled turn is not "done" — no push for Stop.)
         wantPush = true;
         msg.title = QStringLiteral("Task done");
         msg.body = QStringLiteral("A Cindro session finished its turn.");
