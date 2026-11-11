@@ -697,12 +697,62 @@ void Bridge::openSession(const QString &sessionId)
     emit sessionIdChanged();
     syncSubscriptions();   // start receiving THIS session's events (and only it)
     setStatus(QStringLiteral("session ready"));
+    // Forget the previous chat's paging cursor + brain/model before the reply lands.
+    setHistoryPaging(false, false, -1);
+    setSessionMeta(QString(), QString());
     emit sessionOpened(sessionId);
-    // Load this session's history so the Chat page can replay it.
+    // Load this session's history so the Chat page can replay it — WINDOWED: only
+    // the newest page of render-ready items (older pages stream in on scroll-up).
     m_openingSession = true;
+    requestHistoryPage(sessionId, -1, sessionId);
+}
+
+// How many render items one history page holds, and the per-field char cap the
+// daemon applies (the delegates display ≤6k chars of any field anyway — shipping
+// multi-MB tool outputs / base64 screenshots over the socket only to cut them in
+// QML was a big part of the slow open).
+static constexpr int kHistoryPageItems = 60;
+static constexpr int kHistoryFieldChars = 16000;
+
+void Bridge::requestHistoryPage(const QString &sessionId, int beforeSeq, const QString &ctx)
+{
     QVariantMap params;
     params.insert(QStringLiteral("session_id"), sessionId);
-    request(QStringLiteral("session.history"), params, sessionId);
+    params.insert(QStringLiteral("compact"), true);
+    params.insert(QStringLiteral("limit"), kHistoryPageItems);
+    params.insert(QStringLiteral("max_field_chars"), kHistoryFieldChars);
+    if (beforeSeq >= 0)
+        params.insert(QStringLiteral("before_seq"), beforeSeq);
+    request(QStringLiteral("session.history"), params, ctx);
+}
+
+void Bridge::loadOlderHistory()
+{
+    if (m_sessionId.isEmpty() || !m_historyHasMore || m_historyLoadingOlder
+        || m_historyOldestSeq <= 0)
+        return;
+    setHistoryPaging(m_historyHasMore, true, m_historyOldestSeq);
+    requestHistoryPage(m_sessionId, m_historyOldestSeq,
+                       QStringLiteral("__older__:") + m_sessionId);
+}
+
+void Bridge::setHistoryPaging(bool hasMore, bool loadingOlder, int oldestSeq)
+{
+    m_historyOldestSeq = oldestSeq;
+    if (hasMore == m_historyHasMore && loadingOlder == m_historyLoadingOlder)
+        return;
+    m_historyHasMore = hasMore;
+    m_historyLoadingOlder = loadingOlder;
+    emit historyPagingChanged();
+}
+
+void Bridge::setSessionMeta(const QString &brain, const QString &model)
+{
+    if (brain == m_sessionBrain && model == m_sessionModel)
+        return;
+    m_sessionBrain = brain;
+    m_sessionModel = model;
+    emit sessionMetaChanged();
 }
 
 void Bridge::deleteSession(const QString &sessionId)
@@ -726,6 +776,8 @@ void Bridge::newSession()
     // any queued first-turn text so it can't land in a future unrelated session.
     m_pendingText.clear();
     m_pendingImages.clear();
+    setHistoryPaging(false, false, -1);
+    setSessionMeta(QString(), QString());
     if (!m_sessionId.isEmpty()) {
         m_sessionId.clear();
         emit sessionIdChanged();
@@ -970,9 +1022,7 @@ void Bridge::listSessions()
 
 void Bridge::loadSessionHistory(const QString &sessionId)
 {
-    QVariantMap params;
-    params.insert(QStringLiteral("session_id"), sessionId);
-    request(QStringLiteral("session.history"), params, sessionId);
+    requestHistoryPage(sessionId, -1, sessionId);
 }
 
 void Bridge::loadReplay(const QString &sessionId)
@@ -3447,9 +3497,17 @@ void Bridge::replaySessionWidgets(const QString &sessionId)
         return;
     QStringList order;
     QHash<QString, QVariantMap> byId;
+    // Cheap byte pre-filter before the JSON parse: the bus holds EVERY session's
+    // renders (live widgets re-render constantly, so it grows large), and fully
+    // parsing each line on the GUI thread stalled every session open. A line can
+    // only matter if it names this session or is a remove/clear marker.
+    const QByteArray sidBytes = sessionId.toUtf8();
     while (!f.atEnd()) {
         const QByteArray line = f.readLine().trimmed();
         if (line.isEmpty())
+            continue;
+        if (!line.contains(sidBytes) && !line.contains("\"clear\"")
+            && !line.contains("\"remove\""))
             continue;
         const QJsonDocument d = QJsonDocument::fromJson(line);
         if (!d.isObject())
@@ -3928,8 +3986,12 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
     if (!ok) {
         const QString msg = error.value(QStringLiteral("message")).toString();
         const QString code = error.value(QStringLiteral("code")).toString();
-        if (method == QStringLiteral("session.history"))
-            m_openingSession = false;
+        if (method == QStringLiteral("session.history")) {
+            if (ctx.startsWith(QStringLiteral("__older__:")))
+                setHistoryPaging(m_historyHasMore, false, m_historyOldestSeq);
+            else if (!ctx.startsWith(QStringLiteral("__replay__:")))
+                m_openingSession = false;
+        }
         // session.subscribe against an OLDER daemon that predates the session manager:
         // swallow unknown_method. We keep the existing client-side session filter, so
         // delivery is just unscoped (the pre-fix behavior) rather than an error toast.
@@ -4404,6 +4466,23 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             events << evm;
         }
         emit replayLoaded(result.value(QStringLiteral("session")).toMap(), events);
+    } else if (method == QStringLiteral("session.history")
+               && ctx.startsWith(QStringLiteral("__older__:"))) {
+        // An OLDER page of the open chat ("load earlier" / scrolled to the top).
+        const QString sid = ctx.mid(QStringLiteral("__older__:").size());
+        if (sid != m_sessionId)
+            return; // user moved on; the new chat has its own cursor
+        QVariantList events;
+        for (const QVariant &v : result.value(QStringLiteral("events")).toList()) {
+            const QVariantMap row = v.toMap();
+            QVariantMap evm = row.value(QStringLiteral("ev")).toMap();
+            evm.insert(QStringLiteral("seq"), row.value(QStringLiteral("seq")));
+            evm.insert(QStringLiteral("ts"), row.value(QStringLiteral("ts")));
+            events << evm;
+        }
+        setHistoryPaging(result.value(QStringLiteral("has_more")).toBool(), false,
+                         result.value(QStringLiteral("oldest_seq"), -1).toInt());
+        emit sessionHistoryOlder(sid, events);
     } else if (method == QStringLiteral("session.history")) {
         // events: [{seq,ts,ev:{kind,...}}] — fold the inner ev out for QML.
         QVariantList events;
@@ -4411,6 +4490,7 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
             const QVariantMap row = v.toMap();
             QVariantMap evm = row.value(QStringLiteral("ev")).toMap();
             evm.insert(QStringLiteral("seq"), row.value(QStringLiteral("seq")));
+            evm.insert(QStringLiteral("ts"), row.value(QStringLiteral("ts")));
             events << evm;
         }
         const QString sid = ctx.isEmpty()
@@ -4427,6 +4507,15 @@ void Bridge::handleResponse(int id, bool ok, const QVariantMap &result, const QV
                   qPrintable(sid), qPrintable(m_sessionId));
             return;
         }
+        // Paging cursor for "load earlier" (an older daemon without the windowed
+        // mode returns the whole log and no has_more -> no paging, still correct).
+        setHistoryPaging(result.value(QStringLiteral("has_more")).toBool(), false,
+                         result.value(QStringLiteral("oldest_seq"), -1).toInt());
+        // The session's own brain/model so the composer pickers show what THIS chat
+        // runs on (a reopened Sonnet chat used to show the default brain's gpt-5.5).
+        const QVariantMap sess = result.value(QStringLiteral("session")).toMap();
+        setSessionMeta(sess.value(QStringLiteral("brain")).toString(),
+                       sess.value(QStringLiteral("model")).toString());
         emit sessionHistory(sid, events);
     } else if (method == QStringLiteral("memory.list")) {
         emit memoriesListed(result.value(QStringLiteral("memories")).toList(), false);

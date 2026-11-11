@@ -51,7 +51,7 @@ Methods (v1): `ping`; `settings.get`; `settings.set{patch}`;
 `model.list{brain}`;
 `session.create{profile:"coder"|"coworker", brain:"codex"|"claude"|"api", model?, cwd?, target?:"agent"|"real"}` -> `{session_id, thread_id?}`;
 `session.send{session_id, text, images?}`; `session.cancel{session_id}`;
-`session.list`; `session.history{session_id, limit?}`;
+`session.list`; `session.history{session_id, limit?, compact?, before_seq?, max_field_chars?}` (legacy = raw log; `compact`/`before_seq` = one windowed page of ≤`limit` render-ready items, thinking chunks coalesced, + `{has_more, oldest_seq}` — pass `oldest_seq` back as `before_seq` for the next older page);
 `approval.respond{session_id, approval_id, decision:"allow"|"deny"|"always"}`;
 `plan.enter{session_id}` / `plan.exit{session_id}` / `plan.approve{session_id}` /
 `plan.status{session_id}` -> `{restricted, source:"settings"|"self"|"approved"|""}` —

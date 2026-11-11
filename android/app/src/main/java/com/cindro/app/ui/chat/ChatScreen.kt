@@ -645,8 +645,10 @@ fun InputRow(
                 ),
             )
             Spacer(Modifier.width(6.dp))
-            // While a turn is in flight, the trailing button becomes a Stop control
-            // (mid-turn cancel) so it's reachable without leaving the input row.
+            // While a turn is in flight, Stop sits NEXT TO Send instead of replacing
+            // it: you can interrupt the model, or type a follow-up and send it (the
+            // daemon queues it behind the running turn) — previously Send vanished
+            // for the whole turn, and with a Claude brain busy never even turned on.
             if (busy) {
                 HapticIconButton(onClick = onStop) {
                     Icon(
@@ -655,7 +657,8 @@ fun InputRow(
                         tint = JarvisPalette.Error,
                     )
                 }
-            } else {
+            }
+            if (!busy || draft.isNotBlank() || hasAttachment) {
                 HapticIconButton(
                     onClick = onSend,
                     enabled = !sending && (draft.isNotBlank() || hasAttachment),

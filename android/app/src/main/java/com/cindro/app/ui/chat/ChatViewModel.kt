@@ -303,7 +303,9 @@ class ChatViewModel(
         if (trimmed.isNotEmpty()) {
             appendItem(ChatItem.Message(nextId(), role = "user", text = trimmed))
         }
-        _uiState.update { it.copy(sending = true, pending = emptyList(), error = null) }
+        // Busy from the moment we send (Stop shows immediately), not only once the
+        // brain's first event arrives.
+        _uiState.update { it.copy(sending = true, busy = true, pending = emptyList(), error = null) }
 
         viewModelScope.launch {
             runCatching {
@@ -314,14 +316,21 @@ class ChatViewModel(
                         images = images.map { it.mime to it.b64 },
                     )
                 }
-            }.onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+            }.onFailure { e -> _uiState.update { it.copy(error = e.message, busy = false) } }
             _uiState.update { it.copy(sending = false) }
         }
     }
 
     fun cancel() {
+        // Flip back to idle right away (the daemon also broadcasts final{cancelled});
+        // a failed cancel surfaces as an error instead of silently doing nothing.
+        freezeThinking()
+        finishStreaming(hapticComplete = false)
+        lastAssistantText = null
+        _uiState.update { it.copy(busy = false) }
         viewModelScope.launch {
             runCatching { withContext(Dispatchers.IO) { repo.cancel(_uiState.value.sessionId) } }
+                .onFailure { e -> _uiState.update { it.copy(error = "Stop failed: ${e.message}") } }
         }
     }
 
@@ -360,6 +369,12 @@ class ChatViewModel(
     // --- event folding -----------------------------------------------------
 
     private fun fold(ev: BrainEvent) {
+        // Any live, non-terminal event means the model is working — don't rely on
+        // turn_started alone (older daemons never sent one for Claude brains).
+        if (historyReplayed && ev.kind != "final" && ev.kind != "error" && ev.kind != "usage"
+            && !_uiState.value.busy) {
+            _uiState.update { it.copy(busy = true) }
+        }
         when (ev.kind) {
             "turn_started" -> {
                 // A new turn shouldn't carry over a stale accumulation ref — but if
@@ -422,12 +437,14 @@ class ChatViewModel(
             }
             "final" -> {
                 freezeThinking()
-                finishStreaming(hapticComplete = historyReplayed)
+                finishStreaming(hapticComplete = historyReplayed && ev.bool("cancelled") != true)
                 _uiState.update { it.copy(busy = false) }
                 // Speak the turn's final assistant message if read-back is on.
                 val reply = lastAssistantText
                 lastAssistantText = null
-                if (historyReplayed && voiceSettings.readBackEnabled && !reply.isNullOrBlank()) {
+                // final{cancelled:true} = the user hit Stop: don't read out a partial reply.
+                val cancelled = ev.bool("cancelled") == true
+                if (historyReplayed && !cancelled && voiceSettings.readBackEnabled && !reply.isNullOrBlank()) {
                     viewModelScope.launch { voice.speak(reply, voiceSettings.ttsVoice) }
                 }
             }

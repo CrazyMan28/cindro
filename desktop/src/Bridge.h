@@ -40,6 +40,13 @@ class Bridge : public QObject
     Q_PROPERTY(bool connected READ isConnected NOTIFY connectedChanged)
     Q_PROPERTY(QString sessionId READ sessionId NOTIFY sessionIdChanged)
     Q_PROPERTY(QString status READ status NOTIFY statusChanged)
+    // Windowed chat history (fast open): an older page exists / is being fetched.
+    Q_PROPERTY(bool historyHasMore READ historyHasMore NOTIFY historyPagingChanged)
+    Q_PROPERTY(bool historyLoadingOlder READ historyLoadingOlder NOTIFY historyPagingChanged)
+    // The OPEN session's stored brain/model (empty for a fresh, sessionless chat),
+    // so the composer's pickers show what this chat actually runs on.
+    Q_PROPERTY(QString sessionBrain READ sessionBrain NOTIFY sessionMetaChanged)
+    Q_PROPERTY(QString sessionModel READ sessionModel NOTIFY sessionMetaChanged)
     // Agent mode (plan|build|coworker) — live for the HUD chip; WRITE persists it.
     Q_PROPERTY(QString agentMode READ agentMode WRITE setAgentMode NOTIFY agentModeChanged)
 
@@ -98,6 +105,10 @@ public:
     void setFrameProvider(FrameProvider *provider) { m_frameProvider = provider; }
 
     bool isConnected() const { return m_connected; }
+    bool historyHasMore() const { return m_historyHasMore; }
+    bool historyLoadingOlder() const { return m_historyLoadingOlder; }
+    QString sessionBrain() const { return m_sessionBrain; }
+    QString sessionModel() const { return m_sessionModel; }
     QString sessionId() const { return m_sessionId; }
     QString status() const { return m_status; }
     QString agentMode() const { return m_agentMode; }
@@ -254,6 +265,10 @@ public:
     Q_INVOKABLE void listSessions();
     // session.history { session_id } -> sessionHistory(sessionId, events).
     Q_INVOKABLE void loadSessionHistory(const QString &sessionId);
+    // Fetch the next OLDER page of the open chat (scrolled to the top / "Load
+    // earlier") -> sessionHistoryOlder(sessionId, events). No-op when there's
+    // nothing older or a fetch is already in flight.
+    Q_INVOKABLE void loadOlderHistory();
     // Mission Control Replay (jarvis#66): load ANY session's full timeline
     // (ungated + keeps per-event ts) -> replayLoaded(session, events).
     Q_INVOKABLE void loadReplay(const QString &sessionId);
@@ -756,6 +771,10 @@ signals:
     void connectorsChanged(); // emitted after connectors.add so the UI refreshes
     void sessionsListed(const QVariantList &sessions);
     void sessionHistory(const QString &sessionId, const QVariantList &events);
+    // An older page for the open chat, ascending; the panel PREPENDS it.
+    void sessionHistoryOlder(const QString &sessionId, const QVariantList &events);
+    void historyPagingChanged();
+    void sessionMetaChanged();
     // Mission Control Replay: {session metadata map} + [{seq,ts,kind,...}].
     void replayLoaded(const QVariantMap &session, const QVariantList &events);
     // Fired when openSession finishes wiring a chosen session as current.
@@ -1124,6 +1143,15 @@ private:
     // True while a session opened from the Sessions page is being loaded, so the
     // history response can be surfaced as a chat load rather than a list refresh.
     bool m_openingSession = false;
+    // Windowed history cursor for the open session (see session.history compact).
+    bool m_historyHasMore = false;
+    bool m_historyLoadingOlder = false;
+    int m_historyOldestSeq = -1;
+    QString m_sessionBrain;
+    QString m_sessionModel;
+    void setHistoryPaging(bool hasMore, bool loadingOlder, int oldestSeq);
+    void setSessionMeta(const QString &brain, const QString &model);
+    void requestHistoryPage(const QString &sessionId, int beforeSeq, const QString &ctx);
     // True between our OWN session.create request and its reply, so the daemon's
     // session.opened broadcast (which arrives BEFORE the reply) isn't mistaken for a
     // foreign session and doesn't hijack/navigate the active chat.

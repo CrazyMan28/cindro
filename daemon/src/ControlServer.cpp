@@ -4315,6 +4315,14 @@ bool ControlServer::sendToSession(const QString &sessionId, const QString &text,
                             ap + QStringLiteral("\n---\n") + effectiveText;
     }
 
+    // Announce the turn to EVERY surface before the brain starts. Only codex and
+    // the api brain ever emitted turn_started; the claude CLI parser never does,
+    // so the phone (which keys its busy state + Stop button off turn_started)
+    // could not stop a Claude/Sonnet turn at all. The brain's own duplicate is
+    // swallowed in onBrainEvent.
+    m_turnAnnounced.insert(sessionId);
+    publishLifecycleEvent(sessionId, NormalizedBrainEvent::turnStarted());
+
     brain->send(effectiveText, images);
 
     // Memory SYNC (post-turn write of salient user facts). SKIPPED for a subagent —
@@ -4355,6 +4363,17 @@ bool ControlServer::cancelSession(const QString &sessionId, QString *err)
             children << it.key();
     }
     brain->cancel();
+    // Tell every surface the turn is over. A killed CLI emits no `final`, so a
+    // client that tracks busy from the event stream (the phone) used to stay
+    // "busy" forever after Stop — Stop button stuck, Send hidden. `cancelled`
+    // lets clients (and the push fan-out) skip "task done" side effects.
+    m_turnAnnounced.remove(sessionId);
+    {
+        QJsonObject f;
+        f.insert(QStringLiteral("cancelled"), true);
+        publishLifecycleEvent(sessionId,
+                              NormalizedBrainEvent(NormalizedBrainEvent::Kind::Final, f));
+    }
     for (const QString &child : std::as_const(children)) {
         QString cerr;
         cancelSession(child, &cerr);
@@ -4418,6 +4437,7 @@ bool ControlServer::deleteSession(const QString &sessionId, QString *err)
         abortOperatorApprovals(sessionId); // release any parked operator gate first
         brain->deleteLater();
     }
+    m_turnAnnounced.remove(sessionId);
     // 2) End any take-over and drop a held (gated) turn.
     if (m_takeOverActive.contains(sessionId))
         setTakeOverActive(sessionId, false);
@@ -4838,25 +4858,58 @@ Response ControlServer::handleSessionList(const Request &req)
 
 Response ControlServer::handleSessionHistory(const Request &req)
 {
+    return sessionHistoryResponse(m_store, req);
+}
+
+Response ControlServer::sessionHistoryResponse(SessionStore &store, const Request &req)
+{
     const QString sessionId = req.params.value(QStringLiteral("session_id")).toString();
     const int limit = req.params.value(QStringLiteral("limit")).toInt(0);
 
-    auto sess = m_store.get(sessionId);
+    auto sess = store.get(sessionId);
     if (!sess) {
         return Response::failure(req.id, QStringLiteral("no_session"),
                                  QStringLiteral("unknown session: ") + sessionId);
     }
 
-    QJsonArray events;
-    for (const StoredEvent &se : m_store.listEvents(sessionId, limit)) {
+    auto rowJson = [](const StoredEvent &se) {
         QJsonObject e;
         e.insert(QStringLiteral("seq"), se.seq);
         e.insert(QStringLiteral("ts"), se.ts);
         e.insert(QStringLiteral("ev"), se.ev.toJson());
-        events.append(e);
-    }
+        return e;
+    };
+
     QJsonObject result;
     result.insert(QStringLiteral("session"), sess->toJson());
+
+    // Windowed open (the fast path). Opening a long chat used to ship its ENTIRE
+    // raw log — every streamed thinking delta, every multi-MB tool output — in one
+    // frame, which the client then replayed row by row (≈40 s on big sessions).
+    const bool windowed = req.params.value(QStringLiteral("compact")).toBool(false)
+                          || req.params.contains(QStringLiteral("before_seq"));
+    if (windowed) {
+        const int beforeSeq = req.params.contains(QStringLiteral("before_seq"))
+                                  ? req.params.value(QStringLiteral("before_seq")).toInt(-1)
+                                  : -1;
+        const int items = qBound(1, limit > 0 ? limit : 80, 1000);
+        const int maxChars =
+            qMax(0, req.params.value(QStringLiteral("max_field_chars")).toInt(0));
+        const SessionStore::HistoryPage page =
+            store.historyPage(sessionId, beforeSeq, items, maxChars);
+        QJsonArray events;
+        for (const StoredEvent &se : page.events)
+            events.append(rowJson(se));
+        result.insert(QStringLiteral("events"), events);
+        result.insert(QStringLiteral("has_more"), page.hasMore);
+        result.insert(QStringLiteral("oldest_seq"), page.oldestSeq);
+        result.insert(QStringLiteral("compact"), true);
+        return Response::success(req.id, result);
+    }
+
+    QJsonArray events;
+    for (const StoredEvent &se : store.listEvents(sessionId, limit))
+        events.append(rowJson(se));
     result.insert(QStringLiteral("events"), events);
     return Response::success(req.id, result);
 }
@@ -11155,8 +11208,31 @@ bool ControlServer::gateForInjection(const QString &sessionId, const QString &br
 
 // --- event fan-out ---------------------------------------------------------
 
+void ControlServer::publishLifecycleEvent(const QString &sessionId,
+                                          const NormalizedBrainEvent &ev)
+{
+    m_store.appendEvent(sessionId, ev);
+    broadcastSessionEvent(sessionId, ev);
+    emit sessionEvent(sessionId, ev);
+}
+
 void ControlServer::onBrainEvent(const QString &sessionId, const NormalizedBrainEvent &ev)
 {
+    // The user hit Stop and hasn't sent since: anything still arriving is a
+    // straggler from the killed brain (a CLI flushing buffered stdout, an "exited"
+    // error). cancelSession already published final{cancelled}; letting these
+    // through would flip every client back to "busy" with no final to clear it.
+    if (m_userStopped.contains(sessionId))
+        return;
+    // The daemon already announced this turn (sendToSession); drop the brain's own
+    // turn_started so history + clients see exactly one per turn.
+    if (ev.kind == NormalizedBrainEvent::Kind::TurnStarted
+        && m_turnAnnounced.contains(sessionId))
+        return;
+    if (ev.kind == NormalizedBrainEvent::Kind::Final
+        || ev.kind == NormalizedBrainEvent::Kind::Error)
+        m_turnAnnounced.remove(sessionId);
+
     // Persist first so history is durable even if no client is connected.
     m_store.appendEvent(sessionId, ev);
 

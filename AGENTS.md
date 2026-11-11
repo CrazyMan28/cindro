@@ -2034,6 +2034,59 @@ Full write-up: [`docs/BROWSER_VM_CONTROL.md`](docs/BROWSER_VM_CONTROL.md). The g
   OOPIF. Everything runs on one asyncio loop, because bridge futures are loop-bound. The suite
   runs once per shipped extension.
 
+## New subsystems (2026-11-11) — windowed chat history, reliable Stop, session model display
+
+Field report (Windows desktop + Android): opening a long session took ~40 s, scrolling it lagged,
+mouse-wheel scrolling "did nothing", the phone couldn't stop a Claude/Sonnet turn or send a
+follow-up mid-turn, and a reopened Sonnet chat showed `gpt-5.5` in the model picker.
+
+- **`session.history` has a windowed mode — clients that OPEN a chat must use it.** The legacy call
+  shipped the session's entire raw log in one frame (every streamed `thinking` delta — the API
+  brain persists one row PER DELTA — and every multi-MB tool output / base64 screenshot), and the
+  desktop then replayed it event-by-event into the live `ListModel`, re-scanning + JSON
+  round-tripping rows for each tool result / thinking chunk (O(n²)). Now
+  `SessionStore::historyPage()` walks newest-first in 512-row batches and returns ≤`limit`
+  render-ready items: thinking runs coalesced into one event, `usage`/`thread_started`/
+  `driving.state`/unknown dropped, and with `max_field_chars` oversized text fields cut + tagged
+  `{truncated, full_chars}`. Response adds `{has_more, oldest_seq}`; pass `oldest_seq` back as
+  `before_seq`. The shared serializer is `ControlServer::sessionHistoryResponse` (control AND
+  device channel, so the wire shapes can't drift). The legacy shape (no `compact`, no
+  `before_seq`) is UNCHANGED — Replay/web/extension still rely on the full raw log + ts.
+- **Desktop:** `Bridge::openSession` asks for 60 items / 16k chars per field; scrolling to the top
+  (or the "↑ Load earlier messages" header) calls `bridge.loadOlderHistory()` →
+  `sessionHistoryOlder`, which `JarvisPanel` PREPENDS. History is folded into rows in plain JS by
+  `foldHistory()` and appended to the model as ONE batch — keep it row-for-row in sync with
+  `appendEvent()` (same roles, same JSON envelopes). `turn_started` with no later `final` in the
+  page means the turn is still running → `panel.busy = true` so Stop shows on reopen.
+  `replaySessionWidgets` byte-prefilters `widgets.jsonl` lines by session id before JSON-parsing
+  (the bus holds every session's renders and live widgets grow it constantly).
+  `ChatDelegate`'s message bubble caps the laid-out text at `maxMessageChars` (12k), same as Android.
+- **Chat wheel bounds are `[originY, originY + contentHeight - height]`, NOT `[0, contentHeight -
+  height]`.** A ListView of variable-height delegates (plus prepended pages) moves `originY`; the
+  old `target <= 0` / `>= contentHeight - height` checks then hit a bound on every notch and
+  snapped to top/bottom, so the wheel appeared dead.
+- **The daemon announces every turn itself.** `sendToSession` publishes `turn_started` right before
+  `brain->send` (`publishLifecycleEvent`: persist + broadcast + device fan-out, with NONE of
+  `onBrainEvent`'s toast/hook/wake/push side effects); a brain's own `turn_started` is swallowed
+  while `m_turnAnnounced` holds the session. The Claude parser never emitted one, and the phone
+  keys busy/Stop off it — so Claude turns were unstoppable from the phone. `cancelSession`
+  publishes `final{cancelled:true}` (a killed CLI emits no final, which left the phone "busy"
+  forever). Clients must treat `cancelled` finals as "stopped", not "done": no TTS read-back, no
+  completion haptic, and `DeviceServer` sends no "Task done" push for them.
+- **Stop sits next to Send; it doesn't replace it.** Desktop: the round button only becomes Stop
+  while busy AND the composer is empty; with text typed it sends (daemon queues it behind the
+  running turn — `m_pendingTurns`) and a separate small stop button shows. Android composer shows
+  both while busy; `busy` is set on send and on any live non-terminal event, cleared locally on
+  Stop.
+- **Model picker shows the OPEN session's model.** The model `ComboBox` had no `currentIndex`
+  binding (always showed entry 0) and opening a session never adopted its stored brain/model.
+  `Bridge.sessionBrain/sessionModel` (from the history reply's `session` row) drive
+  `adoptSessionModel()`; `onModelsListed` keeps the session model (inserting it if the catalog no
+  longer lists it) and otherwise keeps the user's pick instead of resetting to `models[0]`;
+  `onSettingsLoaded` no longer flips the brain back to `default_brain` while a session is open.
+  Pickers re-sync via `Connections` because a user pick breaks a ComboBox `currentIndex` binding.
+  The model is still fixed per session — changing the picker affects the NEXT new chat.
+
 ## Conventions
 
 - C++: match surrounding Qt style; logic in `core` with a `core/tests` ctest; daemon/desktop stay thin.
